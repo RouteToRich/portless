@@ -1,0 +1,92 @@
+# PortLess — one container per service (modular monolith, REST inter-service comms).
+# Promote any service to a standalone microservice by deploying just its block.
+
+x-service-base: &service-base
+  build: .
+  env_file: .env
+  restart: unless-stopped
+
+services:
+  api-gateway:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.api_gateway.main:app
+      PORT: 8000
+    ports: ["8000:8000"]
+
+  deals:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.deals.main:app
+      PORT: 8001
+    ports: ["8001:8001"]
+
+  trade-min:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.trade_min.main:app
+      PORT: 8002
+    ports: ["8002:8002"]
+
+  match-engine:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.match_engine.main:app
+      PORT: 8003
+    ports: ["8003:8003"]
+
+  sourcing:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.sourcing.main:app
+      PORT: 8004
+    ports: ["8004:8004"]
+
+  negotiator:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.negotiator.main:app
+      PORT: 8005
+    ports: ["8005:8005"]
+
+  dealmaker:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.dealmaker.main:app
+      PORT: 8006
+    ports: ["8006:8006"]
+
+  shield-link:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.shield_link.main:app
+      PORT: 8007
+    ports: ["8007:8007"]
+
+  docugen:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.docugen.main:app
+      PORT: 8008
+    ports: ["8008:8008"]
+
+  escrow-guard:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.escrow_guard.main:app
+      PORT: 8009
+    ports: ["8009:8009"]
+
+  hitl-approval:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.hitl_approval.main:app
+      PORT: 8010
+    ports: ["8010:8010"]
+
+  exception-resolver:
+    <<: *service-base
+    environment:
+      SERVICE_MODULE: services.exception_resolver.main:app
+      PORT: 8011
+    ports: ["8011:8011"]
