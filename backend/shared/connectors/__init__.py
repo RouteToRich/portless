@@ -7,5 +7,6 @@ treat them interchangeably — see Appendix 8.1 of the master specification.
 
 from .base import Connector
 from .registry import CONNECTOR_REGISTRY, get_connector
+from .reorder import ReorderWindowEngine
 
-__all__ = ["Connector", "CONNECTOR_REGISTRY", "get_connector"]
+__all__ = ["Connector", "CONNECTOR_REGISTRY", "get_connector", "ReorderWindowEngine"]

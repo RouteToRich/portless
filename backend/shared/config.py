@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     hitl_approval_url: str = "http://localhost:8010"
     exception_resolver_url: str = "http://localhost:8011"
 
+    # --- Trade-intelligence connector credentials ---
+    # Set in .env — see .env.example for registration instructions.
+    comtrade_subscription_key: str = ""
+    volza_api_key: str = ""
+    alibaba_app_key: str = ""
+    alibaba_app_secret: str = ""
+
     # --- Cross-cutting ---
     http_timeout_seconds: float = 10.0
     log_level: str = "INFO"
