@@ -62,3 +62,6 @@ Letter of Credit
 What if payment not received? - ECGC = Export Credit Guarantee corp
 /globaleximinstitute
 indiausatrade.mea.gov.in - enroll
+
+
+https://www.perplexity.ai/search/c43e8817-3289-474c-a54c-97f6c5165a08 - escrow alternative
