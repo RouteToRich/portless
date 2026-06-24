@@ -65,3 +65,84 @@ indiausatrade.mea.gov.in - enroll
 
 
 https://www.perplexity.ai/search/c43e8817-3289-474c-a54c-97f6c5165a08 - escrow alternative
+
+
+Negotiator agent
+RAG knowledge with trade container shipping negotiation info, 
+real time current news info or agent to connect the real live world news
+beter llm for this kind of work
+trade playbooks and product specifications.
+
+Summary Matrix
+Capability	Provided By	Does it need Internet?	Does it need RAG?
+Bargaining tactics & tone	Base LLM (Pre-trained weights)	❌ No	❌ No
+Knowing trade laws & product moisture limits	RAG (pgvector + Trade Docs)	❌ No (Local DB)	Yes
+Real-time shipping & currency rates	External APIs (Cogoport, FX)	Yes	❌ No
+Verifying if the final price makes at least 8% profit	Hard Code (FastAPI/Python validation)	❌ No	❌ No 
+
+
+===============
+
+is it possible to create a negotiator agent between a buyer and seller/manufacturer. this agent is useful for a merchant exporter.
+this agent should be intelligent enough to negotiate with both buyer and seller with the info shared by both by email or any other communication channels
+before the negotiation starts the agent should be loaded with needed information on score and profit %
+the agent should use the RAG knowledge (ingested with important negotiation skills  for each product/country/rules/factors) and internet facilities for current world scenarios and happenings that could be beneficial for decision on negotiation. 
+Need to consider the travel cost+quality check cost+doc cost while negotiation.
+and Human in the loop wherever possible for approval
+agent should support monitored inboxes, quote extraction from attachments
+Negotiation flow should be persisted in memory
+================
+
+https://www.perplexity.ai/search/7ce95f1a-1baf-4059-972f-a6dcd72b204f
+
+======
+what would be the outcome of match engine? what are all the parameters needed for negotiation engine to negotiate with buyer and seller considering we are going to create an negotiator agent with Knowledge of product/rules/factors/country + internet ccess to get relavant live info needed + HITL wherever needed
+
+=========
+
+
+Negotiator Agent:
+=================
+trade_match_id
+buyer_id
+seller_id
+product_code
+buyer_country_code
+date_of_expectation
+date_of_packaging
+
+
+
+Merchant exporter admin email -  configure with API key
+    - Auto read inbx 
+
+
+
+this agent is useful for a merchant exporter.
+This agent is triggered after Match engine found the match- which passes parameters to this agent
+this agent should be intelligent enough to negotiate with both buyer and seller with the info shared by both by email or any other communication channels
+before the negotiation starts the agent should be loaded with needed information on score and profit %
+the agent should use the RAG knowledge (ingested with important negotiation skills  for each product/country/rules/factors) and internet facilities for current world scenarios and happenings that could be beneficial for decision on negotiation. 
+Need to consider the travel cost+quality check cost+doc cost while negotiation(hope this is received from match engine)
+and Human in the loop wherever possible for approval
+agent should support monitored inboxes, quote extraction from attachments
+Negotiation flow should be persisted in memory which would be helpful for negotiation
+
+
+feed back from buyer and seller
+
+
+
+LLM gateway 
+RAG - ingestion + retrieval
+web search capacity
+Mongodb - negotiation persistance
+inbox monitor 
+send email
+Orchestrator
+buyer side negotiator
+supplier side negotiator
+UI - negotiator / RAG / portal / chat
+
+insurance - export and import api
+

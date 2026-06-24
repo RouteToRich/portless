@@ -32,8 +32,8 @@ match-engine:
 sourcing:
 	uvicorn services.sourcing.main:app --reload --port 8004
 
-negotiator:
-	uvicorn services.negotiator.main:app --reload --port 8005
+negotiation-agent:
+	uvicorn agents.negotiation_agent.main:app --reload --port 8005
 
 dealmaker:
 	uvicorn services.dealmaker.main:app --reload --port 8006

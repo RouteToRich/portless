@@ -34,7 +34,7 @@ from services.deals.router import router as deals_router
 from services.trade_min.router import router as trade_min_router
 from services.match_engine.router import router as match_engine_router
 from services.sourcing.router import router as sourcing_router
-from services.negotiator.router import router as negotiator_router
+from agents.negotiation_agent.router import router as negotiation_agent_router
 from services.dealmaker.router import router as dealmaker_router
 from services.shield_link.router import router as shield_link_router
 from services.docugen.router import router as docugen_router
@@ -47,7 +47,7 @@ _SERVICE_ROUTERS = [
     trade_min_router,
     match_engine_router,
     sourcing_router,
-    negotiator_router,
+    negotiation_agent_router,
     dealmaker_router,
     shield_link_router,
     docugen_router,

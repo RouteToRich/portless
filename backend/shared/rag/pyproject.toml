@@ -1,0 +1,32 @@
+[project]
+name = "practice-rag"
+version = "0.1.0"
+description = "Practice LangGraph RAG system for ingestion, retrieval, augmentation, and generation"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph",
+    "langchain-core",
+    "langchain-community",
+    "langchain-text-splitters",
+    "langchain-openai",
+    "langchain-chroma",
+    "chromadb",
+    "rank-bm25",
+    "python-dotenv",
+    "pydantic",
+    "numpy",
+    "scikit-learn",
+    "pypdf",
+    "sentence-transformers",
+    "pdfplumber",
+    "pdf2image",
+    "pytesseract",
+    "ragas",
+    "deepeval",
+]
+
+[project.scripts]
+practice-rag = "rag_practice.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

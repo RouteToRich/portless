@@ -13,7 +13,7 @@ SERVICE_APPS = [
     ("services.trade_min.main", "/trade-min/health"),
     ("services.match_engine.main", "/match-engine/health"),
     ("services.sourcing.main", "/sourcing/health"),
-    ("services.negotiator.main", "/negotiator/health"),
+    ("agents.negotiation_agent.main", "/negotiation-agent/health"),
     ("services.dealmaker.main", "/dealmaker/health"),
     ("services.shield_link.main", "/shield-link/health"),
     ("services.docugen.main", "/docugen/health"),

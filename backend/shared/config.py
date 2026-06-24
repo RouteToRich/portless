@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     trade_min_url: str = "http://localhost:8002"
     match_engine_url: str = "http://localhost:8003"
     sourcing_url: str = "http://localhost:8004"
-    negotiator_url: str = "http://localhost:8005"
+    negotiation_agent_url: str = "http://localhost:8005"
     dealmaker_url: str = "http://localhost:8006"
     shield_link_url: str = "http://localhost:8007"
     docugen_url: str = "http://localhost:8008"

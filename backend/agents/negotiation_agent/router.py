@@ -1,4 +1,4 @@
-"""HTTP routes for the Negotiator service."""
+"""HTTP routes for the Negotiation Agent."""
 from __future__ import annotations
 
 from fastapi import APIRouter
@@ -10,12 +10,12 @@ from .schemas import (
     StartNegotiationRequest,
 )
 
-router = APIRouter(prefix="/negotiator", tags=["negotiator"])
+router = APIRouter(prefix="/negotiation-agent", tags=["negotiation-agent"])
 
 
 @router.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "negotiator"}
+    return {"status": "ok", "service": "negotiation_agent"}
 
 
 @router.post("/negotiations", response_model=NegotiationResponse, status_code=201)

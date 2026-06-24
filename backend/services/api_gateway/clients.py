@@ -13,7 +13,7 @@ from services.escrow_guard.client import EscrowGuardClient
 from services.exception_resolver.client import ExceptionResolverClient
 from services.hitl_approval.client import HitlApprovalClient
 from services.match_engine.client import MatchEngineClient
-from services.negotiator.client import NegotiatorClient
+from agents.negotiation_agent.client import NegotiationAgentClient
 from services.shield_link.client import ShieldLinkClient
 from services.sourcing.client import SourcingClient
 from services.trade_min.client import TradeMinClient
@@ -22,7 +22,7 @@ deals = DealsClient()
 trade_min = TradeMinClient()
 match_engine = MatchEngineClient()
 sourcing = SourcingClient()
-negotiator = NegotiatorClient()
+negotiation_agent = NegotiationAgentClient()
 dealmaker = DealMakerClient()
 shield_link = ShieldLinkClient()
 docugen = DocuGenClient()
@@ -35,7 +35,7 @@ ALL_CLIENTS = {
     "trade-min": trade_min,
     "match-engine": match_engine,
     "sourcing": sourcing,
-    "negotiator": negotiator,
+    "negotiation-agent": negotiation_agent,
     "dealmaker": dealmaker,
     "shield-link": shield_link,
     "docugen": docugen,
