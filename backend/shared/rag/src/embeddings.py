@@ -1,36 +1,58 @@
+"""Embeddings for the RAG module — routed through the LLM Gateway credentials.
+
+Priority for API key resolution (first non-empty wins):
+  1. RAG_EMBEDDING_API_KEY env var
+  2. LLM_PRIMARY_API_KEY env var (gateway primary key)
+  3. LocalHashEmbeddings fallback (no external API, deterministic)
+
+This keeps embedding calls aligned with the gateway's credential management
+without requiring a separate secrets store.
+"""
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 import numpy as np
 from langchain_core.embeddings import Embeddings
-from sklearn.feature_extraction.text import HashingVectorizer
 
 from .config import settings
 
+logger = logging.getLogger(__name__)
+
+
+class GatewayEmbeddings(Embeddings):
+    """Embeddings backed by the LLM Gateway's primary OpenAI API key.
+
+    Reads credentials from RAGSettings / LLMGatewaySettings so no embedding
+    key needs to be managed separately from the gateway config.
+
+    Falls back to LocalHashEmbeddings when no OpenAI key is available so the
+    pipeline stays runnable in offline / zero-cost environments.
+    """
+
+    def __init__(self) -> None:
+        self._impl = _resolve_embedding_backend()
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._impl.embed_documents(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._impl.embed_query(text)
+
 
 class LocalHashEmbeddings(Embeddings):
-    """Deterministic local embeddings for practice without an API key."""
+    """Deterministic local embeddings — no API key, no external calls.
 
-    def __init__(self, n_features: int = 768) -> None:
-        """Create the local hashing vectorizer used as the embedding backend.
+    Uses HashingVectorizer with L2 normalisation.  Vectors are consistent
+    within a process but not semantically meaningful across restarts.
+    Use for local dev / integration tests only.
+    """
 
-        Implementation:
-            `HashingVectorizer` converts text into fixed-size numeric vectors
-            without fitting a model or calling an external API. `alternate_sign`
-            is disabled so values are non-negative, and L2 normalization makes
-            cosine-style similarity more stable.
+    def __init__(self, n_features: int = 1536) -> None:
+        from sklearn.feature_extraction.text import HashingVectorizer
 
-        Usage:
-            This constructor is called by `get_embeddings` when OpenAI embeddings
-            are disabled. It is useful for demos, tests, and offline practice.
-
-        How it helps other functions:
-            The resulting vectorizer powers `_embed`, which is used by
-            `embed_documents`, `embed_query`, semantic chunking, and Chroma
-            vector search.
-        """
-        self.vectorizer = HashingVectorizer(
+        self._vectorizer = HashingVectorizer(
             n_features=n_features,
             alternate_sign=False,
             norm="l2",
@@ -38,78 +60,70 @@ class LocalHashEmbeddings(Embeddings):
         )
 
     def _embed(self, texts: Iterable[str]) -> list[list[float]]:
-        """Convert one or more text values into numeric vectors.
-
-        Implementation:
-            The iterable is materialized into a list, transformed by the hashing
-            vectorizer, converted to `float32`, and returned as plain Python
-            lists so it matches LangChain's `Embeddings` interface.
-
-        Usage:
-            This private helper centralizes the conversion logic for both
-            document and query embeddings.
-
-        How it helps other functions:
-            `embed_documents` and `embed_query` depend on this function to keep
-            ingestion-time and query-time vector generation consistent.
-        """
-        matrix = self.vectorizer.transform(list(texts))
+        matrix = self._vectorizer.transform(list(texts))
         return matrix.astype(np.float32).toarray().tolist()
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Embed document chunks for ingestion and semantic comparison.
-
-        Implementation:
-            Delegates to `_embed` so every document chunk is represented in the
-            same local vector space.
-
-        Usage:
-            Chroma calls this when inserting chunks, and the semantic chunker
-            calls it when comparing neighboring paragraphs.
-
-        How it helps other functions:
-            The vectors produced here are stored in the vector DB and later
-            compared with vectors from `embed_query` during semantic retrieval.
-        """
         return self._embed(texts)
 
     def embed_query(self, text: str) -> list[float]:
-        """Embed a user query into the same vector space as stored chunks.
-
-        Implementation:
-            Wraps the query in a single-item list, reuses `_embed`, and returns
-            the first vector.
-
-        Usage:
-            The LangGraph `embed_query` node calls this before retrieval. Chroma
-            also uses it internally for similarity search.
-
-        How it helps other functions:
-            Consistent query embeddings allow `VectorStore.semantic_search` to
-            compare the user question against previously inserted chunk vectors.
-        """
         return self._embed([text])[0]
 
 
-def get_embeddings() -> Embeddings:
-    """Return the configured embedding implementation.
+# ────────────────────────────────────────────────────────── backend resolver
 
-    Implementation:
-        If `USE_OPENAI_EMBEDDINGS=true`, the function lazily imports and returns
-        `OpenAIEmbeddings`. Otherwise it returns `LocalHashEmbeddings`, keeping
-        the project runnable without credentials.
+def _resolve_embedding_backend() -> Embeddings:
+    """Return the best available embedding implementation.
 
-    Usage:
-        Graph nodes call this whenever they need embeddings for chunking,
-        insertion, query embedding, or retrieval.
-
-    How it helps other functions:
-        This function is the single switch point between local practice mode and
-        production-style model embeddings, so the rest of the pipeline does not
-        need provider-specific logic.
+    Decision tree:
+      1. RAG_EMBEDDING_PROVIDER=openai → try OpenAIEmbeddings with resolved key
+      2. Key missing or provider=local  → LocalHashEmbeddings
     """
-    if settings.use_openai_embeddings:
+    if settings.embedding_provider != "openai":
+        logger.info("RAG embeddings: using LocalHashEmbeddings (provider=%s)", settings.embedding_provider)
+        return LocalHashEmbeddings(n_features=settings.embedding_dimensions)
+
+    api_key = _resolve_openai_key()
+    if not api_key:
+        logger.warning(
+            "RAG embeddings: no OpenAI key found in RAG_EMBEDDING_API_KEY or "
+            "LLM_PRIMARY_API_KEY — falling back to LocalHashEmbeddings. "
+            "Set one of those env vars to enable semantic embeddings."
+        )
+        return LocalHashEmbeddings(n_features=settings.embedding_dimensions)
+
+    try:
         from langchain_openai import OpenAIEmbeddings
 
-        return OpenAIEmbeddings(model=settings.openai_embedding_model)
-    return LocalHashEmbeddings()
+        backend = OpenAIEmbeddings(model=settings.embedding_model, api_key=api_key)
+        logger.info(
+            "RAG embeddings: OpenAIEmbeddings model=%s (key via gateway)",
+            settings.embedding_model,
+        )
+        return backend
+    except ImportError as exc:
+        logger.error(
+            "langchain-openai not installed — falling back to LocalHashEmbeddings. %s", exc
+        )
+        return LocalHashEmbeddings(n_features=settings.embedding_dimensions)
+
+
+def _resolve_openai_key() -> str:
+    """Resolve the OpenAI API key: RAG config first, then LLM gateway config."""
+    if settings.embedding_api_key:
+        return settings.embedding_api_key
+
+    try:
+        from shared.llm_gateway.config import llm_gateway_settings as gw
+
+        if gw.primary_connector == "openai" and gw.primary_api_key:
+            return gw.primary_api_key
+    except ImportError:
+        pass
+
+    return ""
+
+
+def get_embeddings() -> Embeddings:
+    """Return the configured embedding implementation (singleton-safe)."""
+    return GatewayEmbeddings()

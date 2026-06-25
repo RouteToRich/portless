@@ -56,26 +56,35 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "ingest":
+        if not args.path:
+            print("Error: provide at least one --path argument.")
+            raise SystemExit(1)
+        import asyncio
         graph = build_ingestion_graph()
-        result = graph.invoke(
-            {
-                "input_paths": args.path or [str(settings.data_dir)],
-                "chunk_strategy": args.strategy,
-            }
+        result = asyncio.run(
+            graph.ainvoke(
+                {
+                    "input_paths": args.path,
+                    "chunk_strategy": args.strategy,
+                }
+            )
         )
         print(f"Inserted vector chunks: {result.get('inserted_count', 0)}")
         print(f"Inserted graph chunks: {result.get('graph_inserted_count', 0)}")
         return
 
     if args.command == "ask":
+        import asyncio
         graph = build_query_graph()
-        result = graph.invoke(
-            {
-                "question": args.question,
-                "metadata_filter": parse_metadata_filters(args.filter or []),
-                "user_id": args.user,
-                "team_id": args.team,
-            }
+        result = asyncio.run(
+            graph.ainvoke(
+                {
+                    "question": args.question,
+                    "metadata_filter": parse_metadata_filters(args.filter or []),
+                    "user_id": args.user,
+                    "team_id": args.team,
+                }
+            )
         )
         print(result["answer"])
         print("\nCitation validation:", result.get("citation_validation"))

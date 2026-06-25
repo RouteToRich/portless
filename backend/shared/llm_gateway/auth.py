@@ -1,10 +1,18 @@
-"""JWT authentication and validation for LLM Gateway requests."""
+"""JWT authentication for LLM Gateway requests.
+
+Auth is currently DISABLED (LLM_AUTH_ENABLED=false in config).
+When the JWT middleware is ready, set LLM_AUTH_ENABLED=true and
+LLM_JWT_SECRET in .env — no other code changes needed.
+
+The require_valid_token() dependency becomes a passthrough no-op
+when auth_enabled=False, so it is safe to wire up routes now
+without breaking anything later.
+"""
 from __future__ import annotations
 
 import time
 import logging
 from dataclasses import dataclass
-from functools import wraps
 from typing import Any, Callable
 
 import jwt
@@ -27,7 +35,7 @@ class TokenClaims:
 
 
 class JWTValidator:
-    """Validates JWT tokens for LLM gateway access."""
+    """Validates JWT tokens for LLM Gateway access."""
 
     def __init__(
         self,
@@ -45,7 +53,7 @@ class JWTValidator:
         """Decode and validate a JWT token.
 
         Raises:
-            InvalidTokenError: If token is expired, malformed, or fails verification.
+            InvalidTokenError: expired, malformed, or wrong secret/issuer/audience.
         """
         if not self._secret:
             raise InvalidTokenError("JWT secret is not configured")
@@ -76,15 +84,11 @@ class JWTValidator:
             aud=payload["aud"],
             exp=payload["exp"],
             iat=payload["iat"],
-            extra={
-                k: v
-                for k, v in payload.items()
-                if k not in ("sub", "iss", "aud", "exp", "iat")
-            },
+            extra={k: v for k, v in payload.items() if k not in ("sub", "iss", "aud", "exp", "iat")},
         )
 
     def create_token(self, subject: str, ttl_seconds: int = 3600, **extra_claims: Any) -> str:
-        """Create a signed JWT token (utility for testing and internal service-to-service)."""
+        """Mint a signed JWT (for testing / internal service-to-service use)."""
         now = int(time.time())
         payload = {
             "sub": subject,
@@ -101,10 +105,19 @@ class InvalidTokenError(Exception):
     """Raised when JWT validation fails."""
 
 
-def require_valid_token(validator: JWTValidator | None = None) -> Callable:
-    """FastAPI dependency factory that extracts and validates the Bearer token.
+# Anonymous sentinel returned by the passthrough dependency
+_ANONYMOUS = TokenClaims(sub="anonymous", iss="passthrough", aud="", exp=0, iat=0, extra={})
 
-    Usage:
+
+def require_valid_token(validator: JWTValidator | None = None) -> Callable:
+    """FastAPI dependency factory that validates the Bearer token.
+
+    When LLM_AUTH_ENABLED=false (the default), the dependency is a no-op
+    and returns an anonymous TokenClaims so routes don't need to change
+    once auth is enabled.
+
+    Usage::
+
         from fastapi import Depends
         from shared.llm_gateway import require_valid_token
 
@@ -116,6 +129,10 @@ def require_valid_token(validator: JWTValidator | None = None) -> Callable:
 
     async def _dependency(authorization: str = "") -> TokenClaims:
         from fastapi import HTTPException
+
+        # Passthrough when auth is disabled — wire the routes now, enforce later
+        if not llm_gateway_settings.auth_enabled:
+            return _ANONYMOUS
 
         if not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Missing Bearer token")

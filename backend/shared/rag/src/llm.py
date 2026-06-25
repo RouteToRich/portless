@@ -1,28 +1,26 @@
+"""LLM layer for RAG — generation and prompt construction via the LLM Gateway.
+
+All LLM calls go through LLMClient so they inherit:
+  - Fallback chain (primary → Groq-1 → Groq-2 → Groq-3)
+  - Per-model retries with exponential backoff
+  - Full request tracking (MongoDB or JSONL)
+  - Future: rate limiting, circuit breaker, cost tracking, caching
+"""
 from __future__ import annotations
+
+import logging
 
 from langchain_core.documents import Document
 
 from .config import settings
 
+logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────────────── prompt builder
 
 def build_augmented_prompt(question: str, chunks: list[Document]) -> str:
-    """Build the grounded prompt sent to the generation step.
-
-    Implementation:
-        The function formats each selected chunk with a citation number, title,
-        source path, section, page number, chunk index, and chunk text. It then
-        wraps the context with instructions that require evidence-grounded
-        answers and citations.
-
-    Usage:
-        The query graph calls this in the `augment` node after retrieval,
-        reranking, and knee-point selection have chosen final chunks.
-
-    How it helps other functions:
-        `generate_answer` uses this prompt when OpenAI generation is enabled.
-        The same formatting also documents exactly what evidence was made
-        available to the model.
-    """
+    """Build the grounded RAG prompt with numbered citation blocks."""
     context_blocks = []
     for idx, chunk in enumerate(chunks, start=1):
         source = chunk.metadata.get("source", "unknown")
@@ -36,68 +34,59 @@ def build_augmented_prompt(question: str, chunks: list[Document]) -> str:
         )
 
     context = "\n\n---\n\n".join(context_blocks)
-    return f"""You are a grounded RAG assistant.
-
-Answer the question using only the context below.
-If the context is insufficient, say what evidence is missing.
-Include citations like [1] or [2] for important claims.
-
-Question:
-{question}
-
-Retrieved context:
-{context}
-
-Answer:
-"""
+    return (
+        "You are a grounded RAG assistant.\n\n"
+        "Answer the question using only the context below.\n"
+        "If the context is insufficient, say what evidence is missing.\n"
+        "Include citations like [1] or [2] for important claims.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Retrieved context:\n{context}\n\n"
+        "Answer:\n"
+    )
 
 
-def generate_answer(question: str, chunks: list[Document]) -> str:
-    """Generate the final RAG answer from the selected evidence chunks.
+# ──────────────────────────────────────────────────────── generation
 
-    Implementation:
-        The function always builds the augmented prompt first. If
-        `USE_OPENAI_LLM=true`, it sends that prompt to the configured OpenAI chat
-        model with temperature zero. Otherwise it returns a local extractive
-        answer so the project remains runnable without credentials.
+async def generate_answer(question: str, chunks: list[Document]) -> str:
+    """Generate the final RAG answer via the LLM Gateway.
 
-    Usage:
-        The query graph calls this in its final `generate` node.
-
-    How it helps other functions:
-        It is the terminal step that turns retrieval output into user-facing
-        text. It depends on upstream functions to provide relevant, deduplicated,
-        and properly cited chunks.
+    Routes through LLMClient so the call participates in the full gateway
+    fallback chain and request-tracking pipeline.  Returns a local extractive
+    summary if the gateway chain is empty or all models fail.
     """
     prompt = build_augmented_prompt(question, chunks)
-    if settings.use_openai_llm:
-        from langchain_openai import ChatOpenAI
 
-        llm = ChatOpenAI(model=settings.openai_chat_model, temperature=0)
-        return str(llm.invoke(prompt).content)
-    return _local_extractive_answer(question, chunks)
+    try:
+        from shared.llm_gateway.client import LLMClient
 
+        client = LLMClient()
+        response = await client.chat(
+            messages=[{"role": "user", "content": prompt}],
+            caller="rag.generate",
+            temperature=settings.rag_temperature,
+            max_tokens=settings.rag_max_tokens,
+        )
+        return response.content
+
+    except Exception as exc:
+        logger.warning(
+            "LLM Gateway unavailable for RAG generation (%s: %s) — "
+            "falling back to local extractive answer.",
+            type(exc).__name__,
+            exc,
+        )
+        return _local_extractive_answer(question, chunks)
+
+
+# ──────────────────────────────────────────────────────── local fallback
 
 def _local_extractive_answer(question: str, chunks: list[Document]) -> str:
-    """Return a simple evidence summary when no hosted LLM is configured.
-
-    Implementation:
-        If no chunks are available, it clearly says there is not enough evidence.
-        Otherwise it creates short snippets from selected chunks and includes
-        source metadata beside each citation number.
-
-    Usage:
-        `generate_answer` calls this in local practice mode.
-
-    How it helps other functions:
-        It lets you validate ingestion, retrieval, reranking, and augmentation
-        before introducing LLM credentials or generation costs.
-    """
+    """Return a simple evidence summary when the LLM Gateway is unavailable."""
     if not chunks:
         return "I do not have enough retrieved evidence to answer this question."
 
     lines = [
-        "Local grounded answer:",
+        "Local grounded answer (LLM Gateway unavailable):",
         "",
         f"Question: {question}",
         "",
@@ -108,13 +97,12 @@ def _local_extractive_answer(question: str, chunks: list[Document]) -> str:
         section = chunk.metadata.get("section", "unknown")
         page_number = chunk.metadata.get("page_number", "n/a")
         snippet = " ".join(chunk.page_content.split())[:500]
-        lines.append(f"- [{idx}] {snippet} (source: {source}, section: {section}, page: {page_number})")
+        lines.append(
+            f"- [{idx}] {snippet}  (source: {source}, section: {section}, page: {page_number})"
+        )
 
-    lines.extend(
-        [
-            "",
-            "Summary:",
-            "The answer should be based on the cited chunks above. Enable USE_OPENAI_LLM=true for a fluent LLM-generated response.",
-        ]
-    )
+    lines.extend([
+        "",
+        "Configure LLM_PRIMARY_API_KEY or LLM_GROQ_API_KEY for a fluent LLM-generated response.",
+    ])
     return "\n".join(lines)

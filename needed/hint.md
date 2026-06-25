@@ -131,8 +131,6 @@ Negotiation flow should be persisted in memory which would be helpful for negoti
 
 feed back from buyer and seller
 
-
-
 LLM gateway 
 RAG - ingestion + retrieval
 web search capacity
@@ -146,3 +144,30 @@ UI - negotiator / RAG / portal / chat
 
 insurance - export and import api
 
+=======================
+Infra needs:
+=======================
+Models: llm_gateway
+    LLM model - reasoning
+    Embedding Model
+
+
+DB:
+    Mongo db - vector
+    Mongo db - document
+    Neo4J
+
+Messaging queue
+
+Email config
+Docker
+Langraph framework
+
+IDE:
+    Cursor
+    claude code
+    coipilot
+
+Repo:
+github
+Export license

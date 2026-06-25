@@ -1,19 +1,32 @@
+# RAG module dependencies
+# Motor (async MongoDB driver) + pymongo are already in backend/requirements.txt.
+# Add the RAG-specific extras here.
+
+# Core pipeline
 langgraph
 langchain-core
 langchain-community
 langchain-text-splitters
 langchain-openai
-langchain-chroma
-chromadb
+langchain-text-splitters
 rank-bm25
-python-dotenv
-pydantic
+pydantic-settings
 numpy
 scikit-learn
+
+# PDF loading
 pypdf
-sentence-transformers
 pdfplumber
-pdf2image
-pytesseract
-ragas
-deepeval
+pdf2image      # optional — only needed when enable_pdf_ocr=true
+pytesseract    # optional — only needed when enable_pdf_ocr=true
+
+# Reranking (optional)
+sentence-transformers  # only needed when use_cross_encoder_reranker=true
+
+# Advanced evaluation (all optional)
+ragas    # optional — ADVANCED_EVAL_PROVIDER=ragas
+deepeval # optional — ADVANCED_EVAL_PROVIDER=deepeval
+
+# Removed (replaced by MongoDB Atlas):
+# langchain-chroma
+# chromadb

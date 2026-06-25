@@ -1,41 +1,109 @@
+"""RAG module configuration.
+
+Env-var prefix: RAG_  (e.g. RAG_MONGO_URI, RAG_RETRIEVAL_TOP_K)
+
+Env file load order (later file wins):
+  1. backend/.env                  — shared root, loaded from CWD
+  2. backend/shared/rag/.env       — RAG-specific overrides
+
+Vector database: MongoDB Atlas with $vectorSearch aggregation.
+
+Atlas Vector Search index (create once in Atlas UI or via ensure_vector_index()):
+  - Index type:    vectorSearch
+  - Field path:    embedding
+  - numDimensions: RAG_EMBEDDING_DIMENSIONS (default 1536 for text-embedding-3-small)
+  - Similarity:    RAG_VECTOR_SIMILARITY     (default cosine)
+
+Embeddings: routed through llm-gateway API key.
+  - RAG_EMBEDDING_PROVIDER=openai  → OpenAIEmbeddings using llm-gateway primary key
+  - RAG_EMBEDDING_PROVIDER=local   → LocalHashEmbeddings (offline / zero cost)
+"""
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Module .env lives one level above src/ (i.e. backend/shared/rag/.env)
+_MODULE_ENV = Path(__file__).parent.parent / ".env"
+
+_DEFAULT_MONGO_URI = (
+    "mongodb+srv://richminds84_db_user:8M7dOW4srdGAy7aM"
+    "@cluster0.taios8r.mongodb.net/?appName=Cluster0"
+)
 
 
-load_dotenv()
-
-
-@dataclass(frozen=True)
-class Settings:
-    project_root: Path = Path(__file__).resolve().parents[2]
-    data_dir: Path = project_root / "data"
-    chroma_dir: Path = project_root / os.getenv("CHROMA_DIR", ".chroma")
-    collection_name: str = os.getenv("COLLECTION_NAME", "practice_rag")
-    use_openai_embeddings: bool = os.getenv("USE_OPENAI_EMBEDDINGS", "false").lower() == "true"
-    use_openai_llm: bool = os.getenv("USE_OPENAI_LLM", "false").lower() == "true"
-    openai_embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-    openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-    chunk_size: int = int(os.getenv("CHUNK_SIZE", "900"))
-    chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "120"))
-    semantic_breakpoint_percentile: int = int(os.getenv("SEMANTIC_BREAKPOINT_PERCENTILE", "25"))
-    retrieval_top_k: int = int(os.getenv("RETRIEVAL_TOP_K", "8"))
-    child_chunks_per_parent: int = int(os.getenv("CHILD_CHUNKS_PER_PARENT", "3"))
-    use_cross_encoder_reranker: bool = os.getenv("USE_CROSS_ENCODER_RERANKER", "false").lower() == "true"
-    cross_encoder_model: str = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-    parent_store_dir: Path = project_root / os.getenv("PARENT_STORE_DIR", ".parent_store")
-    graph_store_dir: Path = project_root / os.getenv("GRAPH_STORE_DIR", ".graph_store")
-    graph_retrieval_top_k: int = int(os.getenv("GRAPH_RETRIEVAL_TOP_K", "8"))
-    enable_pdf_layout_extraction: bool = os.getenv("ENABLE_PDF_LAYOUT_EXTRACTION", "true").lower() == "true"
-    enable_pdf_ocr: bool = os.getenv("ENABLE_PDF_OCR", "false").lower() == "true"
-    use_llm_prompt_injection_classifier: bool = (
-        os.getenv("USE_LLM_PROMPT_INJECTION_CLASSIFIER", "false").lower() == "true"
+class RAGSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="RAG_",
+        # Load root .env first, then module-local .env (module wins on conflict)
+        env_file=(".env", str(_MODULE_ENV)),
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
-    advanced_eval_provider: str = os.getenv("ADVANCED_EVAL_PROVIDER", "local")
+
+    # ──────────────────────────────────────────────── MongoDB Atlas
+    mongo_uri: str = _DEFAULT_MONGO_URI
+    mongo_db_name: str = "rag"
+    chunks_collection: str = "chunks"
+    parents_collection: str = "parent_docs"
+    ingestion_jobs_collection: str = "ingestion_jobs"
+    mongo_max_pool_size: int = 50
+    mongo_connect_timeout_ms: int = 5_000
+    mongo_server_selection_timeout_ms: int = 5_000
+
+    # ──────────────────────────────────────────── Atlas Vector Search
+    # The index must exist before queries run — see ensure_vector_index() in
+    # vector_store.py for programmatic creation or the Atlas UI instructions.
+    vector_index_name: str = "vector_index"
+    embedding_dimensions: int = 1536       # text-embedding-3-small = 1536
+    vector_similarity: str = "cosine"      # "cosine" | "euclidean" | "dotProduct"
+
+    # ─────────────────────────── Embeddings (via llm-gateway credentials)
+    # embedding_provider="openai" reads embedding_api_key, then falls back to
+    # LLM_PRIMARY_API_KEY env var, then LocalHashEmbeddings if still empty.
+    embedding_provider: str = "openai"     # "openai" | "local"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_api_key: str = ""            # override with RAG_EMBEDDING_API_KEY
+
+    # ──────────────────────────────────────────────────── Chunking
+    chunk_size: int = 900
+    chunk_overlap: int = 120
+    semantic_breakpoint_percentile: int = 25
+    child_chunks_per_parent: int = 3
+
+    # ──────────────────────────────────────────────── Retrieval
+    retrieval_top_k: int = 8
+    # numCandidates should be 10–20× top_k for good recall on Atlas
+    retrieval_num_candidates: int = 100
+    # Max documents fetched for in-memory BM25 keyword search
+    keyword_search_fetch_limit: int = 500
+
+    # ──────────────────────────────────────────────── Reranking
+    use_cross_encoder_reranker: bool = False
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+    # ──────────────────────────────────────────────── Generation
+    rag_temperature: float = 0.0
+    rag_max_tokens: int = 2048
+
+    # ─────────────────────────────────────────── Document loading
+    enable_pdf_layout_extraction: bool = True
+    enable_pdf_ocr: bool = False
+
+    # ──────────────────────────────────────────────── Security
+    use_llm_prompt_injection_classifier: bool = False
+
+    # ──────────────────────────────────────────────── Evaluation
+    advanced_eval_provider: str = "local"  # "local" | "ragas" | "deepeval" | "llm"
+
+    # ─────────────────────── placeholder: graph retrieval (future)
+    # TODO(graph_rag): set graph_retrieval_enabled=true when graph DB is wired.
+    #   Supported backends: "neo4j", "arangodb", "falkordb"
+    graph_retrieval_enabled: bool = False
+    graph_retrieval_top_k: int = 8
+    graph_db_uri: str = ""                  # e.g. bolt://localhost:7687 for Neo4j
+    graph_db_backend: str = "neo4j"         # "neo4j" | "arangodb" | "falkordb"
 
 
-settings = Settings()
+settings = RAGSettings()

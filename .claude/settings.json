@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/llm_gateway/ -v --tb=short)",
+      "Bash(python -m pytest tests/llm_gateway/ -q)",
+      "Bash(cd \"/cygdrive/c/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend\" && python -m pytest tests/llm_gateway/ -q 2>&1)",
+      "Read(//cygdrive/c/Users/wb655772/kpaulpandi/workarea/pandian/portless/**)",
+      "Bash(ls \"c:\\\\Users\\\\wb655772\\\\.claude\\\\projects\\\\c--Users-wb655772-kpaulpandi-workarea-pandian-portless\\\\memory\\\\\" 2>/dev/null || echo \"EMPTY\")",
+      "Read(//c/Users/wb655772/.claude/projects/c--Users-wb655772-kpaulpandi-workarea-pandian-portless/memory\" 2>/dev/**)",
+      "Bash(git check-ignore *)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/service.py'\\).read\\(\\)\\); print\\('service.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/schemas.py'\\).read\\(\\)\\); print\\('schemas.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/repository.py'\\).read\\(\\)\\); print\\('repository.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/main.py'\\).read\\(\\)\\); print\\('main.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/shared/connectors/trade_intel.py'\\).read\\(\\)\\); print\\('trade_intel.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/config.py'\\).read\\(\\)\\); print\\('config.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/ranking.py'\\).read\\(\\)\\); print\\('ranking.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/router.py'\\).read\\(\\)\\); print\\('router.py OK'\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'.'\\); from services.deals import config, schemas, repository, service, router, client; print\\('OK'\\)\")"
+    ]
+  }
+}

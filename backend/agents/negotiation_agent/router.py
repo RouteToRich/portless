@@ -1,11 +1,13 @@
 """HTTP routes for the Negotiation Agent."""
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from . import service
 from .schemas import (
     NegotiationResponse,
+    NegotiationRound,
+    NegotiationSession,
     RoundRequest,
     StartNegotiationRequest,
 )
@@ -25,9 +27,25 @@ async def start(payload: StartNegotiationRequest) -> NegotiationResponse:
 
 @router.post("/negotiations/{negotiation_id}/round", response_model=NegotiationResponse)
 async def run_round(negotiation_id: str, payload: RoundRequest) -> NegotiationResponse:
-    return await service.run_round(negotiation_id, payload)
+    try:
+        return await service.run_round(negotiation_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc) else 409, detail=str(exc))
 
 
-@router.get("/negotiations/{negotiation_id}", response_model=NegotiationResponse)
-async def get_negotiation(negotiation_id: str) -> NegotiationResponse:
-    return await service.get_negotiation(negotiation_id)
+@router.get("/negotiations/{negotiation_id}", response_model=NegotiationSession)
+async def get_negotiation(negotiation_id: str) -> NegotiationSession:
+    try:
+        return await service.get_negotiation(negotiation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/negotiations/{negotiation_id}/rounds", response_model=list[NegotiationRound])
+async def get_rounds(negotiation_id: str) -> list[NegotiationRound]:
+    return await service.list_rounds(negotiation_id)
+
+
+@router.get("/negotiations", response_model=list[NegotiationSession])
+async def list_negotiations(deal_id: str | None = None) -> list[NegotiationSession]:
+    return await service.list_negotiations(deal_id=deal_id)

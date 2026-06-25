@@ -439,35 +439,366 @@ class VolzaConnector(Connector):
 
 
 class IndiamartConnector(Connector):
+    """IndiaMART: India's largest wholesale B2B directory for seller discovery.
+
+    Used by Trade-Min Agent (Phase 4) to find verified Indian manufacturers
+    who supply a specific HS code and can receive automated RFQs.
+
+    API documentation : https://seller.indiamart.com/lmsrest/
+    Base URL          : https://seller.indiamart.com/lmsrest/api/v1
+    Authentication    : IMAPI-KEY header + registered mobile number
+                        HOW TO GET ACCESS:
+                          1. Register as a seller at seller.indiamart.com
+                          2. Navigate to Settings → API Settings
+                          3. Generate API key (auto-approved for verified sellers)
+    Env vars          : INDIAMART_API_KEY, INDIAMART_MOBILE
+    Pricing           : Included in seller subscription (Gold/Platinum plan).
+    Rate limit        : 1 000 calls/day on standard plan.
+    """
+
     name = "indiamart"
+    _BASE = "https://seller.indiamart.com/lmsrest/api/v1"
+
+    def __init__(self) -> None:
+        self._key = os.environ["INDIAMART_API_KEY"]
+        self._mobile = os.environ["INDIAMART_MOBILE"]
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {
+            "IMAPI-KEY": self._key,
+            "Accept": "application/json",
+        }
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError
+        """Search IndiaMART product catalog for verified suppliers of an HS code.
+
+        Maps the HS code to a keyword for IndiaMART's product-keyword search.
+        Returns seller candidates with company details, pricing, and capacity.
+
+        Expected request keys:
+            hs_code      (str) – 6-digit HS code, e.g. ``"090422"``
+            keyword      (str) – product keyword override (optional)
+            state        (str) – filter by Indian state, e.g. ``"Tamil Nadu"`` (optional)
+            page         (int) – page number, default 1
+            page_size    (int) – results per page (max 50), default 20
+
+        Returns a normalised dict ready for seller-candidate assembly::
+
+            {
+              "total": 142,
+              "sellers": [
+                {
+                  "company_id":    "IM-78932",
+                  "company_name":  "Guntur Agri Products Ltd",
+                  "city":          "Guntur",
+                  "state":         "Andhra Pradesh",
+                  "product_name":  "Ground Red Pepper",
+                  "hs_code":       "090422",
+                  "min_price":     2.5,
+                  "max_price":     3.2,
+                  "price_unit":    "USD/kg",
+                  "min_order_qty": "500 KG",
+                  "annual_capacity_mt": 480.0,
+                  "listing_url":   "https://www.indiamart.com/...",
+                  "contact_id":    "78932-SELLER"
+                },
+                ...
+              ]
+            }
+        """
+        keyword = request.get("keyword") or _HS_TO_KEYWORD.get(
+            request["hs_code"][:4], request["hs_code"]
+        )
+        params: dict[str, Any] = {
+            "mobile_no": self._mobile,
+            "api_key":   self._key,
+            "keyword":   keyword,
+            "page":      request.get("page", 1),
+            "page_size": min(request.get("page_size", 20), 50),
+        }
+        if "state" in request:
+            params["state"] = request["state"]
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{self._BASE}/product/catalog/search",
+                headers=self._headers,
+                params=params,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        raw: list[dict[str, Any]] = (
+            data.get("Response", {}).get("productList", [])
+            or data.get("productList", [])
+            or []
+        )
+
+        sellers = [
+            {
+                "company_id":         p.get("glusr_usr_id") or p.get("company_id", ""),
+                "company_name":       p.get("comp_name") or p.get("company_name", ""),
+                "city":               p.get("city", ""),
+                "state":              p.get("state", ""),
+                "product_name":       p.get("prod_name") or p.get("product_name", ""),
+                "hs_code":            request["hs_code"],
+                "min_price":          _safe_float(p.get("min_price")),
+                "max_price":          _safe_float(p.get("max_price")),
+                "price_unit":         p.get("price_unit", "USD/kg"),
+                "min_order_qty":      p.get("min_order_qty", ""),
+                "annual_capacity_mt": _safe_float(p.get("annual_capacity")),
+                "listing_url":        p.get("canonical_url") or p.get("listing_url", ""),
+                "contact_id":         p.get("contact_id", ""),
+            }
+            for p in raw
+        ]
+
+        return {
+            "total":   data.get("total_count", len(sellers)),
+            "sellers": sellers,
+        }
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError
+        """Dispatch an automated RFQ to a seller on IndiaMART.
+
+        Expected request keys:
+            contact_id   (str) – seller contact ID from ``quote()``
+            message      (str) – RFQ message text
+            quantity     (str) – requested quantity, e.g. ``"500 KG"``
+            buyer_name   (str) – name of the prospective buyer
+            buyer_email  (str) – buyer's contact email
+        """
+        payload: dict[str, Any] = {
+            "mobile_no":   self._mobile,
+            "api_key":     self._key,
+            "contact_id":  request["contact_id"],
+            "message":     request["message"],
+            "quantity":    request.get("quantity", ""),
+            "buyer_name":  request.get("buyer_name", "PortLess Trade Agent"),
+            "buyer_email": request.get("buyer_email", ""),
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{self._BASE}/rfq/send",
+                headers=self._headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
-        raise NotImplementedError
+        """Retrieve company profile + product listings for an IndiaMART company ID.
+
+        ext_ref: IndiaMART company ID (``glusr_usr_id``) from ``quote()``.
+        """
+        params: dict[str, Any] = {
+            "mobile_no":  self._mobile,
+            "api_key":    self._key,
+            "company_id": ext_ref,
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{self._BASE}/company/profile",
+                headers=self._headers,
+                params=params,
+            )
+            resp.raise_for_status()
+            return resp.json()
 
     async def webhook_verify(self, headers: dict[str, str], body: bytes) -> bool:
-        raise NotImplementedError
+        raise NotImplementedError("IndiaMART does not issue outbound webhooks.")
 
 
 class TradeIndiaConnector(Connector):
+    """TradeIndia: fallback wholesale directory for Indian supplier discovery.
+
+    Used by Trade-Min Agent (Phase 4) as a secondary supplier source when
+    IndiaMART yields insufficient quotes or for alternative price benchmarking.
+
+    API documentation : https://www.tradeindia.com/api-docs/
+    Base URL          : https://api.tradeindia.com/v1
+    Authentication    : Bearer token
+                        HOW TO GET ACCESS:
+                          1. Register a company account at tradeindia.com
+                          2. Navigate to My Account → API Access → Generate Token
+                          3. Token valid for 90 days; refresh via /auth/refresh
+    Env var           : TRADEINDIA_API_KEY
+    Pricing           : Included in paid membership (Gold/Platinum plan).
+    Rate limit        : 500 calls/day on standard plan.
+    """
+
     name = "tradeindia"
+    _BASE = "https://api.tradeindia.com/v1"
+
+    def __init__(self) -> None:
+        self._key = os.environ["TRADEINDIA_API_KEY"]
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._key}",
+            "Accept":        "application/json",
+            "Content-Type":  "application/json",
+        }
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError
+        """Search TradeIndia product listings for verified Indian suppliers.
+
+        Expected request keys:
+            hs_code      (str) – 6-digit HS code
+            keyword      (str) – product keyword override (optional)
+            state        (str) – filter by Indian state (optional)
+            page         (int) – page number, default 1
+            limit        (int) – results per page (max 50), default 20
+
+        Returns normalised seller candidates in the same schema as
+        ``IndiamartConnector.quote()`` for drop-in interchangeability::
+
+            {
+              "total": 87,
+              "sellers": [
+                {
+                  "company_id":    "TI-44210",
+                  "company_name":  "Kerala Spice Exports Pvt Ltd",
+                  "city":          "Kochi",
+                  "state":         "Kerala",
+                  "product_name":  "Black Pepper Ground",
+                  "hs_code":       "090422",
+                  "min_price":     2.3,
+                  "max_price":     2.9,
+                  "price_unit":    "USD/kg",
+                  "min_order_qty": "1 MT",
+                  "annual_capacity_mt": 600.0,
+                  "listing_url":   "https://www.tradeindia.com/...",
+                  "contact_id":    "TI-44210-CTX"
+                },
+                ...
+              ]
+            }
+        """
+        keyword = request.get("keyword") or _HS_TO_KEYWORD.get(
+            request["hs_code"][:4], request["hs_code"]
+        )
+        params: dict[str, Any] = {
+            "keyword": keyword,
+            "page":    request.get("page", 1),
+            "limit":   min(request.get("limit", 20), 50),
+            "country": "IN",
+        }
+        if "state" in request:
+            params["state"] = request["state"]
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{self._BASE}/products/search",
+                headers=self._headers,
+                params=params,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        raw: list[dict[str, Any]] = data.get("products", [])
+
+        sellers = [
+            {
+                "company_id":         f"TI-{p.get('company_id', p.get('id', ''))}",
+                "company_name":       p.get("company_name", ""),
+                "city":               p.get("city", ""),
+                "state":              p.get("state", ""),
+                "product_name":       p.get("product_name") or p.get("name", ""),
+                "hs_code":            request["hs_code"],
+                "min_price":          _safe_float(p.get("min_price") or p.get("price")),
+                "max_price":          _safe_float(p.get("max_price")),
+                "price_unit":         p.get("price_unit", "USD/kg"),
+                "min_order_qty":      p.get("min_order") or p.get("moq", ""),
+                "annual_capacity_mt": _safe_float(p.get("annual_capacity")),
+                "listing_url":        p.get("url") or p.get("product_url", ""),
+                "contact_id":         f"TI-{p.get('company_id', p.get('id', ''))}-CTX",
+            }
+            for p in raw
+        ]
+
+        return {
+            "total":   data.get("total", len(sellers)),
+            "sellers": sellers,
+        }
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError
+        """Dispatch an RFQ to a supplier via TradeIndia.
+
+        Expected request keys:
+            contact_id   (str) – seller contact ID from ``quote()``
+            message      (str) – RFQ message text
+            quantity     (str) – requested quantity
+            buyer_name   (str) – name of the prospective buyer
+            buyer_email  (str) – buyer's contact email
+        """
+        payload: dict[str, Any] = {
+            "contact_id":  request["contact_id"],
+            "message":     request["message"],
+            "quantity":    request.get("quantity", ""),
+            "buyer_name":  request.get("buyer_name", "PortLess Trade Agent"),
+            "buyer_email": request.get("buyer_email", ""),
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{self._BASE}/rfq/submit",
+                headers=self._headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
-        raise NotImplementedError
+        """Fetch company profile and all product listings for a TradeIndia company.
+
+        ext_ref: TradeIndia company ID (numeric, as a string) from ``quote()``.
+        """
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{self._BASE}/companies/{ext_ref}",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
 
     async def webhook_verify(self, headers: dict[str, str], body: bytes) -> bool:
-        raise NotImplementedError
+        raise NotImplementedError("TradeIndia does not issue outbound webhooks.")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _safe_float(value: Any) -> float | None:
+    """Convert a value to float, returning None on failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# Maps 4-digit HS prefix → product keyword for IndiaMART / TradeIndia search.
+# Extend this table as new HS codes are added to the default scan list.
+_HS_TO_KEYWORD: dict[str, str] = {
+    "0904": "ground pepper spices",
+    "0902": "tea leaves",
+    "0910": "mixed spices cardamom",
+    "1001": "wheat grain",
+    "2905": "glycerol alcohol",
+    "0901": "coffee beans",
+    "0306": "shrimp prawn seafood",
+    "6109": "cotton t-shirts garments",
+    "8517": "mobile phone electronics",
+    "2709": "crude petroleum oil",
+    "7108": "gold bullion precious metal",
+    "3004": "pharmaceutical medicines",
+    "8471": "computers laptops",
+    "6203": "mens suits trousers garments",
+}
 
 
 class MacmapConnector(Connector):

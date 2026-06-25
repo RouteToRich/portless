@@ -1,15 +1,15 @@
 """Deterministic opportunity-ranking math for the Trade-Min module (FR-1, LLD 4.5).
 
-All functions are pure — no I/O, no global state — so they are reproducible
-and fully unit-testable regardless of whether the Comtrade/Volza connectors
-are live.
+All functions are pure — no I/O, no global state — reproducible and fully
+unit-testable regardless of whether connectors are live.
 
-Simulated demand data is derived from a deterministic SHA-256 hash of the
-(hs_code, market) pair so the same inputs always produce the same scores.
+Simulated demand data uses a deterministic SHA-256 hash of the (hs_code, market)
+pair so the same inputs always produce the same scores.
 """
 from __future__ import annotations
 
 import hashlib
+import math
 
 from .config import DEFAULT_CONFIG, TradeMinConfig
 
@@ -21,28 +21,19 @@ def _deterministic_score(seed: str) -> float:
 
 
 def simulated_demand_index(hs_code: str, market: str) -> float:
-    """Deterministic demand-surge index (0–100) for an HS code in a destination market.
-
-    Proxies what UN Comtrade / Volza would return: a measure of import-volume
-    growth trend for this commodity in this country.
-    """
     return _deterministic_score(f"{hs_code}:demand:{market}")
 
 
 def simulated_price_gap_pct(hs_code: str, market: str) -> float:
-    """Deterministic price-gap percentage (0–50 %) between India FOB and market CIF.
-
-    A higher gap means stronger arbitrage potential.
-    """
     raw = _deterministic_score(f"{hs_code}:pricegap:{market}")
-    return round(raw * 0.5, 1)  # scale 0–100 down to 0–50 %
+    return round(raw * 0.5, 1)  # scale 0–100 → 0–50 %
 
 
 def price_gap_score(
     price_gap_pct: float,
     config: TradeMinConfig = DEFAULT_CONFIG,
 ) -> float:
-    """Normalise price-gap % to a 0–100 score, saturating at ``price_gap_saturation_pct``."""
+    """Normalise a price-gap % to a 0–100 score, saturating at ``price_gap_saturation_pct``."""
     if price_gap_pct <= 0:
         return 0.0
     return min(price_gap_pct / config.price_gap_saturation_pct * 100.0, 100.0)
@@ -50,13 +41,32 @@ def price_gap_score(
 
 def arbitrage_rank(
     demand_index: float,
-    price_gap_pct: float,
+    net_price_gap_pct: float,
     config: TradeMinConfig = DEFAULT_CONFIG,
 ) -> float:
-    """Composite arbitrage rank (0–100): geometric mean of demand index and normalised
-    price-gap score.  Both sub-signals must be positive to produce a non-zero rank.
+    """Composite arbitrage rank (0–100): geometric mean of demand index and
+    normalised net-price-gap score.
+
+    Uses ``net_price_gap_pct`` (gross gap minus tariff/landed-cost add-on) so
+    the score already reflects real take-home margin after duties.
     """
-    pg_score = price_gap_score(price_gap_pct, config)
+    pg_score = price_gap_score(net_price_gap_pct, config)
     if demand_index <= 0 or pg_score <= 0:
         return 0.0
     return round((demand_index * pg_score) ** 0.5, 2)
+
+
+def reorder_probability(
+    days_since_last_import: float,
+    avg_days_between_imports: float,
+) -> float:
+    """Sigmoid probability that a buyer is due to reorder.
+
+    Maps the ratio (days_elapsed / avg_interval) to a 0–1 probability via a
+    logistic curve centred at 1.0 (i.e. exactly one interval elapsed).
+    Probability ≥ 0.70 → upgrade urgency tier 1 → 2 (reorder window open).
+    """
+    if avg_days_between_imports <= 0:
+        return 0.0
+    x = days_since_last_import / avg_days_between_imports
+    return round(1.0 / (1.0 + math.exp(-5.0 * (x - 1.0))), 4)

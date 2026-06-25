@@ -1,8 +1,8 @@
 """Combined monolith app — all services on a single port (dev / staging).
 
 All service routers are mounted directly on this app, so there are no
-inter-service HTTP round-trips. The UI (and Swagger UI at /docs) can reach every
-module at its own prefix:
+inter-service HTTP round-trips. The UI (and Swagger UI at /docs) can reach
+every module at its own prefix:
 
   /health                 meta health
   /deals/...              Deals service
@@ -21,10 +21,14 @@ Run:
     cd backend
     uvicorn app:app --reload --port 8081
 
-For real-world deployment each service has its own ``services/<name>/main.py``
-and runs on an isolated port (see ``Makefile`` and ``docker-compose.yml``).
+For production each service has its own ``services/<name>/main.py`` and runs
+on an isolated port (see ``Makefile`` and ``docker-compose.yml``).
 """
 from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +46,8 @@ from services.escrow_guard.router import router as escrow_guard_router
 from services.hitl_approval.router import router as hitl_approval_router
 from services.exception_resolver.router import router as exception_resolver_router
 
+logger = logging.getLogger(__name__)
+
 _SERVICE_ROUTERS = [
     deals_router,
     trade_min_router,
@@ -57,6 +63,68 @@ _SERVICE_ROUTERS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Application lifespan (shared across all service modules)
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # ── Trade-Min: MongoDB + APScheduler ─────────────────────────────────
+    from services.trade_min.main import on_startup as tm_startup, on_shutdown as tm_shutdown
+    try:
+        await tm_startup()
+    except Exception as exc:
+        logger.error("Trade-Min startup failed (service will run degraded): %s", exc)
+
+    # ── Deals: MongoDB repository ─────────────────────────────────────────
+    from services.deals.main import on_startup as deals_startup, on_shutdown as deals_shutdown
+    try:
+        await deals_startup()
+    except Exception as exc:
+        logger.error("Deals startup failed (service will run degraded): %s", exc)
+
+    # ── Sourcing: MongoDB repository ──────────────────────────────────────
+    from services.sourcing.main import on_startup as sourcing_startup, on_shutdown as sourcing_shutdown
+    try:
+        await sourcing_startup()
+    except Exception as exc:
+        logger.error("Sourcing startup failed (service will run degraded): %s", exc)
+
+    # ── Negotiation Agent: MongoDB repository + inbox monitor ─────────────
+    from agents.negotiation_agent.main import on_startup as neg_startup, on_shutdown as neg_shutdown
+    try:
+        await neg_startup()
+    except Exception as exc:
+        logger.error("NegotiationAgent startup failed (service will run degraded): %s", exc)
+
+    yield
+
+    # ── Teardown (reverse order) ──────────────────────────────────────────
+    try:
+        await neg_shutdown()
+    except Exception as exc:
+        logger.warning("NegotiationAgent shutdown error: %s", exc)
+
+    try:
+        await sourcing_shutdown()
+    except Exception as exc:
+        logger.warning("Sourcing shutdown error: %s", exc)
+
+    try:
+        await deals_shutdown()
+    except Exception as exc:
+        logger.warning("Deals shutdown error: %s", exc)
+
+    try:
+        await tm_shutdown()
+    except Exception as exc:
+        logger.warning("Trade-Min shutdown error: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# App factory
+# ---------------------------------------------------------------------------
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="PortLess · Combined Dev Server",
@@ -66,6 +134,7 @@ def create_app() -> FastAPI:
             "Each module keeps its own router prefix so the URL structure is "
             "identical to the production microservices setup."
         ),
+        lifespan=lifespan,
     )
 
     app.add_middleware(

@@ -1,9 +1,10 @@
 # PortLess — End-to-End Workflow
 
 > **Who is this for?**  
-> Written for a first-time reader (layman) who wants to understand *what the
-> platform does and why*, while also giving developers the service names,
-> connector names, and formula references they need to navigate the codebase.
+> Written for both first-time readers and developers.  
+> Every section describes the *why* in plain English, then shows the exact
+> API calls, request payloads, and response shapes used in the code.  
+> Implementation status (✅ Done / ⏳ Stub) is marked throughout.
 
 ---
 
@@ -23,904 +24,1285 @@ OVERSEAS BUYER  ──►  PORTLESS  ──►  INDIAN MANUFACTURER
 
 ---
 
-## Big Picture: Four Phases
+## Big Picture: Five Phases
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  PHASE 1          PHASE 2          PHASE 3          PHASE 4             │
-│  Find the         Find the         Match &          Execute the         │
-│  Opportunity      Supplier         Score            Deal                │
-│  ──────────────   ──────────────   ──────────────   ──────────────      │
-│  WHO wants to     WHO in India     Is the pair      Ship, inspect,      │
-│  buy, HOW MUCH,   can supply it    viable? What     clear customs,      │
-│  and WHEN?        competitively?   is the margin?   pay everyone.       │
-└──────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  PHASE 1         PHASE 2         PHASE 3         PHASE 3b        PHASE 4    │
+│  Find the        Find the        Score the       Negotiate       Execute     │
+│  Opportunity     Supplier        Match           the Price       the Deal    │
+│  ─────────────   ─────────────   ─────────────   ─────────────   ─────────   │
+│  WHO wants to    WHO in India    Is the pair     Auto-counter    Ship,       │
+│  buy, HOW MUCH,  can supply it   viable? CMS     buyer vs        inspect,    │
+│  and WHEN?       competitively?  ≥ 75 → SOURCE   supplier until  customs,    │
+│                                  < 75 → DISCARD  margin ≥ 8 %   pay all.    │
+│  ✅ Implemented  ✅ Implemented  ✅ Implemented  ✅ Implemented  ⏳ Stubs    │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Phase 1 — Finding the Opportunity
+## Deal Status — Single Source of Truth
 
-### What happens (layman)
+The `deals` service owns the state machine.  Every service and agent transitions
+this state; no other module writes it directly.
+
+```
+DRAFT
+  │  (create_deal called without opportunity_id)
+  │
+  ├──[opportunity_id provided]──► MATCHING
+  │                                  │
+  │                      [quote received, CMS ≥ 75]
+  │                                  │
+  │                               NEGOTIATING ◄─────────────────────────────┐
+  │                                  │                                       │
+  │                       [negotiation.agreed]         [run_round — counter] │
+  │                                  │                                       │
+  │                         NEGOTIATION_AGREED ─────────────────────────────┘
+  │                                  │
+  │                         [dealmaker issues PI]
+  │                                  │
+  │                               PI_SENT
+  │                                  │
+  │                         [buyer accepts PI]
+  │                                  │
+  │                              PI_ACCEPTED
+  │                                  │
+  │                        [buyer wires payment]
+  │                                  │
+  │                           ESCROW_PENDING
+  │                                  │
+  │                      [escrow funded webhook]
+  │                                  │
+  │                           ESCROW_FUNDED
+  │                                  │
+  │                      [dealmaker issues PO]
+  │                                  │
+  │                             PO_ISSUED
+  │                                  │
+  │                    [supplier confirms dispatch]
+  │                                  │
+  │                    SUPPLIER_DISPATCH_READY
+  │                                  │
+  │                     [SGS inspection result]
+  │                      ┌───────────┴──────────────┐
+  │                   QC_PASSED                  QC_FAILED ──► DISPUTE
+  │                      │
+  │               [freight booked, docs filed]
+  │                      │
+  │                  IN_TRANSIT
+  │                      │
+  │              [customs cleared — LEO]
+  │                      │
+  │                   CLEARED
+  │                      │
+  │              [final payout released]
+  │                      │
+  │                     PAID ◄────────── terminal (success)
+  │
+  ├──► NEGOTIATION_FAILED ◄─ terminal (no agreement)
+  ├──► CANCELLED          ◄─ terminal (operator aborts)
+  └──► REFUNDED           ◄─ terminal (buyer refund issued)
+```
+
+---
+
+## Phase 1 — Finding the Opportunity ✅
+
+### What happens
 
 The platform continuously watches global trade data for situations where an
-overseas country is buying a lot of something that India can supply cheaply.
-It also watches for *right now* signals: a buyer who posted a live sourcing
-request this week, or a country that suddenly can't get the product from its
-usual supplier.
+overseas country is buying something that India can supply cheaply.  It also
+detects *right now* signals: a buyer who posted a live sourcing request this
+week, or a country that suddenly cannot get the product from its usual supplier.
 
-### The four demand signals (weakest → strongest intent)
-
-```
-SIGNAL LEVEL       SOURCE                    WHAT IT MEANS
-─────────────────────────────────────────────────────────────────────────
-Level 1 — History  UN Comtrade               "Spain imported 16 T of HS 090422
-                                              from India last year (+40 % YoY)"
-
-Level 2 — Pattern  Volza + ReorderWindow     "Iberia Spices SL bought quarterly;
-                   Engine                     next order due in ~25 days"
-
-Level 3 — Active   Alibaba RFQ               "Iberia Spices SL posted a buy offer
-                   EU TED Tenders             for 10 MT ground pepper this week"
-
-Level 4 — Forced   GDELT Disruption          "Vietnam export ban on pepper →
-                   Monitor                    every EU buyer is emergency-sourcing"
-```
-
-### Flow — Opportunity Discovery
-
-```mermaid
-flowchart TD
-    A([Trade-Min Agent wakes up]) --> B
-
-    B[ComtradeConnector.quote\nWhich countries import this HS code from India?\nYoY growth rate per country] --> C
-
-    C{Growth > threshold?}
-    C -- No --> Z1([Skip — low-demand market])
-    C -- Yes --> D
-
-    D[VolzaConnector.quote\nWhich companies in those countries\nbought this product before?] --> E
-
-    E[ReorderWindowEngine.compute\nFor each buyer — when is their\nnext order statistically due?] --> F
-
-    F{Urgency label?}
-    F -- OVERDUE / IMMINENT --> G1([High priority outreach queue])
-    F -- UPCOMING / WATCHING --> G2([Standard opportunity list])
-    F -- DORMANT --> G3([Archive — revisit in 60 days])
-
-    G1 --> H
-    G2 --> H
-
-    H[AlibabaRfqConnector.quote\nDid this buyer post a live RFQ this week?]
-    H --> I[EuTedConnector.quote\nAny formal EU tender for this product?]
-    I --> J[GdeltDisruptionConnector.quote\nIs any competitor origin country disrupted?]
-
-    J --> K([Opportunity ranked and saved\nOpportunityResponse stored\nin trade-min service])
-```
-
-### Developer reference — Phase 1
-
-| Step | Service | Connector |
-|---|---|---|
-| Macro demand scan | `trade_min` | `ComtradeConnector` |
-| Buyer company list | `trade_min` | `VolzaConnector` |
-| Reorder prediction | `trade_min` (internal) | `ReorderWindowEngine` |
-| Live RFQ scan | `trade_min` | `AlibabaRfqConnector` |
-| EU institutional tender | `trade_min` | `EuTedConnector` |
-| Supply disruption alert | `trade_min` | `GdeltDisruptionConnector` |
-| Buyer risk pre-screen | `trade_min` | `TrademoConnector`, `ImportGeniusConnector` |
-| Tariff viability check | `trade_min` | `MacmapConnector` |
-| EU buyer VAT validation | `trade_min` | `ViesConnector` |
-| Buyer credit limit | `trade_min` | `AllianzTradeConnector` |
-
-**Key files:** `services/trade_min/service.py`, `services/trade_min/schemas.py`,
-`shared/connectors/trade_intel.py`, `shared/connectors/demand_signals.py`,
-`shared/connectors/reorder.py`
-
----
-
-## Phase 2 — Finding the Indian Supplier
-
-### What happens (layman)
-
-Once the platform knows *someone wants to buy*, it searches Indian wholesale
-directories for manufacturers who can supply the exact product.  Before sending
-a quote request, it checks three government databases to make sure the factory
-is legally allowed to export and has no compliance issues.
-
-### The supplier vetting checklist
+### Flow
 
 ```
-CHECK               GOVERNMENT DATABASE       WHAT FAILS IT
-──────────────────────────────────────────────────────────────────────────
-Active GST filing   GSTN (GST Suvidha)        Missing / late filings
-Valid export code   DGFT IEC registry         Expired, suspended, or
-                                              on the DEN denied list
-Registered company  MCA (Ministry of          Shell company / fake CIN
-                    Corporate Affairs)
-Real factory        Udyam / MSME registry     Broker / trader, not a
-(not a broker)                                manufacturer
+Trade-Min wakes up (scheduler or POST /trade-min/scan)
+  │
+  ├─ Phase 1a: Historical demand (Comtrade, Volza, ImportGenius, Trademo)
+  ├─ Phase 1b: Live signals (Alibaba RFQ, EU TED, GDELT disruption)
+  ├─ Phase 1c: Tariff gate (MacMap — skip if tariff too high)
+  ├─ Phase 1d: Seller discovery (IndiaMART, TradeIndia)
+  └─ Phase 1e: Confidence score + persist + emit opportunity.detected
 ```
 
-### Flow — Supplier Discovery
+### Request — trigger a scan
 
-```mermaid
-flowchart TD
-    A([Opportunity confirmed\nHS code + target market known]) --> B
+```http
+POST /trade-min/scan
+Content-Type: application/json
 
-    B[IndiamartConnector.quote\nSearch top-rated manufacturers\nfor the HS code product] --> C
-
-    C[TradeIndiaConnector.quote\nFallback search for additional\nsupplier options] --> D
-
-    D([Candidate supplier list\n5–20 factories]) --> E
-
-    E[GstnConnector.quote\nIs GSTIN active?\nFiling history clean?]
-    E --> F{GST OK?}
-    F -- No --> Z1([Reject — skip to next candidate])
-    F -- Yes --> G
-
-    G[DgftConnector.quote\nIs IEC active?\nOn DGFT DEN denied list?]
-    G --> H{IEC + DGFT OK?}
-    H -- No --> Z2([Reject])
-    H -- Yes --> I
-
-    I[McaConnector.quote\nValid CIN?\nDirectors listed?]
-    I --> J[UdyamConnector.quote\nMSME cert confirms\nreal manufacturer?]
-
-    J --> K([Verified supplier\npasses gatekeeper]) --> L
-
-    L[IndiamartConnector.book\nDispatch automated RFQ:\nproduct spec, quantity,\ndelivery timeline] --> M
-
-    M([Supplier submits quote\nPrice per MT, lead time,\nwarehouse GPS])
-```
-
-### Developer reference — Phase 2
-
-| Step | Service | Connector |
-|---|---|---|
-| Manufacturer search | `sourcing` | `IndiamartConnector` |
-| Fallback search | `sourcing` | `TradeIndiaConnector` |
-| GST validation | `sourcing` | `GstnConnector` |
-| IEC / export licence | `sourcing` | `DgftConnector` |
-| Company registration | `sourcing` | `McaConnector` |
-| MSME / real factory | `sourcing` | `UdyamConnector` |
-| RFQ dispatch | `sourcing` | `IndiamartConnector.book()` |
-
-**Key files:** `services/sourcing/service.py`, `services/sourcing/schemas.py`,
-`shared/connectors/regulatory.py`
-
----
-
-## Phase 3 — Trade Matching & Scoring
-
-### What happens (layman)
-
-With a verified buyer on one side and a verified supplier on the other, the
-Match Engine runs a score from 0 to 100 on the pair.  If the score is 75 or
-above, the deal moves forward.  Below 75, it is automatically discarded.
-
-The score has three components:
-
-| Component | Question it answers | Weight |
-|---|---|---|
-| **Arbitrage (M)** | Is the margin big enough to be worth it? | 50 % |
-| **Proximity (L)** | Is the factory close enough to the port? | 30 % |
-| **Reliability (V)** | Is the supplier established enough to trust? | 20 % |
-
-There is also a hard **Gatekeeper (C)** that turns the entire score to zero if
-the supplier fails any regulatory check — so a factory with a perfect location
-and price but an expired IEC scores exactly 0 and is discarded immediately.
-
-### The formula
-
-$$
-\text{CMS} = C_{\text{supplier}} \times \bigl(w_1 \cdot M_{\text{arbitrage}} + w_2 \cdot L_{\text{proximity}} + w_3 \cdot V_{\text{reliability}}\bigr)
-$$
-
-Where:
-- $C_{\text{supplier}} \in \{0, 1\}$ — 0 if GST fails, IEC inactive, or DGFT denied
-- $M_{\text{arbitrage}} \in [0, 100]$ — scales with `(buyer_price − supplier_quote) / buyer_price`
-- $L_{\text{proximity}} \in [0, 100]$ — linear decay from port (100) to max distance (0)
-- $V_{\text{reliability}} \in [0, 100]$ — based on business age, Udyam cert, shipment count
-- Default weights: $w_1=0.5$, $w_2=0.3$, $w_3=0.2$
-- **Decision:** CMS ≥ 75 → `SOURCE` (proceed)  |  CMS < 75 → `DISCARD`
-
-### Flow — Match Engine
-
-```mermaid
-flowchart TD
-    A([Buyer quote accepted\nSupplier quote received]) --> B
-
-    B[ScoreRequest built:\n• buyer_target_price\n• supplier_quote_price\n• supplier_to_port_km\n• business_age_years\n• annual_shipment_count\n• verification flags] --> C
-
-    C[Gatekeeper check\nC_supplier = 1 if\nGST ✓ AND IEC ✓ AND NOT DGFT denied]
-
-    C --> D{C_supplier = 0?}
-    D -- Yes, failed gatekeeper --> Z([CMS = 0 → DISCARD\nNo deal created])
-    D -- No, passed gatekeeper --> E
-
-    E[M_arbitrage\n= clamp price spread % against saturation\nDefault saturation = 30 %] --> F
-
-    F[L_proximity\n= linear decay from port\nMax distance = 800 km] --> G
-
-    G[V_reliability\n= weighted combo of\nbusiness age, Udyam flag, shipment count] --> H
-
-    H["CMS = 1 × (0.5×M + 0.3×L + 0.2×V)"] --> I
-
-    I{CMS ≥ 75?}
-    I -- Yes → SOURCE --> J([Deal created\nDeals service state machine\nstarts at OPPORTUNITY_IDENTIFIED])
-    I -- No → DISCARD --> K([Discarded with score logged\nfor analytics])
-
-    J --> L[NegotiatorAgent\nFine-tune price,\nauto-counter-offer if needed]
-    L --> M[DealmakerAgent\nIssue Proforma Invoice\nto buyer and PO to supplier]
-```
-
-### Developer reference — Phase 3
-
-| Step | Service | Key file |
-|---|---|---|
-| Score computation | `match_engine` | `services/match_engine/scoring.py` |
-| Score request / response | `match_engine` | `services/match_engine/schemas.py` |
-| CMS threshold config | `match_engine` | `services/match_engine/config.py` |
-| Deal creation on SOURCE | `deals` | `services/deals/service.py` |
-| Negotiation loop | `negotiator` | `services/negotiator/service.py` |
-| PI / PO generation | `dealmaker` | `services/dealmaker/service.py` |
-
----
-
-## API Walkthrough — Phase 1 → 2 → Trade Match (Concrete Example)
-
-> **Scenario:** PortLess hunts for an opportunity to export **Ground Red Pepper
-> (HS 090422)** from Guntur, Andhra Pradesh, India to a buyer in Spain.  
-> Follow every API call, what is sent, what comes back, and how each output
-> feeds the next step — all the way to the final match score.
-
-### Data lineage at a glance
-
-```
-ComtradeConnector.quote()          → "Spain imports 16 T/yr from India, +40 % YoY"
-        │ reporter_code = "724", hs_code = "090422"
-        ▼
-VolzaConnector.quote()             → "Iberia Spices SL is one active buyer"
-        │ volza_buyer_id = "7839201"
-        ▼
-VolzaConnector.status()            → full buyer KPI profile (12 shipments, $3.8 M/yr)
-        │ shipment_dates extracted
-        ▼
-ReorderWindowEngine.compute()      → "next order due in 25 days — UPCOMING"
-        │ urgency_label, avg_reorder_days
-        ▼
-TrademoConnector.quote()           → buyer risk grade = "A", credit stable
-        │ risk_grade, payment_behaviour
-        ▼
-ViesConnector.quote()              → VAT ESB12345678 valid ✓
-        │ vat_verified = true
-        ▼
-AllianzTradeConnector.quote()      → credit limit $120 000, grade A
-        │ credit_limit_usd = 120000
-        ▼
-MacmapConnector.quote()            → Spain MFN tariff on HS 090422 = 7 %
-        │ applied_tariff_pct = 7.0
-        ▼
-IndiamartConnector.quote()         → 8 Guntur manufacturers found
-        │ supplier candidates
-        ▼
-GstnConnector / DgftConnector /    → Guntur Agri Products Ltd passes all checks
-McaConnector / UdyamConnector      │ gst_verified, iec_active, udyam_registered
-        ▼
-IndiamartConnector.book()          → RFQ dispatched → supplier quote: $2.10 / kg
-        │ supplier_quote_price = 2.10
-        ▼
-MatchEngine.score_match()          → CMS = 86 → decision: SOURCE ✓
-```
-
----
-
-### Step 1 — Macro Demand Scan (`ComtradeConnector.quote`)
-
-**What we ask:**  
-"Which countries are importing HS 090422 from India this year, and how much?"
-
-```python
-connector = get_connector("comtrade")
-result = await connector.quote({
-    "hs_code":       "090422",        # Ground red pepper
-    "period":        "2023",
-    "flow_code":     "M",             # M = imports
-    "partner_code":  "356",           # 356 = India (M49 numeric)
-    "max_records":   500,
-})
-```
-
-**What comes back (one row per importing country):**
-
-```json
 {
-  "hs_code": "090422",
-  "period":  "2023",
-  "flow":    "M",
-  "total_records": 42,
-  "records": [
-    {
-      "reporter_code":     "724",
-      "reporter_iso3":     "ESP",
-      "reporter_name":     "Spain",
-      "period":            "2023",
-      "product_desc":      "Pepper, crushed or ground",
-      "net_weight_kg":     16000.0,
-      "cif_value_usd":     46500.0,
-      "primary_value_usd": 46500.0
-    },
-    { "reporter_name": "Poland",  "net_weight_kg": 9200.0,  "primary_value_usd": 28000.0 },
-    { "reporter_name": "Germany", "net_weight_kg": 22000.0, "primary_value_usd": 63000.0 }
-  ]
+  "hs_codes":         ["090422"],
+  "target_markets":   ["ES", "DE", "PL"],
+  "min_arbitrage_rank": 2
 }
 ```
 
-**What the agent does with it:**  
-Calls `ComtradeConnector.status("724:090422")` to fetch the 5-year trend for
-Spain.  The returned `yoy_growth_pct = 40.2` clears the threshold, so Spain is
-promoted to the buyer-discovery stage.
-
----
-
-### Step 2 — Buyer Company Discovery (`VolzaConnector.quote`)
-
-**What we ask:**  
-"Which companies in Spain have shipped HS 090422 from India in the last year?"
-
-```python
-connector = get_connector("volza")
-result = await connector.quote({
-    "hs_code":          "090422",
-    "importer_country": "ES",         # ISO-2 for Spain
-    "exporter_country": "IN",         # default India
-    "start_date":       "2024-01-01",
-    "end_date":         "2024-12-31",
-    "page_size":        50,
-})
-```
-
-**What comes back (one row per shipment):**
+### Response — enriched opportunity
 
 ```json
 {
-  "shipments": [
+  "opportunity_id":     "OPP-2026-ES-090422-001",
+  "hs_code":            "090422",
+  "market":             "ES",
+  "buyer_signals": {
+    "buyer_name":         "Iberia Spices SL",
+    "buyer_country":      "Spain",
+    "vat_number":         "ESB12345678",
+    "vat_verified":       true,
+    "credit_limit_usd":   120000,
+    "risk_grade":         "A",
+    "urgency_label":      "UPCOMING",
+    "days_until_order":   25,
+    "live_rfq_found":     false,
+    "disruption_signal":  true,
+    "disruption_origin":  "Vietnam"
+  },
+  "demand_index":       78.4,
+  "applied_tariff_pct": 7.0,
+  "tariff_viable":      true,
+  "seller_candidates":  [
     {
-      "shipment_id":         "76456564",
-      "shipment_date":       "2024-09-12T00:00:00",
-      "buyer_name":          "Iberia Spices SL",
-      "buyer_country":       "Spain",
-      "supplier_name":       "Guntur Agri Products Ltd",
-      "hs_code":             "090422",
-      "value_usd":           45000.0,
-      "gross_weight_kg":     16000.0,
-      "origin_port":         "Chennai",
-      "destination_port":    "Valencia",
-      "shipment_mode":       "FCL"
+      "supplier_id":   "IND-GNT-008",
+      "company_name":  "Guntur Agri Products Ltd",
+      "gstin":         "37AAAAA0000A1Z1",
+      "iec":           "0312045612",
+      "price_min_usd": 2.05,
+      "price_max_usd": 2.25,
+      "lead_days":     18
     }
   ],
-  "pagination": { "total_records": 4, "has_next_page": false }
+  "arbitrage_rank":     1,
+  "confidence_score":   0.84,
+  "urgency_tier":       "HIGH",
+  "expires_at":         "2026-07-10T00:00:00Z",
+  "status":             "ACTIVE",
+  "created_at":         "2026-06-25T08:00:00Z"
 }
 ```
 
-**What the agent extracts:**  
-`buyer_name = "Iberia Spices SL"`, `volza_buyer_id` (from the next call below).
+### Get the Match Engine seed from this opportunity
 
----
-
-### Step 3 — Full Buyer Profile & Reorder Prediction
-
-**3a. Get buyer KPIs (`VolzaConnector.status`)**
-
-```python
-profile = await connector.status("7839201")   # volza_buyer_id from Step 2
+```http
+GET /trade-min/opportunities/OPP-2026-ES-090422-001/match-seed
 ```
-
-**Returns:**
 
 ```json
 {
-  "buyer_details":  { "buyer_name": "Iberia Spices SL", "buyer_country": "Spain" },
-  "buyer_summary":  { "shipment_count": 420, "total_value_usd": 3800000, "supplier_count": 38 },
-  "shipments": [
-    { "shipment_date": "2024-09-12T00:00:00", ... },
-    { "shipment_date": "2024-06-15T00:00:00", ... },
-    { "shipment_date": "2024-03-20T00:00:00", ... }
+  "opportunity_id":      "OPP-2026-ES-090422-001",
+  "buyer_target_price":  3.20,
+  "buyer_country_code":  "ES",
+  "top_sellers": [
+    {
+      "supplier_id":          "IND-GNT-008",
+      "quote_price_usd":      2.10,
+      "supplier_to_port_km":  320,
+      "business_age_years":   7.0,
+      "udyam_registered":     true,
+      "annual_shipment_count": 14,
+      "gst_verified":         true,
+      "iec_active":           true,
+      "dgft_denied":          false
+    }
   ]
 }
 ```
 
-**3b. Predict next order (`ReorderWindowEngine.compute`)**
+---
 
-```python
-from shared.connectors.reorder import ReorderWindowEngine
-engine = ReorderWindowEngine()
-window = engine.compute(profile)
-```
+## Phase 2 — Finding the Supplier (Sourcing) ✅
 
-**Returns:**
+### What happens
 
-```json
+Once an opportunity is confirmed, the Sourcing service dispatches automated
+RFQs to shortlisted manufacturers.  Every quote that comes back triggers a
+full regulatory verification and a Match Engine re-score before being accepted.
+
+### Step 2a — Dispatch RFQ
+
+```http
+POST /sourcing/rfq
+Content-Type: application/json
+
 {
-  "buyer_name":            "Iberia Spices SL",
-  "avg_reorder_days":      89,
-  "last_shipment_date":    "2024-09-12",
-  "predicted_next_order":  "2024-12-10",
-  "days_until_next_order": 25,
-  "urgency_label":         "UPCOMING",
-  "urgency_score":         0,
-  "confidence":            "HIGH"
+  "deal_id":         "DEAL-2026-IN-ES-0091",
+  "hs_code":         "090422",
+  "quantity_mt":     16,
+  "target_price_usd": 3.20,
+  "validity_days":   7,
+  "suppliers": [
+    {
+      "supplier_id":  "IND-GNT-008",
+      "contact_id":   "CON-001",
+      "source":       "indiamart",
+      "company_name": "Guntur Agri Products Ltd"
+    }
+  ]
 }
 ```
 
-**Decision:** `UPCOMING` label → buyer added to the standard opportunity list and
-outreach is scheduled 5 days before the predicted order date.
+```json
+{
+  "rfq_id":          "RFQ-2026-0091-001",
+  "deal_id":         "DEAL-2026-IN-ES-0091",
+  "dispatched_count": 1,
+  "failed_count":    0,
+  "status":          "COMPLETE",
+  "dispatch_results": [
+    {
+      "supplier_id": "IND-GNT-008",
+      "channel":     "indiamart",
+      "ext_rfq_id":  "IM-RFQ-8812",
+      "success":     true,
+      "error":       null
+    }
+  ]
+}
+```
+
+### Step 2b — Supplier submits quote
+
+```http
+POST /sourcing/quotes
+Content-Type: application/json
+
+{
+  "rfq_id":          "RFQ-2026-0091-001",
+  "deal_id":         "DEAL-2026-IN-ES-0091",
+  "supplier_id":     "IND-GNT-008",
+  "company_name":    "Guntur Agri Products Ltd",
+  "unit_price_usd":  2.10,
+  "currency":        "USD",
+  "quantity_mt":     16,
+  "validity_days":   7,
+  "incoterm":        "FOB",
+  "port_of_loading": "Chennai",
+  "lead_time_days":  18,
+  "payment_terms":   "30% advance, 70% on BL",
+  "gstin":           "37AAAAA0000A1Z1",
+  "iec_number":      "0312045612",
+  "cin_number":      "U15400AP2005PTC123456",
+  "udyam_number":    "UDYAM-AP-07-0012345"
+}
+```
+
+```json
+{
+  "quote_id":   "QT-2026-0091-001",
+  "rfq_id":     "RFQ-2026-0091-001",
+  "deal_id":    "DEAL-2026-IN-ES-0091",
+  "supplier_id": "IND-GNT-008",
+  "unit_price_usd": 2.10,
+  "verification": {
+    "gst_verified":         true,
+    "iec_active":           true,
+    "dgft_denied":          false,
+    "business_age_years":   7.0,
+    "udyam_registered":     true,
+    "annual_shipment_count": 14,
+    "verified_at":          "2026-06-25T08:05:00Z"
+  },
+  "re_scored_cms":      82.4,
+  "re_scored_decision": "SOURCE",
+  "status":             "VERIFIED",
+  "received_at":        "2026-06-25T08:05:00Z"
+}
+```
+
+> **What happens automatically:** The quote ingestion pipeline (1) verifies
+> the supplier with four government APIs in parallel, (2) re-scores with the
+> Match Engine, (3) updates the deal's winning supplier, and (4) transitions
+> the deal from `MATCHING` → `NEGOTIATING` when decision = SOURCE.
 
 ---
 
-### Step 4 — Buyer Risk & Credit Check
+## Phase 3 — Match Scoring ✅
 
-**4a. Supply-chain risk profile (`TrademoConnector.quote`)**
+### What happens
 
-```python
-connector = get_connector("trademo")
-risk = await connector.quote({
-    "hs_code":       "090422",
-    "buyer_country": "ES",
-    "limit":         10,
-})
-# Returns risk_grade, payment_behaviour, trade_frequency for each company
-```
+The Match Engine scores every buyer–supplier pair with a deterministic formula.
+CMS ≥ 75 → **SOURCE** (deal moves forward).  CMS < 75 → **DISCARD**.
 
-**4b. EU VAT validation (`ViesConnector.quote`)**
-
-```python
-connector = get_connector("vies")
-vat = await connector.quote({
-    "vat_number":   "ESB12345678",
-    "country_code": "ES",
-})
-# Returns: { "valid": true, "company_name": "IBERIA SPICES SL", "address": "..." }
-```
-
-**4c. Trade credit insurance limit (`AllianzTradeConnector.quote`)**
-
-```python
-connector = get_connector("allianz_trade")
-credit = await connector.quote({
-    "company_name": "Iberia Spices SL",
-    "country":      "ES",
-    "vat_number":   "ESB12345678",
-})
-# Returns: { "risk_grade": "A", "credit_limit_usd": 120000, "recommendation": "standard_terms" }
-```
-
-**Decision:** risk grade A + VAT valid + credit limit $120 K → buyer is
-approved for standard 30-day payment terms (no 100 % advance escrow required).
-
----
-
-### Step 5 — Tariff Viability (`MacmapConnector.quote`)
-
-**What we ask:**  
-"What is Spain's import duty on HS 090422 from India?"
-
-```python
-connector = get_connector("macmap")
-tariff = await connector.quote({
-    "hs_code":       "090422",
-    "reporter_iso2": "ES",    # importing country
-    "partner_iso2":  "IN",    # exporting country
-})
-# Returns: { "applied_tariff_pct": 7.0, "preferential_rate": 0.0, "quota": null }
-```
-
-**Viability check:**  
-Buyer target CIF price = $3.20 / kg.  
-Landed cost estimate = supplier quote + logistics + tariff = `$2.10 + $0.28 + ($3.20 × 7 %) = $2.62`.  
-Margin = `$3.20 − $2.62 = $0.58 / kg` (18 %) — viable ✓
-
----
-
-### Step 6 — Supplier Discovery & Vetting
-
-**6a. Find manufacturers (`IndiamartConnector.quote`)**
-
-```python
-connector = get_connector("indiamart")
-suppliers = await connector.quote({
-    "query":        "ground red pepper chilli Guntur",
-    "gst_verified": True,
-})
-# Returns: list of 8 manufacturer profiles with GSTIN, address, price range
-```
-
-**6b. Regulatory vetting (run in parallel for each candidate)**
-
-```python
-# All three calls fire concurrently for the shortlisted supplier:
-import asyncio
-
-gstn   = get_connector("gstn")
-dgft   = get_connector("dgft")
-mca    = get_connector("mca")
-udyam  = get_connector("udyam")
-
-gstn_result, dgft_result, mca_result, udyam_result = await asyncio.gather(
-    gstn.quote({"gstin": "37AAAAA0000A1Z1"}),
-    dgft.quote({"iec":   "0312045612"}),
-    mca.quote( {"cin":   "U15400AP2005PTC123456"}),
-    udyam.quote({"udyam_number": "UDYAM-AP-07-0012345"}),
-)
-
-# Gatekeeper flags assembled for match engine:
-gst_verified     = gstn_result["status"]  == "ACTIVE"   # True
-iec_active       = dgft_result["status"]  == "ACTIVE"   # True
-dgft_denied      = dgft_result["den_list"] == True       # False
-udyam_registered = udyam_result["certified"]             # True
-```
-
-**6c. Dispatch RFQ (`IndiamartConnector.book`)**
-
-```python
-rfq = await connector.book({
-    "supplier_id": "IND-GNT-008",
-    "product":     "Ground Red Pepper (HS 090422), moisture < 12 %, AGMARK Grade 1",
-    "quantity":    "16 MT",
-    "message":     "Require FOB Chennai quote, delivery within 21 days.",
-})
-# Supplier responds: { "quote_id": "Q-8812", "price_per_kg_usd": 2.10, "lead_days": 18 }
-```
-
----
-
-### Step 7 — Live Intent Check (optional, boosts confidence)
-
-**7a. Active RFQ on Alibaba? (`AlibabaRfqConnector.quote`)**
-
-```python
-connector = get_connector("alibaba_rfq")
-rfqs = await connector.quote({
-    "query":   "ground pepper spices",
-    "country": "ES",
-})
-# Returns matching live buy-offers posted by Spanish buyers this week
-```
-
-**7b. Disruption in Vietnam (competitor)? (`GdeltDisruptionConnector.quote`)**
-
-```python
-connector = get_connector("gdelt_disruption")
-disruption = await connector.quote({
-    "origin_country":  "Vietnam",
-    "product_keyword": "pepper",
-    "hours_lookback":  72,
-})
-# Returns: { "disruption_detected": true, "signal_strength": "HIGH", "article_count": 7 }
-# → Spain buyers who sourced from Vietnam are now emergency-sourcing → urgency elevated
-```
-
-**7c. EU government tender? (`EuTedConnector.quote`)**
-
-```python
-connector = get_connector("eu_ted")
-tenders = await connector.quote({
-    "query":   "pepper spices food supply",
-    "country": "ES",
-})
-# Returns active procurement notices with deadlines and contract values
-```
-
----
-
-### Step 8 — Assemble the Match Score (`match_engine`)
-
-All data collected in Steps 1–7 flows into a single `ScoreRequest`:
-
-```python
-from services.match_engine.schemas import ScoreRequest, SupplierVerification
-
-score_req = ScoreRequest(
-    deal_id               = "DEAL-2026-IN-ES-0091",
-    supplier_id           = "IND-GNT-008",
-
-    # Arbitrage (M) — from Steps 5 + 6c
-    buyer_target_price    = 3.20,          # buyer's CIF target price / kg
-    supplier_quote_price  = 2.10,          # Guntur Agri's FOB quote / kg
-    currency              = "USD",
-
-    # Gatekeeper (C) — from Step 6b
-    verification = SupplierVerification(
-        gst_verified = True,               # GSTN: ACTIVE
-        iec_active   = True,               # DGFT: ACTIVE
-        dgft_denied  = False,              # DGFT: not on DEN list
-    ),
-
-    # Proximity (L) — Guntur to Chennai port
-    supplier_to_port_km   = 320.0,
-
-    # Reliability (V) — from Step 6b + Indiamart profile
-    business_age_years    = 7.0,           # MCA registration date
-    udyam_registered      = True,          # Udyam certified manufacturer
-    annual_shipment_count = 14,            # from Indiamart profile
-)
-```
-
-**Score computation (inside `scoring.py`):**
+### Formula
 
 ```
-C_supplier  = 1          (GST ✓, IEC ✓, not denied)
+CMS = C_supplier × (0.5 × M_arbitrage + 0.3 × L_proximity + 0.2 × V_reliability)
 
-M_arbitrage = clamp( (3.20 − 2.10) / 3.20 × 100 / 30 × 100 ) = clamp(114) = 100
-               spread = 34 %, saturates at 30 % → M = 100
+C_supplier  = 1   if GST ✓ AND IEC ✓ AND NOT DGFT-denied
+            = 0   otherwise (entire score → 0 → DISCARD)
 
-L_proximity = clamp( (1 − 320/800) × 100 ) = clamp(60) = 60
-               320 km from Chennai, max = 800 km → L = 60
+M_arbitrage = clamp( (buyer_price − supplier_price) / buyer_price × 100 / 30 × 100 )
+              Saturates at 30% spread → M = 100
 
-V_reliability = weighted combo(age=7, udyam=True, shipments=14) ≈ 72
+L_proximity = clamp( (1 − km/800) × 100 )
+              0 km from port → 100, 800 km → 0
 
-CMS = 1 × (0.5 × 100 + 0.3 × 60 + 0.2 × 72)
-    = 1 × (50 + 18 + 14.4)
-    = 82.4
+V_reliability = weighted combo of:
+                business_age_years (max 15y), udyam_registered, annual_shipment_count
 ```
 
-**Decision: CMS = 82.4 ≥ 75 → `SOURCE`**
+### Request / Response
 
-The `deals` service creates deal `DEAL-2026-IN-ES-0091`, state transitions to
-`SUPPLIER_SHORTLISTED`, and the platform moves to Phase 4 execution.
+```http
+POST /match-engine/score
+Content-Type: application/json
 
----
+{
+  "deal_id":              "DEAL-2026-IN-ES-0091",
+  "supplier_id":          "IND-GNT-008",
+  "buyer_target_price":   3.20,
+  "supplier_quote_price": 2.10,
+  "currency":             "USD",
+  "verification": {
+    "gst_verified": true,
+    "iec_active":   true,
+    "dgft_denied":  false
+  },
+  "supplier_to_port_km":   320,
+  "business_age_years":    7.0,
+  "udyam_registered":      true,
+  "annual_shipment_count": 14
+}
+```
 
-### Complete data-flow summary (Phases 1–3)
+```json
+{
+  "match_id":          "ME-2026-0091-001",
+  "deal_id":           "DEAL-2026-IN-ES-0091",
+  "supplier_id":       "IND-GNT-008",
+  "composite_score":   82.4,
+  "gatekeeper_passed": true,
+  "arbitrage_score":   100.0,
+  "proximity_score":    60.0,
+  "reliability_score":  72.0,
+  "weights": { "arbitrage": 0.5, "proximity": 0.3, "reliability": 0.2 },
+  "decision":          "SOURCE",
+  "threshold":         75.0,
+  "scored_at":         "2026-06-25T08:05:10Z"
+}
+```
+
+### Score walk-through (Guntur pepper example)
 
 ```
-API CALL                          KEY OUTPUT           FEEDS INTO
-────────────────────────────────────────────────────────────────────────────
-ComtradeConnector.quote()         reporter = "ES"      VolzaConnector.quote
-                                  yoy = +40 %          opportunity ranking
+C = 1          (GST ✓, IEC ✓, not denied)
 
-VolzaConnector.quote()            buyer_name           VolzaConnector.status
-                                  volza_buyer_id       ReorderWindowEngine
+M = clamp( (3.20 − 2.10) / 3.20 × 100 / 30 × 100 )
+  = clamp( 34.4% / 30 × 100 ) = clamp(114.6) = 100   [spread saturates at 30%]
 
-VolzaConnector.status()           shipment_dates       ReorderWindowEngine
-                                  buyer_summary        TrademoConnector
+L = clamp( (1 − 320/800) × 100 )
+  = clamp(60) = 60
 
-ReorderWindowEngine.compute()     urgency_label        outreach scheduler
-                                  days_until_order     opportunity rank
+V = f(age=7y, udyam=true, shipments=14) ≈ 72
 
-TrademoConnector.quote()          risk_grade           AllianzTradeConnector
-                                                       payment terms decision
+CMS = 1 × (0.5×100 + 0.3×60 + 0.2×72) = 50 + 18 + 14.4 = 82.4  →  SOURCE ✓
+```
 
-ViesConnector.quote()             vat_verified         buyer approval gate
+### Scenario — Supplier fails gatekeeper
 
-AllianzTradeConnector.quote()     credit_limit_usd     escrow configuration
-                                  risk_grade           payment terms
+```
+Supplier GSTIN is cancelled  →  gst_verified = false  →  C = 0
+CMS = 0 × (anything) = 0  →  DISCARD
+```
 
-MacmapConnector.quote()           applied_tariff_pct   viability check
-                                                       ScoreRequest pricing
+```json
+{
+  "composite_score":   0.0,
+  "gatekeeper_passed": false,
+  "decision":          "DISCARD"
+}
+```
 
-IndiamartConnector.quote()        supplier candidates  vetting pipeline
+### Scenario — Supplier too far from port
 
-GstnConnector.quote()             gst_verified (bool)  ScoreRequest.verification
-DgftConnector.quote()             iec_active (bool)    ScoreRequest.verification
-McaConnector.quote()              company valid        ScoreRequest.reliability
-UdyamConnector.quote()            udyam_registered     ScoreRequest.reliability
-
-IndiamartConnector.book()         supplier_quote_price ScoreRequest arbitrage
-
-AlibabaRfqConnector.quote()       live_rfq_found       urgency boost (optional)
-GdeltDisruptionConnector.quote()  disruption_detected  urgency boost (optional)
-EuTedConnector.quote()            tender_found         deal prioritisation
-
-MatchEngine.score_match()         CMS = 82.4           deals service
-                                  decision = SOURCE    → Phase 4 execution
+```
+supplier_to_port_km = 850 (> 800 max)  →  L = 0
+CMS = 1 × (0.5×100 + 0.3×0 + 0.2×72) = 50 + 0 + 14.4 = 64.4  →  DISCARD
 ```
 
 ---
 
-## Phase 4 — Deal Execution (Zero-Touch Shipping)
+## Phase 3b — Negotiation Agent ✅
 
-### What happens (layman)
+### What happens
 
-Once the buyer accepts the Proforma Invoice and wires the payment into escrow,
-the platform orchestrates three independent professional services — quality
-inspection, freight booking, and customs clearance — without anyone from
-PortLess physically doing anything.  Escrow money is only released when each
-checkpoint is verified.
-
-### The payment release ladder
+Once the deal is `NEGOTIATING`, the Negotiation Agent runs a LangGraph
+three-node graph to close the price gap between buyer and supplier.
 
 ```
-MILESTONE                       WHO GETS PAID          AMOUNT RELEASED
-──────────────────────────────────────────────────────────────────────────
-SGS inspection passes (CRF)     Supplier (INR)          Supplier cost
-Let Export Order issued         Freight + CHA           Service fees
-Bill of Lading confirmed        PortLess account        Arbitrage margin
-Goods delivered (buyer ACK)     Final reconciliation    Any holdback buffer
+orchestrator_node  ──► buyer_agent_node  ──┐
+        ▲                                   │ (loops until convergence)
+        └──────────── supplier_agent_node ◄─┘
+
+Termination routes (from orchestrator):
+  NEGOTIATION_AGREED  →  END  (gap ≤ concession_step AND margin ≥ floor)
+  NEGOTIATION_FAILED  →  END  (max rounds exhausted)
+  HITL_APPROVAL       →  END  (margin near floor / first outbound / operator gate)
 ```
 
-### Flow — Execution
+**Deterministic guards** (never delegated to LLM):
+- Convergence: `|ask − bid| ≤ concession_step` AND `net_margin ≥ margin_floor_pct`
+- Net margin: `(buyer_price − supplier_price − logistics − cost_envelope) / buyer_price × 100`
+- Default floor: 8 %,  target: 12–15 %,  concession step: $0.10/unit
 
-```mermaid
-flowchart LR
-    A([Buyer wires payment]) --> B
+**LLM calls** (via shared LLM Gateway, `caller="negotiation_agent.<node>"`):
+- Orchestrator: decides routing when no hard rule fires
+- Buyer agent: drafts outbound message in USD/CIF
+- Supplier agent: drafts outbound message in INR/Ex-Works
 
-    B[EscrowGuard\nLocks funds in multi-currency\nescrow vault\nStripe Treasury / Payoneer] --> C
+### Step 3b-1 — Start negotiation
 
-    C[ShieldLink Agent\nBooks SGS inspection via\nSGS / Bureau Veritas API\nPayload: warehouse GPS,\nHS code, buyer QC specs] --> D
+```http
+POST /negotiation-agent/negotiations
+Content-Type: application/json
 
-    D{SGS inspection\nresult?}
-    D -- FAIL --> E([Logistics pickup cancelled\nDispute ticket raised\nFunds stay locked])
-    D -- PASS, CRF signed --> F
-
-    F[EscrowGuard releases\nsupplier payment in INR] --> G
-
-    G[ShieldLink Agent\nBooks container via\nCogoport / Freightos API\nFOB Chennai, FCL/LCL] --> H
-
-    H[DocuGen Agent generates:\n• Commercial Invoice\n• Packing List\n• Certificate of Origin\n• RoDTEP declaration] --> I
-
-    I[DocuGen → ICEGATE\nSubmits Shipping Bill\nvia CHA API\nCaptures Let Export Order] --> J
-
-    J[EscrowGuard releases\nlogistics + CHA payments] --> K
-
-    K[Carrier issues\nSwitch Bill of Lading\nBuyer name: PortLess\nSupplier name: hidden] --> L
-
-    L[EscrowGuard releases\nPortLess arbitrage margin] --> M([Deal CLOSED\nState machine → COMPLETED])
+{
+  "deal_id":             "DEAL-2026-IN-ES-0091",
+  "trade_match_id":      "ME-2026-0091-001",
+  "buyer_id":            "BUY-IBERIA-001",
+  "seller_id":           "IND-GNT-008",
+  "product_code":        "090422",
+  "buyer_country_code":  "ES",
+  "buyer_target_price":  3.20,
+  "supplier_quote_price": 2.10,
+  "composite_match_score": 82.4,
+  "cost_envelope": {
+    "travel_cost": "0.05",
+    "qc_cost":     "0.08",
+    "doc_cost":    "0.03"
+  },
+  "policy": {
+    "target_margin_pct":  12.0,
+    "margin_floor_pct":   8.0,
+    "max_rounds":         5,
+    "concession_step":    0.10
+  }
+}
 ```
 
-### Developer reference — Phase 4
+**Response (round 1 — first outbound, HITL required because hitl_on_first_outbound=true):**
 
-| Step | Service | Connector |
-|---|---|---|
-| Escrow lock | `escrow_guard` | `StripeTreasuryConnector`, `PayoneerConnector` |
-| QC inspection booking | `shield_link` | `SgsConnector` |
-| Freight quotation + booking | `shield_link` | `CogoportConnector`, `FreightosConnector` |
-| Document generation | `docugen` | — (internal renderer) |
-| Customs filing | `docugen` | `IcegateConnector` |
-| Human approvals | `hitl_approval` | — (notification + webhook) |
-| Exception handling | `exception_resolver` | — |
+```json
+{
+  "negotiation_id":    "NEG-2026-0091-001",
+  "deal_id":           "DEAL-2026-IN-ES-0091",
+  "status":            "HITL_PENDING",
+  "round_no":          1,
+  "current_bid":       3.20,
+  "current_ask":       2.10,
+  "margin_at_current": 29.4,
+  "hitl_required":     true,
+  "reasoning":         "First outbound message requires operator approval",
+  "outbound_buyer_message": "Dear Iberia Spices, we are pleased to offer Ground Red Pepper (HS 090422) at USD 3.20/kg CIF Valencia, moisture < 12%, AGMARK Grade 1. Lead time 18 days from confirmed order. Terms: 30% advance + 70% on BL. Please confirm your interest.",
+  "outbound_supplier_message": null
+}
+```
 
-**Key files:** `services/escrow_guard/service.py`, `services/shield_link/service.py`,
-`services/docugen/service.py`, `shared/connectors/shields.py`,
-`shared/connectors/payments.py`
+### Step 3b-2 — Operator approves, buyer counters
+
+```http
+POST /negotiation-agent/negotiations/NEG-2026-0091-001/round
+Content-Type: application/json
+
+{
+  "party":           "buyer",
+  "counter_price":   2.95,
+  "channel":         "email",
+  "inbound_message": "Thank you for the offer. We can pay max USD 2.95/kg CIF. Can you match?"
+}
+```
+
+**Response (orchestrator routes to supplier agent):**
+
+```json
+{
+  "negotiation_id":    "NEG-2026-0091-001",
+  "status":            "ROUND",
+  "round_no":          2,
+  "current_bid":       2.95,
+  "current_ask":       2.10,
+  "margin_at_current": 22.1,
+  "hitl_required":     false,
+  "outbound_supplier_message": "Dear Guntur Agri, our buyer has confirmed interest at USD 2.95/kg CIF. After logistics of USD 0.28/kg, the effective Ex-Works ceiling is USD 2.51/kg. Given your 18-day lead time and confirmed quality certification, we invite you to revise your offer toward USD 2.45/kg. This unlocks a volume commitment of 16 MT.",
+  "outbound_buyer_message": null
+}
+```
+
+### Step 3b-3 — Supplier counters
+
+```http
+POST /negotiation-agent/negotiations/NEG-2026-0091-001/round
+Content-Type: application/json
+
+{
+  "party":           "supplier",
+  "counter_price":   2.42,
+  "channel":         "email",
+  "inbound_message": "We can do USD 2.42/kg FOB Chennai. Final offer."
+}
+```
+
+**Response (convergence check: |2.95 − 2.42| = 0.53 > 0.10 — not converged yet):**
+
+```json
+{
+  "status":            "ROUND",
+  "round_no":          3,
+  "current_bid":       2.95,
+  "current_ask":       2.42,
+  "margin_at_current": 14.8,
+  "hitl_required":     false,
+  "outbound_buyer_message": "Great news — our supplier has moved to USD 2.42/kg. We can now offer you USD 2.90/kg CIF Valencia, all-in. This reflects our strong preference for a long-term supply partnership. Payment: 30% advance, 70% on BL. Please confirm to proceed."
+}
+```
+
+### Step 3b-4 — Convergence achieved
+
+After round 4:
+
+```
+buyer_bid  = 2.80  USD/kg
+supplier_ask = 2.74  USD/kg
+gap = |2.80 - 2.74| = 0.06 ≤ concession_step (0.10)  ✓
+
+net_margin = (2.80 − 2.74 − 0.28 − 0.16) / 2.80 × 100
+           = (2.80 − 3.18) / 2.80 × 100   → -13.6%  ✗  (logistics too high)
+```
+
+Wait — buyer needs to absorb logistics. Correct calculation uses buyer_price as CIF (includes logistics):
+
+```
+net_margin = (buyer_CIF − supplier_FOB − cost_envelope) / buyer_CIF × 100
+           = (2.80 − 2.74 − 0.16) / 2.80 × 100
+           = -0.10 / 2.80 × 100 = -3.6%   ✗ below floor
+
+→ Orchestrator fires HITL_APPROVAL (margin near floor)
+```
+
+**Response:**
+
+```json
+{
+  "status":            "HITL_PENDING",
+  "round_no":          4,
+  "current_bid":       2.80,
+  "current_ask":       2.74,
+  "margin_at_current": -3.6,
+  "hitl_required":     true,
+  "reasoning":         "Margin -3.6% is below floor 8.0% — HITL required"
+}
+```
+
+**Operator sets override price:**
+
+```http
+POST /negotiation-agent/negotiations/NEG-2026-0091-001/round
+Content-Type: application/json
+
+{
+  "party":                  "buyer",
+  "counter_price":          3.10,
+  "operator_override_price": 3.10,
+  "inbound_message":        "Operator approved revised price: USD 3.10/kg CIF final."
+}
+```
+
+**Response — converged:**
+
+```json
+{
+  "status":            "AGREED",
+  "round_no":          5,
+  "current_bid":       3.10,
+  "current_ask":       2.74,
+  "agreed_price":      2.92,
+  "margin_at_current": 12.1,
+  "hitl_required":     true,
+  "reasoning":         "Convergence achieved: bid=3.10 ask=2.74 gap=0.36 > 0.10 — gap too large; operator override accepted as final",
+  "outbound_buyer_message": "We are pleased to confirm the agreed price of USD 2.92/kg CIF Valencia ..."
+}
+```
+
+### Step 3b-5 — Check full round history
+
+```http
+GET /negotiation-agent/negotiations/NEG-2026-0091-001/rounds
+```
+
+```json
+[
+  {
+    "round_id":             "RND-001",
+    "round_no":             1,
+    "party":                "init",
+    "inbound_price":        null,
+    "outbound_message":     "Dear Iberia Spices ...",
+    "orchestrator_routing": "HITL_APPROVAL",
+    "margin_at_round":      29.4,
+    "hitl_required":        true
+  },
+  {
+    "round_id":             "RND-002",
+    "round_no":             2,
+    "party":                "buyer",
+    "inbound_price":        2.95,
+    "orchestrator_routing": "CALL_SUPPLIER_AGENT",
+    "margin_at_round":      22.1,
+    "hitl_required":        false
+  },
+  {
+    "round_id":             "RND-003",
+    "round_no":             3,
+    "party":                "supplier",
+    "inbound_price":        2.42,
+    "orchestrator_routing": "CALL_BUYER_AGENT",
+    "margin_at_round":      14.8,
+    "hitl_required":        false
+  }
+]
+```
+
+### Scenario — Max rounds exhausted (no agreement)
+
+Policy: `max_rounds = 5`.  After round 5 without convergence:
+
+```json
+{
+  "status":        "FAILED",
+  "round_no":      5,
+  "hitl_required": true,
+  "reasoning":     "Max rounds (5) exhausted without convergence"
+}
+```
+
+Deal status transitions → `NEGOTIATION_FAILED`.  Operator can either:
+- Cancel the deal (`PATCH /deals/{id}/status` → `CANCELLED`)
+- Restart negotiation with a new `POST /negotiation-agent/negotiations` (old session reused only if not FAILED)
 
 ---
 
-## Deal State Machine
+## Phase 4 — Deal Execution ⏳ (Stubs — To Be Implemented)
 
-The `deals` service is the single source of truth.  Every agent transitions the
-state; no other service writes the state directly.
+All six services below have full route definitions, schemas, and domain event
+specs but their `service.py` functions raise `NotImplementedError`.
 
+---
+
+### 4a — Deals Service — Create & Transition ✅
+
+```http
+POST /deals
+Content-Type: application/json
+
+{
+  "operator_id":      "OP-001",
+  "hs_code":          "090422",
+  "market":           "ES",
+  "opportunity_id":   "OPP-2026-ES-090422-001",
+  "margin_floor_pct": 8.0,
+  "autonomy_profile": "L2",
+  "parties": {
+    "buyer_id":    "BUY-IBERIA-001",
+    "supplier_id": "IND-GNT-008"
+  }
+}
 ```
-OPPORTUNITY_IDENTIFIED
-        │
-        ▼
-SUPPLIER_SHORTLISTED  ◄── Match Engine returns SOURCE
-        │
-        ▼
-PI_ISSUED             ◄── DealMaker generates Proforma Invoice
-        │
-        ▼
-ESCROW_FUNDED         ◄── Buyer wires payment, EscrowGuard locks
-        │
-        ▼
-QC_IN_PROGRESS        ◄── SGS inspection triggered
-        │
-        ├── FAIL ──► QC_FAILED (dispute, funds held)
-        │
-        ▼
-QC_PASSED
-        │
-        ▼
-FREIGHT_BOOKED        ◄── Container booked via Cogoport/Freightos
-        │
-        ▼
-CUSTOMS_IN_PROGRESS   ◄── Shipping Bill submitted to ICEGATE
-        │
-        ▼
-LET_EXPORT_ISSUED     ◄── LEO confirmed
-        │
-        ▼
-IN_TRANSIT            ◄── Switch BoL issued by carrier
-        │
-        ▼
-COMPLETED             ◄── Buyer confirms delivery, final payouts made
+
+```json
+{
+  "deal_id":             "DEAL-2026-IN-ES-0091",
+  "operator_id":         "OP-001",
+  "hs_code":             "090422",
+  "market":              "ES",
+  "status":              "MATCHING",
+  "opportunity_id":      "OPP-2026-ES-090422-001",
+  "winning_supplier_id": "IND-GNT-008",
+  "winning_cms":         82.4,
+  "buyer_target_price_usd": 3.20,
+  "margin_floor_pct":    8.0,
+  "match_results": [
+    { "supplier_id": "IND-GNT-008", "composite_score": 82.4, "decision": "SOURCE" }
+  ],
+  "status_history": [
+    { "status": "DRAFT",    "transitioned_at": "2026-06-25T08:00:00Z" },
+    { "status": "MATCHING", "transitioned_at": "2026-06-25T08:00:01Z" }
+  ],
+  "created_at": "2026-06-25T08:00:00Z"
+}
+```
+
+**Transition deal to NEGOTIATING (triggered automatically by Sourcing on SOURCE quote):**
+
+```http
+PATCH /deals/DEAL-2026-IN-ES-0091/status
+Content-Type: application/json
+
+{ "target_status": "NEGOTIATING", "reason": "Sourcing quote re-scored SOURCE" }
 ```
 
 ---
 
-## Complete Connector Inventory
+### 4b — DealMaker — Proforma Invoice & Purchase Order ⏳
 
-| # | Connector | File | Free? | Signal Level |
+**TODO: implement `issue_pi()` and `issue_po()` in `services/dealmaker/service.py`**
+
+```http
+POST /dealmaker/pi
+Content-Type: application/json
+
+{
+  "deal_id":       "DEAL-2026-IN-ES-0091",
+  "agreed_price":  2.92,
+  "quantity_mt":   16,
+  "incoterm":      "CIF",
+  "port":          "Valencia",
+  "payment_terms": "30% advance + 70% on BL",
+  "validity_days": 7
+}
+```
+
+**Expected response (not yet returned — stub raises NotImplementedError):**
+
+```json
+{
+  "pi_id":       "PI-2026-0091-001",
+  "deal_id":     "DEAL-2026-IN-ES-0091",
+  "document_url": "https://storage/docs/PI-2026-0091-001.pdf",
+  "status":      "ISSUED",
+  "issued_at":   "2026-06-25T09:00:00Z"
+}
+```
+
+**Gap:** Render PDF from Jinja2 template, persist, emit `pi.sent` event, transition deal → `PI_SENT`.
+
+```http
+POST /dealmaker/po
+Content-Type: application/json
+
+{
+  "deal_id":          "DEAL-2026-IN-ES-0091",
+  "supplier_price":   2.74,
+  "quantity_mt":      16,
+  "incoterm":         "FOB",
+  "port_of_loading":  "Chennai",
+  "delivery_deadline": "2026-07-20"
+}
+```
+
+**Gap:** Enforce PO guard (net_margin ≥ floor AND credit cleared/prepaid), render, emit `po.issued`, transition deal → `PO_ISSUED`.
+
+---
+
+### 4c — DocuGen — Document Generation & Customs Filing ⏳
+
+**TODO: implement `generate_document()` and `file_customs()` in `services/docugen/service.py`**
+
+```http
+POST /docugen/documents
+Content-Type: application/json
+
+{
+  "deal_id":       "DEAL-2026-IN-ES-0091",
+  "document_type": "COMMERCIAL_INVOICE"
+}
+```
+
+**Expected response:**
+
+```json
+{
+  "document_id":   "DOC-2026-0091-CI",
+  "doc_type":      "COMMERCIAL_INVOICE",
+  "hash":          "sha256:abc123...",
+  "storage_uri":   "gs://portless-docs/2026/0091/CI.pdf",
+  "created_at":    "2026-06-26T10:00:00Z"
+}
+```
+
+**Supported document types:** `PROFORMA_INVOICE`, `COMMERCIAL_INVOICE`, `PACKING_LIST`, `CERTIFICATE_OF_ORIGIN`, `SDF`, `SHIPPING_BILL`
+
+**Gap:** Jinja2 templates per doc type, hash, cloud storage, emit events.
+
+```http
+POST /docugen/customs
+Content-Type: application/json
+
+{
+  "deal_id":          "DEAL-2026-IN-ES-0091",
+  "shipping_bill_id": "DOC-2026-0091-SB",
+  "rodtep_claim":     true
+}
+```
+
+**Expected response:**
+
+```json
+{
+  "filing_id":  "ICEGATE-2026-0091",
+  "leo_number": "LEO/1234/26",
+  "status":     "FILED",
+  "filed_at":   "2026-06-27T06:00:00Z"
+}
+```
+
+**Gap:** ICEGATE EDI connector, stamp RoDTEP declaration, capture LEO, emit `customs.filed`, transition deal → `CLEARED`.
+
+---
+
+### 4d — Shield-Link — QC, Freight, CHA ⏳
+
+**TODO: implement all three functions in `services/shield_link/service.py`**
+
+```http
+POST /shield-link/qc
+Content-Type: application/json
+
+{
+  "deal_id":        "DEAL-2026-IN-ES-0091",
+  "warehouse_gps":  "16.3067,80.4365",
+  "hs_code":        "090422",
+  "buyer_qc_specs": "AGMARK Grade 1, moisture < 12%, SGS CRF required"
+}
+```
+
+**Expected:**
+
+```json
+{
+  "order_id":   "QC-2026-0091-001",
+  "vendor_ref": "SGS-IN-2026-88120",
+  "status":     "BOOKED",
+  "booked_at":  "2026-06-25T10:00:00Z"
+}
+```
+
+**Gap:** SGS / Intertek connector call, persist, emit `qc.booked`, on webhook: transition deal → `QC_PASSED` or `QC_FAILED`.
+
+```http
+POST /shield-link/freight
+Content-Type: application/json
+
+{
+  "deal_id":           "DEAL-2026-IN-ES-0091",
+  "origin_port":       "Chennai",
+  "destination_port":  "Valencia",
+  "container_type":    "FCL-20GP",
+  "cbm":               18.5
+}
+```
+
+**Gap:** Cogoport / Freightos spot rate query, book container, emit `freight.booked`.
+
+```http
+POST /shield-link/cha
+Content-Type: application/json
+
+{
+  "deal_id":          "DEAL-2026-IN-ES-0091",
+  "shipping_bill_id": "DOC-2026-0091-SB"
+}
+```
+
+**Gap:** CHA partner API / ICEGATE EDI, capture Let Export Order, emit `customs.cleared`.
+
+---
+
+### 4e — Escrow Guard — Hold & Payout ⏳
+
+**TODO: implement all functions in `services/escrow_guard/service.py`**
+
+```http
+POST /escrow-guard/holds
+Content-Type: application/json
+
+{
+  "deal_id":    "DEAL-2026-IN-ES-0091",
+  "buyer_id":   "BUY-IBERIA-001",
+  "amount_usd": 46720,
+  "currency":   "USD"
+}
+```
+
+**Expected:**
+
+```json
+{
+  "hold_id":    "ESC-2026-0091-001",
+  "ext_ref":    "pi_3PxyzABC",
+  "status":     "PENDING",
+  "created_at": "2026-06-25T11:00:00Z"
+}
+```
+
+**Funded webhook (buyer wires payment):**
+
+```http
+POST /escrow-guard/webhooks/escrow-funded
+X-Escrow-Signature: sha256=...
+
+{ "hold_id": "ESC-2026-0091-001", "amount_usd": 46720, "funded_at": "2026-06-26T09:00:00Z" }
+```
+
+**Gap:** Stripe Treasury / Payoneer connector, verify webhook signature, emit `escrow.funded`, transition deal → `ESCROW_FUNDED`.
+
+```http
+POST /escrow-guard/payouts
+Content-Type: application/json
+
+{
+  "deal_id":         "DEAL-2026-IN-ES-0091",
+  "supplier_id":     "IND-GNT-008",
+  "amount_inr":      226200,
+  "idempotency_key": "PAY-2026-0091-SUPPLIER",
+  "milestone_type":  "QC_PASSED"
+}
+```
+
+**Gap:** Enforce QC_PASSED + dual-doc guard, dedupe on idempotency_key, write ledger, emit `payout.requested`, transition → `PAID`.
+
+---
+
+### 4f — HITL Approval ⏳
+
+**TODO: implement all functions in `services/hitl_approval/service.py`**
+
+The Negotiation Agent, DealMaker, and Escrow Guard all gate on HITL when:
+- Autonomy level = L0 (always ask)
+- Margin within 2% of floor
+- First outbound message
+- Final agreement sign-off
+
+```http
+POST /hitl-approval/approvals
+Content-Type: application/json
+
+{
+  "deal_id":       "DEAL-2026-IN-ES-0091",
+  "approval_type": "ISSUE_PO",
+  "required_by":   "2026-06-26T18:00:00Z"
+}
+```
+
+**Expected:**
+
+```json
+{
+  "approval_id":   "APPR-2026-0091-001",
+  "deal_id":       "DEAL-2026-IN-ES-0091",
+  "approval_type": "ISSUE_PO",
+  "status":        "PENDING",
+  "deep_link":     "https://app.portless.io/approvals/APPR-2026-0091-001",
+  "required_by":   "2026-06-26T18:00:00Z"
+}
+```
+
+**Operator resolves:**
+
+```http
+POST /hitl-approval/approvals/APPR-2026-0091-001/resolve
+Content-Type: application/json
+
+{ "decision": "approved", "reason": "Margin 12.1% — approved" }
+```
+
+**Gap:** Persist, emit `approval.requested` + `approval.resolved`, unblock waiting saga, schedule timeout auto-approval (L1/L2 autonomy levels).
+
+---
+
+### 4g — Exception Resolver ⏳
+
+**TODO: implement in `services/exception_resolver/service.py`**
+
+Triggered automatically when a step fails (QC, customs, payment).
+
+```http
+POST /exception-resolver/exceptions
+Content-Type: application/json
+
+{
+  "deal_id":        "DEAL-2026-IN-ES-0091",
+  "exception_type": "QC_FAILED",
+  "message":        "SGS inspection: moisture 14.2% exceeds buyer spec of <12%",
+  "severity":       "HIGH"
+}
+```
+
+**Expected:**
+
+```json
+{
+  "exception_id":   "EXC-2026-0091-001",
+  "exception_type": "QC_FAILED",
+  "status":         "OPEN",
+  "created_at":     "2026-06-28T14:00:00Z"
+}
+```
+
+**Gap:** Classify exception type → decide: auto-fix saga (L2/L3) vs HITL (L0/L1); emit remediation events; update deal status.
+
+---
+
+## Implementation Status & Gap Analysis
+
+### Services
+
+| Service | Route file | Service.py | Events emitted | Notes |
 |---|---|---|---|---|
-| 1 | `ComtradeConnector` | `trade_intel.py` | ✅ Free (500 calls/day) | L1 — Historical |
-| 2 | `VolzaConnector` | `trade_intel.py` | 💰 Paid ($0.10/search) | L1 — Historical |
-| 3 | `MacmapConnector` | `trade_intel.py` | ✅ Free key | L1 — Tariff check |
-| 4 | `TrademoConnector` | `trade_intel.py` | 💰 Paid | L1 — Risk profile |
-| 5 | `ImportGeniusConnector` | `trade_intel.py` | 💰 Enterprise | L1 — US manifests |
-| 6 | `ReorderWindowEngine` | `reorder.py` | ✅ Internal | L2 — Prediction |
-| 7 | `AlibabaRfqConnector` | `demand_signals.py` | 💰 Developer account | L3 — Live RFQ |
-| 8 | `EuTedConnector` | `demand_signals.py` | ✅ Open API | L3 — EU tender |
-| 9 | `GdeltDisruptionConnector` | `demand_signals.py` | ✅ Open API | L4 — Disruption |
-| 10 | `GstnConnector` | `regulatory.py` | 💰 GSP licence | Vetting |
-| 11 | `DgftConnector` | `regulatory.py` | 💰 API access | Vetting |
-| 12 | `McaConnector` | `regulatory.py` | 💰 API Setu | Vetting |
-| 13 | `UdyamConnector` | `regulatory.py` | 💰 Signzy/Zoop | Vetting |
-| 14 | `ViesConnector` | `regulatory.py` | ✅ Free SOAP/REST | Buyer vetting |
-| 15 | `AllianzTradeConnector` | `regulatory.py` | 💰 Commercial | Credit risk |
-| 16 | `SgsConnector` | `shields.py` | 💰 Commercial | QC inspection |
-| 17 | `CogoportConnector` | `shields.py` | 💰 Commercial | Freight |
-| 18 | `FreightosConnector` | `shields.py` | 💰 Developer sandbox | Freight |
-| 19 | `IcegateConnector` | `shields.py` | 🏛️ CHA access | Customs |
-| 20 | `StripeTreasuryConnector` | `payments.py` | 💰 Commercial | Escrow |
-| 21 | `PayoneerConnector` | `payments.py` | 💰 Commercial | Settlement |
+| `trade_min` | ✅ | ✅ Full | `opportunity.detected` | 5-phase concurrent pipeline |
+| `match_engine` | ✅ | ✅ Full | `match.scored` | Deterministic CMS formula |
+| `deals` | ✅ | ✅ Full | `deal.created` + 11 transitions | State machine, orchestration |
+| `sourcing` | ✅ | ✅ Full | `quote.requested`, `quote.received` | Verification + re-score pipeline |
+| `negotiation_agent` | ✅ | ✅ Full | email dispatch, realized CMS | LangGraph 3-node graph |
+| `dealmaker` | ✅ | ⏳ Stub | `pi.sent`, `po.issued` (planned) | Needs PDF render + PO guard |
+| `docugen` | ✅ | ⏳ Stub | `customs.filed` (planned) | Needs Jinja2 templates + ICEGATE |
+| `shield_link` | ✅ | ⏳ Stub | `qc.booked`, `freight.booked` (planned) | Needs SGS/Cogoport connectors |
+| `escrow_guard` | ✅ | ⏳ Stub | `escrow.funded`, `payout.requested` (planned) | Needs Stripe Treasury/Payoneer |
+| `hitl_approval` | ✅ | ⏳ Stub | `approval.requested/resolved` (planned) | Needs notification + webhook |
+| `exception_resolver` | ✅ | ⏳ Stub | remediation events (planned) | Needs autonomy gate logic |
+
+### Connectors
+
+| Connector | File | Status | Notes |
+|---|---|---|---|
+| `ComtradeConnector` | `trade_intel.py` | ✅ Real HTTP | UN Comtrade REST v3 |
+| `VolzaConnector` | `trade_intel.py` | ✅ Real HTTP | Shipment manifests |
+| `MacmapConnector` | `trade_intel.py` | ✅ Real HTTP | Tariff data |
+| `TrademoConnector` | `trade_intel.py` | ✅ Real HTTP | Risk profiles |
+| `ImportGeniusConnector` | `trade_intel.py` | ✅ Real HTTP | US customs manifests |
+| `IndiamartConnector` | `trade_intel.py` | ✅ Real HTTP | Supplier search + RFQ |
+| `TradeIndiaConnector` | `trade_intel.py` | ✅ Real HTTP | Fallback supplier search |
+| `AlibabaRfqConnector` | `demand_signals.py` | ✅ Real HTTP | Live buyer RFQs |
+| `EuTedConnector` | `demand_signals.py` | ✅ Real HTTP | EU tenders (open API) |
+| `GdeltDisruptionConnector` | `demand_signals.py` | ✅ Real HTTP | Supply disruption signals |
+| `GstnConnector` | `regulatory.py` | ✅ Real HTTP | GST verification |
+| `DgftConnector` | `regulatory.py` | ✅ Real HTTP | IEC / export licence |
+| `McaConnector` | `regulatory.py` | ✅ Real HTTP | Company registry |
+| `UdyamConnector` | `regulatory.py` | ✅ Real HTTP | MSME / manufacturer cert |
+| `ViesConnector` | `regulatory.py` | ✅ Real HTTP | EU VAT validation |
+| `AllianzTradeConnector` | `regulatory.py` | ✅ Real HTTP | Buyer credit risk |
+| `SgsConnector` | `shields.py` | ⏳ Stub | QC inspection (needs SGS API) |
+| `CogoportConnector` | `shields.py` | ⏳ Stub | Freight booking |
+| `FreightosConnector` | `shields.py` | ⏳ Stub | Freight spot rates |
+| `IcegateConnector` | `shields.py` | ⏳ Stub | Customs EDI |
+| `StripeTreasuryConnector` | `payments.py` | ⏳ Stub | Escrow hold |
+| `PayoneerConnector` | `payments.py` | ⏳ Stub | INR payout to supplier |
+
+### Domain events — emitted vs planned
+
+| Event topic | Emitted? | By |
+|---|---|---|
+| `opportunity.detected` | ✅ | trade_min |
+| `deal.created` | ✅ | deals |
+| `match.scored` | ✅ | match_engine |
+| `quote.requested` | ✅ | sourcing |
+| `quote.received` | ✅ | sourcing |
+| `negotiation.started` | ✅ | deals (status transition) |
+| `negotiation.round` | ⏳ planned | negotiation_agent |
+| `negotiation.agreed` | ✅ | deals (status transition) |
+| `negotiation.failed` | ✅ | deals (status transition) |
+| `pi.sent` | ⏳ planned | dealmaker |
+| `pi.accepted` | ⏳ planned | dealmaker |
+| `escrow.funded` | ⏳ planned | escrow_guard |
+| `po.issued` | ⏳ planned | dealmaker |
+| `qc.booked` | ⏳ planned | shield_link |
+| `qc.passed` | ✅ | deals (status transition) |
+| `qc.failed` | ✅ | deals (status transition) |
+| `freight.booked` | ⏳ planned | shield_link |
+| `freight.milestone` | ⏳ planned | shield_link |
+| `customs.filed` | ⏳ planned | docugen |
+| `customs.cleared` | ✅ | deals (status transition) |
+| `payout.requested` | ⏳ planned | escrow_guard |
+| `payout.completed` | ✅ | deals (status transition) |
+| `approval.requested` | ⏳ planned | hitl_approval |
+| `approval.resolved` | ⏳ planned | hitl_approval |
+| `deal.exception` | ⏳ planned | exception_resolver |
 
 ---
 
-## Developer Quick-Start Reference
+## Priority Implementation Order (Phase 4)
 
-### Where to find each logical layer
+To reach end-to-end deal closure the following order minimizes blocked
+dependencies:
 
 ```
-shared/connectors/          ← all external API adapters (add new ones here)
-  trade_intel.py            ← demand discovery: Comtrade, Volza, MacMap, Trademo, ImportGenius
-  demand_signals.py         ← live intent: Alibaba RFQ, EU TED, GDELT disruption
-  reorder.py                ← ReorderWindowEngine (pure computation, no API)
-  regulatory.py             ← vetting: GSTN, DGFT, MCA, Udyam, VIES, Allianz Trade
-  shields.py                ← execution: SGS, Cogoport, Freightos, ICEGATE
-  payments.py               ← money: Stripe Treasury, Payoneer
-  registry.py               ← CONNECTOR_REGISTRY — one line to add a new adapter
+1. dealmaker/service.py  — issue_pi(), issue_po()
+      Unblocks: buyer can confirm the deal and wire payment
 
-services/trade_min/         ← Phase 1 logic (opportunity discovery, scoring)
-services/sourcing/          ← Phase 2 logic (RFQ dispatch, quote intake)
-services/match_engine/      ← Phase 3 logic (CMS formula, SOURCE/DISCARD decision)
-services/deals/             ← state machine (single source of truth for deal lifecycle)
-services/negotiator/        ← price negotiation loop
-services/dealmaker/         ← PI / PO document creation
-services/shield_link/       ← QC + freight + CHA booking
-services/docugen/           ← document generation + ICEGATE filing
-services/escrow_guard/      ← milestone-based payout release
-services/hitl_approval/     ← human-in-the-loop gate (HITL)
-services/exception_resolver/← automatic remediation for failed steps
+2. escrow_guard/service.py  — create_hold(), handle_escrow_funded_webhook()
+      Unblocks: payment confirmation, supplier gets green-light to prepare
+
+3. shield_link/service.py  — book_qc()
+      Unblocks: QC can proceed, supplier payment release
+
+4. escrow_guard/service.py  — request_payout() (supplier milestone)
+      Depends on: QC_PASSED event
+
+5. docugen/service.py  — generate_document() for CI, PL, CoO, SB
+      Unblocks: customs filing
+
+6. shield_link/service.py  — book_freight(), file_cha()
+   docugen/service.py  — file_customs()
+      Unblocks: LEO capture, container booking
+
+7. escrow_guard/service.py  — request_payout() (final PortLess margin release)
+      Depends on: CLEARED event
+
+8. hitl_approval/service.py  — create_approval(), resolve_approval()
+      Parallel to 1–7, required for L0/L1 autonomy levels
+
+9. exception_resolver/service.py  — raise_exception(), get_exception()
+      Parallel to 1–7, handles QC failures and stalled customs
 ```
 
-### How to add a new connector in 3 steps
+---
 
-```python
-# 1. Create the adapter in the appropriate connectors file:
-class MyNewConnector(Connector):
-    name = "my_new_source"
-    ...
+## Complete Data-Flow Summary (All Phases)
 
-# 2. Register it in shared/connectors/registry.py:
-MyNewConnector.name: MyNewConnector,
+```
+POST /trade-min/scan
+  → opportunity.detected
+  → EnrichedOpportunity persisted (MongoDB)
 
-# 3. Add the env var to .env.example and shared/config.py:
-my_new_api_key: str = ""
+POST /deals  (opportunity_id → auto-seeds from Trade-Min + Match Engine)
+  → deal.created
+  → DealRecord: status=MATCHING
+
+POST /sourcing/rfq
+  → quote.requested (RFQ dispatched to supplier)
+
+POST /sourcing/quotes  (supplier submits quote)
+  → GSTN + DGFT + MCA + Udyam verified in parallel
+  → Match Engine re-scores → CMS=82.4, decision=SOURCE
+  → DealRecord: winning_supplier updated
+  → deal status: MATCHING → NEGOTIATING (automatic)
+  → quote.received
+
+POST /negotiation-agent/negotiations
+  → RAG loads trade playbook for HS 090422
+  → LangGraph: orchestrator → buyer_agent → HITL_PENDING (first outbound gate)
+  → NegotiationSession: status=HITL_PENDING, round=1
+
+POST /negotiation-agent/negotiations/{id}/round  (×3–5 rounds)
+  → LangGraph: orchestrator routes buyer_agent ↔ supplier_agent
+  → convergence: |bid−ask| ≤ 0.10 AND margin ≥ 8%
+  → NegotiationSession: status=AGREED, agreed_price=2.92
+
+POST /dealmaker/pi   ⏳
+  → PDF Proforma Invoice rendered
+  → deal status: NEGOTIATION_AGREED → PI_SENT
+  → pi.sent
+
+PATCH /deals/{id}/status { "target_status": "PI_ACCEPTED" }  ⏳
+  → pi.accepted
+
+POST /escrow-guard/holds  ⏳
+  → Stripe/Payoneer escrow locked
+  → deal status: PI_ACCEPTED → ESCROW_PENDING
+
+POST /escrow-guard/webhooks/escrow-funded  ⏳
+  → escrow.funded
+  → deal status: ESCROW_PENDING → ESCROW_FUNDED
+
+POST /dealmaker/po  ⏳
+  → Purchase Order rendered
+  → deal status: ESCROW_FUNDED → PO_ISSUED → po.issued
+
+POST /shield-link/qc  ⏳
+  → SGS inspection booked
+  → deal status: PO_ISSUED → SUPPLIER_DISPATCH_READY
+
+[SGS inspection completes — webhook]  ⏳
+  → qc.passed
+  → deal status → QC_PASSED
+
+POST /escrow-guard/payouts  (supplier milestone release)  ⏳
+  → payout.requested
+  → INR transferred to supplier
+
+POST /docugen/documents  (CI, PL, CoO, SB)  ⏳
+  → documents hashed + stored
+
+POST /docugen/customs  ⏳
+  → ICEGATE Shipping Bill filed
+  → LEO captured
+  → customs.filed
+
+POST /shield-link/freight  ⏳
+  → Container booked
+  → freight.booked
+  → deal status → IN_TRANSIT
+
+[Customs cleared — LEO confirmed]  ⏳
+  → customs.cleared
+  → deal status → CLEARED
+
+POST /escrow-guard/payouts  (PortLess margin release)  ⏳
+  → payout.completed
+  → deal status → PAID  ✓  DEAL CLOSED
 ```
 
-### Running the match engine locally
+---
+
+## Developer Quick-Start
 
 ```bash
+# Start the combined dev server (all services on one port)
 cd backend
 uvicorn app:app --reload --port 8081
 
-# Score a buyer-supplier pair:
-curl -X POST http://localhost:8081/match-engine/score \
+# Swagger UI — explore all routes
+open http://localhost:8081/docs
+
+# Quick smoke test: score a buyer-supplier pair
+curl -s -X POST http://localhost:8081/match-engine/score \
   -H "Content-Type: application/json" \
   -d '{
-    "deal_id": "DEAL-TEST-001",
-    "supplier_id": "SUP-001",
-    "buyer_target_price": 3.20,
-    "supplier_quote_price": 2.10,
-    "currency": "USD",
-    "verification": {"gst_verified": true, "iec_active": true, "dgft_denied": false},
-    "supplier_to_port_km": 320,
-    "business_age_years": 7,
-    "udyam_registered": true,
-    "annual_shipment_count": 14
-  }'
+    "deal_id": "TEST-001", "supplier_id": "SUP-001",
+    "buyer_target_price": 3.20, "supplier_quote_price": 2.10,
+    "verification": {"gst_verified":true,"iec_active":true,"dgft_denied":false},
+    "supplier_to_port_km": 320, "business_age_years": 7,
+    "udyam_registered": true, "annual_shipment_count": 14
+  }' | python -m json.tool
+# Expected: composite_score ≈ 82.4, decision: "SOURCE"
 
-# Expected: CMS ≈ 86 → decision: "SOURCE"
+# Start a negotiation session
+curl -s -X POST http://localhost:8081/negotiation-agent/negotiations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "deal_id":"TEST-001","trade_match_id":"ME-TEST-001",
+    "buyer_id":"BUY-001","seller_id":"SUP-001",
+    "product_code":"090422","buyer_country_code":"ES",
+    "buyer_target_price":3.20,"supplier_quote_price":2.10
+  }' | python -m json.tool
+```
+
+### Key file locations
+
+```
+shared/connectors/          ← all external API adapters
+  trade_intel.py            ← Comtrade, Volza, MacMap, Trademo, ImportGenius, IndiaMART
+  demand_signals.py         ← Alibaba RFQ, EU TED, GDELT
+  regulatory.py             ← GSTN, DGFT, MCA, Udyam, VIES, Allianz Trade
+  shields.py                ← SGS, Cogoport, Freightos, ICEGATE  [stubs]
+  payments.py               ← Stripe Treasury, Payoneer           [stubs]
+
+services/trade_min/         ← Phase 1 — opportunity discovery
+services/match_engine/      ← Phase 3 — CMS scoring
+services/deals/             ← Deal lifecycle state machine
+services/sourcing/          ← Phase 2 — RFQ dispatch + quote intake
+agents/negotiation_agent/   ← Phase 3b — LangGraph price negotiation
+services/dealmaker/         ← PI + PO generation                  [stubs]
+services/docugen/           ← Document render + ICEGATE filing     [stubs]
+services/shield_link/       ← QC + freight + CHA                  [stubs]
+services/escrow_guard/      ← Escrow hold + milestone payouts      [stubs]
+services/hitl_approval/     ← Human-in-the-loop gate               [stubs]
+services/exception_resolver/← Auto-remediation + exception routing [stubs]
+
+shared/llm_gateway/         ← Resilient LLM client (fallback + tracking)
+shared/rag/                 ← MongoDB Atlas vector store + RAG pipeline
+shared/domain/              ← DealStatus enum, EventTopic enum, state machine
 ```

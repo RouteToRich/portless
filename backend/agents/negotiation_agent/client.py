@@ -22,3 +22,10 @@ class NegotiationAgentClient(BaseServiceClient):
 
     async def get_negotiation(self, negotiation_id: str) -> Any:
         return await self.get(f"/negotiation-agent/negotiations/{negotiation_id}")
+
+    async def list_rounds(self, negotiation_id: str) -> Any:
+        return await self.get(f"/negotiation-agent/negotiations/{negotiation_id}/rounds")
+
+    async def list_negotiations(self, deal_id: str | None = None) -> Any:
+        params = {"deal_id": deal_id} if deal_id else {}
+        return await self.get("/negotiation-agent/negotiations", params=params)

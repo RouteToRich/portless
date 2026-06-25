@@ -131,31 +131,45 @@ def _deepeval_notes() -> str:
 
 
 def _llm_judge_notes(question: str, answer: str, chunks: list[Document]) -> str:
-    """Run a compact optional LLM-as-judge evaluation.
-
-    Implementation:
-        The function sends the question, answer, and context snippets to the
-        configured chat model and asks for a short quality judgment. Errors are
-        returned as notes so the graph still completes.
+    """Run a compact LLM-as-judge evaluation via the LLM Gateway.
 
     Usage:
         `advanced_evaluation_notes` calls this when `ADVANCED_EVAL_PROVIDER=llm`.
-
-    How it helps other functions:
-        It gives a lightweight production-style evaluator option that can be
-        compared with the local heuristic metrics.
     """
-    try:
-        from langchain_openai import ChatOpenAI
+    import asyncio
 
-        context = "\n\n".join(chunk.page_content[:700] for chunk in chunks)
-        llm = ChatOpenAI(model=settings.openai_chat_model, temperature=0)
-        prompt = (
-            "Evaluate this RAG answer for faithfulness, context precision, and relevance. "
-            "Return one concise sentence.\n\n"
-            f"Question: {question}\n\nAnswer: {answer}\n\nContext:\n{context}"
-        )
-        return str(llm.invoke(prompt).content)
+    async def _judge() -> str:
+        try:
+            from shared.llm_gateway.client import LLMClient
+
+            context = "\n\n".join(chunk.page_content[:700] for chunk in chunks)
+            prompt = (
+                "Evaluate this RAG answer for faithfulness, context precision, and relevance. "
+                "Return one concise sentence.\n\n"
+                f"Question: {question}\n\nAnswer: {answer}\n\nContext:\n{context}"
+            )
+            client = LLMClient()
+            response = await client.chat(
+                messages=[{"role": "user", "content": prompt}],
+                caller="rag.evaluation.llm_judge",
+                temperature=0.0,
+                max_tokens=200,
+            )
+            return response.content
+        except Exception as exc:
+            return f"LLM judge unavailable: {exc}"
+
+    try:
+        try:
+            asyncio.get_running_loop()
+            # Already inside an async event loop (e.g. FastAPI) — run in a
+            # worker thread with its own event loop to avoid nesting.
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, _judge()).result(timeout=30)
+        except RuntimeError:
+            # No running loop — safe to run directly.
+            return asyncio.run(_judge())
     except Exception as exc:
         return f"LLM judge unavailable: {exc}"
 

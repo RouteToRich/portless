@@ -1,0 +1,41 @@
+# =============================================================================
+# Root .gitignore — PortLess monorepo
+# =============================================================================
+
+# ── secrets / environment files ──────────────────────────────────────────────
+# .env files at any depth are ignored; .env.example files ARE tracked as
+# documentation templates. In production, real values live in a keyvault.
+.env
+**/.env
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Node / frontend ───────────────────────────────────────────────────────────
+node_modules/
+dist/
+.next/
+.nuxt/
+.output/
+
+# ── Editor / OS ───────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

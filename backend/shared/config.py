@@ -5,7 +5,16 @@ moving a module to its own host only requires changing an environment variable.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Populate os.environ from backend/.env so connector classes that read
+# os.environ[KEY] directly work in local dev.  In production (Docker/k8s)
+# env vars are injected by the container runtime — load_dotenv is a no-op
+# because override=False leaves real env vars untouched.
+load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
 
 class Settings(BaseSettings):
@@ -25,12 +34,25 @@ class Settings(BaseSettings):
     hitl_approval_url: str = "http://localhost:8010"
     exception_resolver_url: str = "http://localhost:8011"
 
+    # --- Regulatory verification connector credentials ---
+    api_setu_key: str = ""
+    api_setu_client_id: str = ""
+    allianz_trade_client_id: str = ""
+    allianz_trade_client_secret: str = ""
+    allianz_trade_webhook_secret: str = ""
+
     # --- Trade-intelligence connector credentials ---
     # Set in .env — see .env.example for registration instructions.
     comtrade_subscription_key: str = ""
     volza_api_key: str = ""
     alibaba_app_key: str = ""
     alibaba_app_secret: str = ""
+    macmap_api_key: str = ""
+    trademo_api_key: str = ""
+    importgenius_api_key: str = ""
+    indiamart_api_key: str = ""
+    indiamart_mobile: str = ""
+    tradeindia_api_key: str = ""
 
     # --- Cross-cutting ---
     http_timeout_seconds: float = 10.0

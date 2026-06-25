@@ -7,7 +7,13 @@ dist/
 .venv/
 venv/
 env/
+
+# ── secrets / environment files ──────────────────────────────────────────────
+# .env files at any depth are ignored; .env.example files are tracked.
 .env
+**/.env
+# Never commit real secrets — use .env.example as the documented template.
+
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/

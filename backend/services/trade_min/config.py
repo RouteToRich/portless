@@ -1,19 +1,62 @@
-"""Configuration for the Trade-Min opportunity scanner (FR-1, LLD 4.5)."""
+"""Configuration for the Trade-Min opportunity scanner (FR-1, LLD 4.5, §10).
+
+All runtime-tuneable values are env-var driven via pydantic-settings.
+Algorithmic constants (saturation points, tier thresholds) live in the
+dataclass so they can be unit-tested without any environment.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
+
+
+class TradeMinSettings(BaseSettings):
+    """Runtime settings loaded from environment / .env file."""
+
+    model_config = SettingsConfigDict(
+        env_file=str(_BACKEND_ENV),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # ── MongoDB ────────────────────────────────────────────────────────────
+    trade_mongo_uri: str = ""
+    trade_mongo_db_name: str = "trade"
+    trade_mongo_collection: str = "opportunities"
+
+    # ── Connector credentials (read-only; connectors read os.environ directly,
+    #    but settings exposes them for health-check / redaction logging) ──────
+    comtrade_subscription_key: str = ""
+    volza_api_key: str = ""
+    macmap_api_key: str = ""
+    trademo_api_key: str = ""
+    importgenius_api_key: str = ""
+    alibaba_app_key: str = ""
+    alibaba_app_secret: str = ""
+    indiamart_api_key: str = ""
+    indiamart_mobile: str = ""
+    tradeindia_api_key: str = ""
+
+    # ── Scheduling (cron expressions) ─────────────────────────────────────
+    scheduler_nightly_cron: str = "0 2 * * *"   # 02:00 UTC daily
+    scheduler_reorder_cron: str = "0 */6 * * *"  # every 6 h
 
 
 @dataclass(frozen=True)
 class TradeMinConfig:
+    """Algorithmic constants for the five-phase pipeline."""
+
     # Default HS codes to scan when the caller does not provide a list.
-    # Examples from the master spec workflow (cardamom-blend, wheat, glycerol).
     default_hs_codes: tuple[str, ...] = ("090422", "100190", "290543")
 
     # Default destination markets (ISO-3166 alpha-2).
     default_markets: tuple[str, ...] = ("ES", "DE", "US", "AE", "GB")
 
-    # Minimum arbitrage rank to include an opportunity in scan results (0–100).
+    # Minimum composite arbitrage rank to include in results (0–100).
     min_arbitrage_rank: float = 20.0
 
     # Upper bound on opportunities returned per single scan.
@@ -22,8 +65,34 @@ class TradeMinConfig:
     # Demand index at which a market is considered a "demand surge" (0–100).
     demand_surge_threshold: float = 40.0
 
-    # Maximum price-gap percentage used as the 100-score saturation point.
+    # Maximum price-gap % used as the 100-score saturation point.
     price_gap_saturation_pct: float = 40.0
+
+    # ── Phase 1 guardrails ────────────────────────────────────────────────
+    # Abort the pipeline for this hs_code×market pair when fewer than this
+    # many Phase-1 connectors respond successfully.
+    phase1_min_connectors: int = 2
+
+    # ── Tariff gate (Phase 3) ─────────────────────────────────────────────
+    # net_price_gap_pct < tariff_hard_discard_floor  → hard discard
+    # tariff_hard_discard_floor ≤ gap < tariff_marginal_floor → MARGINAL
+    # gap ≥ tariff_marginal_floor                              → ACTIVE / viable
+    tariff_hard_discard_floor: float = 1.0
+    tariff_marginal_floor: float = 5.0
+
+    # ── Confidence score weights ──────────────────────────────────────────
+    confidence_phase1_max: int = 50     # 4/4 connectors = 50 pts
+    confidence_live_max: int = 25       # rfq + tender + disruption
+    confidence_tariff_max: int = 15     # MacMap confirmed viable = 15 pts
+    confidence_sellers_max: int = 10    # ≥3 candidates = 10 pts
+
+    # ── Reorder window ────────────────────────────────────────────────────
+    reorder_probability_threshold: float = 0.70  # sigmoid ≥ 0.70 → tier 2
+
+    # ── Urgency tier TTLs (hours) ─────────────────────────────────────────
+    urgency_ttl_hours: tuple[int, ...] = (0, 168, 72, 48, 24)
+    # index 0 unused; tier 1 = 168 h (7 d), tier 2 = 72 h, tier 3 = 48 h, tier 4 = 24 h
 
 
 DEFAULT_CONFIG = TradeMinConfig()
+settings = TradeMinSettings()

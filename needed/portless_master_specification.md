@@ -933,3 +933,753 @@ Each becomes an adapter in `packages/connectors/` with a uniform interface: `quo
 - GSTN Developer: https://developer.gst.gov.in
 - UN Comtrade: https://comtradeplus.un.org
 - VIES: https://ec.europa.eu/taxation_customs/vies
+
+---
+
+## 9. LLM Cost, Quality & Selection Guide
+
+This section covers the expected API pricing for language models and embeddings used in PortLess, compares open-source vs cloud LLMs across quality dimensions relevant to this platform, and provides a specific LLM recommendation for the Negotiation Agent.
+
+---
+
+### 9.1 LLM & Embedding Cost Analysis
+
+#### 9.1.1 LLM API Pricing (per 1 Million Tokens)
+
+| Provider | Model | Input $/1M | Output $/1M | Context Window | Strengths |
+|---|---|---|---|---|---|
+| **Anthropic** | Claude Fable 5 | $10.00 | $50.00 | 1M | Best overall reasoning, long-horizon agents |
+| **Anthropic** | Claude Opus 4.8 | $5.00 | $25.00 | 1M | Advanced reasoning, agentic tasks, tool use |
+| **Anthropic** | Claude Sonnet 4.6 | $3.00 | $15.00 | 1M | Balanced speed + intelligence |
+| **Anthropic** | Claude Haiku 4.5 | $1.00 | $5.00 | 200K | Fastest, cheapest, bulk extraction |
+| **OpenAI** | GPT-4o | $2.50 | $10.00 | 128K | Strong reasoning, broad ecosystem |
+| **OpenAI** | GPT-4o mini | $0.15 | $0.60 | 128K | Low cost, fast turnaround |
+| **OpenAI** | o3 mini | $1.10 | $4.40 | 128K | Structured reasoning tasks |
+| **Google** | Gemini 2.0 Flash | $0.075 | $0.30 | 1M | Cheapest at scale, good extraction |
+| **Google** | Gemini 1.5 Pro | $1.25 | $5.00 | 2M | Very large context, multimodal |
+| **Mistral** | Mistral Large 2 | $2.00 | $6.00 | 128K | European data-residency option |
+| **Mistral** | Mistral Small | $0.20 | $0.60 | 128K | Budget EU-hosted option |
+| **DeepSeek** | DeepSeek V3 (API) | $0.27 | $1.10 | 128K | Strong code + instruction following |
+| **Meta (via API)** | Llama 3.1 70B | ~$0.90 | ~$0.90 | 128K | Open weights, via Fireworks/Together |
+| **Self-hosted** | Llama 3.1 70B (AWS g5.12xlarge) | ~$0.005 | ~$0.005 | 128K | Near-zero token cost; GPU server ~$16/hr |
+| **Self-hosted** | Mistral Large / Qwen 2.5 72B | ~$0.008 | ~$0.008 | 128K | High throughput on A100/H100 clusters |
+
+> **Prompt caching** (Claude, GPT-4o): repeated RAG context blocks are cached at ~10% of input cost. A Negotiation Agent re-using the same trade policy RAG context across rounds reduces per-round cost by up to 90% for the cached portion.
+
+#### 9.1.2 Embedding Model Pricing
+
+The PortLess data model stores embeddings as `VECTOR(1536)` — the standard OpenAI dimension. Embedding costs are incurred when indexing trade policies, supplier catalogs, buyer profiles, and past deal context.
+
+| Provider | Model | Cost $/1M Tokens | Output Dimensions | Notes |
+|---|---|---|---|---|
+| **OpenAI** | text-embedding-3-small | $0.02 | 1536 | Default match for `VECTOR(1536)` |
+| **OpenAI** | text-embedding-3-large | $0.13 | 3072 | Higher accuracy; requires schema change to `VECTOR(3072)` |
+| **Cohere** | Embed v3 English | $0.10 | 1024 | Strong retrieval accuracy; multilingual variant available |
+| **VoyageAI** | voyage-3 | $0.06 | 1024 | Best-in-class retrieval for domain-specific docs |
+| **Self-hosted** | nomic-embed-text (768-dim) | ~$0 | 768 | Strong open model; requires dim change |
+| **Self-hosted** | bge-large-en-v1.5 (1024-dim) | ~$0 | 1024 | MTEB-leading open source; GPU inference needed |
+
+> **Recommendation:** Use `text-embedding-3-small` at $0.02/1M as the default — it matches `VECTOR(1536)` in the schema with no migration needed. Switch to `voyage-3` or `bge-large` for RAG-heavy workloads where retrieval precision matters more than cost.
+
+#### 9.1.3 Estimated Monthly Cost — PortLess Workload
+
+**Assumptions per deal:**
+- Negotiation Agent: 5 rounds × (30K input + 10K output) = 150K input + 50K output tokens
+- Supporting agents (Trade-Min, QC, Exception-Resolver, Sourcing): 5 agents × (20K input + 5K output) = 100K input + 25K output tokens (routed via Claude Haiku 4.5)
+- Embeddings: ~10M tokens indexed per 50 deals (trade docs, policies, supplier catalogs)
+
+| Scale | Negotiation (Sonnet 4.6) | Supporting Agents (Haiku 4.5) | Embeddings (3-small) | Total/month |
+|---|---|---|---|---|
+| **50 deals/month** | $60 | $7 | $0.20 | **~$67** |
+| **200 deals/month** | $240 | $28 | $0.80 | **~$269** |
+| **500 deals/month** | $600 | $69 | $2.00 | **~$671** |
+| **50 deals (Opus 4.8 for all)** | $100 | $7 | $0.20 | **~$107** |
+| **500 deals (Opus 4.8 for all)** | $1,000 | $69 | $2.00 | **~$1,071** |
+
+> **Cost optimisation levers:**
+> 1. **LiteLLM routing** (already in §3.6) — route bulk/extraction tasks to Haiku 4.5 and only escalate to Sonnet/Opus for negotiation rounds.
+> 2. **Claude Prompt Caching** — cache shared RAG context (trade policies, HS codes, buyer profile) across negotiation rounds; saves ~80–90% on repeated context.
+> 3. **Tiered model escalation** — start negotiations on Sonnet 4.6; escalate to Opus 4.8 only when deal value > ₹50L or BATNA floor is at risk.
+> 4. **Self-hosted embeddings** — replace `text-embedding-3-small` with `bge-large-en-v1.5` on a shared GPU server; embedding cost drops to near zero at scale.
+
+---
+
+### 9.2 Open Source vs Cloud LLM — Quality Comparison
+
+The following table compares open-source LLMs (self-hosted or via API) against top cloud/commercial LLMs across every quality dimension relevant to PortLess agents.
+
+| Quality Dimension | Cloud LLM (Claude Sonnet 4.6 / Opus 4.8) | Open Source (Llama 3.1 70B / Qwen 2.5 72B / Mistral Large) | Winner |
+|---|---|---|---|
+| **Multi-step reasoning** | Excellent — adaptive thinking, chain-of-thought, long-horizon planning | Good at 70B; gaps in complex nested logic vs frontier models | Cloud |
+| **Instruction following** | Near-perfect; reliably follows complex, multi-constraint prompts | Strong at 70B+; can drift on deeply nested instructions | Cloud |
+| **Tool / function calling** | Native, first-class; reliable JSON schema validation and retry | 70B models support tool use; JSON reliability lower than frontier | Cloud |
+| **RAG coherence** | Excellent — synthesizes retrieved chunks without hallucination | Moderate; higher hallucination rate on domain-specific retrieval | Cloud |
+| **JSON output consistency** | Highly reliable structured output; schema-constrained generation | Variable; requires tighter prompting and output validation layers | Cloud |
+| **Multi-round context retention** | Excellent up to 1M tokens; remembers deal history across rounds | 70B models limited to 128K; context drift seen beyond 32K active tokens | Cloud |
+| **Attachment / PDF parsing** | Native via Files API (Claude) and vision models | Requires external preprocessing pipeline (unstructured.io, pdfminer) | Cloud |
+| **Negotiation reasoning (BATNA, margin)** | Excellent — trained on complex reasoning, financial trade-offs | Llama 3.1 70B and Qwen 2.5 72B competitive; DeepSeek V3 very strong | Cloud (slight edge) |
+| **Multilingual support (Hindi/Tamil/Marathi)** | Strong (Claude, GPT-4o); handles Indian regional languages | Qwen 2.5 and Llama 3.1 have good multilingual support | Tie |
+| **Latency (time-to-first-token)** | 1–3 seconds (varies by model tier) | Self-hosted A10G: ~0.5–1s; API providers (Groq): ~0.3s | Open Source (self-hosted/Groq) |
+| **Data privacy / residency** | Data sent to Anthropic/OpenAI cloud; DPA and BAA available | Full on-premise; zero data egress | Open Source |
+| **Self-hosting complexity** | None — API call only | High — GPU provisioning, model serving (vLLM/Ollama), scaling, monitoring | Cloud |
+| **Fine-tuning for domain** | Limited (Claude); GPT-4o fine-tuning available | Full fine-tuning possible on Llama 3.1 / Mistral | Open Source |
+| **Output reliability under load** | Guaranteed SLAs with auto-scaling | Depends on self-hosted infrastructure; single-node bottlenecks | Cloud |
+| **Cost at scale (>5K deals/month)** | $3–5/1M tokens — grows linearly | ~$0.005–0.01/1M (GPU amortised) — far cheaper at high volume | Open Source |
+| **API ecosystem & integrations** | Full LangGraph / LangChain / LiteLLM support; MCP tools | Growing — LiteLLM supports Llama, Mistral, DeepSeek via OpenAI-compat API | Cloud (maturity edge) |
+| **Compliance (SOC2, HIPAA)** | Anthropic SOC2 Type II; enterprise agreements available | Self-hosted = you own compliance; no third-party audit required | Open Source (strict compliance) |
+
+**Summary verdict by scenario:**
+
+| Scenario | Recommended Approach |
+|---|---|
+| MVP and early traction (0–200 deals/month) | Cloud LLM (Claude Sonnet 4.6 via LiteLLM) — fastest to ship, lowest ops burden |
+| Data-residency-critical enterprise client | Self-hosted Llama 3.1 70B / Mistral Large 2 on private cloud |
+| Scale (500+ deals/month) cost-sensitive | Hybrid: open-source for extraction/classification; cloud for negotiation reasoning |
+| Maximum deal quality (high-value shipments) | Cloud — Claude Opus 4.8 for negotiation; no open-source model matches its BATNA reasoning |
+| EU buyer requirement | Mistral Large 2 (EU-hosted) or self-hosted with GDPR-compliant infra |
+
+---
+
+### 9.3 LLM Recommendation for the Negotiation Agent
+
+#### 9.3.1 Negotiation Agent Requirements Recap (§4.3.1)
+
+The Negotiation Agent must:
+- Conduct multi-round, stateful negotiations with overseas buyers via email/WhatsApp
+- Apply BATNA logic — know its margin floor and walk away from bad deals
+- Synthesise RAG context (trade policies, past deal prices, commodity benchmarks)
+- Parse buyer attachments (PDFs, spreadsheets, L/Cs)
+- Integrate real-time internet data (commodity spot rates, forex)
+- Maintain conversation memory across rounds (sometimes days apart)
+- Draft legally coherent commercial documents (PI, contracts, LoI)
+- Escalate to HITL when the deal is ambiguous or above a value threshold
+- Route through LiteLLM for model switching without code change (§3.6)
+
+#### 9.3.2 Detailed Model Comparison for Negotiation Agent
+
+| Evaluation Criterion | Claude Sonnet 4.6 | Claude Opus 4.8 | GPT-4o | Llama 3.1 70B (self-hosted) | DeepSeek V3 | Gemini 2.0 Flash |
+|---|---|---|---|---|---|---|
+| Multi-round negotiation reasoning | ★★★★☆ | ★★★★★ | ★★★★☆ | ★★★☆☆ | ★★★★☆ | ★★★☆☆ |
+| BATNA & margin-floor logic | ★★★★☆ | ★★★★★ | ★★★★☆ | ★★★☆☆ | ★★★★☆ | ★★★☆☆ |
+| RAG synthesis quality | ★★★★☆ | ★★★★★ | ★★★★☆ | ★★★☆☆ | ★★★★☆ | ★★★☆☆ |
+| JSON / structured output | ★★★★★ | ★★★★★ | ★★★★★ | ★★★★☆ | ★★★★☆ | ★★★★☆ |
+| Tool use / function calling | ★★★★★ | ★★★★★ | ★★★★★ | ★★★★☆ | ★★★★☆ | ★★★★☆ |
+| Long-context retention (1M) | ★★★★★ | ★★★★★ | ★★★☆☆ (128K) | ★★★☆☆ (128K) | ★★★☆☆ (128K) | ★★★★★ (1M) |
+| PDF / attachment parsing | ★★★★★ | ★★★★★ | ★★★★★ | ★★☆☆☆ (needs pipeline) | ★★☆☆☆ | ★★★★☆ |
+| Commercial document drafting | ★★★★★ | ★★★★★ | ★★★★★ | ★★★☆☆ | ★★★★☆ | ★★★☆☆ |
+| Instruction following under constraints | ★★★★★ | ★★★★★ | ★★★★☆ | ★★★★☆ | ★★★★☆ | ★★★☆☆ |
+| Latency (per round, TTFT) | ~1.5s | ~3–5s | ~1–2s | ~0.5–1s (Groq) | ~1s (API) | ~0.5s |
+| Cost per full deal (5 rounds) | ~$1.20 | ~$2.00 | ~$0.85 | ~$0.04 | ~$0.10 | ~$0.02 |
+| Data privacy | Anthropic DPA | Anthropic DPA | OpenAI DPA | Full on-prem | DeepSeek DPA | Google DPA |
+| LiteLLM integration | Native | Native | Native | Via OpenAI-compat | Via OpenAI-compat | Native |
+| HITL escalation support | ★★★★★ | ★★★★★ | ★★★★☆ | ★★★☆☆ | ★★★★☆ | ★★★☆☆ |
+
+#### 9.3.3 Recommended Configuration
+
+**Primary Negotiation Agent: Claude Sonnet 4.6**
+- Handles the majority of deals (standard commodity negotiations, routine pricing rounds)
+- Best balance of intelligence and cost for this workload
+- Native LiteLLM routing: `model: "anthropic/claude-sonnet-4-6"`
+- Use adaptive thinking for BATNA-sensitive rounds
+
+**Escalation tier: Claude Opus 4.8**
+- Triggered automatically when:
+  - Deal value > ₹50 lakh (configurable threshold)
+  - More than 3 rounds without agreement (negotiation is stalling)
+  - BATNA floor pressure detected (buyer asking below margin floor)
+  - HITL override requested
+- LiteLLM routing: `model: "anthropic/claude-opus-4-8"` with fallback to Sonnet 4.6
+
+**Bulk / extraction agents (Trade-Min, Exception-Resolver): Claude Haiku 4.5**
+- All document parsing, HS code classification, compliance checks, status extraction
+- 5× cheaper than Sonnet; 25× cheaper than Opus for non-reasoning tasks
+- LiteLLM routing: `model: "anthropic/claude-haiku-4-5-20251001"`
+
+**LiteLLM router configuration (packages/ai/litellm_config.yaml):**
+```yaml
+model_list:
+  - model_name: negotiation-primary
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: negotiation-escalation
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: bulk-extraction
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+router_settings:
+  fallbacks:
+    - negotiation-escalation: ["negotiation-primary"]
+  enable_pre_call_checks: true
+  cache_responses: true
+```
+
+#### 9.3.4 Why Not Open Source for the Negotiation Agent?
+
+| Concern | Detail |
+|---|---|
+| BATNA reasoning depth | No 70B open source model consistently matches Claude Sonnet 4.6 on long-horizon financial trade-off reasoning. Llama 3.1 70B and Qwen 2.5 72B both drift on nested margin-floor logic beyond round 3. |
+| JSON output reliability | Negotiation state machine requires `NegotiationState` JSON at every step. Open source models need aggressive system-prompt engineering + output parsing guards; Claude generates valid structured output natively. |
+| Attachment parsing | Buyer PDFs (L/Cs, inspection reports) require vision + file parsing. Claude Files API handles this natively; open source requires an external unstructured.io pipeline adding latency and cost. |
+| Cost difference is marginal | At 50–500 deals/month, the cost difference between Claude Sonnet 4.6 (~$60–$600/month) and a self-hosted 70B model (~$2–$20/month token cost) is outweighed by GPU server costs (~$800–$2,000/month), DevOps overhead, and the revenue at stake per deal. |
+| Data privacy escalation path | If a future enterprise client requires full on-prem, LiteLLM allows switching to a self-hosted Mistral Large or Llama 3.1 70B with a single config change — no application code change needed. |
+
+#### 9.3.5 Open Source Fallback Strategy (Future / Enterprise Tier)
+
+If data residency or volume economics demand self-hosted models:
+
+| Use Case | Recommended Model | Hardware | Notes |
+|---|---|---|---|
+| Negotiation (primary) | Mistral Large 2 (123B) | 2× A100 80GB | Best open-weight negotiation quality; EU-origin model |
+| Negotiation (budget) | Qwen 2.5 72B Instruct | 1× A100 80GB | Strong instruction-following; multilingual (Hindi support) |
+| Bulk extraction | Llama 3.1 8B / Mistral 7B | 1× A10G 24GB | Ultra-cheap; handles structured extraction well |
+| Embeddings | bge-large-en-v1.5 (1024-dim) | Shared CPU/GPU | Requires `ALTER COLUMN embedding TYPE VECTOR(1024)` migration |
+
+> Switch models with zero application code change — update `litellm_config.yaml` and restart the LiteLLM proxy. All Negotiation Agent, LangGraph node, and RAG code remain unchanged.
+
+---
+
+**Section 9 Summary:**
+
+| Decision | Recommendation |
+|---|---|
+| Negotiation Agent primary model | **Claude Sonnet 4.6** via LiteLLM |
+| High-stakes deal escalation | **Claude Opus 4.8** auto-triggered by deal value / BATNA pressure |
+| Bulk extraction agents | **Claude Haiku 4.5** for cost efficiency |
+| Embedding model | **text-embedding-3-small** ($0.02/1M) — matches `VECTOR(1536)` schema |
+| Expected cost at 50 deals/month | **~$67/month** (Sonnet 4.6 + Haiku 4.5 + embeddings) |
+| Expected cost at 500 deals/month | **~$671/month** |
+| Open source recommendation | Mistral Large 2 or Qwen 2.5 72B if on-prem required (switch via LiteLLM config only) |
+
+---
+
+## 10. Trade-Min — Global Opportunity Discovery (Revised Architecture)
+
+This section replaces the skeletal Trade-Min design in §4.5 with a complete, production-ready specification covering all third-party connectors, enriched data models, the five-phase pipeline, what the Match Engine consumes, scheduling strategy, persistence, and implementation sequence.
+
+---
+
+### 10.1 Current State & Known Bugs
+
+The existing `backend/services/trade_min/` implementation has four critical defects that must be fixed before any live connector work proceeds.
+
+| # | Location | Bug | Impact |
+|---|---|---|---|
+| B-1 | `service.py:69` | `sources[0]` only — only the first requested source is queried; all others are silently ignored | Demand signals from Volza, ImportGenius, Trademo are never used |
+| B-2 | `service.py` | No tariff gate — `MacmapConnector` is never called, so opportunities destroyed by destination-country import duties are not filtered out | Margin projections are wrong; Match Engine is seeded with unviable deals |
+| B-3 | `repository.py` | In-memory `_store: dict` — all opportunities are lost on process restart; no cross-instance sharing | Cannot run multiple workers; no restart resilience |
+| B-4 | `schemas.py` | `OpportunityResponse` exposes only `demand_index`, `price_gap_pct`, `arbitrage_rank`, `source` — the Match Engine has no buyer names, tariff data, seller candidates, or urgency signal | CMS calculation cannot be seeded with real buyer/supplier pairs |
+
+---
+
+### 10.2 Enriched Data Model
+
+The following Pydantic models replace the thin `OpportunityResponse`. Every field the Match Engine, Sourcing Agent, and Negotiation Agent needs is present at the point `opportunity.detected` is published.
+
+#### 10.2.1 `BuyerSignal`
+Represents a single named overseas buyer who has demonstrably purchased or is actively seeking this HS code in this market.
+
+```python
+class BuyerSignal(BaseModel):
+    buyer_name: str                 # "Iberia Spices SL"
+    buyer_country: str              # ISO-2: "ES"
+    company_id: str | None          # Volza/Trademo internal ID for dedup
+    last_import_date: str | None    # ISO date: "2026-03-15"
+    annual_volume_mt: float | None  # metric tons/year from manifests
+    risk_score: float | None        # 0–100 from Trademo/Allianz; lower = safer
+    signal_type: Literal[
+        "manifest",    # Volza/ImportGenius/Trademo historical shipment
+        "rfq",         # Alibaba RFQ — buyer is sourcing RIGHT NOW
+        "tender",      # EU TED — formal procurement notice, defined budget
+        "disruption",  # GDELT — buyer's usual supplier is disrupted
+    ]
+    source: str                     # "volza" | "trademo" | "import_genius" | "alibaba_rfq" | "eu_ted"
+    urgency_tier: int               # 1=manifest 2=manifest+reorder 3=rfq/tender 4=disruption
+    estimated_order_value_usd: float | None
+    contact_url: str | None         # Alibaba RFQ link or EU TED notice URL
+```
+
+#### 10.2.2 `TariffData`
+MacMap-sourced duty and barrier data. Used by the tariff gate (§10.4.3) to discard commercially unviable opportunities before they enter the deal pipeline.
+
+```python
+class TariffData(BaseModel):
+    hs_code: str
+    origin_country: str = "IN"
+    destination_country: str
+    applied_duty_pct: float         # MFN or preferential rate (whichever applies India→dest)
+    gst_vat_pct: float | None       # destination country VAT/GST on imports
+    ntb_flags: list[str]            # ["SPS_CERTIFICATE", "LABELLING_EN", "QUOTA_ACTIVE"]
+    rules_of_origin: str | None     # e.g., "CTH at 6-digit HS level"
+    total_landed_cost_add_pct: float  # applied_duty_pct + gst_vat_pct (conservative estimate)
+    source: str = "macmap"
+    fetched_at: datetime
+```
+
+#### 10.2.3 `DemandSignal`
+A single normalised signal contribution from one connector. The array of these on `EnrichedOpportunity` gives the Match Engine and operator a full provenance chain.
+
+```python
+class DemandSignal(BaseModel):
+    source: str                     # "comtrade" | "volza" | "alibaba_rfq" | "eu_ted" | "gdelt"
+    signal_type: Literal["historical", "manifest", "rfq", "tender", "disruption"]
+    urgency_tier: int               # 1–4 (see §10.3 urgency model)
+    normalized_value: float         # 0–100 contribution to demand_index
+    weight: float                   # weight applied in composite (weights sum to 1.0)
+    raw_summary: str                # human-readable: "7 GDELT HIGH articles on Vietnam pepper ban"
+    fetched_at: datetime
+```
+
+#### 10.2.4 `SellerCandidate`
+A pre-vetted Indian manufacturer for this HS code, ready for RFQ dispatch by the Sourcing Agent. Passing this list in the opportunity avoids a redundant IndiaMART query when the deal is created.
+
+```python
+class SellerCandidate(BaseModel):
+    candidate_id: str               # "IND-INDIAMART-9012345"
+    company_name: str               # "Guntur Agri Products Ltd"
+    location_city: str
+    location_state: str
+    hs_code: str
+    estimated_fob_price_usd: float | None  # wholesale quote / catalogue price
+    annual_capacity_mt: float | None
+    source: str                     # "indiamart" | "tradeindia"
+    listing_url: str | None
+    contact_id: str | None          # IndiaMART lead ID for automated RFQ
+    supplier_to_port_km: float | None  # pre-populated for Match Engine proximity score
+```
+
+#### 10.2.5 `EnrichedOpportunity` — Full Schema
+Replaces `OpportunityResponse`. Backwards-compatible: all original fields are retained.
+
+```python
+class EnrichedOpportunity(BaseModel):
+    # ── original fields (unchanged) ──────────────────────────────────────────
+    opportunity_id: str             # "OPP-{12hex}"
+    hs_code: str                    # 6-digit
+    market: str                     # ISO-2 destination
+    demand_index: float             # 0–100 composite across all demand signals
+    price_gap_pct: float            # India FOB vs destination CIF, gross
+    arbitrage_rank: float           # sqrt(demand_index x price_gap_score), net-of-tariff
+    source: str                     # primary/highest-confidence source
+    currency: str = "USD"
+    status: Literal["ACTIVE", "MARGINAL", "EXPIRED", "CONVERTED"] = "ACTIVE"
+    scanned_at: datetime
+
+    # ── demand provenance ─────────────────────────────────────────────────────
+    demand_signals: list[DemandSignal]     # one entry per connector that contributed
+    urgency_tier: int                      # max(signal.urgency_tier) across all signals
+    confidence_score: float                # 0–100 weighted composite reliability score
+
+    # ── buyer side ────────────────────────────────────────────────────────────
+    buyer_signals: list[BuyerSignal]       # named buyers from manifests + live signals
+    active_rfq_count: int = 0             # Alibaba RFQs matching this HS/keyword
+    active_tender_count: int = 0          # EU TED tenders matching this HS
+
+    # ── tariff/cost gate ─────────────────────────────────────────────────────
+    tariff_data: TariffData | None        # MacMap result for hs_code → market
+    net_price_gap_pct: float              # price_gap_pct - tariff_data.total_landed_cost_add_pct
+    tariff_viable: bool                   # True if net_price_gap_pct >= viability_floor
+
+    # ── seller side (for Match Engine seed) ──────────────────────────────────
+    seller_candidates: list[SellerCandidate]  # IndiaMART + TradeIndia results
+
+    # ── lifecycle ────────────────────────────────────────────────────────────
+    expires_at: datetime | None            # scanned_at + TTL (tier-1: 7d, tier-4: 24h)
+    scan_version: int = 1
+```
+
+---
+
+### 10.3 Urgency Tier Model
+
+Urgency tier drives TTL, UI priority, scheduling frequency, and the Sourcing Agent's response speed.
+
+| Tier | Name | Signal | Source | TTL | Deal Priority |
+|---|---|---|---|---|---|
+| **1** | Historical | Trade volumes growing YoY; no active intent | Comtrade | 7 days | Normal |
+| **2** | Active Buyer | Named buyer with past imports; reorder window open | Volza, ImportGenius, Trademo | 3 days | Elevated |
+| **3** | Live Intent | Buyer posted RFQ or formal tender RIGHT NOW | Alibaba RFQ, EU TED | 48 hours | High |
+| **4** | Emergency | Competitor origin country faces export ban / disruption | GDELT | 24 hours | Urgent — fast-track sourcing |
+
+When multiple signals are present, `urgency_tier = max(all signal tiers)`. A Comtrade tier-1 baseline boosted by a GDELT tier-4 disruption produces a tier-4 opportunity.
+
+---
+
+### 10.4 Five-Phase Enrichment Pipeline
+
+Each scan invocation for an `(hs_code, market)` pair runs five sequential phases. Phases 1 and 2 run concurrently within themselves via `asyncio.gather`. Phases 3, 4, and 5 run after their predecessor completes.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  PHASE 1 — Historical Demand (concurrent)                           │
+│  Comtrade  →  YoY demand trend  (tier 1)                            │
+│  Volza     →  named buyer manifests (tier 2)                        │
+│  ImportGenius → US/LatAm importer manifests (tier 2)                │
+│  Trademo   →  buyer risk + trade frequency (tier 2)                 │
+└────────────────────────┬────────────────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  PHASE 2 — Live Demand Signals (concurrent)                         │
+│  AlibabaRFQ  →  active buyer RFQs (tier 3)                         │
+│  EuTED       →  active EU tenders (tier 3)                          │
+│  GDELT       →  competitor disruption news (tier 4)                 │
+└────────────────────────┬────────────────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  PHASE 3 — Tariff Gate                                              │
+│  MacMap → applied_duty_pct + NTBs + rules_of_origin                │
+│  GATE: if net_price_gap_pct < VIABILITY_FLOOR → discard            │
+└────────────────────────┬────────────────────────────────────────────┘
+                         ▼  (only viable opportunities proceed)
+┌─────────────────────────────────────────────────────────────────────┐
+│  PHASE 4 — Seller Discovery (concurrent)                            │
+│  IndiaMART  →  manufacturer listings + FOB price estimates          │
+│  TradeIndia →  fallback manufacturer listings                       │
+└────────────────────────┬────────────────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  PHASE 5 — Score, Rank & Publish                                    │
+│  Build EnrichedOpportunity → persist MongoDB → publish              │
+│  opportunity.detected (with full enriched payload)                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 10.4.1 Phase 1 — Historical Demand (fix for Bug B-1)
+
+All four connectors are called **concurrently** with `asyncio.gather`. Each result is normalised into a `DemandSignal` and a list of `BuyerSignal` entries.
+
+```python
+results = await asyncio.gather(
+    comtrade.quote({"hs_code": hs_code, "market": market}),
+    volza.quote({"hs_code": hs_code, "market": market}),
+    import_genius.quote({"hs_code": hs_code, "market": market}),
+    trademo.quote({"hs_code": hs_code, "market": market}),
+    return_exceptions=True,   # connector failure != scan failure
+)
+```
+
+**Demand index composition (Phase 1):**
+
+| Connector | Weight | Contribution |
+|---|---|---|
+| Comtrade YoY trend | 0.40 | `demand_index_comtrade` (0–100) |
+| Volza manifest volume | 0.25 | normalised by `max(annual_volume_mt, 100MT)` |
+| ImportGenius manifest volume | 0.15 | same normalisation as Volza |
+| Trademo trade frequency | 0.20 | `min(trade_frequency_score, 100)` |
+
+If a connector raises an exception, its weight is redistributed proportionally among the connectors that succeeded. An opportunity is **not created** if fewer than 2 connectors succeed in Phase 1.
+
+#### 10.4.2 Phase 2 — Live Demand Signals (concurrent)
+
+Three connectors detect real-time intent. Each is called independently; failure of one does not block the others.
+
+**AlibabaRFQ** — maps the HS code to a product keyword via a static lookup table (or Claude Haiku 4.5 extraction, ≤100 tokens) and searches active RFQs filtered by `buyer_country`.
+
+**EuTED** — maps HS code CPV codes and queries the TED REST endpoint for active procurement notices in the destination country.
+
+**GDELT** — identifies competitor origin countries for the HS code (e.g., Vietnam for pepper, China for glycerol) from a static lookup or Comtrade Phase 1 result, then scans for disruption news.
+
+Phase 2 signals **upgrade the urgency tier** of an existing Phase 1 result but cannot create a standalone opportunity (Phase 1 must contribute at least one signal).
+
+**Urgency tier escalation rules:**
+
+```
+base_tier = 1 if comtrade only
+base_tier = 2 if volza OR trademo OR import_genius returned named buyers
+base_tier = 3 if alibaba_rfq OR eu_ted returned active signals
+base_tier = 4 if gdelt returned signal_strength "MEDIUM" or "HIGH"
+urgency_tier = max(base_tier, phase2_tier)
+```
+
+#### 10.4.3 Phase 3 — Tariff Gate (fix for Bug B-2)
+
+MacMap is called for every opportunity that survives Phase 1+2 scoring.
+
+```python
+tariff_result = await macmap.quote({
+    "hs_code": hs_code,
+    "reporter": "356",   # India ISO-3166 numeric
+    "partner":  market,
+})
+net_price_gap = gross_price_gap_pct - tariff_result["total_landed_cost_add_pct"]
+tariff_viable = net_price_gap >= TARIFF_VIABILITY_FLOOR  # default: 5.0%
+```
+
+**Gate logic:**
+
+| Condition | Action |
+|---|---|
+| `net_price_gap_pct >= 5.0%` | Proceed to Phase 4 |
+| `1.0% <= net_price_gap_pct < 5.0%` | Flag `tariff_viable = False`; include at reduced rank with `status = "MARGINAL"` |
+| `net_price_gap_pct < 1.0%` | Hard discard — arbitrage wiped out by duty |
+| MacMap call fails | Log warning; set `tariff_data = None`, `tariff_viable = True` (optimistic) and add `"tariff_unverified"` NTB flag |
+
+The `arbitrage_rank` formula is updated to use `net_price_gap_pct` instead of gross:
+
+```
+arbitrage_rank = sqrt(demand_index * price_gap_score(net_price_gap_pct))
+```
+
+#### 10.4.4 Phase 4 — Seller Discovery (concurrent)
+
+IndiaMART and TradeIndia are queried concurrently for manufacturers who can supply the HS code. Results are deduplicated by company name (Levenshtein distance < 3) and normalised to `SellerCandidate` objects.
+
+```python
+sellers = await asyncio.gather(
+    indiamart.quote({"hs_code": hs_code, "max_results": 10}),
+    tradeindia.quote({"hs_code": hs_code, "max_results": 10}),
+    return_exceptions=True,
+)
+```
+
+Each `SellerCandidate` is pre-populated with `supplier_to_port_km` via a static state→nearest-seaport lookup table so the Match Engine can compute the proximity score `L` without a geocoding call.
+
+If both connectors fail (stubs not yet live), `seller_candidates = []` and the Sourcing Agent handles seller discovery at deal-creation time — no regression in deal flow.
+
+#### 10.4.5 Phase 5 — Score, Rank, Persist, Publish
+
+```python
+opportunity = EnrichedOpportunity(
+    demand_index       = composite_demand_index,
+    price_gap_pct      = gross_price_gap_pct,
+    net_price_gap_pct  = net_price_gap_pct,
+    arbitrage_rank     = ranking.arbitrage_rank(demand_index, net_price_gap_pct),
+    demand_signals     = demand_signals,
+    urgency_tier       = urgency_tier,
+    confidence_score   = confidence_score,
+    buyer_signals      = buyer_signals,
+    tariff_data        = tariff_data,
+    tariff_viable      = tariff_viable,
+    seller_candidates  = seller_candidates,
+    expires_at         = scanned_at + TTL_BY_TIER[urgency_tier],
+    ...
+)
+await repository.save(opportunity)          # MongoDB (§10.6)
+await publisher.publish(DomainEvent(
+    topic   = EventTopic.OPPORTUNITY_DETECTED,
+    payload = opportunity.model_dump(),     # full enriched payload
+))
+```
+
+**Confidence score formula:**
+
+```
+confidence_score = (
+    (n_phase1_connectors_succeeded / 4) * 50   +  # max 50 pts from Phase 1
+    (n_phase2_signals_found > 0)        * 25   +  # max 25 pts for live signals
+    (tariff_data is not None)           * 15   +  # 15 pts for verified tariff
+    (len(seller_candidates) > 0)        * 10      # 10 pts for known sellers
+)
+```
+
+---
+
+### 10.5 What the Match Engine Consumes
+
+The Match Engine (`services/match_engine/`) receives `deal.created` which references an `opportunity_id`. It fetches the `EnrichedOpportunity` and seeds the `ScoreRequest` with pre-computed values, avoiding redundant API calls.
+
+| `ScoreRequest` field | Source in `EnrichedOpportunity` | Notes |
+|---|---|---|
+| `buyer_target_price` | Derived from `buyer_signals[i].estimated_order_value_usd / volume`, or operator input | Operator can override before deal creation |
+| `supplier_quote_price` | `seller_candidates[i].estimated_fob_price_usd` | Pre-populated from IndiaMART catalogue |
+| `supplier_to_port_km` | `seller_candidates[i].supplier_to_port_km` | Pre-computed via state→port lookup |
+| `verification.*` | Fetched live by Match Engine from GSTN/DGFT/MCA | Still live-checked at deal time |
+| `business_age_years` | Fetched live from MCA at deal time | Not cached in opportunity |
+| `annual_shipment_count` | Derived from Trademo `buyer_signals` if available | Hint; Match Engine may override |
+
+**Data flow (opportunity → deal → match):**
+
+```
+EnrichedOpportunity (opportunity.detected)
+    │
+    │  Operator clicks "Start Deal" on Opportunity Radar UI
+    ▼
+deal.created {
+    opportunity_id,
+    selected_buyer_signal_index,    ← operator picks which buyer to target
+    selected_seller_candidate_index ← operator picks preferred supplier
+}
+    │
+    ▼
+Match Engine fetches EnrichedOpportunity
+    │  extracts buyer_target_price, supplier_quote_price, supplier_to_port_km
+    ▼
+ScoreRequest → CMS calculation → match.scored
+    │
+    ▼
+Negotiation Agent seeded with:
+    - tariff_data (landed cost context for BATNA reasoning)
+    - buyer_signals[i].risk_score (counterparty risk)
+    - urgency_tier (negotiation deadline pressure)
+    - buyer_signals[i].last_import_date (reorder context)
+```
+
+**New fields on `match.scored` event payload:**
+```json
+{
+  "match_id": "MATCH-2026-SPICE-004",
+  "opportunity_id": "OPP-a3f8c2d19e4b",
+  "urgency_tier": 3,
+  "tariff_viable": true,
+  "applied_duty_pct": 12.5,
+  "net_price_gap_pct": 18.3,
+  "buyer_risk_score": 22.0,
+  "seller_to_port_km": 310,
+  "...existing CMS fields...": "..."
+}
+```
+
+The Negotiation Agent uses `urgency_tier` to set `deadline` (tier-4 → 6h negotiation window vs tier-1 → 48h), `applied_duty_pct` to validate CIF price claims from the buyer, and `buyer_risk_score` to decide whether Allianz Trade credit insurance is mandatory before issuing PI.
+
+---
+
+### 10.6 Persistence — MongoDB Migration (fix for Bug B-3)
+
+Replace `InMemoryOpportunityRepository` with a MongoDB-backed repository reusing the same Motor connection pool used by the RAG module.
+
+**Collection:** `trade.opportunities` (same Atlas cluster, separate DB `trade`).
+
+**Indexes:**
+```python
+await col.create_index([("status", 1), ("urgency_tier", -1), ("arbitrage_rank", -1)])
+await col.create_index("hs_code")
+await col.create_index("market")
+await col.create_index([("hs_code", 1), ("market", 1), ("scanned_at", -1)])
+await col.create_index("expires_at", expireAfterSeconds=0)  # auto-TTL
+```
+
+The TTL index on `expires_at` automatically removes expired opportunities from the collection. Status transitions (`ACTIVE → MARGINAL → EXPIRED → CONVERTED`) are managed by the service layer and event consumers. The `CONVERTED` status is set when `deal.created` references the opportunity, preventing the same opportunity from generating duplicate deals.
+
+---
+
+### 10.7 Scheduling & Trigger Strategy
+
+| Mode | Trigger | Scope | Frequency |
+|---|---|---|---|
+| **Full Scan** | APScheduler cron `0 2 * * *` (02:00 UTC) | All default HS codes × markets | Nightly |
+| **Targeted Rescan** | Event: `deal.converted` (hs_code, market) | Single HS code × all default markets | On conversion, within 5 min |
+| **Emergency Scan** | Event: `gdelt.disruption_detected` | Single HS code × all markets where disrupted competitor exports | Immediately on event |
+| **Reorder Window** | APScheduler cron `0 */6 * * *` | Buyer signals where reorder probability > 0.7 | Every 6 hours |
+
+**Reorder Window Engine:**
+
+For every `BuyerSignal` with `last_import_date` and estimated annual order frequency, the reorder window engine predicts when the buyer is next due to purchase:
+
+```
+avg_days_between_imports = 365 / estimated_annual_order_count
+days_since_last_import   = (today - last_import_date).days
+reorder_probability      = sigmoid((days_since_last_import - avg_days) / 30)
+```
+
+When `reorder_probability > 0.7` for a known buyer, a targeted rescan is triggered for their `(hs_code, country)` pair and the new opportunity `urgency_tier` is upgraded from 1 → 2 to reflect the elevated buying likelihood.
+
+---
+
+### 10.8 Connector Implementation Status & Priority
+
+| Connector | Group | Status | Priority |
+|---|---|---|---|
+| `ComtradeConnector` | 1 | Fully implemented | Done |
+| `VolzaConnector` | 1 | Fully implemented | Done |
+| `MacmapConnector` | 1 | Fully implemented | Done |
+| `TrademoConnector` | 1 | Fully implemented | Done |
+| `ImportGeniusConnector` | 1 | Fully implemented | Done |
+| `AlibabaRfqConnector` | 1b | Fully implemented | Done |
+| `GdeltDisruptionConnector` | 1b | Fully implemented | Done |
+| `EuTedConnector` | 1b | Fully implemented | Done |
+| `IndiamartConnector` | 2 | **Stub — implement next** | Sprint S2 |
+| `TradeIndiaConnector` | 2 | **Stub — implement next** | Sprint S2 |
+
+`IndiamartConnector` and `TradeIndiaConnector` are the last unimplemented connectors in the discovery pipeline. Until they are live, `seller_candidates = []` and the Sourcing Agent handles seller discovery at deal-creation time — no deal-flow regression.
+
+---
+
+### 10.9 Implementation Sequence
+
+| Sprint | Task | Files |
+|---|---|---|
+| **S2a** | Fix B-1: replace `sources[0]` with `asyncio.gather` across all Phase 1 connectors | `service.py` |
+| **S2b** | Fix B-2: add Phase 3 tariff gate; update `arbitrage_rank` to use `net_price_gap_pct` | `service.py`, `ranking.py` |
+| **S2c** | Fix B-3: replace `InMemoryOpportunityRepository` with `MongoOpportunityRepository` | `repository.py` |
+| **S2d** | Expand `OpportunityResponse` → `EnrichedOpportunity`; add all sub-models | `schemas.py` |
+| **S2e** | Add Phase 2 (live signals) and Phase 4 (seller discovery) to `scan_opportunities()` | `service.py` |
+| **S2f** | Update `opportunity.detected` event payload to carry full `EnrichedOpportunity` | `service.py`, `shared/domain/events.py` |
+| **S2g** | Add `ReorderWindowEngine` and APScheduler cron triggers | `service.py`, `main.py` |
+| **S2h** | Implement `IndiamartConnector` (replace stub) | `shared/connectors/trade_intel.py` |
+| **S2i** | Implement `TradeIndiaConnector` (replace stub) | `shared/connectors/trade_intel.py` |
+| **S2j** | Update Match Engine to consume enriched fields from `opportunity.detected` | `services/match_engine/service.py` |
+| **S2k** | Update Opportunity Radar UI to show urgency tier, buyer count, tariff viability badge | `apps/web/` |
+
+---
+
+### 10.10 Opportunity Radar UI — Enriched Card Fields
+
+The Opportunity Radar screen (§6.3) displays `EnrichedOpportunity` cards. The following fields are added to each card in addition to the existing arbitrage rank display:
+
+| Field | Display | Source |
+|---|---|---|
+| Urgency tier badge | `TIER 1 HISTORICAL` / `TIER 4 EMERGENCY` (colour-coded red/amber/green) | `urgency_tier` |
+| Buyer count | `12 named buyers` | `len(buyer_signals)` |
+| Live RFQs | `3 active RFQs` (shown only if > 0) | `active_rfq_count` |
+| Live tenders | `1 EU tender — €480K` (shown only if > 0) | `active_tender_count` |
+| Tariff viability | Green `18.3% net gap` or Red `duty wipes margin` | `tariff_viable`, `net_price_gap_pct` |
+| Confidence | `87% confidence` (progress bar) | `confidence_score` |
+| Seller ready | `8 sellers ready` or `Sourcing will find` | `len(seller_candidates)` |
+| Expires | `Expires in 47h` (countdown) | `expires_at` |
+
+The one-click **"Start Deal"** button opens a modal letting the operator select a `BuyerSignal` and a `SellerCandidate` from the enriched lists before creating `deal.created`. This pre-seeds the Match Engine with real buyer/supplier price data without any additional API calls.
+
+---
+
+### 10.11 Configuration Additions (`TradeMinConfig`)
+
+```python
+@dataclass(frozen=True)
+class TradeMinConfig:
+    # ... existing fields unchanged ...
+
+    # Tariff gate thresholds
+    tariff_viability_floor_pct: float = 5.0   # net gap below this -> MARGINAL
+    hard_discard_gap_pct: float = 1.0          # net gap below this -> discard
+
+    # Phase 1 minimum requirement
+    min_phase1_connectors: int = 2             # abort scan if < 2 connectors succeed
+    min_demand_index: float = 15.0             # pre-live-signal floor before continuing
+
+    # Confidence thresholds
+    min_confidence_for_deal: float = 40.0      # block "Start Deal" button if below
+
+    # Reorder window
+    reorder_probability_threshold: float = 0.70
+
+    # MongoDB
+    mongo_uri: str = ""                        # read from TRADE_MIN_MONGO_URI env var
+    mongo_db: str = "trade"
+    opportunities_collection: str = "opportunities"
+
+    # Scheduling
+    full_scan_cron: str = "0 2 * * *"
+    reorder_window_cron: str = "0 */6 * * *"
+```
+
+---
+
+### 10.12 Trade-Min Summary
+
+| Decision | Specification |
+|---|---|
+| Bug B-1 fix | `asyncio.gather` across all 4 Phase 1 connectors; weight redistribution on failure |
+| Bug B-2 fix | MacMap Phase 3 tariff gate; `arbitrage_rank` uses `net_price_gap_pct` |
+| Bug B-3 fix | `MongoOpportunityRepository` with Motor; TTL index for lifecycle |
+| Bug B-4 fix | `EnrichedOpportunity` with `BuyerSignal`, `TariffData`, `DemandSignal`, `SellerCandidate` |
+| Urgency model | 4 tiers (Historical → Emergency); TTL shrinks from 7d to 24h |
+| Confidence score | 100-point composite: Phase 1 coverage (50) + live signals (25) + tariff (15) + sellers (10) |
+| Match Engine feed | Pre-seeded `buyer_target_price`, `supplier_quote_price`, `supplier_to_port_km` eliminate redundant API calls at deal time |
+| Scheduling | Nightly full scan + 6h reorder window + event-triggered emergency scan |
+| Remaining stubs | `IndiamartConnector`, `TradeIndiaConnector` — implement in Sprint S2h/S2i |
