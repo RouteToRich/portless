@@ -9,11 +9,41 @@ const baseURL = import.meta.env.VITE_API_BASE_URL ?? "/api";
 // VITE_USE_MOCKS=true (e.g. `npm run dev:mock`).
 const useMocks = import.meta.env.VITE_USE_MOCKS === "true";
 
+export const TOKEN_KEY = "portless_token";
+export const USER_KEY = "portless_user";
+
 export const api = axios.create({
   baseURL,
   timeout: 15000,
   headers: { "Content-Type": "application/json" },
 });
+
+// Attach the JWT to every outgoing request.
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token) {
+    config.headers = config.headers ?? {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// On 401 (expired/invalid token), clear the session and bounce to /login.
+// Auth endpoints are exempt so login/register can surface their own errors.
+api.interceptors.response.use(
+  (res) => res,
+  (error) => {
+    const url: string = error.config?.url ?? "";
+    if (error.response?.status === 401 && !url.includes("/auth/")) {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/login";
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 
 if (useMocks) {
   // Install a bootstrap adapter synchronously so the very first request (e.g.

@@ -103,6 +103,20 @@ export interface DealException {
 
 export type DownstreamHealth = Record<string, string>;
 
+// Auth
+export interface AuthUser {
+  user_id: string;
+  email: string;
+  name: string;
+  created_at?: string | null;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+}
+
 // RAG knowledge base
 export interface RagStats {
   total_chunks: number;

@@ -10,12 +10,26 @@ import { Exceptions } from "./pages/Exceptions";
 import { AutonomySettings } from "./pages/AutonomySettings";
 import { SystemHealth } from "./pages/SystemHealth";
 import { KnowledgeBase } from "./pages/KnowledgeBase";
+import { Login } from "./pages/Login";
+import { useAuth } from "./lib/auth";
+
+function RequireAuth({ children }: { children: JSX.Element }) {
+  const { isAuthenticated } = useAuth();
+  return isAuthenticated ? children : <Navigate to="/login" replace />;
+}
 
 export default function App() {
   return (
     <>
       <Routes>
-        <Route element={<AppLayout />}>
+        <Route path="/login" element={<Login />} />
+        <Route
+          element={
+            <RequireAuth>
+              <AppLayout />
+            </RequireAuth>
+          }
+        >
           <Route index element={<Navigate to="/radar" replace />} />
           <Route path="/radar" element={<OpportunityRadar />} />
           <Route path="/deals" element={<DealBoard />} />

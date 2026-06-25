@@ -13,15 +13,25 @@ import type {
   NegotiationResponse,
   NegotiationRound,
   NegotiationSession,
+  AuthUser,
   Opportunity,
   QcRecord,
   RagIngestResponse,
   RagJobStatus,
   RagStats,
   ResolveApprovalRequest,
+  TokenResponse,
 } from "./types";
 
 // Thin wrappers around the gateway endpoints (services/api_gateway/router.py).
+
+export const AuthApi = {
+  register: (payload: { email: string; name: string; password: string }) =>
+    api.post<TokenResponse>("/auth/register", payload).then((r) => r.data),
+  login: (payload: { email: string; password: string }) =>
+    api.post<TokenResponse>("/auth/login", payload).then((r) => r.data),
+  me: () => api.get<AuthUser>("/auth/me").then((r) => r.data),
+};
 
 export const HealthApi = {
   gateway: () => api.get<{ status: string; service: string }>("/health").then((r) => r.data),

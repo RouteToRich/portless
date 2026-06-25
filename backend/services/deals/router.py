@@ -1,7 +1,9 @@
 """HTTP routes for the Deals service (LLD 4.2)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from shared.auth.dependencies import AuthUser, get_current_user
 
 from . import service
 from .schemas import (
@@ -15,6 +17,18 @@ from .schemas import (
 from .service import DealNotFoundError, InvalidTransitionError
 
 router = APIRouter(prefix="/deals", tags=["deals"])
+
+
+async def _owned_deal(deal_id: str, user: AuthUser) -> DealRecord:
+    """Fetch a deal and enforce that it belongs to the caller (else 404)."""
+    try:
+        deal = await service.get_deal(deal_id)
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if deal.operator_id != user.user_id:
+        # Hide existence of other users' deals.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Deal {deal_id!r} not found")
+    return deal
 
 
 # ---------------------------------------------------------------------------
@@ -34,40 +48,41 @@ async def health() -> dict[str, str]:
 async def list_deals(
     limit: int = Query(default=100, ge=1, le=500),
     status: DealStatus | None = Query(default=None),
-    operator_id: str | None = Query(default=None),
+    user: AuthUser = Depends(get_current_user),
 ) -> list[DealRecord]:
-    """List deals sorted by creation time descending.
+    """List the authenticated user's deals, newest first.
 
-    Use ``status`` to filter by lifecycle state (e.g. ``MATCHING``, ``NEGOTIATING``).
-    Use ``operator_id`` to scope to a single operator's deals.
+    Always scoped to the caller (``operator_id`` == user id) for multi-tenancy.
+    Use ``status`` to filter by lifecycle state (e.g. ``MATCHING``).
     """
     return await service.list_deals(
         limit=limit,
         status=status,
-        operator_id=operator_id,
+        operator_id=user.user_id,
     )
 
 
 @router.post("", response_model=DealRecord, status_code=status.HTTP_201_CREATED)
-async def create_deal(payload: CreateDealRequest) -> DealRecord:
-    """Create a new deal.
+async def create_deal(
+    payload: CreateDealRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> DealRecord:
+    """Create a new deal owned by the authenticated user.
 
-    When ``opportunity_id`` is provided the service fetches the Trade-Min
-    MatchEngineSeed, scores all seller candidates via Match Engine, and
-    transitions to ``MATCHING`` if a SOURCE decision is found.
+    The deal's ``operator_id`` is forced to the caller's id so it is tied to
+    their account regardless of the request body.
     """
+    payload.operator_id = user.user_id
     return await service.create_deal(payload)
 
 
 @router.get("/{deal_id}", response_model=DealRecord)
-async def get_deal(deal_id: str) -> DealRecord:
-    """Fetch a single deal by ID."""
-    try:
-        return await service.get_deal(deal_id)
-    except DealNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+async def get_deal(
+    deal_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> DealRecord:
+    """Fetch a single deal owned by the caller (404 if not theirs)."""
+    return await _owned_deal(deal_id, user)
 
 
 # ---------------------------------------------------------------------------
@@ -75,12 +90,17 @@ async def get_deal(deal_id: str) -> DealRecord:
 # ---------------------------------------------------------------------------
 
 @router.patch("/{deal_id}/status", response_model=DealRecord)
-async def update_status(deal_id: str, payload: UpdateStatusRequest) -> DealRecord:
-    """Transition a deal to a new lifecycle state.
+async def update_status(
+    deal_id: str,
+    payload: UpdateStatusRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> DealRecord:
+    """Transition one of the caller's deals to a new lifecycle state.
 
     Topology is enforced by the state machine in ``shared.domain.state_machine``.
-    Returns ``422`` when the transition is not permitted.
+    Returns ``422`` when the transition is not permitted, ``404`` if not theirs.
     """
+    await _owned_deal(deal_id, user)  # ownership gate
     try:
         return await service.update_status(deal_id, payload)
     except DealNotFoundError as exc:
@@ -120,18 +140,16 @@ async def update_financials(
 # ---------------------------------------------------------------------------
 
 @router.get("/{deal_id}/match-scores", response_model=list[MatchResult])
-async def get_match_scores(deal_id: str) -> list[MatchResult]:
-    """Return all Match Engine scores computed for a deal's seller candidates.
+async def get_match_scores(
+    deal_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> list[MatchResult]:
+    """Return Match Engine scores for one of the caller's deals.
 
     The list is sorted by composite score descending so the winning candidate
     appears first.  ``decision`` is either ``SOURCE`` (viable) or ``DISCARD``.
     """
-    try:
-        deal = await service.get_deal(deal_id)
-    except DealNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+    deal = await _owned_deal(deal_id, user)
 
     return sorted(
         deal.match_results,

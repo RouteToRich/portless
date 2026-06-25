@@ -54,7 +54,19 @@ type RawObj = Record<string, unknown>;
 const DOWNSTREAM_FIXTURE =
   import.meta.env.VITE_MOCK_DEGRADED === "true" ? downstreamDegraded : downstreamAllOk;
 
-type Handler = (ctx: { id: string; query: URLSearchParams; body: RawObj }) => unknown;
+type Handler = (ctx: {
+  id: string;
+  query: URLSearchParams;
+  body: RawObj;
+  ownerId: string;
+}) => unknown;
+
+// Handlers throw this to return a non-200 (e.g. 401 bad login, 409 email taken).
+class MockError extends Error {
+  constructor(public status: number, public detail: string) {
+    super(detail);
+  }
+}
 
 const unwrap = <T>(o: { items?: T[] } | T[]): T[] => (Array.isArray(o) ? o : (o.items ?? []));
 
@@ -234,6 +246,43 @@ function normalizeDoc(d: RawObj) {
 const dealDetails = [dealNegotiating, dealEscrowFunded, dealInTransit, dealPaid, dealDispute];
 const documents = ((documentsList as { documents?: RawObj[] }).documents ?? []).map(normalizeDoc);
 
+// ── Mock auth + per-user data ────────────────────────────────────────────
+// A built-in demo account owns all the seed fixtures; freshly registered users
+// start with an empty Deal Board and build their own flow — so the UI is unique
+// per login, mirroring the real backend's operator-scoped deals.
+interface MockUser {
+  user_id: string;
+  email: string;
+  name: string;
+  password: string;
+}
+const DEMO_OWNER = "USR-DEMO";
+const mockUsers = new Map<string, MockUser>([
+  ["demo@portless.io", { user_id: DEMO_OWNER, email: "demo@portless.io", name: "Demo Operator", password: "demo123" }],
+]);
+
+const seedDeals = unwrap<RawObj>(dealList as never)
+  .map(normalizeDeal)
+  .map((d) => ({ ...d, operator_id: DEMO_OWNER }));
+const dealsByOwner = new Map<string, RawObj[]>([[DEMO_OWNER, seedDeals]]);
+
+function encodeMockToken(u: MockUser): string {
+  return "mock." + btoa(JSON.stringify({ sub: u.user_id, email: u.email, name: u.name }));
+}
+function ownerFromAuthHeader(header: string | undefined): string {
+  if (!header) return "";
+  const raw = header.replace(/^Bearer\s+/i, "");
+  if (!raw.startsWith("mock.")) return "";
+  try {
+    return (JSON.parse(atob(raw.slice(5))) as { sub?: string }).sub ?? "";
+  } catch {
+    return "";
+  }
+}
+function publicUser(u: MockUser) {
+  return { user_id: u.user_id, email: u.email, name: u.name, created_at: new Date().toISOString() };
+}
+
 // ── RAG ingest job simulation ────────────────────────────────────────────
 // Track upload start times so a polled job reports running for ~2.5s then
 // completes — mirroring the real background ingestion flow.
@@ -262,14 +311,67 @@ const routes: Record<string, Handler> = {
   "GET /health": () => gatewayOk,
   "GET /health/downstream": () => DOWNSTREAM_FIXTURE,
 
-  // Deals
-  "GET /deals": () => unwrap<RawObj>(dealList as never).map(normalizeDeal),
-  "GET /deals/:id": ({ id }) =>
-    normalizeDeal((dealDetails as RawObj[]).find((d) => d.deal_id === id) ?? (dealNegotiating as RawObj)),
-  "POST /deals": ({ body }) =>
-    normalizeDeal({ deal_id: `DEAL-MOCK-${Date.now()}`, status: "DRAFT", ...body }),
-  "PATCH /deals/:id/status": ({ id, body }) =>
-    normalizeDeal({ ...(dealNegotiating as RawObj), deal_id: id, status: body.target_status ?? "MATCHING" }),
+  // Auth
+  "POST /auth/register": ({ body }) => {
+    const email = String(body.email ?? "").trim().toLowerCase();
+    if (!email || !body.password) throw new MockError(422, "Email and password required");
+    if (mockUsers.has(email)) throw new MockError(409, `An account with '${email}' already exists`);
+    const user: MockUser = {
+      user_id: `USR-${Math.random().toString(36).slice(2, 10).toUpperCase()}`,
+      email,
+      name: String(body.name ?? email),
+      password: String(body.password),
+    };
+    mockUsers.set(email, user);
+    dealsByOwner.set(user.user_id, []); // fresh, empty board
+    return { access_token: encodeMockToken(user), token_type: "bearer", user: publicUser(user) };
+  },
+  "POST /auth/login": ({ body }) => {
+    const email = String(body.email ?? "").trim().toLowerCase();
+    const user = mockUsers.get(email);
+    if (!user || user.password !== String(body.password ?? "")) {
+      throw new MockError(401, "Invalid email or password");
+    }
+    return { access_token: encodeMockToken(user), token_type: "bearer", user: publicUser(user) };
+  },
+  "GET /auth/me": ({ ownerId }) => {
+    const user = [...mockUsers.values()].find((u) => u.user_id === ownerId);
+    if (!user) throw new MockError(401, "Invalid or expired token");
+    return publicUser(user);
+  },
+
+  // Deals (scoped to the authenticated user)
+  "GET /deals": ({ ownerId }) => dealsByOwner.get(ownerId) ?? [],
+  "GET /deals/:id": ({ id, ownerId }) => {
+    const owned = (dealsByOwner.get(ownerId) ?? []).find((d) => d.deal_id === id);
+    if (owned) return owned;
+    // Fall back to a detail fixture (demo deals map to these by id).
+    return normalizeDeal((dealDetails as RawObj[]).find((d) => d.deal_id === id) ?? (dealNegotiating as RawObj));
+  },
+  "POST /deals": ({ body, ownerId }) => {
+    const deal = normalizeDeal({
+      deal_id: `DEAL-MOCK-${Date.now().toString(36).toUpperCase()}`,
+      status: "DRAFT",
+      market: "AE",
+      ...body,
+      operator_id: ownerId,
+    });
+    const list = dealsByOwner.get(ownerId) ?? [];
+    dealsByOwner.set(ownerId, [deal, ...list]);
+    return deal;
+  },
+  "PATCH /deals/:id/status": ({ id, body, ownerId }) => {
+    const list = dealsByOwner.get(ownerId) ?? [];
+    const existing = list.find((d) => d.deal_id === id);
+    const updated = normalizeDeal({
+      ...(existing ?? (dealNegotiating as RawObj)),
+      deal_id: id,
+      status: body.target_status ?? "MATCHING",
+      operator_id: ownerId,
+    });
+    if (existing) dealsByOwner.set(ownerId, list.map((d) => (d.deal_id === id ? updated : d)));
+    return updated;
+  },
 
   // Opportunities
   "GET /opportunities": () =>
@@ -373,10 +475,27 @@ export const mockAdapter: AxiosAdapter = async (config: InternalAxiosRequestConf
     return response({ ok: true });
   }
 
-  const data = match.handler({
-    id: match.id,
-    query: new URLSearchParams(queryString),
-    body: parseBody(config.data),
-  });
-  return response(data);
+  const headers = (config.headers ?? {}) as Record<string, unknown>;
+  const authHeader = (headers.Authorization ?? headers.authorization) as string | undefined;
+
+  try {
+    const data = match.handler({
+      id: match.id,
+      query: new URLSearchParams(queryString),
+      body: parseBody(config.data),
+      ownerId: ownerFromAuthHeader(authHeader),
+    });
+    return response(data);
+  } catch (err) {
+    if (err instanceof MockError) {
+      return Promise.reject(
+        Object.assign(new Error(err.detail), {
+          isAxiosError: true,
+          config,
+          response: response({ detail: err.detail }, err.status),
+        })
+      );
+    }
+    throw err;
+  }
 };

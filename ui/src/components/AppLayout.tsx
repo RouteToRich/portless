@@ -6,6 +6,7 @@ import {
   Bell,
   BrainCircuit,
   LayoutGrid,
+  LogOut,
   Menu,
   Moon,
   Package2,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/lib/theme";
+import { useAuth } from "@/lib/auth";
 import { useApprovals, useGatewayHealth } from "@/api/hooks";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -53,8 +55,16 @@ export function AppLayout() {
   const { theme, toggleTheme } = useTheme();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  const { user, logout } = useAuth();
   const { data: approvals } = useApprovals("PENDING");
   const { data: health, isError: healthError } = useGatewayHealth();
+
+  const initials = (user?.name || user?.email || "U")
+    .split(/\s+/)
+    .map((s) => s[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 
   const pendingCount = approvals?.length ?? 0;
   const isOnline = !healthError && health?.status === "ok";
@@ -165,15 +175,29 @@ export function AppLayout() {
             />
           </div>
 
-          {/* User avatar */}
+          {/* User avatar + logout */}
           <div className="flex items-center gap-2.5 px-2">
             <Avatar className="w-7 h-7">
-              <AvatarFallback className="text-[10px]">OP</AvatarFallback>
+              <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
             </Avatar>
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium truncate">Operator</p>
-              <p className="text-[10px] text-muted-foreground truncate">ops@portless.io</p>
+              <p className="text-xs font-medium truncate">{user?.name ?? "Operator"}</p>
+              <p className="text-[10px] text-muted-foreground truncate">
+                {user?.email ?? ""}
+              </p>
             </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={logout}
+                  className="p-1.5 rounded-md text-muted-foreground hover:bg-secondary hover:text-destructive transition-colors"
+                  aria-label="Log out"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Log out</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </aside>

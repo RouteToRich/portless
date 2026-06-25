@@ -34,6 +34,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from shared.config import settings
+from shared.auth.middleware import AuthMiddleware
+from services.auth.router import router as auth_router
 from services.deals.router import router as deals_router
 from services.trade_min.router import router as trade_min_router
 from services.match_engine.router import router as match_engine_router
@@ -143,6 +145,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("ExceptionResolver startup failed (service will run degraded): %s", exc)
 
+    # ── Auth: MongoDB user repository (falls back to in-memory) ──────────
+    from services.auth.repository import init_repository as auth_init, close_repository as auth_close
+    try:
+        await auth_init()
+    except Exception as exc:
+        logger.error("Auth startup failed (service will run degraded): %s", exc)
+
     # ── RAG: ensure MongoDB vector indexes (optional module) ─────────────
     try:
         from shared.rag.src.router import startup as rag_startup
@@ -153,6 +162,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
+    try:
+        await auth_close()
+    except Exception as exc:
+        logger.warning("Auth shutdown error: %s", exc)
+
     try:
         await er_close()
     except Exception as exc:
@@ -226,6 +240,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # JWT validation runs on every request except the public allowlist
+    # (/auth/login, /auth/register, *​/health, docs). Added BEFORE CORS so that
+    # CORS remains the outermost middleware and 401 responses still carry CORS
+    # headers (Starlette wraps last-added outermost).
+    app.add_middleware(AuthMiddleware)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allow_origins,
@@ -238,6 +258,7 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "portless-combined"}
 
+    app.include_router(auth_router)
     for router in _SERVICE_ROUTERS:
         app.include_router(router)
 
