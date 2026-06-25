@@ -12,6 +12,16 @@ Complete set of realistic JSON responses for every PortLess service. Use these t
 
 ```
 mocked/
+├── health/                    API Gateway health checks (System Health screen)
+│   ├── gateway_ok.json        GET /health — gateway online
+│   ├── downstream_all_ok.json GET /health/downstream — all 11 services "ok"
+│   └── downstream_degraded.json  GET /health/downstream — 2 services unreachable
+│
+├── rag/                       RAG knowledge base (Knowledge Base screen)
+│   ├── stats.json             GET /rag/stats — indexed chunk count
+│   ├── ingest_accepted.json   POST /rag/upload — 202 job accepted
+│   └── job_completed.json     GET /rag/ingest/{job_id} — completed job
+│
 ├── deals/                     Deal service responses
 │   ├── deal_list.json         GET /deals — 4 deals in different states
 │   ├── deal_detail_negotiating.json

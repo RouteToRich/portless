@@ -11,17 +11,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 
 function ArbitrageBar({ rank }: { rank: number }) {
-  // Higher rank = better (max ~10)
-  const pct = Math.min(100, (rank / 10) * 100);
+  // Higher rank = better (max ~10). Guard against missing/non-numeric values.
+  const safeRank = Number.isFinite(rank) ? rank : 0;
+  const pct = Math.min(100, (safeRank / 10) * 100);
   return (
     <div className="flex items-center gap-2">
       <Progress
         value={pct}
         className="h-1.5 flex-1"
         indicatorClassName={
-          rank >= 7
+          safeRank >= 7
             ? "bg-[#2ec28a]"
-            : rank >= 4
+            : safeRank >= 4
             ? "bg-[#f5a623]"
             : "bg-[#ff5d6c]"
         }
@@ -29,10 +30,10 @@ function ArbitrageBar({ rank }: { rank: number }) {
       <span
         className={cn(
           "text-xs font-bold w-8 text-right",
-          rank >= 7 ? "text-[#2ec28a]" : rank >= 4 ? "text-[#f5a623]" : "text-[#ff5d6c]"
+          safeRank >= 7 ? "text-[#2ec28a]" : safeRank >= 4 ? "text-[#f5a623]" : "text-[#ff5d6c]"
         )}
       >
-        {rank.toFixed(1)}
+        {safeRank.toFixed(1)}
       </span>
     </div>
   );

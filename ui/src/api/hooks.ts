@@ -10,6 +10,7 @@ import {
   MatchApi,
   NegotiationApi,
   OpportunitiesApi,
+  RagApi,
   ShieldApi,
 } from "./endpoints";
 import type { ApprovalRecord, CreateDealRequest, ResolveApprovalRequest } from "./types";
@@ -281,5 +282,42 @@ export function useMatchScore(dealId: string | undefined) {
     queryKey: ["match-score", dealId],
     queryFn: () => MatchApi.getScore(dealId as string),
     enabled: Boolean(dealId),
+  });
+}
+
+// ── RAG Knowledge Base ────────────────────────────────────────────────────────
+
+export function useRagStats() {
+  return useQuery({
+    queryKey: ["rag", "stats"],
+    queryFn: RagApi.stats,
+    refetchInterval: 15000,
+  });
+}
+
+export function useRagUpload() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ files, chunkStrategy }: { files: File[]; chunkStrategy?: string }) =>
+      RagApi.upload(files, chunkStrategy),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["rag", "stats"] }),
+  });
+}
+
+// Polls a running ingestion job until it completes or fails.
+export function useRagJob(jobId: string | null) {
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: ["rag", "job", jobId],
+    queryFn: () => RagApi.jobStatus(jobId as string),
+    enabled: Boolean(jobId),
+    refetchInterval: (query) => {
+      const s = query.state.data?.status;
+      if (s === "completed" || s === "failed") {
+        qc.invalidateQueries({ queryKey: ["rag", "stats"] });
+        return false;
+      }
+      return 1500;
+    },
   });
 }

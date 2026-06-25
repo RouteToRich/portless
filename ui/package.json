@@ -2,10 +2,14 @@
   "name": "portless-web",
   "version": "0.1.0",
   "private": true,
+  "overrides": {
+    "esbuild": "npm:esbuild-wasm@^0.21.3"
+  },
   "description": "PortLess Ops Console — React UI for the merchant-export platform",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "vite --mode mock",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit"

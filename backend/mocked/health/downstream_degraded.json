@@ -1,0 +1,13 @@
+{
+  "deals": "ok",
+  "trade-min": "ok",
+  "match-engine": "ok",
+  "sourcing": "ok",
+  "negotiation-agent": "ok",
+  "dealmaker": "ok",
+  "shield-link": "unreachable",
+  "docugen": "ok",
+  "escrow-guard": "unreachable",
+  "hitl-approval": "ok",
+  "exception-resolver": "ok"
+}

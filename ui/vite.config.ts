@@ -10,10 +10,16 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // Mock-mode fixtures live in the backend's documented mocked/ set.
+      "@mocked": path.resolve(__dirname, "../backend/mocked"),
     },
   },
   server: {
     port: 5173,
+    // Allow importing JSON fixtures from ../backend/mocked (outside the ui root).
+    fs: {
+      allow: [path.resolve(__dirname, ".."), path.resolve(__dirname)],
+    },
     proxy: {
       "/api": {
         target: "http://localhost:8081",
@@ -21,5 +27,8 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
+  },
+  build: {
+    target: "esnext",
   },
 });

@@ -4,6 +4,7 @@ import {
   Activity,
   AlertTriangle,
   Bell,
+  BrainCircuit,
   LayoutGrid,
   Menu,
   Moon,
@@ -33,6 +34,7 @@ const NAV = [
   { to: "/exceptions",label: "Exceptions",          icon: AlertTriangle },
   { to: "/autonomy",  label: "Autonomy Settings",   icon: Settings2 },
   { to: "/health",    label: "System Health",       icon: Activity },
+  { to: "/knowledge", label: "Knowledge Base",      icon: BrainCircuit },
 ];
 
 const PAGE_TITLES: Record<string, string> = {
@@ -43,6 +45,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/exceptions": "Exceptions",
   "/autonomy":   "Autonomy Settings",
   "/health":     "System Health",
+  "/knowledge":  "Knowledge Base",
 };
 
 export function AppLayout() {

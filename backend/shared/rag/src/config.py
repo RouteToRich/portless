@@ -91,6 +91,18 @@ class RAGSettings(BaseSettings):
     enable_pdf_layout_extraction: bool = True
     enable_pdf_ocr: bool = False
 
+    # ──────────────────────────── Uploaded-file storage (raw bytes)
+    # Where raw uploaded knowledge files are persisted durably. "mongodb"
+    # stores bytes in GridFS — no external infra needed. Swap to "s3" later
+    # by setting RAG_FILE_STORE_BACKEND=s3 and filling the s3_* fields; the
+    # S3 implementation lives in file_store.py (S3FileStore).
+    file_store_backend: str = "mongodb"          # "mongodb" | "s3"
+    file_store_gridfs_bucket: str = "rag_files"  # GridFS bucket name
+    # S3 placeholders — only read when file_store_backend="s3"
+    s3_bucket: str = ""
+    s3_region: str = ""
+    s3_endpoint_url: str = ""                     # for S3-compatible stores (MinIO etc.)
+
     # ──────────────────────────────────────────────── Security
     use_llm_prompt_injection_classifier: bool = False
 

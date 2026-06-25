@@ -103,6 +103,29 @@ export interface DealException {
 
 export type DownstreamHealth = Record<string, string>;
 
+// RAG knowledge base
+export interface RagStats {
+  total_chunks: number;
+  collection: string;
+  db: string;
+}
+
+export interface RagIngestResponse {
+  job_id: string;
+  status: string;
+  message: string;
+}
+
+export interface RagJobStatus {
+  job_id: string;
+  status: "pending" | "running" | "completed" | "failed";
+  inserted_count?: number | null;
+  graph_inserted_count?: number | null;
+  error?: string | null;
+  started_at: string;
+  completed_at?: string | null;
+}
+
 export interface CreateDealRequest {
   operator_id: string;
   hs_code: string;

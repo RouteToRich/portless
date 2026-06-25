@@ -41,8 +41,10 @@ interface ServiceCardProps {
 
 function ServiceCard({ name, status }: ServiceCardProps) {
   const isOk = status === "ok";
-  const label = SERVICE_LABELS[name] ?? name.replace(/_/g, " ");
-  const emoji = SERVICE_ICONS[name] ?? "🔧";
+  // Gateway reports hyphenated keys (e.g. "trade-min"); our maps use underscores.
+  const key = name.replace(/-/g, "_");
+  const label = SERVICE_LABELS[key] ?? name.replace(/[_-]/g, " ");
+  const emoji = SERVICE_ICONS[key] ?? "🔧";
 
   return (
     <Card

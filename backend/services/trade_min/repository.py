@@ -283,3 +283,16 @@ async def close_repository() -> None:
         _motor_client = None
         logger.info("Trade-Min MongoDB connection closed")
     _repository = None
+
+
+class RepositoryProxy:
+    """A synchronous proxy for the repository, primarily used in tests to clear state."""
+    def clear(self) -> None:
+        global _repository
+        if _repository is None:
+            _repository = InMemoryFallbackRepository()
+        if isinstance(_repository, InMemoryFallbackRepository):
+            _repository._store.clear()
+
+
+repository = RepositoryProxy()

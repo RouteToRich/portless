@@ -15,6 +15,9 @@ import type {
   NegotiationSession,
   Opportunity,
   QcRecord,
+  RagIngestResponse,
+  RagJobStatus,
+  RagStats,
   ResolveApprovalRequest,
 } from "./types";
 
@@ -121,4 +124,20 @@ export const MatchApi = {
     api
       .get<MatchScore>("/match-engine/matches", { params: { deal_id: dealId } })
       .then((r) => r.data),
+};
+
+export const RagApi = {
+  stats: () => api.get<RagStats>("/rag/stats").then((r) => r.data),
+  jobStatus: (jobId: string) =>
+    api.get<RagJobStatus>(`/rag/ingest/${jobId}`).then((r) => r.data),
+  upload: (files: File[], chunkStrategy = "recursive") => {
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f));
+    form.append("chunk_strategy", chunkStrategy);
+    return api
+      .post<RagIngestResponse>("/rag/upload", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
 };

@@ -6,9 +6,11 @@ Mount this router in the main app:
     app.include_router(rag_router, prefix="/rag")
 
 Endpoints:
-    POST   /rag/ingest              — start an ingestion job
+    POST   /rag/ingest              — start an ingestion job (server-side paths)
+    POST   /rag/upload              — upload files from a browser, then ingest
     GET    /rag/ingest/{job_id}     — poll ingestion job status
     POST   /rag/query               — ask a question (full RAG pipeline)
+    GET    /rag/files               — list persisted uploaded files
     DELETE /rag/documents/{source}  — delete all chunks for a source path
     GET    /rag/health              — liveness + MongoDB ping
     GET    /rag/stats               — document count stats
@@ -17,11 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from .config import settings
@@ -154,6 +158,97 @@ async def start_ingest(
     )
 
 
+@router.post(
+    "/upload",
+    response_model=IngestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload files and ingest them",
+)
+async def upload_and_ingest(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(..., description="Knowledge files to ingest."),
+    chunk_strategy: str = Form("recursive"),
+) -> IngestResponse:
+    """Accept browser file uploads, persist the bytes durably, then ingest.
+
+    Each file is first stored in the configured file store (MongoDB GridFS by
+    default — see file_store.py) so it survives restarts. A transient working
+    copy is then written to a temp dir and fed into the path-based ``/ingest``
+    pipeline. Swap the backend to S3 later via RAG_FILE_STORE_BACKEND.
+    """
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files supplied.",
+        )
+
+    from .file_store import get_file_store
+
+    store = get_file_store()
+    upload_dir = Path(tempfile.gettempdir()) / "portless-rag-uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_paths: list[str] = []
+    persisted = 0
+    for f in files:
+        if not f.filename:
+            continue
+        data = await f.read()
+        name = Path(f.filename).name  # strip any path components
+        if not data:
+            continue
+
+        # 1) Persist durably (MongoDB GridFS by default).
+        try:
+            await store.save(
+                name, data,
+                content_type=f.content_type,
+                metadata={"origin": "rag_upload", "chunk_strategy": chunk_strategy},
+            )
+            persisted += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RAG upload: failed to persist %r to %s store: %s", name, store.backend, exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to persist {name!r} to {store.backend} store: {exc}",
+            ) from exc
+
+        # 2) Materialise a transient working copy for the path-based ingester.
+        dest = upload_dir / name
+        dest.write_bytes(data)
+        saved_paths.append(str(dest))
+
+    if not saved_paths:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded files had no readable content.",
+        )
+
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {
+        "status": "pending",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
+        "inserted_count": None,
+        "graph_inserted_count": None,
+        "error": None,
+    }
+    background_tasks.add_task(
+        _run_ingest_job,
+        job_id=job_id,
+        input_paths=saved_paths,
+        chunk_strategy=chunk_strategy,
+    )
+    return IngestResponse(
+        job_id=job_id,
+        status="pending",
+        message=(
+            f"Persisted {persisted} file(s) to the {store.backend} store and queued "
+            f"ingestion. Poll /rag/ingest/{job_id} for status."
+        ),
+    )
+
+
 @router.get(
     "/ingest/{job_id}",
     response_model=JobStatusResponse,
@@ -272,6 +367,23 @@ async def health_check() -> HealthResponse:
         mongodb=mongo_status,
         vector_index=index_status,
     )
+
+
+@router.get(
+    "/files",
+    summary="List persisted uploaded files",
+)
+async def list_files(limit: int = 100) -> dict[str, Any]:
+    """Return files persisted in the configured file store (default: GridFS)."""
+    from .file_store import get_file_store
+
+    store = get_file_store()
+    files = await store.list(limit=limit)
+    return {
+        "backend": store.backend,
+        "count": len(files),
+        "files": [f.model_dump() for f in files],
+    }
 
 
 @router.get(

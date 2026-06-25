@@ -9,6 +9,7 @@ import { MoneyMargin } from "./pages/MoneyMargin";
 import { Exceptions } from "./pages/Exceptions";
 import { AutonomySettings } from "./pages/AutonomySettings";
 import { SystemHealth } from "./pages/SystemHealth";
+import { KnowledgeBase } from "./pages/KnowledgeBase";
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
           <Route path="/exceptions" element={<Exceptions />} />
           <Route path="/autonomy" element={<AutonomySettings />} />
           <Route path="/health" element={<SystemHealth />} />
+          <Route path="/knowledge" element={<KnowledgeBase />} />
           <Route path="*" element={<Navigate to="/radar" replace />} />
         </Route>
       </Routes>

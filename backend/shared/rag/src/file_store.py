@@ -1,0 +1,193 @@
+"""Durable storage for raw uploaded knowledge files.
+
+The bytes of every file uploaded through ``POST /rag/upload`` are persisted here
+so they survive process/container restarts and can be re-ingested or audited.
+
+Backends are pluggable via ``RAG_FILE_STORE_BACKEND``:
+
+  • ``mongodb`` (default) — bytes stored in MongoDB GridFS. No external infra.
+  • ``s3``                — Amazon S3 / S3-compatible object store (future).
+
+``get_file_store()`` returns the configured implementation. To add S3 later,
+fill in :class:`S3FileStore` and set ``RAG_FILE_STORE_BACKEND=s3`` plus the
+``RAG_S3_*`` settings — no caller changes required, because every backend
+implements the :class:`FileStore` Protocol.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Protocol, runtime_checkable
+
+from pydantic import BaseModel
+
+from .config import settings
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Common types
+# ---------------------------------------------------------------------------
+
+class StoredFile(BaseModel):
+    """Reference to a persisted file, returned by every FileStore backend."""
+
+    file_id: str
+    filename: str
+    size: int
+    backend: str
+    content_type: str | None = None
+    uploaded_at: str | None = None
+
+
+@runtime_checkable
+class FileStore(Protocol):
+    """Backend-agnostic interface for persisting raw uploaded files."""
+
+    backend: str
+
+    async def save(
+        self,
+        filename: str,
+        data: bytes,
+        content_type: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> StoredFile: ...
+
+    async def read(self, file_id: str) -> bytes: ...
+
+    async def delete(self, file_id: str) -> bool: ...
+
+    async def list(self, limit: int = 100) -> list[StoredFile]: ...
+
+
+# ---------------------------------------------------------------------------
+# MongoDB GridFS implementation (default)
+# ---------------------------------------------------------------------------
+
+class MongoGridFSFileStore:
+    """Persist file bytes in MongoDB via GridFS.
+
+    GridFS chunks large files automatically, so this handles documents above
+    the 16 MB BSON limit. Files live in ``<bucket>.files`` / ``<bucket>.chunks``
+    in the RAG database.
+    """
+
+    backend = "mongodb"
+
+    def __init__(self) -> None:
+        self._bucket_name = settings.file_store_gridfs_bucket
+
+    async def _bucket(self) -> Any:
+        from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+        from shared.llm_gateway.mongo_connection import get_connection
+
+        conn = await get_connection(uri=settings.mongo_uri, db_name=settings.mongo_db_name)
+        db = conn.get_database()
+        return AsyncIOMotorGridFSBucket(db, bucket_name=self._bucket_name)
+
+    async def save(
+        self,
+        filename: str,
+        data: bytes,
+        content_type: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> StoredFile:
+        bucket = await self._bucket()
+        meta = {"content_type": content_type, **(metadata or {})}
+        file_id = await bucket.upload_from_stream(filename, data, metadata=meta)
+        logger.info(
+            "FileStore(mongodb): stored %r (%d bytes) as GridFS id %s",
+            filename, len(data), file_id,
+        )
+        return StoredFile(
+            file_id=str(file_id),
+            filename=filename,
+            size=len(data),
+            backend=self.backend,
+            content_type=content_type,
+        )
+
+    async def read(self, file_id: str) -> bytes:
+        from bson import ObjectId
+
+        bucket = await self._bucket()
+        stream = await bucket.open_download_stream(ObjectId(file_id))
+        return await stream.read()
+
+    async def delete(self, file_id: str) -> bool:
+        from bson import ObjectId
+
+        bucket = await self._bucket()
+        try:
+            await bucket.delete(ObjectId(file_id))
+            return True
+        except Exception as exc:  # noqa: BLE001 — unknown id / already gone
+            logger.warning("FileStore(mongodb): delete %s failed: %s", file_id, exc)
+            return False
+
+    async def list(self, limit: int = 100) -> list[StoredFile]:
+        from shared.llm_gateway.mongo_connection import get_connection
+
+        conn = await get_connection(uri=settings.mongo_uri, db_name=settings.mongo_db_name)
+        files_col = conn.get_collection(f"{self._bucket_name}.files")
+        cursor = files_col.find({}, sort=[("uploadDate", -1)], limit=limit)
+        out: list[StoredFile] = []
+        async for doc in cursor:
+            meta = doc.get("metadata") or {}
+            upload_date = doc.get("uploadDate")
+            out.append(
+                StoredFile(
+                    file_id=str(doc["_id"]),
+                    filename=doc.get("filename", ""),
+                    size=int(doc.get("length", 0)),
+                    backend=self.backend,
+                    content_type=meta.get("content_type"),
+                    uploaded_at=upload_date.isoformat() if upload_date else None,
+                )
+            )
+        return out
+
+
+# ---------------------------------------------------------------------------
+# S3 implementation (future — stub)
+# ---------------------------------------------------------------------------
+
+class S3FileStore:
+    """Amazon S3 / S3-compatible backend.
+
+    Placeholder for the future. To enable: add ``boto3`` (or ``aioboto3``) to
+    requirements, implement the methods below against ``settings.s3_bucket`` /
+    ``s3_region`` / ``s3_endpoint_url``, then set ``RAG_FILE_STORE_BACKEND=s3``.
+    The file_id should be the S3 object key.
+    """
+
+    backend = "s3"
+
+    def __init__(self) -> None:
+        raise NotImplementedError(
+            "S3 file store is not wired yet. Use RAG_FILE_STORE_BACKEND=mongodb "
+            "(default), or implement S3FileStore in shared/rag/src/file_store.py."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+_BACKENDS = {
+    "mongodb": MongoGridFSFileStore,
+    "s3": S3FileStore,
+}
+
+
+def get_file_store() -> FileStore:
+    """Return the configured file-store backend (default: MongoDB GridFS)."""
+    backend = (settings.file_store_backend or "mongodb").lower()
+    impl = _BACKENDS.get(backend)
+    if impl is None:
+        raise ValueError(
+            f"Unknown RAG_FILE_STORE_BACKEND {backend!r}. "
+            f"Supported: {', '.join(_BACKENDS)}."
+        )
+    return impl()

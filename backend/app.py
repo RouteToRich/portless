@@ -143,6 +143,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("ExceptionResolver startup failed (service will run degraded): %s", exc)
 
+    # ── RAG: ensure MongoDB vector indexes (optional module) ─────────────
+    try:
+        from shared.rag.src.router import startup as rag_startup
+        await rag_startup()
+    except Exception as exc:
+        logger.warning("RAG startup skipped (knowledge base will run degraded): %s", exc)
+
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
@@ -233,6 +240,15 @@ def create_app() -> FastAPI:
 
     for router in _SERVICE_ROUTERS:
         app.include_router(router)
+
+    # RAG module is optional — its imports pull in heavy deps (embeddings,
+    # vector store). Mount defensively so a missing dep can't break the app.
+    try:
+        from shared.rag.src.router import router as rag_router
+
+        app.include_router(rag_router, prefix="/rag")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG router not mounted (knowledge upload disabled): %s", exc)
 
     return app
 

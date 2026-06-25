@@ -143,6 +143,10 @@ class MongoConnection:
         """Return the Motor collection for `name` in this database."""
         return self._db[name]
 
+    def get_database(self) -> Any:
+        """Return the Motor database handle (needed for e.g. GridFS buckets)."""
+        return self._db
+
     async def ensure_indexes(
         self,
         collection_name: str,
