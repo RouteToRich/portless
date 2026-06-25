@@ -5,14 +5,20 @@ downstream service to resume the deal flow.  The ``callback_payload`` stored
 with the approval record is the full request body for the target service,
 exactly as the caller submitted it when creating the approval.
 
-On REJECT the service emits a ``deal.exception`` event instead so the
-Exception Resolver (or a human operator) can decide the next step.
+On REJECT:
+  - Hard-reject actions emit a ``deal.exception`` event so the Exception
+    Resolver (or a human operator) can decide the next step.
+  - Soft-reject actions (e.g. SEND_NEGOTIATION_EMAIL) call ``execute_reject_callback``
+    instead, which updates the draft status without raising a deal exception.
 
-Each callback is:
+Each approve callback is:
   async def _cb_<action>(deal_id, payload) -> dict | None
   Returns a dict summary (logged) or None if nothing to report.
 
-The dispatcher ``execute_callback`` maps ApprovalAction values to handlers.
+Each reject callback follows the same signature.
+
+The dispatchers ``execute_callback`` / ``execute_reject_callback`` map
+ApprovalAction values to handlers.
 """
 from __future__ import annotations
 
@@ -23,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Individual action handlers
+# Approve handlers
 # ---------------------------------------------------------------------------
 
 async def _cb_book_freight(deal_id: str, payload: dict[str, Any]) -> dict | None:
@@ -60,13 +66,41 @@ async def _cb_file_customs(deal_id: str, payload: dict[str, Any]) -> dict | None
 
 async def _cb_resolve_exception(deal_id: str, payload: dict[str, Any]) -> dict | None:
     """Continue: resolve a deal exception after HITL approval."""
-    # Exception resolver is still a stub; log and return.
     logger.info("HITL: RESOLVE_EXCEPTION approved for deal %s — payload: %s", deal_id, payload)
     return {"action": "RESOLVE_EXCEPTION", "deal_id": deal_id}
 
 
+async def _cb_send_negotiation_email(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Send the operator-approved negotiation email draft.
+
+    If the operator supplied a ``modified_body`` in the resolve request it is
+    forwarded here via the payload and passed to send_approved_email so the
+    final email uses the operator's version instead of the LLM draft.
+    """
+    from agents.negotiation_agent.service import send_approved_email  # type: ignore[import]
+
+    email_id: str = payload["email_id"]
+    modified_body: str | None = payload.get("modified_body")
+    await send_approved_email(email_id, modified_body)
+    status = "modified_sent" if modified_body else "sent"
+    return {"email_id": email_id, "status": status}
+
+
 # ---------------------------------------------------------------------------
-# Dispatcher
+# Reject handlers (soft-reject actions only)
+# ---------------------------------------------------------------------------
+
+async def _rcb_send_negotiation_email(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Mark a negotiation email draft as rejected (operator declined to send)."""
+    from agents.negotiation_agent.service import reject_email  # type: ignore[import]
+
+    email_id: str = payload["email_id"]
+    await reject_email(email_id)
+    return {"email_id": email_id, "status": "rejected"}
+
+
+# ---------------------------------------------------------------------------
+# Approve dispatcher
 # ---------------------------------------------------------------------------
 
 _CALLBACK_MAP = {
@@ -75,6 +109,7 @@ _CALLBACK_MAP = {
     "RELEASE_SUPPLIER_PAYOUT": _cb_release_supplier_payout,
     "FILE_CUSTOMS": _cb_file_customs,
     "RESOLVE_EXCEPTION": _cb_resolve_exception,
+    "SEND_NEGOTIATION_EMAIL": _cb_send_negotiation_email,
 }
 
 
@@ -109,7 +144,6 @@ async def execute_callback(
             "HITL: callback %s failed for deal %s approval %s: %s",
             action, deal_id, approval_id, exc,
         )
-        # Surface as domain event so Exception Resolver can pick it up
         try:
             from shared.bus import get_publisher
             from shared.domain.events import DomainEvent, EventTopic
@@ -126,4 +160,43 @@ async def execute_callback(
             ))
         except Exception:
             pass
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Reject dispatcher (soft-reject actions)
+# ---------------------------------------------------------------------------
+
+_REJECT_CALLBACK_MAP = {
+    "SEND_NEGOTIATION_EMAIL": _rcb_send_negotiation_email,
+}
+
+
+async def execute_reject_callback(
+    action: str,
+    deal_id: str,
+    callback_payload: dict[str, Any],
+    approval_id: str,
+) -> dict | None:
+    """Execute the reject handler for a soft-reject action.
+
+    Unlike ``execute_callback``, failures here are logged only — no
+    DEAL_EXCEPTION is emitted because the rejection itself was intentional.
+    """
+    handler = _REJECT_CALLBACK_MAP.get(action)
+    if handler is None:
+        return None
+
+    try:
+        result = await handler(deal_id, callback_payload)
+        logger.info(
+            "HITL: reject callback %s executed for deal %s approval %s → %s",
+            action, deal_id, approval_id, result,
+        )
+        return result
+    except Exception as exc:
+        logger.error(
+            "HITL: reject callback %s failed for deal %s approval %s: %s",
+            action, deal_id, approval_id, exc,
+        )
         return None

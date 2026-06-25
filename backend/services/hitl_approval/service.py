@@ -44,7 +44,7 @@ from shared.bus import get_publisher
 from shared.domain.enums import ApprovalAction
 from shared.domain.events import DomainEvent, EventTopic
 
-from .callbacks import execute_callback
+from .callbacks import execute_callback, execute_reject_callback
 from .config import settings
 from .notification import notify
 from .repository import get_repository
@@ -58,6 +58,10 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 _VALID_ACTIONS = {a.value for a in ApprovalAction}
+
+# Actions where a REJECT is a deliberate operator decision, not a deal
+# blocker — no DEAL_EXCEPTION event should be emitted for these.
+_SOFT_REJECT_ACTIONS = {ApprovalAction.SEND_NEGOTIATION_EMAIL.value}
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +259,7 @@ async def resolve_approval(
         "resolved_by": req.resolved_by,
         "resolved_at": now,
         "resolution_note": req.note,
+        "modified_body": req.modified_body,
         "updated_at": now,
     })
     await repo.save(updated)
@@ -264,8 +269,13 @@ async def resolve_approval(
     await notify("approval_resolved", response.model_dump(mode="json"))
 
     if req.decision == "APPROVE":
+        # Inject modified_body into callback payload so the handler can use it
+        payload_for_callback = dict(record.callback_payload)
+        if req.modified_body:
+            payload_for_callback["modified_body"] = req.modified_body
+
         asyncio.create_task(
-            execute_callback(record.action, record.deal_id, record.callback_payload, approval_id)
+            execute_callback(record.action, record.deal_id, payload_for_callback, approval_id)
         )
         await _emit(EventTopic.APPROVAL_RESOLVED, record.deal_id, {
             "approval_id": approval_id,
@@ -274,16 +284,25 @@ async def resolve_approval(
             "resolved_by": req.resolved_by,
         })
     else:
-        # REJECT: surface as deal exception for downstream handling
-        await _emit(EventTopic.DEAL_EXCEPTION, record.deal_id, {
-            "source": "hitl_approval",
-            "approval_id": approval_id,
-            "action": record.action,
-            "decision": "REJECT",
-            "resolved_by": req.resolved_by,
-            "note": req.note,
-            "action_required": "deal_flow_blocked_by_operator_rejection",
-        })
+        if record.action in _SOFT_REJECT_ACTIONS:
+            # Soft reject (e.g. email draft) — call the reject callback to update
+            # the draft status, but do NOT raise a deal exception.
+            asyncio.create_task(
+                execute_reject_callback(
+                    record.action, record.deal_id, record.callback_payload, approval_id
+                )
+            )
+        else:
+            # Hard reject: surface as deal exception for downstream handling
+            await _emit(EventTopic.DEAL_EXCEPTION, record.deal_id, {
+                "source": "hitl_approval",
+                "approval_id": approval_id,
+                "action": record.action,
+                "decision": "REJECT",
+                "resolved_by": req.resolved_by,
+                "note": req.note,
+                "action_required": "deal_flow_blocked_by_operator_rejection",
+            })
         await _emit(EventTopic.APPROVAL_RESOLVED, record.deal_id, {
             "approval_id": approval_id,
             "action": record.action,

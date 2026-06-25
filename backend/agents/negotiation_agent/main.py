@@ -13,10 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 async def on_startup() -> None:
+    from .email_history import init_email_repository
     from .repository import init_repository
     from .service import monitor_inbox
 
     await init_repository()
+    await init_email_repository()
     await monitor_inbox()
     logger.info("NegotiationAgent startup complete")
 

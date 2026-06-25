@@ -71,6 +71,28 @@ export interface Approval {
   deep_link?: string | null;
 }
 
+export interface ApprovalRecord {
+  approval_id: string;
+  deal_id: string;
+  action: string;
+  summary: string | null;
+  financial_impact_usd: number | null;
+  risk_flags: string[];
+  autonomy_level: AutonomyLevel;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "AUTO_APPROVED" | "TIMED_OUT";
+  expires_at: string | null;
+  default_on_timeout: "APPROVE" | "REJECT";
+  deep_link: string | null;
+  callback_payload: Record<string, unknown>;
+  decision: "APPROVE" | "REJECT" | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
+  modified_body: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DealException {
   exception_id: string;
   deal_id: string;
@@ -87,4 +109,136 @@ export interface CreateDealRequest {
   autonomy_profile?: AutonomyLevel;
   margin_floor_pct?: number | null;
   parties?: Party[];
+}
+
+// Negotiation types
+export interface NegotiationSession {
+  negotiation_id: string;
+  deal_id: string;
+  trade_match_id: string;
+  buyer_id: string;
+  seller_id: string;
+  product_code: string;
+  status: "STARTED" | "ROUND" | "AGREED" | "FAILED" | "HITL_PENDING" | "ESCALATED";
+  round_no: number;
+  current_bid: number | null;
+  current_ask: number | null;
+  agreed_price: number | null;
+  margin_at_current: number | null;
+  hitl_required: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NegotiationRound {
+  round_id: string;
+  negotiation_id: string;
+  deal_id: string;
+  round_no: number;
+  party: "buyer" | "supplier";
+  channel: string;
+  inbound_price: number | null;
+  inbound_message: string | null;
+  outbound_message: string;
+  orchestrator_routing: string;
+  margin_at_round: number | null;
+  hitl_required: boolean;
+  created_at: string;
+}
+
+export interface EmailHistoryRecord {
+  email_id: string;
+  negotiation_id: string;
+  deal_id: string;
+  round_no: number;
+  direction: "outbound" | "inbound";
+  party: "buyer" | "supplier";
+  to_address: string;
+  from_address: string;
+  subject: string;
+  body: string;
+  original_body: string | null;
+  approval_id: string | null;
+  status:
+    | "draft"
+    | "pending_approval"
+    | "sent"
+    | "modified_sent"
+    | "rejected"
+    | "failed"
+    | "received";
+  sent_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NegotiationResponse {
+  round: NegotiationRound;
+  session: NegotiationSession;
+}
+
+export interface RunRoundRequest {
+  inbound_price?: number | null;
+  inbound_message?: string | null;
+  party?: "buyer" | "supplier";
+}
+
+// Escrow, QC, Freight, Docugen
+export interface EscrowHold {
+  hold_id: string;
+  deal_id: string;
+  amount_usd: number;
+  status: "PENDING" | "FUNDED" | "RELEASED" | "REFUNDED";
+  stripe_payment_intent_id: string | null;
+  funded_at: string | null;
+}
+
+export interface QcRecord {
+  qc_id: string;
+  deal_id: string;
+  provider: string;
+  status: "BOOKED" | "IN_PROGRESS" | "PASSED" | "FAILED";
+  report_url: string | null;
+  booked_at: string;
+}
+
+export interface FreightRecord {
+  tpo_id: string;
+  deal_id: string;
+  provider: string;
+  status: "BOOKED" | "IN_TRANSIT" | "ARRIVED" | "CLEARED";
+  bl_number: string | null;
+  eta: string | null;
+}
+
+export interface DocumentRecord {
+  document_id: string;
+  deal_id: string;
+  document_type: string;
+  status: string;
+  file_url: string | null;
+  created_at: string;
+}
+
+// Match score
+export interface MatchScore {
+  composite_score: number;
+  price_score: number;
+  margin_score: number;
+  risk_score: number;
+  logistics_score: number;
+}
+
+// SSE event
+export interface ApprovalStreamEvent {
+  event: string;
+  data: ApprovalRecord;
+}
+
+// Resolve payload
+export interface ResolveApprovalRequest {
+  decision: "APPROVE" | "REJECT";
+  resolved_by: string;
+  note?: string;
+  modified_body?: string;
 }

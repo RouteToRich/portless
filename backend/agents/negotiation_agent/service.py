@@ -6,6 +6,9 @@ Orchestrates:
   3. get_negotiation()   — read session state
   4. list_rounds()       — retrieve round history
   5. monitor_inbox()     — placeholder (see email_dispatcher.InboxMonitor)
+  6. list_email_history()  — email audit trail for a negotiation
+  7. send_approved_email() — called by HITL callback when operator approves
+  8. reject_email()        — called by HITL callback when operator rejects
 """
 from __future__ import annotations
 
@@ -19,6 +22,12 @@ from shared.domain.events import DomainEvent, EventTopic
 
 from .config import settings
 from .email_dispatcher import EmailDispatcher, EmailMessage, InboxMonitor
+from .email_history import (
+    EmailDirection,
+    EmailHistoryRecord,
+    EmailStatus,
+    get_email_repository,
+)
 from .graph import NegotiationGraphState, build_negotiation_graph
 from .guards import compute_net_margin
 from .rag import load_rag_context
@@ -37,6 +46,8 @@ logger = logging.getLogger(__name__)
 
 _dispatcher = EmailDispatcher()
 _inbox_monitor = InboxMonitor()
+
+_SMTP_FROM = "portless-trade@portless.io"
 
 
 # ---------------------------------------------------------------------------
@@ -77,38 +88,116 @@ def _graph_state_to_status(routing: str) -> NegotiationStatus:
     return mapping.get(routing, "ROUND")
 
 
+async def _create_and_gate_email(
+    session: NegotiationSession,
+    party: str,
+    to_address: str,
+    subject: str,
+    body: str,
+) -> str:
+    """Persist an email draft and create an L0 HITL approval gate.
+
+    The email is NOT sent here.  The HITL callback (send_approved_email /
+    reject_email) handles the actual dispatch once an operator decides.
+
+    Returns the generated email_id.
+    """
+    now = datetime.now(timezone.utc)
+    email_id = f"EMAIL-{uuid.uuid4().hex[:10].upper()}"
+
+    record = EmailHistoryRecord(
+        email_id=email_id,
+        negotiation_id=session.negotiation_id,
+        deal_id=session.deal_id,
+        round_no=session.round_no,
+        direction=EmailDirection.OUTBOUND,
+        party=party,
+        to_address=to_address,
+        from_address=_SMTP_FROM,
+        subject=subject,
+        body=body,
+        status=EmailStatus.DRAFT,
+        created_at=now,
+        updated_at=now,
+    )
+    await get_email_repository().save(record)
+
+    try:
+        from services.hitl_approval.service import create_approval  # type: ignore[import]
+        from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
+
+        preview = body[:150] + ("..." if len(body) > 150 else "")
+        approval_req = CreateApprovalRequest(
+            deal_id=session.deal_id,
+            action="SEND_NEGOTIATION_EMAIL",
+            summary=(
+                f"Round {session.round_no} draft email to {party} — {preview}"
+            ),
+            risk_flags=["email_content_review"],
+            autonomy_level="L0",
+            callback_payload={
+                "email_id": email_id,
+                "negotiation_id": session.negotiation_id,
+                "party": party,
+            },
+            idempotency_key=email_id,
+        )
+        approval = await create_approval(approval_req)
+
+        updated = record.model_copy(update={
+            "approval_id": approval.approval_id,
+            "status": EmailStatus.PENDING_APPROVAL,
+            "updated_at": datetime.now(timezone.utc),
+        })
+        await get_email_repository().save(updated)
+
+        logger.info(
+            "Email draft %s gated via HITL approval %s (party=%s round=%d)",
+            email_id, approval.approval_id, party, session.round_no,
+        )
+    except Exception as exc:
+        logger.error("Failed to create HITL approval for email %s: %s", email_id, exc)
+
+    return email_id
+
+
 async def _post_graph_notify(
     session: NegotiationSession,
     final_state: NegotiationGraphState,
     repo: NegotiationRepository,
 ) -> None:
-    """Emit domain events and dispatch outbound messages after graph completes."""
+    """Create HITL-gated email drafts and emit domain events after graph completes.
+
+    Emails are NOT dispatched directly — each draft is stored and routed
+    through a SEND_NEGOTIATION_EMAIL HITL approval.  The operator can then
+    approve (send as-is), modify+approve, or reject each draft.
+    """
     buyer_msg = final_state.get("buyer_outbound_message", "")
     supplier_msg = final_state.get("supplier_outbound_message", "")
 
     tasks = []
     if buyer_msg:
-        tasks.append(_dispatcher.send(EmailMessage(
-            to_address=f"{session.buyer_id}@portless.placeholder",
-            subject=f"PortLess Trade Update — Round {session.round_no}",
-            body=buyer_msg,
-            negotiation_id=session.negotiation_id,
-            round_no=session.round_no,
-        )))
+        tasks.append(_create_and_gate_email(
+            session,
+            "buyer",
+            f"{session.buyer_id}@portless.placeholder",
+            f"PortLess Trade Update — Round {session.round_no}",
+            buyer_msg,
+        ))
     if supplier_msg:
-        tasks.append(_dispatcher.send(EmailMessage(
-            to_address=f"{session.seller_id}@portless.placeholder",
-            subject=f"PortLess Trade Quote — Round {session.round_no}",
-            body=supplier_msg,
-            negotiation_id=session.negotiation_id,
-            round_no=session.round_no,
-        )))
+        tasks.append(_create_and_gate_email(
+            session,
+            "supplier",
+            f"{session.seller_id}@portless.placeholder",
+            f"PortLess Trade Quote — Round {session.round_no}",
+            supplier_msg,
+        ))
 
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for r in results:
             if isinstance(r, Exception):
-                logger.warning("Email dispatch error: %s", r)
+                logger.warning("Email gating error: %s", r)
 
     if session.status == "AGREED" and session.agreed_price:
         await _compute_realized_cms(session, repo)
@@ -386,3 +475,106 @@ async def list_rounds(negotiation_id: str) -> list[NegotiationRound]:
 async def monitor_inbox() -> None:
     """Start the IMAP inbox monitor (placeholder — see InboxMonitor for TODO)."""
     await _inbox_monitor.start()
+
+
+# ---------------------------------------------------------------------------
+# Email history helpers — called by HITL callbacks and router
+# ---------------------------------------------------------------------------
+
+async def send_approved_email(email_id: str, modified_body: str | None = None) -> None:
+    """Send an operator-approved email draft.
+
+    Called by the HITL SEND_NEGOTIATION_EMAIL callback on APPROVE.
+    If *modified_body* is provided the operator has edited the draft; the
+    original body is preserved in ``EmailHistoryRecord.original_body``.
+    """
+    repo = get_email_repository()
+    record = await repo.get(email_id)
+    if not record:
+        logger.error("send_approved_email: email %s not found", email_id)
+        return
+
+    body_to_send = modified_body or record.body
+
+    try:
+        await _dispatcher.send(EmailMessage(
+            to_address=record.to_address,
+            subject=record.subject,
+            body=body_to_send,
+            negotiation_id=record.negotiation_id,
+            round_no=record.round_no,
+        ))
+        now = datetime.now(timezone.utc)
+        new_status = EmailStatus.MODIFIED_SENT if modified_body else EmailStatus.SENT
+        updates: dict = {"status": new_status, "sent_at": now, "updated_at": now}
+        if modified_body:
+            updates["original_body"] = record.body
+            updates["body"] = modified_body
+        await repo.save(record.model_copy(update=updates))
+        logger.info("Email %s dispatched (status=%s)", email_id, new_status)
+    except Exception as exc:
+        logger.error("Email %s send failed: %s", email_id, exc)
+        await repo.save(record.model_copy(update={
+            "status": EmailStatus.FAILED,
+            "updated_at": datetime.now(timezone.utc),
+        }))
+
+
+async def reject_email(email_id: str) -> None:
+    """Mark an email draft as rejected (operator declined to send it).
+
+    Called by the HITL SEND_NEGOTIATION_EMAIL callback on REJECT.
+    """
+    repo = get_email_repository()
+    record = await repo.get(email_id)
+    if not record:
+        logger.error("reject_email: email %s not found", email_id)
+        return
+
+    await repo.save(record.model_copy(update={
+        "status": EmailStatus.REJECTED,
+        "updated_at": datetime.now(timezone.utc),
+    }))
+    logger.info("Email %s rejected by operator", email_id)
+
+
+async def list_email_history(negotiation_id: str) -> list[EmailHistoryRecord]:
+    """Return all email records for the given negotiation, oldest first."""
+    return await get_email_repository().list_by_negotiation(negotiation_id)
+
+
+async def record_inbound_email(
+    negotiation_id: str,
+    deal_id: str,
+    round_no: int,
+    party: str,
+    from_address: str,
+    subject: str,
+    body: str,
+) -> EmailHistoryRecord:
+    """Persist an inbound email received from a buyer or supplier.
+
+    Called by InboxMonitor when it parses a reply.  The record is terminal
+    (status=RECEIVED) — no HITL gate is created for inbound messages.
+    """
+    now = datetime.now(timezone.utc)
+    email_id = f"EMAIL-{uuid.uuid4().hex[:10].upper()}"
+    record = EmailHistoryRecord(
+        email_id=email_id,
+        negotiation_id=negotiation_id,
+        deal_id=deal_id,
+        round_no=round_no,
+        direction=EmailDirection.INBOUND,
+        party=party,
+        to_address=_SMTP_FROM,
+        from_address=from_address,
+        subject=subject,
+        body=body,
+        status=EmailStatus.RECEIVED,
+        sent_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    await get_email_repository().save(record)
+    logger.info("Inbound email %s recorded (party=%s round=%d)", email_id, party, round_no)
+    return record

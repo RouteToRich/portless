@@ -1,11 +1,20 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApprovalsApi,
   DealsApi,
+  DocugenApi,
+  EscrowApi,
+  ExceptionsApi,
   HealthApi,
+  MatchApi,
+  NegotiationApi,
   OpportunitiesApi,
+  ShieldApi,
 } from "./endpoints";
-import type { CreateDealRequest } from "./types";
+import type { ApprovalRecord, CreateDealRequest, ResolveApprovalRequest } from "./types";
+
+// ── Health ──────────────────────────────────────────────────────────────────
 
 export function useGatewayHealth() {
   return useQuery({ queryKey: ["health", "gateway"], queryFn: HealthApi.gateway });
@@ -19,8 +28,14 @@ export function useDownstreamHealth() {
   });
 }
 
+// ── Deals ───────────────────────────────────────────────────────────────────
+
 export function useDeals(status?: string) {
-  return useQuery({ queryKey: ["deals", status ?? "all"], queryFn: () => DealsApi.list(status) });
+  return useQuery({
+    queryKey: ["deals", status ?? "all"],
+    queryFn: () => DealsApi.list(status),
+    refetchInterval: 15000,
+  });
 }
 
 export function useDeal(dealId: string | undefined) {
@@ -58,6 +73,8 @@ export function useUpdateDealStatus() {
   });
 }
 
+// ── Opportunities ────────────────────────────────────────────────────────────
+
 export function useOpportunities() {
   return useQuery({ queryKey: ["opportunities"], queryFn: OpportunitiesApi.list });
 }
@@ -70,10 +87,21 @@ export function useScanOpportunities() {
   });
 }
 
+// ── Approvals ────────────────────────────────────────────────────────────────
+
 export function useApprovals(status?: string) {
   return useQuery({
     queryKey: ["approvals", status ?? "all"],
     queryFn: () => ApprovalsApi.list(status),
+    refetchInterval: 10000,
+  });
+}
+
+export function useApproval(approvalId: string | undefined) {
+  return useQuery({
+    queryKey: ["approval", approvalId],
+    queryFn: () => ApprovalsApi.get(approvalId as string),
+    enabled: Boolean(approvalId),
   });
 }
 
@@ -82,13 +110,176 @@ export function useResolveApproval() {
   return useMutation({
     mutationFn: ({
       approvalId,
-      decision,
-      resolvedBy,
+      payload,
     }: {
       approvalId: string;
-      decision: "APPROVE" | "REJECT";
-      resolvedBy: string;
-    }) => ApprovalsApi.resolve(approvalId, decision, resolvedBy),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
+      payload: ResolveApprovalRequest;
+    }) => ApprovalsApi.resolve(approvalId, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["approvals"] });
+    },
+  });
+}
+
+// ── Approvals SSE stream ─────────────────────────────────────────────────────
+
+export function useApprovalStream() {
+  const [events, setEvents] = useState<ApprovalRecord[]>([]);
+  const [connected, setConnected] = useState(false);
+  const qc = useQueryClient();
+  const baseURL = import.meta.env.VITE_API_BASE_URL ?? "";
+
+  useEffect(() => {
+    const url = baseURL
+      ? `${baseURL}/hitl-approval/stream`
+      : "/api/hitl-approval/stream";
+
+    let es: EventSource;
+    let retryTimeout: ReturnType<typeof setTimeout>;
+
+    const connect = () => {
+      es = new EventSource(url);
+
+      es.onopen = () => setConnected(true);
+
+      es.onmessage = (e) => {
+        try {
+          const approval = JSON.parse(e.data) as ApprovalRecord;
+          setEvents((prev) => {
+            const exists = prev.find((x) => x.approval_id === approval.approval_id);
+            if (exists) {
+              return prev.map((x) =>
+                x.approval_id === approval.approval_id ? approval : x
+              );
+            }
+            return [approval, ...prev].slice(0, 50);
+          });
+          qc.invalidateQueries({ queryKey: ["approvals"] });
+        } catch {
+          // ignore parse errors
+        }
+      };
+
+      es.onerror = () => {
+        setConnected(false);
+        es.close();
+        retryTimeout = setTimeout(connect, 5000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      es?.close();
+      clearTimeout(retryTimeout);
+    };
+  }, [baseURL, qc]);
+
+  return { events, connected };
+}
+
+// ── Exceptions ───────────────────────────────────────────────────────────────
+
+export function useException(exceptionId: string | null) {
+  return useQuery({
+    queryKey: ["exception", exceptionId],
+    queryFn: () => ExceptionsApi.get(exceptionId as string),
+    enabled: Boolean(exceptionId),
+  });
+}
+
+export function useExceptions() {
+  return useQuery({
+    queryKey: ["exceptions"],
+    queryFn: ExceptionsApi.list,
+    refetchInterval: 15000,
+  });
+}
+
+// ── Negotiation ───────────────────────────────────────────────────────────────
+
+export function useNegotiationSessions(dealId: string | undefined) {
+  return useQuery({
+    queryKey: ["negotiation-sessions", dealId],
+    queryFn: () => NegotiationApi.getSessions(dealId as string),
+    enabled: Boolean(dealId),
+  });
+}
+
+export function useNegotiationRounds(negotiationId: string | undefined) {
+  return useQuery({
+    queryKey: ["negotiation-rounds", negotiationId],
+    queryFn: () => NegotiationApi.getRounds(negotiationId as string),
+    enabled: Boolean(negotiationId),
+  });
+}
+
+export function useNegotiationEmails(negotiationId: string | undefined) {
+  return useQuery({
+    queryKey: ["negotiation-emails", negotiationId],
+    queryFn: () => NegotiationApi.getEmails(negotiationId as string),
+    enabled: Boolean(negotiationId),
+    refetchInterval: 10000,
+  });
+}
+
+export function useRunNegotiationRound(negotiationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: { inbound_price?: number | null; inbound_message?: string | null; party?: string }) =>
+      NegotiationApi.runRound(negotiationId, req),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["negotiation-rounds", negotiationId] });
+      qc.invalidateQueries({ queryKey: ["negotiation-emails", negotiationId] });
+      qc.invalidateQueries({ queryKey: ["negotiation-sessions"] });
+    },
+  });
+}
+
+// ── Escrow ────────────────────────────────────────────────────────────────────
+
+export function useEscrowHolds(dealId: string | undefined) {
+  return useQuery({
+    queryKey: ["escrow-holds", dealId],
+    queryFn: () => EscrowApi.getHolds(dealId as string),
+    enabled: Boolean(dealId),
+  });
+}
+
+// ── Shield ─────────────────────────────────────────────────────────────────────
+
+export function useQcRecords(dealId: string | undefined) {
+  return useQuery({
+    queryKey: ["qc-records", dealId],
+    queryFn: () => ShieldApi.getQc(dealId as string),
+    enabled: Boolean(dealId),
+  });
+}
+
+export function useFreightRecords(dealId: string | undefined) {
+  return useQuery({
+    queryKey: ["freight-records", dealId],
+    queryFn: () => ShieldApi.getFreight(dealId as string),
+    enabled: Boolean(dealId),
+  });
+}
+
+// ── Docugen ─────────────────────────────────────────────────────────────────────
+
+export function useDocuments(dealId: string | undefined) {
+  return useQuery({
+    queryKey: ["documents", dealId],
+    queryFn: () => DocugenApi.getDocuments(dealId as string),
+    enabled: Boolean(dealId),
+  });
+}
+
+// ── Match Engine ──────────────────────────────────────────────────────────────
+
+export function useMatchScore(dealId: string | undefined) {
+  return useQuery({
+    queryKey: ["match-score", dealId],
+    queryFn: () => MatchApi.getScore(dealId as string),
+    enabled: Boolean(dealId),
   });
 }

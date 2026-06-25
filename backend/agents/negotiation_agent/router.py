@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from . import service
+from .email_history import EmailHistoryRecord
 from .schemas import (
     NegotiationResponse,
     NegotiationRound,
@@ -44,6 +45,18 @@ async def get_negotiation(negotiation_id: str) -> NegotiationSession:
 @router.get("/negotiations/{negotiation_id}/rounds", response_model=list[NegotiationRound])
 async def get_rounds(negotiation_id: str) -> list[NegotiationRound]:
     return await service.list_rounds(negotiation_id)
+
+
+@router.get("/negotiations/{negotiation_id}/emails", response_model=list[EmailHistoryRecord])
+async def get_email_history(negotiation_id: str) -> list[EmailHistoryRecord]:
+    """Return all outbound drafts and inbound replies for a negotiation.
+
+    Records are ordered oldest-first.  Each record carries a ``status`` that
+    tracks the email through its lifecycle:
+    draft → pending_approval → sent | modified_sent | rejected | failed
+    Inbound emails from buyer/supplier have status=received.
+    """
+    return await service.list_email_history(negotiation_id)
 
 
 @router.get("/negotiations", response_model=list[NegotiationSession])

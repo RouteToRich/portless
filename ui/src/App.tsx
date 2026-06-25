@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from "react-router-dom";
+import { Toaster } from "sonner";
 import { AppLayout } from "./components/AppLayout";
 import { OpportunityRadar } from "./pages/OpportunityRadar";
 import { DealBoard } from "./pages/DealBoard";
@@ -11,19 +12,34 @@ import { SystemHealth } from "./pages/SystemHealth";
 
 export default function App() {
   return (
-    <Routes>
-      <Route element={<AppLayout />}>
-        <Route index element={<Navigate to="/radar" replace />} />
-        <Route path="/radar" element={<OpportunityRadar />} />
-        <Route path="/deals" element={<DealBoard />} />
-        <Route path="/deals/:dealId" element={<DealDetail />} />
-        <Route path="/approvals" element={<ApprovalsInbox />} />
-        <Route path="/money" element={<MoneyMargin />} />
-        <Route path="/exceptions" element={<Exceptions />} />
-        <Route path="/autonomy" element={<AutonomySettings />} />
-        <Route path="/health" element={<SystemHealth />} />
-        <Route path="*" element={<Navigate to="/radar" replace />} />
-      </Route>
-    </Routes>
+    <>
+      <Routes>
+        <Route element={<AppLayout />}>
+          <Route index element={<Navigate to="/radar" replace />} />
+          <Route path="/radar" element={<OpportunityRadar />} />
+          <Route path="/deals" element={<DealBoard />} />
+          <Route path="/deals/:dealId" element={<DealDetail />} />
+          <Route path="/approvals" element={<ApprovalsInbox />} />
+          <Route path="/money" element={<MoneyMargin />} />
+          <Route path="/exceptions" element={<Exceptions />} />
+          <Route path="/autonomy" element={<AutonomySettings />} />
+          <Route path="/health" element={<SystemHealth />} />
+          <Route path="*" element={<Navigate to="/radar" replace />} />
+        </Route>
+      </Routes>
+
+      <Toaster
+        position="bottom-right"
+        theme="dark"
+        richColors
+        toastOptions={{
+          style: {
+            background: "#16203a",
+            border: "1px solid #243150",
+            color: "#e6ecf5",
+          },
+        }}
+      />
+    </>
   );
 }

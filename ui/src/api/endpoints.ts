@@ -1,11 +1,21 @@
 import { api } from "./client";
 import type {
-  Approval,
+  ApprovalRecord,
   CreateDealRequest,
   Deal,
   DealException,
+  DocumentRecord,
   DownstreamHealth,
+  EmailHistoryRecord,
+  EscrowHold,
+  FreightRecord,
+  MatchScore,
+  NegotiationResponse,
+  NegotiationRound,
+  NegotiationSession,
   Opportunity,
+  QcRecord,
+  ResolveApprovalRequest,
 } from "./types";
 
 // Thin wrappers around the gateway endpoints (services/api_gateway/router.py).
@@ -35,18 +45,80 @@ export const OpportunitiesApi = {
 export const ApprovalsApi = {
   list: (status?: string) =>
     api
-      .get<Approval[]>("/approvals", { params: status ? { status } : undefined })
-      .then((r) => r.data),
-  resolve: (approvalId: string, decision: "APPROVE" | "REJECT", resolvedBy: string) =>
-    api
-      .post<Approval>(`/approvals/${approvalId}/resolve`, {
-        decision,
-        resolved_by: resolvedBy,
+      .get<ApprovalRecord[]>("/hitl-approval/approvals", {
+        params: status ? { status } : undefined,
       })
+      .then((r) => r.data),
+  get: (approvalId: string) =>
+    api.get<ApprovalRecord>(`/hitl-approval/approvals/${approvalId}`).then((r) => r.data),
+  resolve: (approvalId: string, payload: ResolveApprovalRequest) =>
+    api
+      .post<ApprovalRecord>(`/hitl-approval/approvals/${approvalId}/resolve`, payload)
       .then((r) => r.data),
 };
 
 export const ExceptionsApi = {
   get: (exceptionId: string) =>
     api.get<DealException>(`/exceptions/${exceptionId}`).then((r) => r.data),
+  list: () => api.get<DealException[]>("/exceptions").then((r) => r.data),
+};
+
+export const NegotiationApi = {
+  getSessions: (dealId: string) =>
+    api
+      .get<NegotiationSession[]>("/negotiation-agent/negotiations", {
+        params: { deal_id: dealId },
+      })
+      .then((r) => r.data),
+  getSession: (negotiationId: string) =>
+    api
+      .get<NegotiationSession>(`/negotiation-agent/negotiations/${negotiationId}`)
+      .then((r) => r.data),
+  getRounds: (negotiationId: string) =>
+    api
+      .get<NegotiationRound[]>(`/negotiation-agent/negotiations/${negotiationId}/rounds`)
+      .then((r) => r.data),
+  getEmails: (negotiationId: string) =>
+    api
+      .get<EmailHistoryRecord[]>(`/negotiation-agent/negotiations/${negotiationId}/emails`)
+      .then((r) => r.data),
+  runRound: (
+    negotiationId: string,
+    req: { inbound_price?: number | null; inbound_message?: string | null; party?: string }
+  ) =>
+    api
+      .post<NegotiationResponse>(`/negotiation-agent/negotiations/${negotiationId}/round`, req)
+      .then((r) => r.data),
+};
+
+export const EscrowApi = {
+  getHolds: (dealId: string) =>
+    api
+      .get<EscrowHold[]>("/escrow-guard/holds", { params: { deal_id: dealId } })
+      .then((r) => r.data),
+};
+
+export const ShieldApi = {
+  getQc: (dealId: string) =>
+    api
+      .get<QcRecord[]>("/shield-link/qc", { params: { deal_id: dealId } })
+      .then((r) => r.data),
+  getFreight: (dealId: string) =>
+    api
+      .get<FreightRecord[]>("/shield-link/freight", { params: { deal_id: dealId } })
+      .then((r) => r.data),
+};
+
+export const DocugenApi = {
+  getDocuments: (dealId: string) =>
+    api
+      .get<DocumentRecord[]>("/docugen/documents", { params: { deal_id: dealId } })
+      .then((r) => r.data),
+};
+
+export const MatchApi = {
+  getScore: (dealId: string) =>
+    api
+      .get<MatchScore>("/match-engine/matches", { params: { deal_id: dealId } })
+      .then((r) => r.data),
 };

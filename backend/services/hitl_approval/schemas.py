@@ -29,7 +29,7 @@ class ApprovalRecord(BaseModel):
     approval_id: str
     deal_id: str
     action: str
-    """ApprovalAction value: RELEASE_SUPPLIER_PAYOUT | BOOK_FREIGHT | ISSUE_PO | FILE_CUSTOMS | RESOLVE_EXCEPTION"""
+    """ApprovalAction value: RELEASE_SUPPLIER_PAYOUT | BOOK_FREIGHT | ISSUE_PO | FILE_CUSTOMS | RESOLVE_EXCEPTION | SEND_NEGOTIATION_EMAIL"""
     summary: str | None = None
     financial_impact_usd: float | None = None
     risk_flags: list[str] = Field(default_factory=list)
@@ -48,6 +48,8 @@ class ApprovalRecord(BaseModel):
     resolved_by: str | None = None
     resolved_at: datetime | None = None
     resolution_note: str | None = None
+    modified_body: str | None = None
+    """For SEND_NEGOTIATION_EMAIL: operator-supplied replacement email body."""
 
     created_at: datetime
     updated_at: datetime
@@ -77,6 +79,9 @@ class ResolveApprovalRequest(BaseModel):
     decision: Literal["APPROVE", "REJECT"]
     resolved_by: str
     note: str | None = None
+    modified_body: str | None = None
+    """For SEND_NEGOTIATION_EMAIL approvals: provide a replacement email body
+    to send instead of the LLM draft.  Only meaningful when decision=APPROVE."""
 
 
 class ApprovalResponse(BaseModel):
@@ -95,6 +100,7 @@ class ApprovalResponse(BaseModel):
     resolved_by: str | None = None
     resolved_at: datetime | None = None
     resolution_note: str | None = None
+    modified_body: str | None = None
     created_at: datetime
 
     @classmethod
@@ -115,6 +121,7 @@ class ApprovalResponse(BaseModel):
             resolved_by=r.resolved_by,
             resolved_at=r.resolved_at,
             resolution_note=r.resolution_note,
+            modified_body=r.modified_body,
             created_at=r.created_at,
         )
 
