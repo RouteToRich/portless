@@ -1,0 +1,20 @@
+{
+  "deal_id": "DEAL-20240101-001",
+  "opportunity_id": "OPP-2024-001",
+  "cms_score": 87.4,
+  "scored_at": "2024-01-15T09:01:30Z",
+  "breakdown": {
+    "price_competitiveness": {"score": 22.1, "max": 25, "weight": 0.25},
+    "supply_reliability": {"score": 19.8, "max": 20, "weight": 0.20},
+    "trade_compliance": {"score": 17.5, "max": 20, "weight": 0.20},
+    "logistics_fit": {"score": 15.2, "max": 15, "weight": 0.15},
+    "financial_health": {"score": 12.8, "max": 15, "weight": 0.15},
+    "esg_score": {"score": 0.0, "max": 5, "weight": 0.05}
+  },
+  "recommendation": "PROCEED",
+  "flags": [],
+  "comparable_deals": [
+    {"deal_id": "DEAL-20231201-089", "cms_score": 84.2, "outcome": "PAID"},
+    {"deal_id": "DEAL-20231115-071", "cms_score": 89.1, "outcome": "PAID"}
+  ]
+}

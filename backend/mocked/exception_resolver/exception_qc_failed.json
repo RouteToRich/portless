@@ -1,0 +1,48 @@
+{
+  "exception_id": "EXC-DISPUTE-2024001",
+  "deal_id": "DEAL-20240104-004",
+  "source_event": "qc.failed",
+  "source_service": "shield_link",
+  "status": "ESCALATED",
+  "category": "QC_FAILED",
+  "severity": "HIGH",
+  "summary": "QC inspection failed: Coconut Oil moisture 23.1% exceeds 14% contract threshold",
+  "root_cause": "Supplier stored product in non-climate-controlled warehouse during heavy monsoon. Moisture absorbed during storage exceeded contract limits. SGS inspection found moisture 23.1%, aflatoxin 18ppb — both exceeding contracted thresholds.",
+  "decision": "ESCALATE",
+  "remediation_steps": [
+    {
+      "step": 1,
+      "description": "Notify buyer and supplier of QC failure findings",
+      "status": "DONE",
+      "executed_at": "2024-01-22T09:15:00Z",
+      "result": "Email notifications sent to both parties"
+    },
+    {
+      "step": 2,
+      "description": "Assess if product can be reworked within acceptable timeline and cost",
+      "status": "DONE",
+      "executed_at": "2024-01-22T09:15:00Z",
+      "result": "HITL escalation created for operator assessment"
+    },
+    {
+      "step": 3,
+      "description": "If reworkable: rebook SGS for re-inspection after remediation",
+      "status": "PENDING",
+      "executed_at": null,
+      "result": null
+    },
+    {
+      "step": 4,
+      "description": "If not reworkable: transition deal to DISPUTE and initiate refund process",
+      "status": "PENDING",
+      "executed_at": null,
+      "result": null
+    }
+  ],
+  "approval_id": "APPR-EXC-20240122-004",
+  "resolution_note": "Escalated to HITL approval APPR-EXC-20240122-004.",
+  "auto_fix_attempts": 0,
+  "raised_at": "2024-01-22T09:15:00Z",
+  "resolved_at": null,
+  "updated_at": "2024-01-22T09:16:00Z"
+}

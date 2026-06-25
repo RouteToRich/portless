@@ -1,0 +1,14 @@
+{
+  "error": "MARGIN_BREACH",
+  "status_code": 422,
+  "detail": "PO margin 6.8% is below the minimum threshold of 8.0%. Renegotiate pricing before issuing PO.",
+  "context": {
+    "deal_id": "DEAL-20240130-010",
+    "buyer_price_usd": 1500,
+    "agreed_price_usd": 1398,
+    "computed_margin_pct": 6.8,
+    "minimum_margin_pct": 8.0,
+    "shortfall_pct": 1.2
+  },
+  "suggested_action": "Renegotiate agreed price to at most 1380 USD/MT to achieve 8% margin, or negotiate a higher buyer price."
+}

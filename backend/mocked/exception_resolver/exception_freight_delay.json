@@ -1,0 +1,41 @@
+{
+  "exception_id": "EXC-FREIGHT-2024005",
+  "deal_id": "DEAL-20240115-012",
+  "source_event": "freight.milestone",
+  "source_service": "shield_link",
+  "status": "RESOLVED",
+  "category": "FREIGHT_DELAY",
+  "severity": "MEDIUM",
+  "summary": "Vessel MV GUJARAT STAR delayed 8 days due to port congestion at Jebel Ali",
+  "root_cause": "Unprecedented port congestion at Jebel Ali (AEJEA) due to regional shipping surge. Vessel MV Gujarat Star held at anchorage. New ETA revised to Feb 28 from Feb 20. Cargo integrity not affected — sealed containers.",
+  "decision": "MONITOR",
+  "remediation_steps": [
+    {
+      "step": 1,
+      "description": "Notify buyer of revised ETA — 8-day delay at destination port",
+      "status": "DONE",
+      "executed_at": "2024-02-12T08:00:00Z",
+      "result": "Buyer notified via email. Buyer acknowledged and agreed to wait."
+    },
+    {
+      "step": 2,
+      "description": "Confirm cargo integrity with shipping line — containers sealed",
+      "status": "DONE",
+      "executed_at": "2024-02-12T08:05:00Z",
+      "result": "Cogoport confirmed containers sealed and cargo intact."
+    },
+    {
+      "step": 3,
+      "description": "Monitor daily vessel tracking updates until arrival",
+      "status": "DONE",
+      "executed_at": "2024-02-28T09:00:00Z",
+      "result": "Vessel arrived 2024-02-28. Delay fully resolved."
+    }
+  ],
+  "approval_id": null,
+  "resolution_note": "Logged for monitoring — delay resolved upon vessel arrival. No financial impact.",
+  "auto_fix_attempts": 0,
+  "raised_at": "2024-02-12T08:00:00Z",
+  "resolved_at": "2024-02-28T09:00:00Z",
+  "updated_at": "2024-02-28T09:00:00Z"
+}

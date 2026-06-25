@@ -1,0 +1,48 @@
+{
+  "exception_id": "EXC-CUSTOMS-2024007",
+  "deal_id": "DEAL-20240118-015",
+  "source_event": "customs.filed",
+  "source_service": "shield_link",
+  "status": "ESCALATED",
+  "category": "CUSTOMS_REJECTED",
+  "severity": "HIGH",
+  "summary": "ICEGATE rejected Shipping Bill — IEC mismatch between SB and GSTIN records",
+  "root_cause": "The Importer-Exporter Code (IEC) on the Shipping Bill (0514056789) does not match the IEC linked to the supplier's GSTIN in the DGFT registry (0514012345). Likely a data entry error during document generation. ICEGATE rejected and requires correction before LEO can be issued.",
+  "decision": "ESCALATE",
+  "remediation_steps": [
+    {
+      "step": 1,
+      "description": "Identify correct IEC from DGFT registry for supplier GSTIN 36AABCK1234F1Z5",
+      "status": "DONE",
+      "executed_at": "2024-01-18T11:00:00Z",
+      "result": "Confirmed correct IEC is 0514012345 from DGFT API"
+    },
+    {
+      "step": 2,
+      "description": "Regenerate Shipping Bill document with corrected IEC",
+      "status": "DONE",
+      "executed_at": "2024-01-18T11:01:00Z",
+      "result": "Docugen auto-regenerated Shipping Bill DOC-SB-015-V2"
+    },
+    {
+      "step": 3,
+      "description": "Re-file corrected Shipping Bill to ICEGATE",
+      "status": "PENDING",
+      "executed_at": null,
+      "result": null
+    },
+    {
+      "step": 4,
+      "description": "Confirm LEO issuance from ICEGATE after re-filing",
+      "status": "PENDING",
+      "executed_at": null,
+      "result": null
+    }
+  ],
+  "approval_id": "APPR-CUST-20240118-008",
+  "resolution_note": "Escalated to HITL for operator to re-file corrected Shipping Bill.",
+  "auto_fix_attempts": 1,
+  "raised_at": "2024-01-18T10:55:00Z",
+  "resolved_at": null,
+  "updated_at": "2024-01-18T11:01:00Z"
+}

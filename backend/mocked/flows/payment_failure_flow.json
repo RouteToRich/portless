@@ -1,0 +1,57 @@
+{
+  "_description": "Deal where payout fails after goods delivered — exception resolver escalates for manual payout",
+  "_deal_id": "DEAL-20240112-008",
+  "steps": [
+    {
+      "step": 1,
+      "name": "Deal reaches CLEARED (happy path steps 1-16)",
+      "deal_status": "CLEARED"
+    },
+    {
+      "step": 2,
+      "name": "Payout Requested",
+      "api": "POST /escrow-guard/payouts",
+      "request": {
+        "deal_id": "DEAL-20240112-008",
+        "hold_id": "ESC-HOLD-20231212-002",
+        "supplier_payoneer_id": "PNEER-SUP-002",
+        "amount_usd": 18000
+      },
+      "deal_status": "CLEARED"
+    },
+    {
+      "step": 3,
+      "name": "Payoneer Webhook — PAYOUT FAILED",
+      "api": "POST /escrow-guard/webhooks/payout-completed",
+      "response_file": "escrow_guard/payout_failed_webhook.json",
+      "deal_status": "CLEARED",
+      "note": "deal.exception emitted internally"
+    },
+    {
+      "step": 4,
+      "name": "Exception Raised — PAYMENT_FAILED",
+      "api": "POST /exception-resolver/exceptions (auto-triggered)",
+      "response_file": "exception_resolver/exception_payment_failed.json",
+      "deal_status": "CLEARED"
+    },
+    {
+      "step": 5,
+      "name": "HITL Approval for RELEASE_SUPPLIER_PAYOUT",
+      "api": "POST /hitl-approval/approvals",
+      "response_file": "hitl_approval/approval_pending_l0.json",
+      "deal_status": "CLEARED",
+      "ui_action": "Operator must decide: retry Payoneer, wire transfer, or hold"
+    },
+    {
+      "step": 6,
+      "name": "Operator Approves — retry payout",
+      "api": "POST /hitl-approval/approvals/{id}/resolve",
+      "request": {
+        "decision": "APPROVE",
+        "resolved_by": "ops@portless.io",
+        "note": "Payoneer account restriction lifted. Retry payout."
+      },
+      "deal_status": "PAID"
+    }
+  ]
+}

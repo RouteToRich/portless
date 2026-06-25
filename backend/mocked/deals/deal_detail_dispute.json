@@ -1,0 +1,31 @@
+{
+  "deal_id": "DEAL-20240104-004",
+  "commodity": "Coconut Oil",
+  "hs_code": "1513.11",
+  "quantity_mt": 10,
+  "unit": "MT",
+  "buyer_price_usd": 1650,
+  "agreed_price_usd": 1520,
+  "currency": "USD",
+  "status": "DISPUTE",
+  "cms_score": 65.3,
+  "qc_order_id": "QC-SGS-20240120-003",
+  "exception_id": "EXC-DISPUTE-2024001",
+  "dispute_reason": "QC inspection found 23% moisture content exceeding contracted 14% threshold. Buyer refuses to accept shipment.",
+  "created_at": "2024-01-05T10:00:00Z",
+  "updated_at": "2024-01-22T09:15:00Z",
+  "timeline": [
+    {"status": "DRAFT", "at": "2024-01-05T10:00:00Z", "by": "system"},
+    {"status": "MATCHING", "at": "2024-01-05T10:05:00Z", "by": "match_engine"},
+    {"status": "NEGOTIATING", "at": "2024-01-05T10:15:00Z", "by": "sourcing"},
+    {"status": "NEGOTIATION_AGREED", "at": "2024-01-08T13:00:00Z", "by": "negotiation_agent"},
+    {"status": "PI_SENT", "at": "2024-01-09T09:00:00Z", "by": "dealmaker"},
+    {"status": "PI_ACCEPTED", "at": "2024-01-10T14:00:00Z", "by": "buyer"},
+    {"status": "ESCROW_PENDING", "at": "2024-01-11T10:00:00Z", "by": "escrow_guard"},
+    {"status": "ESCROW_FUNDED", "at": "2024-01-13T12:00:00Z", "by": "escrow_guard"},
+    {"status": "PO_ISSUED", "at": "2024-01-15T09:00:00Z", "by": "dealmaker"},
+    {"status": "SUPPLIER_DISPATCH_READY", "at": "2024-01-18T10:00:00Z", "by": "shield_link"},
+    {"status": "QC_FAILED", "at": "2024-01-20T15:30:00Z", "by": "shield_link"},
+    {"status": "DISPUTE", "at": "2024-01-22T09:15:00Z", "by": "exception_resolver"}
+  ]
+}

@@ -1,4 +1,8 @@
-"""REST client for the Shield-Link service."""
+"""REST client for the Shield-Link service.
+
+Used by other services to interact with Shield-Link over HTTP (microservice mode).
+In combined-monolith mode, services can call shield_link.service directly.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -22,3 +26,9 @@ class ShieldLinkClient(BaseServiceClient):
 
     async def file_cha(self, payload: dict[str, Any]) -> Any:
         return await self.post("/shield-link/cha", json=payload)
+
+    async def get_tpo(self, tpo_id: str) -> Any:
+        return await self.get(f"/shield-link/tpo/{tpo_id}")
+
+    async def get_deal_orders(self, deal_id: str) -> Any:
+        return await self.get(f"/shield-link/deals/{deal_id}/orders")

@@ -97,9 +97,91 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("NegotiationAgent startup failed (service will run degraded): %s", exc)
 
+    # ── DealMaker: MongoDB repository ─────────────────────────────────────
+    from services.dealmaker.repository import init_repository as dm_init, close_repository as dm_close
+    try:
+        await dm_init()
+    except Exception as exc:
+        logger.error("DealMaker startup failed (service will run degraded): %s", exc)
+
+    # ── DocuGen: MongoDB repository ───────────────────────────────────────
+    from services.docugen.repository import init_repository as dg_init, close_repository as dg_close
+    try:
+        await dg_init()
+    except Exception as exc:
+        logger.error("DocuGen startup failed (service will run degraded): %s", exc)
+
+    # ── Shield-Link: MongoDB repository ──────────────────────────────────
+    from services.shield_link.repository import init_repository as sl_init, close_repository as sl_close
+    try:
+        await sl_init()
+    except Exception as exc:
+        logger.error("ShieldLink startup failed (service will run degraded): %s", exc)
+
+    # ── Escrow-Guard: MongoDB repository ─────────────────────────────────
+    from services.escrow_guard.repository import init_repository as eg_init, close_repository as eg_close
+    try:
+        await eg_init()
+    except Exception as exc:
+        logger.error("EscrowGuard startup failed (service will run degraded): %s", exc)
+
+    # ── HITL Approval: MongoDB repository + timeout watcher ──────────────
+    import asyncio as _asyncio
+    from services.hitl_approval.repository import init_repository as hitl_init, close_repository as hitl_close
+    from services.hitl_approval.service import run_timeout_watcher
+    _hitl_watcher: _asyncio.Task | None = None
+    try:
+        await hitl_init()
+        _hitl_watcher = _asyncio.create_task(run_timeout_watcher())
+    except Exception as exc:
+        logger.error("HitlApproval startup failed (service will run degraded): %s", exc)
+
+    # ── Exception Resolver: MongoDB repository ────────────────────────────
+    from services.exception_resolver.repository import init_repository as er_init, close_repository as er_close
+    try:
+        await er_init()
+    except Exception as exc:
+        logger.error("ExceptionResolver startup failed (service will run degraded): %s", exc)
+
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
+    try:
+        await er_close()
+    except Exception as exc:
+        logger.warning("ExceptionResolver shutdown error: %s", exc)
+
+    if _hitl_watcher and not _hitl_watcher.done():
+        _hitl_watcher.cancel()
+        try:
+            await _hitl_watcher
+        except _asyncio.CancelledError:
+            pass
+    try:
+        await hitl_close()
+    except Exception as exc:
+        logger.warning("HitlApproval shutdown error: %s", exc)
+
+    try:
+        await eg_close()
+    except Exception as exc:
+        logger.warning("EscrowGuard shutdown error: %s", exc)
+
+    try:
+        await sl_close()
+    except Exception as exc:
+        logger.warning("ShieldLink shutdown error: %s", exc)
+
+    try:
+        await dg_close()
+    except Exception as exc:
+        logger.warning("DocuGen shutdown error: %s", exc)
+
+    try:
+        await dm_close()
+    except Exception as exc:
+        logger.warning("DealMaker shutdown error: %s", exc)
+
     try:
         await neg_shutdown()
     except Exception as exc:

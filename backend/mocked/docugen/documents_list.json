@@ -1,0 +1,60 @@
+{
+  "deal_id": "DEAL-20240103-003",
+  "documents": [
+    {
+      "document_id": "DOC-CI-001",
+      "deal_id": "DEAL-20240103-003",
+      "document_type": "CI",
+      "status": "RENDERED",
+      "sha256_hash": "a3f8c2b1d9e7f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2",
+      "file_size_bytes": 48320,
+      "download_url": "/docugen/documents/DOC-CI-001/download",
+      "created_at": "2024-01-10T08:05:00Z",
+      "rendered_at": "2024-01-10T08:05:12Z"
+    },
+    {
+      "document_id": "DOC-PL-001",
+      "deal_id": "DEAL-20240103-003",
+      "document_type": "PL",
+      "status": "RENDERED",
+      "sha256_hash": "c5d7e9f1a3b5c7d9e1f3a5b7c9d1e3f5a7b9c1d3e5f7a9b1c3d5e7f9a1b3c5",
+      "file_size_bytes": 32110,
+      "download_url": "/docugen/documents/DOC-PL-001/download",
+      "created_at": "2024-01-10T08:06:00Z",
+      "rendered_at": "2024-01-10T08:06:08Z"
+    },
+    {
+      "document_id": "DOC-COO-001",
+      "deal_id": "DEAL-20240103-003",
+      "document_type": "CoO",
+      "status": "RENDERED",
+      "sha256_hash": "d6e8f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6",
+      "file_size_bytes": 28540,
+      "download_url": "/docugen/documents/DOC-COO-001/download",
+      "created_at": "2024-01-10T08:07:00Z",
+      "rendered_at": "2024-01-10T08:07:05Z"
+    },
+    {
+      "document_id": "DOC-SDF-001",
+      "deal_id": "DEAL-20240103-003",
+      "document_type": "SDF",
+      "status": "RENDERED",
+      "sha256_hash": "e7f9a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e3f5a7b9c1d3e5f7a9b1c3d5e7",
+      "file_size_bytes": 19820,
+      "download_url": "/docugen/documents/DOC-SDF-001/download",
+      "created_at": "2024-01-10T08:08:00Z",
+      "rendered_at": "2024-01-10T08:08:04Z"
+    },
+    {
+      "document_id": "DOC-SB-001",
+      "deal_id": "DEAL-20240103-003",
+      "document_type": "SHIPPING_BILL",
+      "status": "RENDERED",
+      "sha256_hash": "f8a0b2c4d6e8f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8",
+      "file_size_bytes": 41200,
+      "download_url": "/docugen/documents/DOC-SB-001/download",
+      "created_at": "2024-01-10T08:09:00Z",
+      "rendered_at": "2024-01-10T08:09:10Z"
+    }
+  ]
+}

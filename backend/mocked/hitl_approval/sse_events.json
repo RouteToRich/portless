@@ -1,0 +1,50 @@
+{
+  "_meta": "Sample SSE events received by the UI from GET /hitl-approval/stream",
+  "_usage": "Connect with EventSource('/hitl-approval/stream') and listen for 'message' events. Each data field is a JSON string.",
+  "sample_events": [
+    {
+      "_raw_sse": "data: {\"event_type\": \"approval_created\", \"approval_id\": \"APPR-PO-20240124-001\", \"deal_id\": \"DEAL-20240105-005\", \"action\": \"ISSUE_PO\", \"status\": \"PENDING\", \"summary\": \"Issue Purchase Order — Black Pepper 8MT\", \"financial_impact_usd\": 60000, \"deep_link\": \"http://localhost:5173/hitl/APPR-PO-20240124-001\", \"occurred_at\": \"2024-01-24T08:55:00Z\"}\n\n",
+      "parsed": {
+        "event_type": "approval_created",
+        "approval_id": "APPR-PO-20240124-001",
+        "deal_id": "DEAL-20240105-005",
+        "action": "ISSUE_PO",
+        "status": "PENDING",
+        "summary": "Issue Purchase Order — Black Pepper 8MT",
+        "financial_impact_usd": 60000,
+        "deep_link": "http://localhost:5173/hitl/APPR-PO-20240124-001",
+        "occurred_at": "2024-01-24T08:55:00Z"
+      }
+    },
+    {
+      "_raw_sse": "data: {\"event_type\": \"approval_resolved\", \"approval_id\": \"APPR-PO-20240124-001\", \"deal_id\": \"DEAL-20240105-005\", \"action\": \"ISSUE_PO\", \"status\": \"APPROVED\", \"decision\": \"APPROVE\", \"resolved_by\": \"ops@portless.io\", \"occurred_at\": \"2024-01-24T09:30:00Z\"}\n\n",
+      "parsed": {
+        "event_type": "approval_resolved",
+        "approval_id": "APPR-PO-20240124-001",
+        "deal_id": "DEAL-20240105-005",
+        "action": "ISSUE_PO",
+        "status": "APPROVED",
+        "decision": "APPROVE",
+        "resolved_by": "ops@portless.io",
+        "occurred_at": "2024-01-24T09:30:00Z"
+      }
+    },
+    {
+      "_raw_sse": ": heartbeat\n\n",
+      "_note": "Heartbeat sent every 30 seconds to keep connection alive. Ignore in UI."
+    }
+  ],
+  "resolve_request_body": {
+    "_description": "POST /hitl-approval/approvals/{approval_id}/resolve",
+    "approve_example": {
+      "decision": "APPROVE",
+      "resolved_by": "ops@portless.io",
+      "note": "Margin verified, PO approved"
+    },
+    "reject_example": {
+      "decision": "REJECT",
+      "resolved_by": "ops@portless.io",
+      "note": "Margin too low — renegotiate"
+    }
+  }
+}

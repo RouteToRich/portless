@@ -1,0 +1,75 @@
+{
+  "deal_id": "DEAL-20240105-005",
+  "opportunity_id": "OPP-2024-005",
+  "buyer_id": "BUYER-EURO-SPICE-GMBH",
+  "supplier_id": "SUP-RAJAPALAYAM-AGRI",
+  "commodity": "Black Pepper",
+  "hs_code": "0904.11",
+  "quantity_mt": 8,
+  "unit": "MT",
+  "buyer_price_usd": 7500,
+  "agreed_price_usd": 6900,
+  "currency": "USD",
+  "origin_country": "IN",
+  "destination_country": "DE",
+  "port_of_loading": "INCOK",
+  "port_of_discharge": "DEHAM",
+  "incoterm": "CIF",
+  "payment_terms": "LC 60 days",
+  "status": "IN_TRANSIT",
+  "cms_score": 94.1,
+  "financials": {
+    "buyer_price_usd": 7500,
+    "agreed_price_usd": 6900,
+    "portless_margin_pct": 8.7,
+    "freight_cost_usd": 2100,
+    "insurance_usd": 420,
+    "total_deal_value_usd": 60000
+  },
+  "parties": {
+    "buyer": {
+      "name": "Euro Spice GmbH",
+      "country": "DE",
+      "contact": "einkauf@eurospice.de"
+    },
+    "supplier": {
+      "name": "Rajapalayam Agri Exports",
+      "country": "IN",
+      "gstin": "33AABCR3456H1Z8",
+      "iec": "0514078901",
+      "contact": "exports@rajaagri.in"
+    }
+  },
+  "negotiation_id": "NEG-005-2024",
+  "pi_id": "PI-20240122-003",
+  "po_id": "PO-20240124-002",
+  "escrow_hold_id": "ESC-HOLD-20240123-002",
+  "qc_order_id": "QC-SGS-20240126-001",
+  "freight_order_id": "FRT-CGP-20240128-001",
+  "tracking": {
+    "vessel": "MV MUMBAI EXPRESS",
+    "bl_number": "COSU-BL-20240128-7891",
+    "eta_destination": "2024-02-20T00:00:00Z",
+    "current_location": "Arabian Sea",
+    "milestones": [
+      {"event": "DEPARTED_ORIGIN", "at": "2024-01-28T14:00:00Z", "location": "Kochi Port"},
+      {"event": "PASSED_GULF", "at": "2024-02-03T08:00:00Z", "location": "Gulf of Aden"}
+    ]
+  },
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-02-03T08:15:00Z",
+  "timeline": [
+    {"status": "DRAFT", "at": "2024-01-15T10:00:00Z", "by": "system"},
+    {"status": "MATCHING", "at": "2024-01-15T10:01:00Z", "by": "match_engine"},
+    {"status": "NEGOTIATING", "at": "2024-01-15T10:10:00Z", "by": "sourcing"},
+    {"status": "NEGOTIATION_AGREED", "at": "2024-01-17T12:00:00Z", "by": "negotiation_agent"},
+    {"status": "PI_SENT", "at": "2024-01-18T09:00:00Z", "by": "dealmaker"},
+    {"status": "PI_ACCEPTED", "at": "2024-01-20T14:00:00Z", "by": "buyer"},
+    {"status": "ESCROW_PENDING", "at": "2024-01-21T10:00:00Z", "by": "escrow_guard"},
+    {"status": "ESCROW_FUNDED", "at": "2024-01-23T11:30:00Z", "by": "escrow_guard"},
+    {"status": "PO_ISSUED", "at": "2024-01-24T09:00:00Z", "by": "dealmaker"},
+    {"status": "SUPPLIER_DISPATCH_READY", "at": "2024-01-26T15:00:00Z", "by": "shield_link"},
+    {"status": "QC_PASSED", "at": "2024-01-27T16:00:00Z", "by": "shield_link"},
+    {"status": "IN_TRANSIT", "at": "2024-01-28T14:00:00Z", "by": "shield_link"}
+  ]
+}

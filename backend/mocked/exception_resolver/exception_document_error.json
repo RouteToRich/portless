@@ -1,0 +1,41 @@
+{
+  "exception_id": "EXC-DOCERR-2024009",
+  "deal_id": "DEAL-20240120-017",
+  "source_event": "deal.exception",
+  "source_service": "docugen",
+  "status": "RESOLVED",
+  "category": "DOCUMENT_ERROR",
+  "severity": "LOW",
+  "summary": "Commercial Invoice render failed — missing port_of_discharge in deal context",
+  "root_cause": "Deal record was created without port_of_discharge being set. The CI Jinja2 template requires this field. Document generation failed at the rendering stage before any external system was called.",
+  "decision": "AUTO_FIX",
+  "remediation_steps": [
+    {
+      "step": 1,
+      "description": "Identify missing field from render error log",
+      "status": "DONE",
+      "executed_at": "2024-01-20T10:15:30Z",
+      "result": "Missing field: port_of_discharge"
+    },
+    {
+      "step": 2,
+      "description": "Patch deal record with correct port_of_discharge from PI",
+      "status": "DONE",
+      "executed_at": "2024-01-20T10:15:31Z",
+      "result": "port_of_discharge set to DEHAM from PI record"
+    },
+    {
+      "step": 3,
+      "description": "Retry document generation for Commercial Invoice",
+      "status": "DONE",
+      "executed_at": "2024-01-20T10:15:35Z",
+      "result": "Document DOC-CI-017 generated successfully"
+    }
+  ],
+  "approval_id": null,
+  "resolution_note": "Auto-fixed: document_regenerated",
+  "auto_fix_attempts": 1,
+  "raised_at": "2024-01-20T10:15:00Z",
+  "resolved_at": "2024-01-20T10:15:40Z",
+  "updated_at": "2024-01-20T10:15:40Z"
+}

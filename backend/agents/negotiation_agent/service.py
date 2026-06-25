@@ -14,6 +14,9 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from shared.bus.publisher import get_publisher
+from shared.domain.events import DomainEvent, EventTopic
+
 from .config import settings
 from .email_dispatcher import EmailDispatcher, EmailMessage, InboxMonitor
 from .graph import NegotiationGraphState, build_negotiation_graph
@@ -109,6 +112,21 @@ async def _post_graph_notify(
 
     if session.status == "AGREED" and session.agreed_price:
         await _compute_realized_cms(session, repo)
+
+    get_publisher().publish(DomainEvent(
+        topic=EventTopic.NEGOTIATION_ROUND,
+        deal_id=session.deal_id,
+        payload={
+            "negotiation_id": session.negotiation_id,
+            "round_no": session.round_no,
+            "status": session.status,
+            "current_bid": session.current_bid,
+            "current_ask": session.current_ask,
+            "margin_at_current": session.margin_at_current,
+            "routing": final_state.get("routing"),
+            "hitl_required": session.hitl_required,
+        },
+    ))
 
 
 async def _compute_realized_cms(session: NegotiationSession, repo: NegotiationRepository) -> None:

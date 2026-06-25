@@ -1,0 +1,53 @@
+{
+  "scan_id": "SCAN-20240125-001",
+  "triggered_at": "2024-01-25T06:00:00Z",
+  "completed_at": "2024-01-25T06:04:32Z",
+  "opportunities_found": 3,
+  "opportunities": [
+    {
+      "opportunity_id": "OPP-2024-101",
+      "commodity": "Cumin Seeds",
+      "hs_code": "0909.31",
+      "buyer_country": "AE",
+      "supplier_country": "IN",
+      "estimated_volume_mt": 25,
+      "price_spread_usd": 180,
+      "demand_signal_score": 88,
+      "supply_availability_score": 92,
+      "trade_flow_score": 76,
+      "regulatory_clearance": "green",
+      "detected_at": "2024-01-25T06:02:10Z",
+      "sources": ["indiamart", "comtrade", "alibaba"]
+    },
+    {
+      "opportunity_id": "OPP-2024-102",
+      "commodity": "Fenugreek Seeds",
+      "hs_code": "1212.94",
+      "buyer_country": "US",
+      "supplier_country": "IN",
+      "estimated_volume_mt": 12,
+      "price_spread_usd": 145,
+      "demand_signal_score": 74,
+      "supply_availability_score": 85,
+      "trade_flow_score": 68,
+      "regulatory_clearance": "amber",
+      "detected_at": "2024-01-25T06:03:01Z",
+      "sources": ["volza", "trademo"]
+    },
+    {
+      "opportunity_id": "OPP-2024-103",
+      "commodity": "Sesame Seeds",
+      "hs_code": "1207.40",
+      "buyer_country": "JP",
+      "supplier_country": "IN",
+      "estimated_volume_mt": 50,
+      "price_spread_usd": 320,
+      "demand_signal_score": 95,
+      "supply_availability_score": 78,
+      "trade_flow_score": 89,
+      "regulatory_clearance": "green",
+      "detected_at": "2024-01-25T06:03:45Z",
+      "sources": ["alibaba", "comtrade", "macmap"]
+    }
+  ]
+}

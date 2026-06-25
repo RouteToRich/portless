@@ -1,0 +1,55 @@
+{
+  "deal_id": "DEAL-20240101-001",
+  "opportunity_id": "OPP-2024-001",
+  "buyer_id": "BUYER-RATAN-EXPORTS",
+  "supplier_id": "SUP-KRISHNA-SPICES",
+  "commodity": "Turmeric Finger",
+  "hs_code": "0910.30",
+  "quantity_mt": 20,
+  "unit": "MT",
+  "buyer_price_usd": 1800,
+  "agreed_price_usd": null,
+  "currency": "USD",
+  "origin_country": "IN",
+  "destination_country": "AE",
+  "port_of_loading": "INNSA",
+  "port_of_discharge": "AEJEA",
+  "incoterm": "CIF",
+  "payment_terms": "LC at sight",
+  "status": "NEGOTIATING",
+  "cms_score": 87.4,
+  "financials": {
+    "buyer_price_usd": 1800,
+    "supplier_ask_usd": 1650,
+    "portless_margin_pct": 9.2,
+    "freight_cost_usd": 1200,
+    "insurance_usd": 180,
+    "total_deal_value_usd": 36000
+  },
+  "parties": {
+    "buyer": {
+      "name": "Ratan Exports Pvt Ltd",
+      "country": "AE",
+      "gstin": null,
+      "contact": "ratan@ratanexports.ae"
+    },
+    "supplier": {
+      "name": "Krishna Spices & Agro",
+      "country": "IN",
+      "gstin": "36AABCK1234F1Z5",
+      "iec": "0514012345",
+      "contact": "krishna@krishnaspices.in"
+    }
+  },
+  "negotiation_id": "NEG-001-2024",
+  "pi_id": null,
+  "po_id": null,
+  "escrow_hold_id": null,
+  "created_at": "2024-01-15T09:00:00Z",
+  "updated_at": "2024-01-16T14:30:00Z",
+  "timeline": [
+    {"status": "DRAFT", "at": "2024-01-15T09:00:00Z", "by": "system"},
+    {"status": "MATCHING", "at": "2024-01-15T09:01:00Z", "by": "match_engine"},
+    {"status": "NEGOTIATING", "at": "2024-01-15T09:05:00Z", "by": "sourcing"}
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "po_id": "PO-20240124-002",
+  "pi_id": "PI-20240122-003",
+  "deal_id": "DEAL-20240105-005",
+  "status": "ACTIVE",
+  "supplier": {
+    "name": "Rajapalayam Agri Exports",
+    "address": "Survey No 78, Virudhunagar, TN 626117, India",
+    "gstin": "33AABCR3456H1Z8",
+    "iec": "0514078901"
+  },
+  "buyer": {
+    "name": "Euro Spice GmbH",
+    "address": "Gewürzstraße 12, 20097 Hamburg, Germany"
+  },
+  "line_items": [
+    {
+      "description": "Black Pepper (Malabar Grade A), HS 0904.11",
+      "quantity_mt": 8,
+      "unit_price_usd": 6900,
+      "total_usd": 55200
+    }
+  ],
+  "subtotal_usd": 55200,
+  "freight_usd": 2100,
+  "insurance_usd": 420,
+  "total_usd": 57720,
+  "buyer_price_usd": 60000,
+  "portless_margin_pct": 8.7,
+  "currency": "USD",
+  "incoterm": "CIF",
+  "payment_terms": "LC 60 days",
+  "delivery_date": "2024-02-20",
+  "special_instructions": "SGS quality certificate required at dispatch. Moisture < 12%, Piperine > 4%.",
+  "sha256_hash": "b4g9d3c2e8f5g7h9i1j3k5l7m9n1o3p5q7r9s1t3u5v7w9x1y3z5a7b9c1d3",
+  "document_url": "/dealmaker/po/PO-20240124-002/download",
+  "issued_at": "2024-01-24T09:00:00Z"
+}

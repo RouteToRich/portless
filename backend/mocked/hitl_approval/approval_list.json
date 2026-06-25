@@ -1,0 +1,51 @@
+{
+  "items": [
+    {
+      "approval_id": "APPR-PO-20240124-001",
+      "deal_id": "DEAL-20240105-005",
+      "action": "ISSUE_PO",
+      "autonomy_level": "L0",
+      "status": "APPROVED",
+      "summary": "Issue Purchase Order — Black Pepper 8MT @ USD 6,900/MT",
+      "financial_impact_usd": 60000,
+      "deep_link": "http://localhost:5173/hitl/APPR-PO-20240124-001",
+      "decision": "APPROVE",
+      "resolved_by": "ops@portless.io",
+      "resolved_at": "2024-01-24T09:30:00Z",
+      "created_at": "2024-01-24T08:55:00Z"
+    },
+    {
+      "approval_id": "APPR-FRT-20240128-002",
+      "deal_id": "DEAL-20240105-005",
+      "action": "BOOK_FREIGHT",
+      "autonomy_level": "L1",
+      "status": "PENDING",
+      "summary": "Book freight via Cogoport — Kochi to Hamburg",
+      "financial_impact_usd": 2100,
+      "deep_link": "http://localhost:5173/hitl/APPR-FRT-20240128-002",
+      "expires_at": "2024-01-28T16:55:00Z",
+      "default_on_timeout": "APPROVE",
+      "decision": null,
+      "resolved_by": null,
+      "resolved_at": null,
+      "created_at": "2024-01-28T08:55:00Z"
+    },
+    {
+      "approval_id": "APPR-EXC-20240122-004",
+      "deal_id": "DEAL-20240104-004",
+      "action": "RESOLVE_EXCEPTION",
+      "autonomy_level": "L1",
+      "status": "ESCALATED",
+      "summary": "QC FAILED — Coconut Oil moisture 23% exceeds 14% contract threshold. Assess rework feasibility.",
+      "financial_impact_usd": 16500,
+      "deep_link": "http://localhost:5173/hitl/APPR-EXC-20240122-004",
+      "expires_at": "2024-01-24T09:15:00Z",
+      "default_on_timeout": "REJECT",
+      "decision": null,
+      "resolved_by": null,
+      "resolved_at": null,
+      "created_at": "2024-01-22T09:15:00Z"
+    }
+  ],
+  "total": 3
+}

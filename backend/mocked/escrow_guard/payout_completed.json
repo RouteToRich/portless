@@ -1,0 +1,17 @@
+{
+  "payout_id": "PAY-PNEER-20240120-001",
+  "hold_id": "ESC-HOLD-20231210-001",
+  "deal_id": "DEAL-20240103-003",
+  "status": "COMPLETED",
+  "amount_usd": 29400,
+  "currency": "USD",
+  "provider": "payoneer",
+  "payoneer_payment_id": "PNR-PAY-20240120-987654",
+  "supplier": {
+    "name": "Tirupati Foods & Agro",
+    "payoneer_account_id": "PNEER-SUP-TFA-001",
+    "bank_account_last4": "4521"
+  },
+  "completed_at": "2024-01-20T16:00:00Z",
+  "deal_status_transitioned_to": "PAID"
+}

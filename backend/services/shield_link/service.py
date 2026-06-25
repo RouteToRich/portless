@@ -1,30 +1,529 @@
-"""Business logic for the Shield-Link service (skeleton — not implemented)."""
+"""Shield-Link service — business logic.
+
+Orchestrates third-party physical-inspection and logistics providers:
+
+  book_qc()              PO_ISSUED → SUPPLIER_DISPATCH_READY
+                         Books SGS/Intertek inspection; emits qc.booked.
+
+  handle_qc_result()     SUPPLIER_DISPATCH_READY → QC_PASSED | QC_FAILED
+                         Inbound provider webhook; transitions deal; emits
+                         qc.passed or qc.failed.
+
+  book_freight()         QC_PASSED → IN_TRANSIT
+                         Books Cogoport/Freightos container; emits freight.booked.
+
+  handle_freight_milestone()
+                         Updates TPO on each milestone; transitions deal →
+                         CLEARED when milestone == "ARRIVED"/"CLEARED".
+                         Emits freight.milestone.
+
+  file_cha()             Submits customs docs to ICEGATE via registered CHA.
+                         Emits customs.filed (complementary to DocuGen).
+
+All mutating paths:
+  • Idempotency key deduplication
+  • Deal state validation via can_transition()
+  • Connector call with graceful stub fallback (no API key → stub response)
+  • Persist ThirdPartyOrderRecord
+  • Transition deal status
+  • Emit domain event
+
+Exceptions
+----------
+DealNotFoundError     404 — unknown deal_id
+InvalidDealState      422 — deal not in required state
+TpoNotFoundError      404 — unknown tpo_id
+ConnectorCallError    502 — provider returned error
+WebhookVerifyError    401 — webhook signature invalid
+"""
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+from shared.bus import get_publisher
+from shared.connectors.shields import (
+    ConnectorError,
+    get_freight_connector,
+    get_qc_connector,
+)
+from shared.domain.events import DomainEvent, EventTopic
+from shared.domain.state_machine import can_transition
+
+from .config import settings
+from .repository import get_repository
 from .schemas import (
     ChaFilingRequest,
+    DealOrdersResponse,
     FreightBookingRequest,
+    FreightMilestonePayload,
     QcBookingRequest,
+    QcWebhookPayload,
+    ThirdPartyOrderRecord,
     ThirdPartyOrderResponse,
 )
 
+logger = logging.getLogger(__name__)
 
-async def book_qc(payload: QcBookingRequest) -> ThirdPartyOrderResponse:
-    """Book a 3rd-party inspection and emit ``qc.booked``.
 
-    TODO: call SGS/Intertek connector, persist order, emit event.
+# ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+class DealNotFoundError(Exception):
+    def __init__(self, deal_id: str) -> None:
+        super().__init__(f"Deal {deal_id!r} not found")
+        self.deal_id = deal_id
+
+
+class InvalidDealState(Exception):
+    def __init__(self, deal_id: str, current: str, required: str) -> None:
+        super().__init__(f"Deal {deal_id!r} is {current!r}; required {required!r}")
+        self.deal_id = deal_id
+        self.current = current
+        self.required = required
+
+
+class TpoNotFoundError(Exception):
+    def __init__(self, tpo_id: str) -> None:
+        super().__init__(f"Third-party order {tpo_id!r} not found")
+
+
+class ConnectorCallError(Exception):
+    """Provider returned a non-retryable error."""
+
+
+class WebhookVerifyError(Exception):
+    """Inbound webhook signature verification failed."""
+
+
+# ---------------------------------------------------------------------------
+# ID generator
+# ---------------------------------------------------------------------------
+
+def _new_tpo_id(order_type: str) -> str:
+    return f"TPO-{order_type}-{uuid4().hex[:10].upper()}"
+
+
+# ---------------------------------------------------------------------------
+# Deal bridge
+# ---------------------------------------------------------------------------
+
+async def _fetch_deal(deal_id: str) -> Any:
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        return await get_deal(deal_id)
+    except Exception as exc:
+        if "not found" in str(exc).lower():
+            raise DealNotFoundError(deal_id) from exc
+        raise
+
+
+async def _transition_deal(deal_id: str, target: str, reason: str) -> None:
+    try:
+        from services.deals.service import update_status  # type: ignore[import]
+        from services.deals.schemas import UpdateStatusRequest  # type: ignore[import]
+        from shared.domain.enums import DealStatus
+        await update_status(deal_id, UpdateStatusRequest(target_status=DealStatus(target), reason=reason))
+    except Exception as exc:
+        logger.error("ShieldLink: deal transition %s→%s failed: %s", deal_id, target, exc)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Event helper
+# ---------------------------------------------------------------------------
+
+async def _emit(topic: EventTopic, deal_id: str, payload: dict) -> None:
+    try:
+        await get_publisher().publish(DomainEvent(topic=topic, deal_id=deal_id, payload=payload))
+    except Exception as exc:
+        logger.warning("ShieldLink: emit %s failed: %s", topic, exc)
+
+
+# ---------------------------------------------------------------------------
+# QC booking
+# ---------------------------------------------------------------------------
+
+async def book_qc(req: QcBookingRequest) -> ThirdPartyOrderResponse:
+    """Book a QC inspection with the configured provider.
+
+    Pre-condition: deal must be in ``PO_ISSUED`` state.
+    Post: deal → ``SUPPLIER_DISPATCH_READY``, emits ``qc.booked``.
     """
-    raise NotImplementedError
+    repo = get_repository()
+
+    if req.idempotency_key:
+        existing = await repo.get_by_idempotency_key(req.idempotency_key)
+        if existing is not None:
+            return ThirdPartyOrderResponse.from_record(existing)
+
+    deal = await _fetch_deal(req.deal_id)
+    deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+    if deal_status != "PO_ISSUED":
+        raise InvalidDealState(req.deal_id, deal_status, "PO_ISSUED")
+
+    from shared.domain.enums import DealStatus
+    if not can_transition(DealStatus(deal_status), DealStatus.SUPPLIER_DISPATCH_READY):
+        raise InvalidDealState(req.deal_id, deal_status, "PO_ISSUED")
+
+    provider = req.provider or settings.default_qc_provider
+    now = datetime.now(timezone.utc)
+    tpo_id = _new_tpo_id("QC")
+
+    # Create PENDING record first for crash-safety
+    record = ThirdPartyOrderRecord(
+        tpo_id=tpo_id,
+        deal_id=req.deal_id,
+        order_type="QC",
+        provider=provider,
+        status="PENDING",
+        pickup_ready_at=req.pickup_ready_at,
+        idempotency_key=req.idempotency_key,
+        created_at=now,
+        updated_at=now,
+    )
+    await repo.save(record)
+
+    # Call connector
+    connector = get_qc_connector(provider)
+    try:
+        result = await connector.book({
+            "deal_id": req.deal_id,
+            "location": req.location or "",
+            "pickup_ready_at": req.pickup_ready_at or "",
+            "hs_code": req.hs_code or getattr(deal, "hs_code", ""),
+            "quantity_mt": req.quantity_mt or 0.0,
+        })
+    except ConnectorError as exc:
+        failed = record.model_copy(update={"status": "FAILED", "updated_at": datetime.now(timezone.utc)})
+        await repo.save(failed)
+        raise ConnectorCallError(f"QC booking failed for deal {req.deal_id}: {exc}") from exc
+
+    updated = record.model_copy(update={
+        "status": "BOOKED",
+        "ext_ref": result.get("ext_ref"),
+        "provider_payload": result,
+        "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(updated)
+
+    await _transition_deal(req.deal_id, "SUPPLIER_DISPATCH_READY", f"QC booked — ref {result.get('ext_ref')}")
+    await _emit(EventTopic.QC_BOOKED, req.deal_id, {
+        "tpo_id": tpo_id,
+        "provider": provider,
+        "ext_ref": result.get("ext_ref"),
+        "inspection_date": result.get("inspection_date"),
+        "stub": result.get("stub", False),
+    })
+
+    logger.info("ShieldLink: QC booked %s for deal %s (ref=%s)", tpo_id, req.deal_id, result.get("ext_ref"))
+    return ThirdPartyOrderResponse.from_record(updated)
 
 
-async def book_freight(payload: FreightBookingRequest) -> ThirdPartyOrderResponse:
-    """Book freight and emit ``freight.booked``.
+# ---------------------------------------------------------------------------
+# QC result webhook
+# ---------------------------------------------------------------------------
 
-    TODO: fetch spot rates (Cogoport/Freightos), book container, emit event.
+async def handle_qc_result(
+    ext_ref: str,
+    payload: QcWebhookPayload,
+    raw_headers: dict[str, str],
+    raw_body: bytes,
+) -> dict[str, str]:
+    """Process QC inspection result webhook.
+
+    Verifies provider signature, updates TPO, transitions deal to
+    QC_PASSED or QC_FAILED, and emits the appropriate event.
     """
-    raise NotImplementedError
+    repo = get_repository()
+
+    # Locate the TPO by ext_ref
+    tpo = await repo.get_by_ext_ref(ext_ref)
+    if tpo is None:
+        raise TpoNotFoundError(ext_ref)
+
+    # Verify webhook signature
+    connector = get_qc_connector(tpo.provider)
+    try:
+        valid = await connector.webhook_verify(raw_headers, raw_body)
+    except Exception:
+        valid = False
+    if not valid:
+        raise WebhookVerifyError(f"QC webhook signature invalid for ext_ref={ext_ref}")
+
+    now = datetime.now(timezone.utc)
+    qc_result = payload.result  # "PASS" or "FAIL"
+
+    updated = tpo.model_copy(update={
+        "status": "COMPLETED" if qc_result == "PASS" else "FAILED",
+        "qc_result": qc_result,
+        "qc_report_url": payload.report_url,
+        "crf_hash": payload.crf_hash,
+        "qc_completed_at": now,
+        "updated_at": now,
+    })
+    await repo.save(updated)
+
+    if qc_result == "PASS":
+        try:
+            await _transition_deal(tpo.deal_id, "QC_PASSED", f"QC passed — ref {ext_ref}")
+        except Exception as exc:
+            logger.error("ShieldLink: QC_PASSED transition failed for deal %s: %s", tpo.deal_id, exc)
+        await _emit(EventTopic.QC_PASSED, tpo.deal_id, {
+            "tpo_id": tpo.tpo_id,
+            "ext_ref": ext_ref,
+            "crf_hash": payload.crf_hash,
+            "report_url": payload.report_url,
+        })
+    else:
+        try:
+            await _transition_deal(tpo.deal_id, "QC_FAILED", f"QC failed — ref {ext_ref}, notes: {payload.notes}")
+        except Exception as exc:
+            logger.error("ShieldLink: QC_FAILED transition failed for deal %s: %s", tpo.deal_id, exc)
+        await _emit(EventTopic.QC_FAILED, tpo.deal_id, {
+            "tpo_id": tpo.tpo_id,
+            "ext_ref": ext_ref,
+            "notes": payload.notes,
+        })
+
+    logger.info("ShieldLink: QC result %s processed for deal %s", qc_result, tpo.deal_id)
+    return {"status": "ok", "result": qc_result, "deal_id": tpo.deal_id}
 
 
-async def file_cha(payload: ChaFilingRequest) -> ThirdPartyOrderResponse:
-    """Submit customs docs via CHA. TODO: ICEGATE EDI integration."""
-    raise NotImplementedError
+# ---------------------------------------------------------------------------
+# Freight booking
+# ---------------------------------------------------------------------------
+
+async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
+    """Book a freight container with the configured provider.
+
+    Pre-condition: deal must be in ``QC_PASSED`` state.
+    Post: deal → ``IN_TRANSIT``, emits ``freight.booked``.
+    """
+    repo = get_repository()
+
+    if req.idempotency_key:
+        existing = await repo.get_by_idempotency_key(req.idempotency_key)
+        if existing is not None:
+            return ThirdPartyOrderResponse.from_record(existing)
+
+    deal = await _fetch_deal(req.deal_id)
+    deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+    if deal_status != "QC_PASSED":
+        raise InvalidDealState(req.deal_id, deal_status, "QC_PASSED")
+
+    from shared.domain.enums import DealStatus
+    if not can_transition(DealStatus(deal_status), DealStatus.IN_TRANSIT):
+        raise InvalidDealState(req.deal_id, deal_status, "QC_PASSED")
+
+    provider = req.provider or settings.default_freight_provider
+    now = datetime.now(timezone.utc)
+    tpo_id = _new_tpo_id("FRT")
+
+    record = ThirdPartyOrderRecord(
+        tpo_id=tpo_id,
+        deal_id=req.deal_id,
+        order_type="FREIGHT",
+        provider=provider,
+        status="PENDING",
+        incoterm=req.incoterm,
+        origin_port=req.origin_port,
+        destination_port=req.destination_port,
+        idempotency_key=req.idempotency_key,
+        created_at=now,
+        updated_at=now,
+    )
+    await repo.save(record)
+
+    connector = get_freight_connector(provider)
+    try:
+        result = await connector.book({
+            "deal_id": req.deal_id,
+            "origin_port": req.origin_port or "",
+            "destination_port": req.destination_port or "",
+            "container_type": req.container_type,
+            "hs_code": req.hs_code or getattr(deal, "hs_code", ""),
+            "quantity_mt": req.quantity_mt or 0.0,
+            "incoterm": req.incoterm,
+        })
+    except ConnectorError as exc:
+        failed = record.model_copy(update={"status": "FAILED", "updated_at": datetime.now(timezone.utc)})
+        await repo.save(failed)
+        raise ConnectorCallError(f"Freight booking failed for deal {req.deal_id}: {exc}") from exc
+
+    updated = record.model_copy(update={
+        "status": "BOOKED",
+        "ext_ref": result.get("ext_ref"),
+        "vessel": result.get("vessel"),
+        "voyage": result.get("voyage"),
+        "container_number": result.get("container_number"),
+        "etd": result.get("etd"),
+        "eta": result.get("eta"),
+        "provider_payload": result,
+        "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(updated)
+
+    await _transition_deal(req.deal_id, "IN_TRANSIT", f"Freight booked — ref {result.get('ext_ref')}")
+    await _emit(EventTopic.FREIGHT_BOOKED, req.deal_id, {
+        "tpo_id": tpo_id,
+        "provider": provider,
+        "ext_ref": result.get("ext_ref"),
+        "vessel": result.get("vessel"),
+        "voyage": result.get("voyage"),
+        "etd": result.get("etd"),
+        "eta": result.get("eta"),
+        "stub": result.get("stub", False),
+    })
+
+    logger.info("ShieldLink: freight booked %s for deal %s (ref=%s)", tpo_id, req.deal_id, result.get("ext_ref"))
+    return ThirdPartyOrderResponse.from_record(updated)
+
+
+# ---------------------------------------------------------------------------
+# Freight milestone webhook
+# ---------------------------------------------------------------------------
+
+async def handle_freight_milestone(
+    ext_ref: str,
+    payload: FreightMilestonePayload,
+    raw_headers: dict[str, str],
+    raw_body: bytes,
+) -> dict[str, str]:
+    """Process freight milestone webhook (DEPARTED / IN_TRANSIT / ARRIVED / CLEARED).
+
+    Transitions deal → CLEARED when milestone is ARRIVED or CLEARED.
+    Emits freight.milestone for all milestones.
+    """
+    repo = get_repository()
+
+    tpo = await repo.get_by_ext_ref(ext_ref)
+    if tpo is None:
+        raise TpoNotFoundError(ext_ref)
+
+    connector = get_freight_connector(tpo.provider)
+    try:
+        valid = await connector.webhook_verify(raw_headers, raw_body)
+    except Exception:
+        valid = False
+    if not valid:
+        raise WebhookVerifyError(f"Freight webhook signature invalid for ext_ref={ext_ref}")
+
+    new_status = "IN_PROGRESS" if payload.milestone in ("DEPARTED", "IN_TRANSIT") else "COMPLETED"
+    updated = tpo.model_copy(update={
+        "status": new_status,
+        "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(updated)
+
+    await _emit(EventTopic.FREIGHT_MILESTONE, tpo.deal_id, {
+        "tpo_id": tpo.tpo_id,
+        "ext_ref": ext_ref,
+        "milestone": payload.milestone,
+        "location": payload.location,
+        "timestamp": payload.timestamp,
+    })
+
+    if payload.milestone in ("ARRIVED", "CLEARED"):
+        try:
+            await _transition_deal(tpo.deal_id, "CLEARED", f"Cargo {payload.milestone} — ref {ext_ref}")
+            await _emit(EventTopic.CUSTOMS_CLEARED, tpo.deal_id, {
+                "tpo_id": tpo.tpo_id,
+                "ext_ref": ext_ref,
+                "milestone": payload.milestone,
+            })
+        except Exception as exc:
+            logger.error("ShieldLink: CLEARED transition failed for deal %s: %s", tpo.deal_id, exc)
+
+    logger.info("ShieldLink: milestone %s for deal %s", payload.milestone, tpo.deal_id)
+    return {"status": "ok", "milestone": payload.milestone, "deal_id": tpo.deal_id}
+
+
+# ---------------------------------------------------------------------------
+# CHA filing
+# ---------------------------------------------------------------------------
+
+async def file_cha(req: ChaFilingRequest) -> ThirdPartyOrderResponse:
+    """Submit customs docs to ICEGATE via registered CHA.
+
+    Does not require a specific deal status; can run alongside freight booking.
+    Emits customs.filed.
+    """
+    repo = get_repository()
+
+    if req.idempotency_key:
+        existing = await repo.get_by_idempotency_key(req.idempotency_key)
+        if existing is not None:
+            return ThirdPartyOrderResponse.from_record(existing)
+
+    deal = await _fetch_deal(req.deal_id)
+    now = datetime.now(timezone.utc)
+    tpo_id = _new_tpo_id("CHA")
+
+    record = ThirdPartyOrderRecord(
+        tpo_id=tpo_id,
+        deal_id=req.deal_id,
+        order_type="CHA",
+        provider=req.provider,
+        status="PENDING",
+        idempotency_key=req.idempotency_key,
+        created_at=now,
+        updated_at=now,
+    )
+    await repo.save(record)
+
+    from shared.connectors.shields import IcegateConnector
+    connector = IcegateConnector()
+    try:
+        result = await connector.book({
+            "deal_id": req.deal_id,
+            "documents": req.documents,
+            "rodtep_declaration": req.rodtep_declaration,
+            "hs_code": getattr(deal, "hs_code", ""),
+        })
+    except ConnectorError as exc:
+        failed = record.model_copy(update={"status": "FAILED", "updated_at": datetime.now(timezone.utc)})
+        await repo.save(failed)
+        raise ConnectorCallError(f"CHA filing failed for deal {req.deal_id}: {exc}") from exc
+
+    updated = record.model_copy(update={
+        "status": "COMPLETED",
+        "ext_ref": result.get("shipping_bill_number"),
+        "provider_payload": result,
+        "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(updated)
+
+    await _emit(EventTopic.CUSTOMS_FILED, req.deal_id, {
+        "tpo_id": tpo_id,
+        "shipping_bill_number": result.get("shipping_bill_number"),
+        "let_export_order": result.get("let_export_order"),
+        "stub": result.get("stub", False),
+    })
+
+    logger.info("ShieldLink: CHA filed %s for deal %s", tpo_id, req.deal_id)
+    return ThirdPartyOrderResponse.from_record(updated)
+
+
+# ---------------------------------------------------------------------------
+# Read helpers
+# ---------------------------------------------------------------------------
+
+async def get_tpo(tpo_id: str) -> ThirdPartyOrderResponse:
+    repo = get_repository()
+    tpo = await repo.get(tpo_id)
+    if tpo is None:
+        raise TpoNotFoundError(tpo_id)
+    return ThirdPartyOrderResponse.from_record(tpo)
+
+
+async def list_deal_orders(deal_id: str) -> DealOrdersResponse:
+    repo = get_repository()
+    orders = await repo.list_by_deal(deal_id)
+    return DealOrdersResponse(
+        deal_id=deal_id,
+        orders=[ThirdPartyOrderResponse.from_record(o) for o in orders],
+    )

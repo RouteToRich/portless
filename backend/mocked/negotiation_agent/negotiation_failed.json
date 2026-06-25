@@ -1,0 +1,41 @@
+{
+  "negotiation_id": "NEG-FAIL-2024-009",
+  "deal_id": "DEAL-20240109-009",
+  "status": "FAILED",
+  "rounds": [
+    {
+      "round": 1,
+      "buyer_offer_usd": 900,
+      "supplier_ask_usd": 1200,
+      "gap_usd": 300,
+      "llm_recommendation": "Gap too wide — request supplier to provide cost breakdown",
+      "counter_offer_usd": 1050,
+      "outcome": "COUNTER",
+      "occurred_at": "2024-01-09T11:00:00Z"
+    },
+    {
+      "round": 2,
+      "buyer_offer_usd": 940,
+      "supplier_ask_usd": 1180,
+      "gap_usd": 240,
+      "llm_recommendation": "Gap still 20% — recommend alternate supplier",
+      "counter_offer_usd": 1060,
+      "outcome": "REJECTED",
+      "occurred_at": "2024-01-09T15:00:00Z"
+    },
+    {
+      "round": 3,
+      "buyer_offer_usd": 950,
+      "supplier_ask_usd": 1180,
+      "gap_usd": 230,
+      "llm_recommendation": "Negotiation exhausted — declare failure",
+      "counter_offer_usd": null,
+      "outcome": "FAILED",
+      "occurred_at": "2024-01-09T17:00:00Z"
+    }
+  ],
+  "agreed_price_usd": null,
+  "failure_reason": "Price gap could not be bridged after 3 rounds. Buyer ceiling $950, supplier floor $1180.",
+  "failed_at": "2024-01-09T17:05:00Z",
+  "deal_status_transitioned_to": "NEGOTIATION_FAILED"
+}

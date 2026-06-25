@@ -1,0 +1,54 @@
+{
+  "deal_id": "DEAL-20240103-003",
+  "commodity": "Coriander Seeds",
+  "hs_code": "0909.21",
+  "quantity_mt": 30,
+  "unit": "MT",
+  "buyer_price_usd": 1100,
+  "agreed_price_usd": 980,
+  "currency": "USD",
+  "status": "PAID",
+  "cms_score": 78.9,
+  "financials": {
+    "buyer_price_usd": 1100,
+    "agreed_price_usd": 980,
+    "portless_margin_pct": 12.2,
+    "freight_cost_usd": 1800,
+    "insurance_usd": 210,
+    "total_deal_value_usd": 33000,
+    "payout_to_supplier_usd": 29400
+  },
+  "pi_id": "PI-20231210-001",
+  "po_id": "PO-20231215-001",
+  "payout_id": "PAY-PNEER-20240120-001",
+  "documents": [
+    {"type": "CI", "document_id": "DOC-CI-001", "url": "/docugen/documents/DOC-CI-001"},
+    {"type": "PL", "document_id": "DOC-PL-001", "url": "/docugen/documents/DOC-PL-001"},
+    {"type": "CoO", "document_id": "DOC-COO-001", "url": "/docugen/documents/DOC-COO-001"},
+    {"type": "SDF", "document_id": "DOC-SDF-001", "url": "/docugen/documents/DOC-SDF-001"},
+    {"type": "SHIPPING_BILL", "document_id": "DOC-SB-001", "url": "/docugen/documents/DOC-SB-001"}
+  ],
+  "customs": {
+    "leo_number": "LEO/2024/INCCU/789012",
+    "shipping_bill_number": "SB/2024/INCCU/456789",
+    "filed_at": "2024-01-10T08:00:00Z"
+  },
+  "created_at": "2023-12-01T08:00:00Z",
+  "updated_at": "2024-01-20T16:00:00Z",
+  "timeline": [
+    {"status": "DRAFT", "at": "2023-12-01T08:00:00Z", "by": "system"},
+    {"status": "MATCHING", "at": "2023-12-01T08:05:00Z", "by": "match_engine"},
+    {"status": "NEGOTIATING", "at": "2023-12-01T09:00:00Z", "by": "sourcing"},
+    {"status": "NEGOTIATION_AGREED", "at": "2023-12-05T14:00:00Z", "by": "negotiation_agent"},
+    {"status": "PI_SENT", "at": "2023-12-07T10:00:00Z", "by": "dealmaker"},
+    {"status": "PI_ACCEPTED", "at": "2023-12-09T11:00:00Z", "by": "buyer"},
+    {"status": "ESCROW_PENDING", "at": "2023-12-10T09:00:00Z", "by": "escrow_guard"},
+    {"status": "ESCROW_FUNDED", "at": "2023-12-12T16:00:00Z", "by": "escrow_guard"},
+    {"status": "PO_ISSUED", "at": "2023-12-15T09:00:00Z", "by": "dealmaker"},
+    {"status": "SUPPLIER_DISPATCH_READY", "at": "2023-12-20T10:00:00Z", "by": "shield_link"},
+    {"status": "QC_PASSED", "at": "2023-12-22T14:00:00Z", "by": "shield_link"},
+    {"status": "IN_TRANSIT", "at": "2023-12-24T08:00:00Z", "by": "shield_link"},
+    {"status": "CLEARED", "at": "2024-01-15T14:00:00Z", "by": "shield_link"},
+    {"status": "PAID", "at": "2024-01-20T16:00:00Z", "by": "escrow_guard"}
+  ]
+}

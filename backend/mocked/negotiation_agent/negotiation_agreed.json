@@ -1,0 +1,32 @@
+{
+  "negotiation_id": "NEG-001-2024",
+  "deal_id": "DEAL-20240101-001",
+  "status": "AGREED",
+  "rounds": [
+    {
+      "round": 1,
+      "buyer_offer_usd": 1620,
+      "supplier_ask_usd": 1650,
+      "gap_usd": 30,
+      "llm_recommendation": "Counter at 1635 — split difference",
+      "counter_offer_usd": 1635,
+      "outcome": "COUNTER",
+      "occurred_at": "2024-01-15T10:00:00Z"
+    },
+    {
+      "round": 2,
+      "buyer_offer_usd": 1635,
+      "supplier_ask_usd": 1640,
+      "gap_usd": 5,
+      "llm_recommendation": "Accept — gap within 0.4%, margin holds at 9.6%",
+      "counter_offer_usd": 1638,
+      "outcome": "AGREED",
+      "occurred_at": "2024-01-15T14:00:00Z"
+    }
+  ],
+  "agreed_price_usd": 1638,
+  "agreed_at": "2024-01-15T14:15:00Z",
+  "portless_margin_pct": 9.6,
+  "next_step": "issue_pi",
+  "email_thread_id": "EMAIL-NEG-001-2024"
+}
