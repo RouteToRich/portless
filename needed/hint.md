@@ -171,3 +171,15 @@ IDE:
 Repo:
 github
 Export license
+
+
+ExFro - export sourcing partner
+
+ExportifyInc says it supports supplier identification, verification, export documentation, quality and inspection coordination, and photo/video verification before shipment.
+
+Trustx says it provides on-site QC inspectors, photographic reports, checklist-based QA, and verification of shipping documentation from fumigation to export paperwork.
+
+DGN EXIM says it performs supplier audits, packing verification, container stuffing checks, and customs paperwork coordination, including third-party testing on request.
+
+
+add websearch provision for negotiation agent 

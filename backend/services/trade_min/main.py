@@ -26,6 +26,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 
+from .cache import close_cache, init_cache
 from .config import settings
 from .repository import close_repository, init_repository
 from .router import router
@@ -71,6 +72,7 @@ async def on_startup() -> None:
     global _scheduler
 
     await init_repository()  # logs WARNING if falling back to in-memory
+    await init_cache()       # raw API response cache (Mongo TTL / in-memory)
 
     _scheduler = AsyncIOScheduler(timezone="UTC")
     _scheduler.add_job(
@@ -104,6 +106,7 @@ async def on_shutdown() -> None:
         _scheduler.shutdown(wait=False)
         logger.info("Trade-Min scheduler stopped")
         _scheduler = None
+    await close_cache()
     await close_repository()
 
 
@@ -123,11 +126,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # ---------------------------------------------------------------------------
 
 def create_app() -> FastAPI:
-    return FastAPI(
+    app = FastAPI(
         title="PortLess · Trade-Min Service",
         version="2.0.0",
         lifespan=lifespan,
     )
+    app.include_router(router)
+    return app
 
 
 app = create_app()

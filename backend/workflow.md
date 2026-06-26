@@ -129,6 +129,27 @@ Trade-Min wakes up (scheduler or POST /trade-min/scan)
   └─ Phase 1e: Confidence score + persist + emit opportunity.detected
 ```
 
+### Raw API response caching (quota conservation) ✅
+
+Slow-changing sources are cached so repeated scans don't re-spend API quota
+(Comtrade's free tier is only 500 calls/day). Every connector call routes through
+`_safe_quote()`, which checks a TTL cache *before* hitting the live API and stores
+successful responses keyed by `(connector, request)`.
+
+| Source | Cached? | TTL | Why |
+|---|---|---|---|
+| **Comtrade** (prior-year annual trade) | ✅ | 7 days | Immutable once the year closes |
+| **MacMap** (tariffs / NTBs) | ✅ | 7 days | Changes rarely |
+| Volza / ImportGenius / Trademo | ❌ | — | Not cached (manifest data drifts) |
+| Alibaba RFQ / GDELT / EU TED (live signals) | ❌ | — | Must stay fresh |
+
+- **Backend:** `services/trade_min/cache.py` — MongoDB collection `api_cache` with a
+  TTL index on `expires_at`; falls back to in-memory when `TRADE_MONGO_URI` is absent.
+- **TTLs:** `config.py → TradeMinConfig.cache_ttl_seconds` (per-connector).
+- **Kill switch:** `TRADE_CACHE_ENABLED=0` bypasses the cache and always hits the live API.
+- **Fail-safe:** cache errors are swallowed — a cache outage degrades to "always call live,"
+  never breaks a scan.
+
 ### Request — trigger a scan
 
 ```http
@@ -1667,11 +1688,11 @@ shared/domain/              ← DealStatus enum, EventTopic enum, state machine
 
 ---
 
-### Summary Table (Last checked: 2026-06-25)
+### Summary Table (Last checked: 2026-06-26)
 
 | # | API / Service | Module | Status | Env Var(s) | Cost |
 |---|---------------|--------|--------|------------|------|
-| 1 | UN Comtrade | trade-min Phase 1 | 🔑 Key needed | `COMTRADE_SUBSCRIPTION_KEY` | Free 500 calls/day |
+| 1 | UN Comtrade | trade-min Phase 1 | ✅ Connected & verified | `COMTRADE_SUBSCRIPTION_KEY` (set & validated) | Free 500 calls/day |
 | 2 | Volza | trade-min Phase 1 | 🔑 Key needed | `VOLZA_API_KEY` | $0.10/search + $0.02/record |
 | 3 | Trademo Intel | trade-min Phase 1 | 🔑 Key needed | `TRADEMO_API_KEY` | Subscription |
 | 4 | ImportGenius | trade-min Phase 1 | 🔑 Key needed | `IMPORTGENIUS_API_KEY` | Enterprise plan |
@@ -1707,7 +1728,7 @@ shared/domain/              ← DealStatus enum, EventTopic enum, state machine
 
 ---
 
-#### 1. UN Comtrade — 🔑 Key needed
+#### 1. UN Comtrade — ✅ Connected & verified
 
 **What it does:** Global trade volume data by HS code and country. Used to detect
 import surges, e.g. "Spain's pepper imports from India grew 40% YoY."
@@ -1720,7 +1741,15 @@ import surges, e.g. "Spain's pepper imports from India grew 40% YoY."
 - Free tier — 500 API calls/day, up to 100K records/call *(sufficient for dev)*
 - Premium — unlimited calls, 250K records/call *(contact comtrade@un.org)*
 
-**Steps to connect:**
+**Connection status (verified 2026-06-26):**
+- `COMTRADE_SUBSCRIPTION_KEY` is set in `backend/.env` and validated against the live API.
+- Test call `GET https://comtradeapi.un.org/data/v1/get/C/A/HS` (cmdCode `100190`, period `2023`,
+  flow `M`) returned **HTTP 200** with real records (~3.0 s, incl. ~1.07 s server compute).
+- Re-test any time with `python backend/scripts/check_trade_api_connections.py` → row shows **✓ OK**.
+- **Quota note:** responses are cached for 7 days (see *Raw API response caching* under Phase 1),
+  so repeat scans of the same HS × market × period do not re-spend the 500-calls/day free quota.
+
+**Steps to connect (already completed):**
 1. Create a free account at https://comtradeplus.un.org
 2. Go to https://comtradedeveloper.un.org → **Products** → **Free APIs** → **Subscribe** (auto-approved, instant)
 3. Go to **Profile** → **Show keys** → copy the subscription key

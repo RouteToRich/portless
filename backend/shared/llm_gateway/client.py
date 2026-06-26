@@ -151,11 +151,11 @@ class LLMClient:
         fallback_chain: FallbackChain | None = None,
         tracker: RequestTracker | None = None,
         settings: LLMGatewaySettings | None = None,
+        cache: "ResponseCache | None" = None,
         # ── future feature hooks (all disabled / None by default) ──────────
         # TODO(rate_limiter):   rate_limiter: RateLimiter | None = None,
         # TODO(circuit_breaker): circuit_breaker: CircuitBreaker | None = None,
         # TODO(cost_estimator): cost_estimator: CostEstimator | None = None,
-        # TODO(cache):          cache: ResponseCache | None = None,
         # TODO(health):         health_monitor: HealthMonitor | None = None,
         # TODO(prompt_guard):   prompt_guard: PromptGuard | None = None,
     ) -> None:
@@ -178,11 +178,19 @@ class LLMClient:
                 tracking_file=self._settings.tracking_file_path,
             )
 
+        # ── response cache (shared MongoDB TTL cache; opt-in) ──────────────
+        if cache is not None:
+            self._cache: Any = cache
+        elif self._settings.cache_enabled:
+            from .cache import ResponseCache  # lazy — avoids circular import
+            self._cache = ResponseCache(ttl_seconds=self._settings.cache_ttl_seconds)
+        else:
+            self._cache = None
+
         # ── future feature hook storage ────────────────────────────────────
         # TODO(rate_limiter):   self._rate_limiter = rate_limiter
         # TODO(circuit_breaker): self._circuit_breaker = circuit_breaker
         # TODO(cost_estimator): self._cost_estimator = cost_estimator
-        # TODO(cache):          self._cache = cache
         # TODO(health):         self._health_monitor = health_monitor
         # TODO(prompt_guard):   self._prompt_guard = prompt_guard
         self._graph = self._build_graph()
@@ -243,12 +251,18 @@ class LLMClient:
         #     if result.blocked:
         #         raise PromptBlocked(reason=result.reason, category=result.category)
 
-        # TODO(cache): return cached response if available
-        # if self._cache:
-        #     key = self._cache.make_key(messages, endpoints[0].model, temperature or LLM_TEMPERATURE)
-        #     cached = self._cache.get(key)
-        #     if cached is not None:
-        #         return cached
+        # Response cache — return a cached result for an identical request.
+        cache_key: str | None = None
+        if self._cache is not None:
+            cache_key = self._cache.make_key(
+                messages,
+                endpoints[0].model,
+                temperature if temperature is not None else LLM_TEMPERATURE,
+            )
+            cached = await self._cache.aget(cache_key)
+            if cached is not None:
+                logger.debug("LLM cache hit for caller=%s", caller)
+                return cached
 
         # TODO(rate_limiter): enforce per-caller rate limits
         # if self._rate_limiter:
@@ -275,7 +289,10 @@ class LLMClient:
         final_state = await self._graph.ainvoke(initial_state)
 
         if final_state["response"] is not None:
-            return final_state["response"]
+            response = final_state["response"]
+            if cache_key is not None:
+                await self._cache.aset(cache_key, response)
+            return response
 
         raise LLMExhaustedException(
             f"All {len(endpoints)} model(s) in the fallback chain exhausted. "
@@ -424,12 +441,8 @@ class LLMClient:
             #         tokens_used=state["response"].total_tokens,
             #     )
 
-            # TODO(cache): store response so identical future calls are instant
-            # if self._cache:
-            #     key = self._cache.make_key(
-            #         state["messages"], endpoint.model, state["temperature"]
-            #     )
-            #     self._cache.set(key, state["response"])
+            # Response caching is handled in chat() (keyed on the primary
+            # model + temperature) so it covers fallback responses too.
 
             return {}  # success → graph routes to END
 

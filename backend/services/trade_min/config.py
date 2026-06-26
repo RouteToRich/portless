@@ -9,6 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+_HOUR = 3600
+_DAY = 24 * _HOUR
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -27,6 +30,13 @@ class TradeMinSettings(BaseSettings):
     trade_mongo_uri: str = ""
     trade_mongo_db_name: str = "trade"
     trade_mongo_collection: str = "opportunities"
+
+    # ── Raw API response cache ────────────────────────────────────────────
+    # Collection (same Atlas DB) holding cached raw connector responses, with
+    # a TTL index. Falls back to in-memory when trade_mongo_uri is absent.
+    trade_cache_collection: str = "api_cache"
+    # Kill switch — set TRADE_CACHE_ENABLED=0 to always hit the live API.
+    trade_cache_enabled: bool = True
 
     # ── Connector credentials (read-only; connectors read os.environ directly,
     #    but settings exposes them for health-check / redaction logging) ──────
@@ -92,6 +102,19 @@ class TradeMinConfig:
     # ── Urgency tier TTLs (hours) ─────────────────────────────────────────
     urgency_ttl_hours: tuple[int, ...] = (0, 168, 72, 48, 24)
     # index 0 unused; tier 1 = 168 h (7 d), tier 2 = 72 h, tier 3 = 48 h, tier 4 = 24 h
+
+    # ── Raw API response cache TTLs (seconds), keyed by connector name ─────
+    # Only connectors listed here are cached. Values are slow-changing:
+    #   comtrade — prior-year annual trade data is effectively immutable
+    #   macmap   — applied tariffs / NTBs change rarely
+    # Live signals (alibaba_rfq, gdelt_disruption, eu_ted) are deliberately
+    # absent so they are always fetched fresh.
+    cache_ttl_seconds: dict[str, int] = field(
+        default_factory=lambda: {
+            "comtrade": 7 * _DAY,
+            "macmap":   7 * _DAY,
+        }
+    )
 
 
 DEFAULT_CONFIG = TradeMinConfig()

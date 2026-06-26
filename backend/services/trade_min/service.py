@@ -28,7 +28,8 @@ from shared.bus import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 
 from . import ranking
-from .config import DEFAULT_CONFIG, TradeMinConfig
+from .cache import cache_get, cache_set, make_cache_key
+from .config import DEFAULT_CONFIG, TradeMinConfig, settings
 from .repository import get_repository
 from .schemas import (
     BuyerSignal,
@@ -164,18 +165,32 @@ async def _safe_quote(name: str, req: dict) -> dict | None:
     """Call connector.quote(req) and return the result, or None on any failure.
 
     Handles:
+      - Raw-response caching for slow-changing sources (Comtrade, MacMap) to
+        conserve API quota — a cache hit short-circuits the live call.
       - Missing credentials (KeyError in connector __init__)
       - Network timeouts, API errors, unexpected exceptions
     """
+    ttl = DEFAULT_CONFIG.cache_ttl_seconds.get(name)
+    cache_key: str | None = None
+    if ttl and settings.trade_cache_enabled:
+        cache_key = make_cache_key(name, req)
+        cached = await cache_get(cache_key)
+        if cached is not None:
+            logger.debug("Connector %r cache hit (%s)", name, cache_key)
+            return cached
+
     conn = _build_connector(name)
     if conn is None:
         return None
     try:
         result = await conn.quote(req)  # type: ignore[union-attr]
-        return result
     except Exception as exc:
         logger.warning("Connector %r quote() failed: %s", name, exc)
         return None
+
+    if cache_key is not None and isinstance(result, dict) and result:
+        await cache_set(cache_key, name, result, ttl)  # type: ignore[arg-type]
+    return result
 
 
 def _new_opportunity_id() -> str:
@@ -858,7 +873,7 @@ async def scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
     min_rank = max(payload.min_arbitrage_rank, config.min_arbitrage_rank)
 
     tasks = [
-        _scan_one(hs, mkt, config, min_rank)
+        _scan_one(hs, mkt, config)
         for hs in hs_codes
         for mkt in markets
     ]
@@ -868,7 +883,10 @@ async def scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
     for r in raw:
         if isinstance(r, BaseException):
             logger.error("Scan task raised an unhandled exception: %s", r)
-        elif r is not None:
+        elif r is not None and r.arbitrage_rank >= min_rank:
+            # Opportunities below the caller's threshold are still persisted by
+            # _phase5 (so /opportunities can surface them later) but are excluded
+            # from this scan's response.
             results.append(r)
 
     results.sort(key=lambda o: (o.urgency_tier, o.arbitrage_rank), reverse=True)
@@ -879,7 +897,6 @@ async def _scan_one(
     hs_code: str,
     market: str,
     config: TradeMinConfig,
-    min_rank: float,
 ) -> EnrichedOpportunity | None:
     try:
         phase1 = await _phase1_historical_demand(hs_code, market, config)

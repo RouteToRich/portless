@@ -17,7 +17,11 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/config.py'\\).read\\(\\)\\); print\\('config.py OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/ranking.py'\\).read\\(\\)\\); print\\('ranking.py OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/services/trade_min/router.py'\\).read\\(\\)\\); print\\('router.py OK'\\)\")",
-      "Bash(python -c \"import sys; sys.path.insert\\(0,'.'\\); from services.deals import config, schemas, repository, service, router, client; print\\('OK'\\)\")"
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'.'\\); from services.deals import config, schemas, repository, service, router, client; print\\('OK'\\)\")",
+      "Bash(cp \"c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/.env.example\" \"c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/.env\")",
+      "Bash(git -C \"c:/Users/wb655772/kpaulpandi/workarea/pandian/portless\" check-ignore backend/.env)",
+      "Bash(python -c \"import uvicorn, fastapi; print\\('deps ok'\\)\")",
+      "Bash(python -c \"import shared.connectors.regulatory; print\\('regulatory OK'\\)\")"
     ]
   }
 }

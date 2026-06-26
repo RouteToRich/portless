@@ -35,9 +35,38 @@ from typing import Any
 
 import httpx
 
+from shared.cache import cache_get, cache_set, make_key
+
 from .base import Connector
 
 logger = logging.getLogger(__name__)
+
+# Government / VAT verification results are stable day-to-day, so the same
+# GSTIN / IEC / CIN / Udyam / VAT lookup is cached to avoid hammering the
+# upstream APIs on every quote re-verification. Read-only only — never applied
+# to book()/mutating operations.
+_VERIFY_TTL_SECONDS = 24 * 3600
+
+
+async def _cached_lookup(
+    namespace: str,
+    key_parts: tuple,
+    fetch,
+    ttl_seconds: int = _VERIFY_TTL_SECONDS,
+) -> dict:
+    """Return a cached verification result or fetch + store it.
+
+    ``fetch`` is an async callable returning the result dict. Only non-empty
+    dicts are cached; all cache operations are best-effort (never raise).
+    """
+    key = make_key(*key_parts)
+    hit = await cache_get(namespace, key)
+    if hit is not None:
+        return hit
+    result = await fetch()
+    if isinstance(result, dict) and result:
+        await cache_set(namespace, key, result, ttl_seconds)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -99,25 +128,28 @@ class GstnConnector(Connector):
             legal_name, registration_date, taxpayer_type
         """
         gstin = request["gstin"].strip().upper()
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{self._base}/gstns/{gstin}",
-                headers=_apisetu_headers(self._key, self._client_id),
-            )
-            resp.raise_for_status()
-            data = resp.json()
 
-        return {
-            "gstin": gstin,
-            "status": (
-                data.get("gstnStatus") or data.get("status") or "UNKNOWN"
-            ).upper(),
-            "legal_name": (
-                data.get("legalNameOfBusiness") or data.get("tradeName") or ""
-            ),
-            "registration_date": data.get("registrationDate") or "",
-            "taxpayer_type": data.get("taxpayerType") or "",
-        }
+        async def _fetch() -> dict[str, Any]:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{self._base}/gstns/{gstin}",
+                    headers=_apisetu_headers(self._key, self._client_id),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            return {
+                "gstin": gstin,
+                "status": (
+                    data.get("gstnStatus") or data.get("status") or "UNKNOWN"
+                ).upper(),
+                "legal_name": (
+                    data.get("legalNameOfBusiness") or data.get("tradeName") or ""
+                ),
+                "registration_date": data.get("registrationDate") or "",
+                "taxpayer_type": data.get("taxpayerType") or "",
+            }
+
+        return await _cached_lookup("regulatory:gstn", ("gstn", gstin), _fetch)
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("GSTN has no booking operation")
@@ -163,22 +195,25 @@ class DgftConnector(Connector):
             entity_name, nature_of_concern
         """
         iec = request["iec"].strip().upper()
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{self._IEC_BASE}/IECDetails/{iec}",
-                headers={"Accept": "application/json"},
-                follow_redirects=True,
-            )
-            resp.raise_for_status()
-            data = resp.json()
 
-        return {
-            "iec": iec,
-            "status": (data.get("iecStatus") or data.get("status") or "UNKNOWN").upper(),
-            "entity_name": data.get("entityName") or "",
-            "nature_of_concern": data.get("natureOfConcern") or "",
-            "file_number": data.get("fileNumber") or "",
-        }
+        async def _fetch() -> dict[str, Any]:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{self._IEC_BASE}/IECDetails/{iec}",
+                    headers={"Accept": "application/json"},
+                    follow_redirects=True,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            return {
+                "iec": iec,
+                "status": (data.get("iecStatus") or data.get("status") or "UNKNOWN").upper(),
+                "entity_name": data.get("entityName") or "",
+                "nature_of_concern": data.get("natureOfConcern") or "",
+                "file_number": data.get("fileNumber") or "",
+            }
+
+        return await _cached_lookup("regulatory:dgft", ("dgft", iec), _fetch)
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         """Check if an entity is on the DGFT denied-party list.
@@ -245,24 +280,27 @@ class McaConnector(Connector):
             incorporation_date (ISO-8601), age_years (float), category
         """
         cin = request["cin"].strip().upper()
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{self._BASE}/companies/{cin}",
-                headers=_apisetu_headers(self._key, self._client_id),
-            )
-            resp.raise_for_status()
-            data = resp.json()
 
-        inc_date = data.get("dateOfIncorporation") or ""
-        return {
-            "cin": cin,
-            "company_name": data.get("companyName") or "",
-            "company_status": (data.get("companyStatus") or "UNKNOWN").upper(),
-            "incorporation_date": inc_date,
-            "age_years": _compute_age_years(inc_date),
-            "category": data.get("companyCategory") or "",
-            "class_of_company": data.get("classOfCompany") or "",
-        }
+        async def _fetch() -> dict[str, Any]:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{self._BASE}/companies/{cin}",
+                    headers=_apisetu_headers(self._key, self._client_id),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            inc_date = data.get("dateOfIncorporation") or ""
+            return {
+                "cin": cin,
+                "company_name": data.get("companyName") or "",
+                "company_status": (data.get("companyStatus") or "UNKNOWN").upper(),
+                "incorporation_date": inc_date,
+                "age_years": _compute_age_years(inc_date),
+                "category": data.get("companyCategory") or "",
+                "class_of_company": data.get("classOfCompany") or "",
+            }
+
+        return await _cached_lookup("regulatory:mca", ("mca", cin), _fetch)
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("MCA has no booking operation")
@@ -307,21 +345,24 @@ class UdyamConnector(Connector):
             ("micro" | "small" | "medium")
         """
         udyam_no = request["udyam_number"].strip().upper()
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{self._BASE}/registrations/{udyam_no}",
-                headers=_apisetu_headers(self._key, self._client_id),
-            )
-            resp.raise_for_status()
-            data = resp.json()
 
-        return {
-            "udyam_number": udyam_no,
-            "registered": bool(data.get("isActive", False)),
-            "enterprise_name": data.get("enterpriseName") or "",
-            "msme_type": (data.get("msmeType") or "").lower(),
-            "activity": data.get("majorActivity") or "",
-        }
+        async def _fetch() -> dict[str, Any]:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{self._BASE}/registrations/{udyam_no}",
+                    headers=_apisetu_headers(self._key, self._client_id),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            return {
+                "udyam_number": udyam_no,
+                "registered": bool(data.get("isActive", False)),
+                "enterprise_name": data.get("enterpriseName") or "",
+                "msme_type": (data.get("msmeType") or "").lower(),
+                "activity": data.get("majorActivity") or "",
+            }
+
+        return await _cached_lookup("regulatory:udyam", ("udyam", udyam_no), _fetch)
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("Udyam has no booking operation")
@@ -366,22 +407,25 @@ class ViesConnector(Connector):
         """
         country = request["country_code"].strip().upper()
         vat = request["vat_number"].strip().upper()
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                f"{self._BASE}/ms/{country}/vat/{vat}",
-                headers={"Accept": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
 
-        return {
-            "vat_number": vat,
-            "country_code": country,
-            "valid": bool(data.get("isValid", False)),
-            "company_name": data.get("traderName") or "",
-            "company_address": data.get("traderAddress") or "",
-            "request_date": data.get("requestDate") or "",
-        }
+        async def _fetch() -> dict[str, Any]:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    f"{self._BASE}/ms/{country}/vat/{vat}",
+                    headers={"Accept": "application/json"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            return {
+                "vat_number": vat,
+                "country_code": country,
+                "valid": bool(data.get("isValid", False)),
+                "company_name": data.get("traderName") or "",
+                "company_address": data.get("traderAddress") or "",
+                "request_date": data.get("requestDate") or "",
+            }
+
+        return await _cached_lookup("regulatory:vies", ("vies", country, vat), _fetch)
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("VIES is a read-only verification service")

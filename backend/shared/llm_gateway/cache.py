@@ -1,132 +1,85 @@
-"""Response cache — placeholder, NOT YET IMPLEMENTED.
+"""LLM response cache — backed by the application-wide ``shared.cache``.
 
-Hook points in LLMClient.chat():
+Caches identical chat requests keyed on ``(messages, model, temperature)`` so a
+repeated prompt during the same deal cycle returns instantly without re-spending
+tokens. Uses the shared MongoDB TTL cache (in-memory fallback when Mongo is
+absent), so entries are shared across workers and expire automatically.
 
-    # Before entering the LangGraph — check cache first:
-    if self._cache:
-        key = self._cache.make_key(messages, model, temperature)
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached  # immediate return, no LLM call
+Wired into ``LLMClient.chat()`` and gated by ``LLM_CACHE_ENABLED`` (default off).
+Keep the TTL short (``LLM_CACHE_TTL_SECONDS``, default 120s) so live prices never
+go stale within a negotiation.
 
-    # In handle_outcome after a successful response:
-    if self._cache and state["response"] is not None:
-        key = self._cache.make_key(messages, endpoint.model, state["temperature"])
-        self._cache.set(key, state["response"])
-
-Why this is needed:
-    Negotiation agents frequently re-query the same commodity/incoterm
-    combination during a single deal cycle (e.g. "what's the standard
-    price for 20MT turmeric CIF Shanghai?"). Caching identical prompts
-    can cut LLM spend by 20-40% and halve latency on repeated queries.
-
-    Cache should be keyed on (hash(messages), model, temperature) so
-    that different temperatures or models never share a cached result.
-
-Implementation plan:
-    1. Build make_key(): sha256 of canonical JSON of messages + model + temp.
-    2. Backends:
-       - "memory" — LRU dict with threading.Lock and max_size cap.
-       - "redis"  — GET/SETEX with TTL; key = "llmgw:{hash}".
-    3. TTL: short (60–300 s) to avoid stale prices in a live deal.
-    4. Invalidation:
-       - Time-based via TTL (preferred, simple, correct for price data).
-       - Manual clear_all() / clear_model(model) for admin endpoints.
-    5. Config fields on LLMGatewaySettings (already added as placeholders):
-       LLM_CACHE_ENABLED, LLM_CACHE_BACKEND, LLM_CACHE_TTL_SECONDS,
-       LLM_CACHE_MAX_SIZE, LLM_CACHE_REDIS_URL.
-    6. Never cache temperature=0 calls differently from temperature=0.0 —
-       normalise floats before hashing (round to 4 dp).
-
-Usage once implemented::
+Usage::
 
     from shared.llm_gateway import LLMClient, ResponseCache
 
     client = LLMClient(cache=ResponseCache(ttl_seconds=120))
-    # Second identical call returns instantly from cache.
     r1 = await client.chat(messages, caller="agent")
-    r2 = await client.chat(messages, caller="agent")
+    r2 = await client.chat(messages, caller="agent")  # served from cache
     assert r1.content == r2.content
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
-from .client import LLMResponse
+from shared.cache import cache_clear, cache_get, cache_set
+
+if TYPE_CHECKING:
+    from .client import LLMResponse
 
 logger = logging.getLogger(__name__)
 
 
 class ResponseCache:
-    """LLM response cache keyed on (messages, model, temperature).
+    """Async LLM response cache keyed on (messages, model, temperature)."""
 
-    This is a stub — all methods raise NotImplementedError.
-    Replace with a real implementation when ready.
+    def __init__(self, ttl_seconds: int = 120, namespace: str = "llm") -> None:
+        self._ttl = ttl_seconds
+        self._namespace = namespace
 
-    Expected constructor args (once implemented):
-        backend: str = "memory"  # "memory" | "redis"
-        ttl_seconds: int = 120
-        max_size: int = 1000     # max entries for memory backend
-        redis_url: str = ""      # required if backend="redis"
-    """
-
+    # ------------------------------------------------------------------ key
     def make_key(
         self,
         messages: list[dict[str, str]],
         model: str,
         temperature: float,
     ) -> str:
-        """Return a deterministic cache key for this (messages, model, temperature) triple.
+        """Deterministic key for a (messages, model, temperature) triple.
 
-        This method IS implemented here because the hashing logic is
-        pure and straightforward — the rest stays as stubs.
+        Temperature is rounded to 4 dp so 0 and 0.0 never split the cache.
         """
         payload = json.dumps(
             {
                 "messages": messages,
                 "model": model,
-                "temperature": round(temperature, 4),
+                "temperature": round(float(temperature), 4),
             },
             sort_keys=True,
             ensure_ascii=False,
         )
         return "llmgw:" + hashlib.sha256(payload.encode()).hexdigest()
 
-    def get(self, key: str) -> LLMResponse | None:
-        """Return the cached response for key, or None on a miss.
+    # ------------------------------------------------------------------ get/set
+    async def aget(self, key: str) -> "LLMResponse | None":
+        """Return the cached response for key, or None on miss/error."""
+        doc = await cache_get(self._namespace, key)
+        if not doc:
+            return None
+        from .client import LLMResponse  # lazy — avoids circular import
+        try:
+            return LLMResponse(**doc)
+        except Exception as exc:  # malformed cache doc — treat as miss
+            logger.debug("LLM cache decode failed for %s: %s", key, exc)
+            return None
 
-        Raises:
-            NotImplementedError: until this is implemented.
-        """
-        # TODO: memory backend — LRU dict lookup; check expiry timestamp
-        # TODO: redis backend — GET key; deserialise JSON → LLMResponse
-        raise NotImplementedError(
-            "ResponseCache.get() is not yet implemented. "
-            "See cache.py for the implementation plan."
-        )
+    async def aset(self, key: str, response: "LLMResponse") -> None:
+        """Store a response under key with the configured TTL (best-effort)."""
+        await cache_set(self._namespace, key, dataclasses.asdict(response), self._ttl)
 
-    def set(self, key: str, response: LLMResponse) -> None:
-        """Store a response under key with the configured TTL.
-
-        Raises:
-            NotImplementedError: until this is implemented.
-        """
-        # TODO: memory backend — evict oldest if at max_size; store (value, expires_at)
-        # TODO: redis backend — SETEX key ttl_seconds (JSON-serialised LLMResponse)
-        raise NotImplementedError("ResponseCache.set() is not yet implemented.")
-
-    def clear_all(self) -> None:
-        """Evict every cached entry (for admin/testing)."""
-        # TODO: memory — clear dict; redis — SCAN + DEL "llmgw:*"
-        raise NotImplementedError("ResponseCache.clear_all() is not yet implemented.")
-
-    def clear_model(self, model: str) -> None:
-        """Evict all cached entries that were produced by model.
-
-        Requires storing model in the cache value, not just the key.
-        """
-        # TODO: iterate entries; delete where value.model == model
-        raise NotImplementedError("ResponseCache.clear_model() is not yet implemented.")
+    async def clear(self) -> int:
+        """Evict every entry in this cache's namespace."""
+        return await cache_clear(self._namespace)
