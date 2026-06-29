@@ -12,7 +12,8 @@ Implementation plan:
     1. Choose algorithm: token-bucket (bursty OK) or sliding-window (strict).
     2. Choose backend:
        - "memory"  — threading.Lock + deque, single-process only (good for dev).
-       - "redis"   — Redis INCR + EXPIREAT, shared across workers (production).
+       - "mongo"   — atomic $inc on a TTL doc in the shared MongoDB cache,
+                     shared across workers (production).
     3. Limits to enforce:
        - Per-caller RPM (requests per minute).
        - Per-caller TPM (tokens per minute) — needs estimated token count upfront.
@@ -20,7 +21,7 @@ Implementation plan:
     4. Expose current usage via get_usage(caller) for observability dashboards.
     5. Config fields on LLMGatewaySettings to wire (already added as placeholders):
        LLM_RATE_LIMIT_ENABLED, LLM_RATE_LIMIT_RPM, LLM_RATE_LIMIT_TPM,
-       LLM_RATE_LIMIT_BACKEND, LLM_RATE_LIMIT_REDIS_URL.
+       LLM_RATE_LIMIT_BACKEND.
 
 Usage once implemented::
 
@@ -70,11 +71,10 @@ class RateLimiter:
     Replace with a real implementation when ready.
 
     Expected constructor args (once implemented):
-        backend: str = "memory"          # "memory" | "redis"
+        backend: str = "memory"          # "memory" | "mongo"
         rpm: int = 60                    # requests per minute per caller
         tpm: int = 100_000               # tokens per minute per caller
         global_qpm_per_model: int = 300  # model-level global cap
-        redis_url: str = ""              # required if backend="redis"
     """
 
     def check(self, caller: str, model: str, estimated_tokens: int = 0) -> None:
@@ -92,7 +92,7 @@ class RateLimiter:
             NotImplementedError: until this is implemented.
         """
         # TODO: implement token-bucket or sliding-window algorithm
-        # TODO: persist window state in memory dict or Redis
+        # TODO: persist window state in a memory dict or the shared MongoDB cache
         # TODO: enforce rpm, tpm, and global_qpm_per_model
         raise NotImplementedError(
             "RateLimiter.check() is not yet implemented. "

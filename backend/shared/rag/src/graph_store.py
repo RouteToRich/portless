@@ -23,10 +23,6 @@ Recommended backends (set RAG_GRAPH_DB_BACKEND):
                  RAG_GRAPH_DB_URI = http://localhost:8529
                  pip install python-arango
 
-  "falkordb"  — Redis-compatible property graph; fast for small graphs
-                 RAG_GRAPH_DB_URI = redis://localhost:6379
-                 pip install falkordb
-
 Graph node schema (example — Neo4j Cypher):
   (:Chunk   {chunk_id, content, source, section, page_number})
   (:Entity  {name, type})         -- extracted by NER on ingestion

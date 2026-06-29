@@ -767,6 +767,345 @@ class TradeIndiaConnector(Connector):
         raise NotImplementedError("TradeIndia does not issue outbound webhooks.")
 
 
+# ===========================================================================
+# FREE / OPEN replacements for the paid Phase-1 & Phase-3 connectors
+# ===========================================================================
+# These let the opportunity pipeline run end-to-end at $0:
+#   - WitsTariffConnector  → replaces the paid ITC MacMap (Phase 3 tariff gate)
+#   - CensusTradeConnector → free US demand source augmenting UN Comtrade (Phase 1)
+# See workflow.md → "Trade-Min Cost-Reduction" for the full rationale.
+# ---------------------------------------------------------------------------
+
+# ISO-3166 alpha-2 → numeric code (WITS / Census use numeric reporters).
+_ISO2_TO_ISO_NUM: dict[str, str] = {
+    "ES": "724", "DE": "276", "US": "840", "AE": "784", "GB": "826",
+    "FR": "250", "IT": "380", "NL": "528", "PL": "616", "AU": "036",
+    "CA": "124", "JP": "392", "SG": "702", "CN": "156", "BE": "056",
+    "CH": "756", "SA": "682", "SE": "752", "DK": "208", "NO": "578",
+    "AT": "040", "PT": "620", "IE": "372", "FI": "246", "TR": "792",
+    "ZA": "710", "BR": "076", "MX": "484", "KR": "410", "TH": "764",
+    "MY": "458", "EG": "818", "NG": "566", "AR": "032", "IN": "356",
+}
+
+
+def _parse_wits_sdmx_latest(data: dict[str, Any]) -> tuple[float | None, str | None]:
+    """Extract the most-recent tariff observation from a WITS SDMX-JSON payload.
+
+    WITS returns SDMX-JSON shaped as
+    ``{"dataSets":[{"series":{"0:0:0:0:0":{"observations":{"0":[2.13], ...}}}}],
+       "structure":{"dimensions":{"observation":[{"values":[{"id":"2018"},...]}]}}}``.
+    Returns ``(tariff_pct, year)`` or ``(None, None)`` when no data is present.
+    """
+    datasets = data.get("dataSets") or []
+    if not datasets:
+        return None, None
+    series = datasets[0].get("series") or {}
+    if not series:
+        return None, None
+    first = next(iter(series.values()))
+    observations = first.get("observations") or {}
+    if not observations:
+        return None, None
+    last_key = max(observations.keys(), key=lambda k: int(k))
+    raw_val = observations[last_key][0] if observations[last_key] else None
+
+    periods: list[str] = []
+    obs_dims = (
+        ((data.get("structure") or {}).get("dimensions") or {}).get("observation") or []
+    )
+    if obs_dims:
+        periods = [v.get("id", "") for v in (obs_dims[0].get("values") or [])]
+    year = periods[int(last_key)] if int(last_key) < len(periods) else None
+
+    return (_safe_float(raw_val), year)
+
+
+class WitsTariffConnector(Connector):
+    """World Bank WITS (UNCTAD TRAINS): applied import tariffs — FREE, no key.
+
+    Drop-in replacement for the paid ITC MacMap connector in the Phase 3 tariff
+    gate. Returns the simple-average applied MFN tariff (%) a destination market
+    charges on an HS-6 product, harmonised across countries.
+
+    API documentation : https://wits.worldbank.org/witsapiintro.aspx
+    Base URL          : https://wits.worldbank.org/API/V1/SDMX/V21/rest/data/DF_WITS_Tariff_TRAINS
+    Authentication    : NONE — fully open, no registration or key required.
+    Pricing           : Free.
+    Notes             : SDMX-JSON only when ``Accept: application/json`` is sent;
+                        sparse coverage → returns ``applied_duty_pct=None`` when a
+                        country/product/year has no published line (handled
+                        gracefully downstream as "tariff unverified").
+    """
+
+    name = "wits_tariff"
+    _BASE = (
+        "https://wits.worldbank.org/API/V1/SDMX/V21/rest/data/DF_WITS_Tariff_TRAINS"
+    )
+
+    def __init__(self) -> None:
+        # No credentials required.
+        pass
+
+    async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Fetch the latest applied MFN tariff for an HS-6 code in a market.
+
+        Expected request keys:
+            hs_code        (str) – 6-digit HS code, e.g. ``"090411"``
+            reporter_iso2  (str) – importing country ISO-2, e.g. ``"ES"``
+            partner_iso2   (str) – exporting country ISO-2 (unused; MFN/World used)
+
+        Returns::
+
+            {"hs_code": "090411", "reporter_iso2": "ES", "partner": "WLD",
+             "applied_duty_pct": 2.13, "tariff_type": "MFN", "year": "2021",
+             "source": "WITS_TRAINS"}
+        """
+        hs6 = str(request["hs_code"])[:6]
+        reporter = _ISO2_TO_ISO_NUM.get(str(request.get("reporter_iso2", "")).upper())
+        result: dict[str, Any] = {
+            "hs_code": hs6,
+            "reporter_iso2": str(request.get("reporter_iso2", "")).upper(),
+            "partner": "WLD",
+            "applied_duty_pct": None,
+            "tariff_type": "MFN",
+            "year": None,
+            "source": "WITS_TRAINS",
+        }
+        if not reporter:
+            return result  # market not mapped → no tariff data
+
+        from datetime import date as _date
+        end_year = _date.today().year
+        # key dims: FREQ.REPORTER.PARTNER.PRODUCT.DATATYPE  (partner 000 = World/MFN)
+        key = f".{reporter}.000.{hs6}.reported"
+        params = {"startPeriod": end_year - 6, "endPeriod": end_year, "format": "JSON"}
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{self._BASE}/{key}/",
+                params=params,
+                headers={"Accept": "application/json"},
+            )
+        # WITS replies with an XML error body (not 4xx) when no data exists.
+        try:
+            data = resp.json()
+        except Exception:
+            return result
+        applied, year = _parse_wits_sdmx_latest(data)
+        result["applied_duty_pct"] = applied
+        result["year"] = year
+        return result
+
+    async def book(self, request: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError("WITS is a read-only data source.")
+
+    async def status(self, ext_ref: str) -> dict[str, Any]:
+        raise NotImplementedError("WITS is a read-only data source.")
+
+    async def webhook_verify(self, headers: dict[str, str], body: bytes) -> bool:
+        raise NotImplementedError("WITS does not issue webhooks.")
+
+
+class CensusTradeConnector(Connector):
+    """US Census Bureau International Trade API: US imports by HS — FREE (key).
+
+    Free, official, high-resolution US import statistics. Augments UN Comtrade in
+    Phase 1 for the US market (Comtrade remains the global source). Returns the
+    same record shape as ``ComtradeConnector.quote()`` for drop-in extraction.
+
+    API documentation : https://www.census.gov/data/developers/data-sets/international-trade.html
+    Base URL          : https://api.census.gov/data/timeseries/intltrade/imports/hs
+    Authentication    : free API key, ``key`` query parameter.
+                        HOW TO GET KEY (free, instant):
+                          1. Request a key at https://api.census.gov/data/key_signup.html
+                          2. Confirm via the emailed activation link
+                          3. Set CENSUS_API_KEY in backend/.env
+    Env var           : CENSUS_API_KEY
+    Pricing           : Free. Coverage: US imports only, monthly, Jan-2010+.
+    """
+
+    name = "census"
+    _BASE = "https://api.census.gov/data/timeseries/intltrade/imports/hs"
+
+    def __init__(self) -> None:
+        self._key = os.environ["CENSUS_API_KEY"]
+
+    async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
+        """US imports of an HS-6 code by partner country (Comtrade-shaped output).
+
+        Expected request keys:
+            hs_code  (str) – 6-digit HS code
+            market   (str) – destination ISO-2; Census only covers ``"US"``
+            time     (str) – ``"YYYY-MM"`` month override (optional)
+
+        Returns ``{"records": [...], "total_records": n, "hs_code", "period"}``;
+        records carry ``fob_value_usd`` (customs value) + ``cif_value_usd``.
+        Returns an empty result for non-US markets (Census is US-only).
+        """
+        hs6 = str(request["hs_code"])[:6]
+        market = str(request.get("market", "US")).upper()
+        empty = {"records": [], "total_records": 0, "hs_code": hs6, "period": ""}
+        if market != "US":
+            return empty
+
+        from datetime import date as _date, timedelta as _td
+        # Census lags ~6 weeks; query a recent settled month.
+        ref = _date.today().replace(day=1) - _td(days=70)
+        time_str = request.get("time") or f"{ref.year}-{ref.month:02d}"
+
+        params = {
+            "get": "CTY_CODE,CTY_NAME,GEN_VAL_MO,GEN_CIF_MO,I_COMMODITY",
+            "I_COMMODITY": hs6,
+            "COMM_LVL": "HS6",
+            "time": time_str,
+            "key": self._key,
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(self._BASE, params=params)
+        try:
+            rows = resp.json()
+        except Exception:
+            return empty
+        if not isinstance(rows, list) or len(rows) < 2:
+            return empty
+
+        header = rows[0]
+        idx = {name: i for i, name in enumerate(header)}
+        records = []
+        for r in rows[1:]:
+            fob = _safe_float(r[idx["GEN_VAL_MO"]]) if "GEN_VAL_MO" in idx else None
+            cif = _safe_float(r[idx["GEN_CIF_MO"]]) if "GEN_CIF_MO" in idx else None
+            records.append({
+                "reporter_iso3": "USA",
+                "reporter_name": "United States",
+                "partner_name": r[idx["CTY_NAME"]] if "CTY_NAME" in idx else "",
+                "period": time_str,
+                "hs_code": hs6,
+                "flow": "M",
+                "fob_value_usd": fob,
+                "cif_value_usd": cif,
+                "primary_value_usd": cif or fob,
+            })
+        return {
+            "records": records,
+            "total_records": len(records),
+            "hs_code": hs6,
+            "period": time_str,
+        }
+
+    async def book(self, request: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError("US Census is a read-only data source.")
+
+    async def status(self, ext_ref: str) -> dict[str, Any]:
+        raise NotImplementedError("US Census is a read-only data source.")
+
+    async def webhook_verify(self, headers: dict[str, str], body: bytes) -> bool:
+        raise NotImplementedError("US Census does not issue webhooks.")
+
+
+class Access2MarketsConnector(Connector):
+    """EU Access2Markets: tariffs + NTBs + rules of origin for EU destinations.
+
+    EU-specific tariff source for the Phase 3 gate. Where WITS gives only the
+    applied MFN rate globally, Access2Markets adds EU non-tariff barriers and
+    rules-of-origin (the extra fields the legacy MacMap connector provided), so
+    it is preferred for EU markets — with automatic WITS fallback.
+
+    API documentation : https://trade.ec.europa.eu/access-to-markets
+    Authentication    : the official portal API is not openly documented (the
+                        public "My Trade Assistant" backend / Apitalks api.store
+                        wrapper require early-access registration). Rather than
+                        hard-code an unverified path, the production endpoint is
+                        supplied via env so it is filled in once confirmed.
+    Env vars          : ACCESS2MARKETS_API_URL  – full URL template with
+                          ``{reporter}/{partner}/{product}`` placeholders, e.g.
+                          ``https://.../duties/{partner}/{reporter}/{product}``
+                        ACCESS2MARKETS_API_KEY  – optional bearer token.
+    Pricing           : Free (EU public data).
+    Behaviour         : when ACCESS2MARKETS_API_URL is unset (default), quote()
+                        returns ``applied_duty_pct=None`` so the Phase 3 gate
+                        transparently falls back to the free WITS connector.
+    """
+
+    name = "access2markets"
+
+    def __init__(self) -> None:
+        self._url_tpl = os.environ.get("ACCESS2MARKETS_API_URL", "")
+        self._key = os.environ.get("ACCESS2MARKETS_API_KEY", "")
+
+    async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Fetch EU applied duty + NTBs + rules of origin for an HS-6 code.
+
+        Expected request keys:
+            hs_code        (str) – 6-digit HS code
+            reporter_iso2  (str) – EU importing country ISO-2, e.g. ``"ES"``
+            partner_iso2   (str) – exporting country ISO-2, e.g. ``"IN"``
+
+        Returns ``{applied_duty_pct, ntb_flags, rules_of_origin, tariff_type,
+        source}``. ``applied_duty_pct`` is ``None`` when no endpoint is
+        configured or the lookup yields nothing → Phase 3 falls back to WITS.
+        """
+        reporter = str(request.get("reporter_iso2", "")).upper()
+        partner = str(request.get("partner_iso2", "IN")).upper()
+        hs6 = str(request["hs_code"])[:6]
+        result: dict[str, Any] = {
+            "hs_code": hs6,
+            "reporter_iso2": reporter,
+            "applied_duty_pct": None,
+            "ntb_flags": [],
+            "rules_of_origin": None,
+            "tariff_type": "EU_APPLIED",
+            "source": "ACCESS2MARKETS",
+        }
+        if not self._url_tpl:
+            return result  # not configured → WITS fallback downstream
+
+        url = (
+            self._url_tpl
+            .replace("{reporter}", reporter)
+            .replace("{partner}", partner)
+            .replace("{product}", hs6)
+        )
+        headers = {"Accept": "application/json"}
+        if self._key:
+            headers["Authorization"] = f"Bearer {self._key}"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception:
+            return result  # any failure → WITS fallback
+
+        # Defensive mapping across the likely Access2Markets field names.
+        duty = data.get("appliedDuty") or data.get("dutyRate") or data.get("tariffRate")
+        if duty is None and isinstance(data.get("duties"), list) and data["duties"]:
+            duty = data["duties"][0].get("rate")
+        if duty is not None:
+            result["applied_duty_pct"] = _safe_float(str(duty).replace("%", "").strip())
+        ntbs = data.get("nonTariffMeasures") or data.get("ntms") or data.get("ntbs") or []
+        if isinstance(ntbs, list):
+            result["ntb_flags"] = [
+                str(n.get("code") or n.get("description") or n)
+                for n in ntbs[:5]
+            ]
+        roo = data.get("rulesOfOrigin") or data.get("roo")
+        if isinstance(roo, dict):
+            result["rules_of_origin"] = roo.get("rule") or roo.get("description")
+        elif isinstance(roo, str):
+            result["rules_of_origin"] = roo
+        return result
+
+    async def book(self, request: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError("Access2Markets is a read-only data source.")
+
+    async def status(self, ext_ref: str) -> dict[str, Any]:
+        raise NotImplementedError("Access2Markets is a read-only data source.")
+
+    async def webhook_verify(self, headers: dict[str, str], body: bytes) -> bool:
+        raise NotImplementedError("Access2Markets does not issue webhooks.")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ const ACTION_CLASSES = [
   {
     key: "opportunity_scan",
     label: "Opportunity Scanning",
-    description: "Auto-scan Comtrade/Volza/MacMap for arbitrage signals",
+    description: "Auto-scan Comtrade/Census/WITS for arbitrage signals",
     def: "L3" as Level,
   },
   {

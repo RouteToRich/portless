@@ -21,7 +21,9 @@
       "Bash(cp \"c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/.env.example\" \"c:/Users/wb655772/kpaulpandi/workarea/pandian/portless/backend/.env\")",
       "Bash(git -C \"c:/Users/wb655772/kpaulpandi/workarea/pandian/portless\" check-ignore backend/.env)",
       "Bash(python -c \"import uvicorn, fastapi; print\\('deps ok'\\)\")",
-      "Bash(python -c \"import shared.connectors.regulatory; print\\('regulatory OK'\\)\")"
+      "Bash(python -c \"import shared.connectors.regulatory; print\\('regulatory OK'\\)\")",
+      "WebSearch",
+      "WebFetch(domain:api.apis.guru)"
     ]
   }
 }

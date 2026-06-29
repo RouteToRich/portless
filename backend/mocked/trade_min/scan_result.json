@@ -32,7 +32,7 @@
       "trade_flow_score": 68,
       "regulatory_clearance": "amber",
       "detected_at": "2024-01-25T06:03:01Z",
-      "sources": ["volza", "trademo"]
+      "sources": ["comtrade", "census"]
     },
     {
       "opportunity_id": "OPP-2024-103",
@@ -47,7 +47,7 @@
       "trade_flow_score": 89,
       "regulatory_clearance": "green",
       "detected_at": "2024-01-25T06:03:45Z",
-      "sources": ["alibaba", "comtrade", "macmap"]
+      "sources": ["alibaba", "comtrade", "wits_tariff"]
     }
   ]
 }

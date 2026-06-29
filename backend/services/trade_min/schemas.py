@@ -23,9 +23,13 @@ from pydantic import BaseModel, Field
 
 OpportunityStatus = Literal["ACTIVE", "MARGINAL", "EXPIRED", "CONVERTED"]
 DataSource = Literal[
-    "comtrade", "volza", "macmap", "trademo", "importgenius",
+    # Free / active sources
+    "comtrade", "census", "wits_tariff",
     "alibaba_rfq", "gdelt_disruption", "eu_ted",
     "indiamart", "tradeindia", "simulated",
+    # Legacy / paid sources (retired from the default pipeline; kept so older
+    # persisted opportunities still validate)
+    "volza", "macmap", "trademo", "importgenius",
 ]
 SignalType = Literal["historical", "manifest", "rfq", "tender", "disruption"]
 

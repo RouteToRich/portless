@@ -23,6 +23,8 @@ from .shields import (
     SgsConnector,
 )
 from .trade_intel import (
+    Access2MarketsConnector,
+    CensusTradeConnector,
     ComtradeConnector,
     ImportGeniusConnector,
     IndiamartConnector,
@@ -30,6 +32,7 @@ from .trade_intel import (
     TradeIndiaConnector,
     TrademoConnector,
     VolzaConnector,
+    WitsTariffConnector,
 )
 
 CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
@@ -41,27 +44,42 @@ CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
 
     # UN Comtrade: global trade volumes, HS code flow data, and YoY demand
     # growth across 200+ countries.  Detects surging import demands such as
-    # "Turmeric imports in Poland grew 40 % YoY".
+    # "Turmeric imports in Poland grew 40 % YoY".  FREE (500 calls/day).
     ComtradeConnector.name: ComtradeConnector,
 
-    # ITC Market Access Map: applied import tariffs, non-tariff barriers, and
-    # rules of origin per country-pair.  Verifies that CIF Cost + Tariff keeps
-    # a deal commercially viable before a Proforma Invoice is issued.
+    # World Bank WITS (TRAINS): applied import tariffs at HS-6 — the FREE,
+    # no-key replacement for ITC MacMap. Powers the Phase 3 tariff gate.
+    WitsTariffConnector.name: WitsTariffConnector,
+
+    # EU Access2Markets: FREE EU tariffs + NTBs + rules of origin. Preferred for
+    # EU destinations in Phase 3 (richer than WITS); falls back to WITS when the
+    # ACCESS2MARKETS_API_URL endpoint is not configured.
+    Access2MarketsConnector.name: Access2MarketsConnector,
+
+    # US Census International Trade: FREE (key) high-resolution US import
+    # statistics; augments Comtrade for the US market in Phase 1.
+    CensusTradeConnector.name: CensusTradeConnector,
+
+    # -------------------------------------------------------------------------
+    # LEGACY / PAID — retired from the default pipeline, kept for future use.
+    # Re-enable by setting their API keys + restoring them to the Phase 1/3/4
+    # connector lists in services/trade_min/service.py. See workflow.md →
+    # "Replaced / Legacy Trade-Min connectors (kept for future use)".
+    # -------------------------------------------------------------------------
+
+    # ITC Market Access Map (PAID subscription) — superseded by WITS for the
+    # tariff gate. Richer NTBs / rules-of-origin if a subscription is bought.
     MacmapConnector.name: MacmapConnector,
 
-    # Volza: Bill of Lading and customs shipping manifests for 80+ countries.
-    # Extracts active corporate buyer names importing specific HS codes from
-    # India so Trade-Min can target warm, verified leads.
+    # Volza (PAID, per-record) — named buyers from Bill-of-Lading manifests.
+    # No free global equivalent; live-intent signals (Alibaba RFQ, EU TED,
+    # GDELT) cover actionable leads instead.
     VolzaConnector.name: VolzaConnector,
 
-    # Trademo Intel: supply-chain records, buyer risk profiling, and trade
-    # frequencies.  Identifies high-volume Western buyers with stable supply
-    # needs and flags counterparty risk before outreach.
+    # Trademo Intel (PAID) — buyer risk profiling + trade frequencies.
     TrademoConnector.name: TrademoConnector,
 
-    # ImportGenius / Panjiva: US Customs and Latin-American marine manifests.
-    # Spotlights repeat bulk importers who consistently buy categories that
-    # Indian exporters can supply competitively.
+    # ImportGenius / Panjiva (PAID, enterprise) — US/LatAm BoL manifests.
     ImportGeniusConnector.name: ImportGeniusConnector,
 
     # -------------------------------------------------------------------------

@@ -588,7 +588,7 @@ Indexes: `deals(status)`, `events(deal_id, seq)`, `ledger(idempotency_key)`, `em
 | Workers | Python consumers, httpx adapters |
 | Event Bus | NATS JetStream → Kafka/Redpanda |
 | Database | PostgreSQL 16 + pgvector |
-| Cache/locks | Redis (idempotency, rate-limit, agent memory) |
+| Cache/locks | MongoDB TTL cache (idempotency, rate-limit, agent memory) |
 | Object store | S3-compatible (MinIO in dev) |
 | Payments | Stripe Treasury / Payoneer B2B |
 | OCR | Azure Document Intelligence |
@@ -781,7 +781,7 @@ flowchart TB
 ### 6.4 Local Development
 
 ```bash
-# 1. Start infra: Postgres+pgvector, NATS, Redis, MinIO
+# 1. Start infra: Postgres+pgvector, NATS, MongoDB, MinIO
 docker compose -f infra/docker-compose.dev.yml up -d
 
 # 2. Migrate + seed sandbox data (fake suppliers/buyers, sandbox API keys)

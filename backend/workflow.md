@@ -1391,20 +1391,23 @@ Full JSON for all 8 exception categories + list endpoint in `backend/mocked/exce
 
 | Connector | File | Status | Notes |
 |---|---|---|---|
-| `ComtradeConnector` | `trade_intel.py` | ✅ Real HTTP | UN Comtrade REST v3 |
-| `VolzaConnector` | `trade_intel.py` | ✅ Real HTTP | Shipment manifests |
-| `MacmapConnector` | `trade_intel.py` | ✅ Real HTTP | Tariff data |
-| `TrademoConnector` | `trade_intel.py` | ✅ Real HTTP | Risk profiles |
-| `ImportGeniusConnector` | `trade_intel.py` | ✅ Real HTTP | US customs manifests |
+| `ComtradeConnector` | `trade_intel.py` | ✅ Real HTTP (free) | UN Comtrade REST v3 — Phase 1 demand |
+| `WitsTariffConnector` | `trade_intel.py` | ✅ Real HTTP, live-verified (free, no key) | World Bank WITS TRAINS — Phase 3 tariff gate (**replaces MacMap**) |
+| `CensusTradeConnector` | `trade_intel.py` | ✅ Real HTTP (free key) | US Census imports — Phase 1 US augmentation |
+| `Access2MarketsConnector` | `trade_intel.py` | ✅ Implemented (EU-preferred; endpoint via `ACCESS2MARKETS_API_URL`, WITS fallback) | EU tariffs + NTBs + rules of origin — Phase 3 for EU markets |
+| `VolzaConnector` | `trade_intel.py` | 🗄️ Legacy (paid) | Shipment manifests — retired from default pipeline |
+| `MacmapConnector` | `trade_intel.py` | 🗄️ Legacy (paid) | Tariff data — replaced by `WitsTariffConnector` |
+| `TrademoConnector` | `trade_intel.py` | 🗄️ Legacy (paid) | Risk profiles — retired from default pipeline |
+| `ImportGeniusConnector` | `trade_intel.py` | 🗄️ Legacy (paid) | US customs manifests — retired from default pipeline |
 | `IndiamartConnector` | `trade_intel.py` | ✅ Real HTTP | Supplier search + RFQ |
 | `TradeIndiaConnector` | `trade_intel.py` | ✅ Real HTTP | Fallback supplier search |
 | `AlibabaRfqConnector` | `demand_signals.py` | ✅ Real HTTP | Live buyer RFQs |
 | `EuTedConnector` | `demand_signals.py` | ✅ Real HTTP | EU tenders (open API) |
 | `GdeltDisruptionConnector` | `demand_signals.py` | ✅ Real HTTP | Supply disruption signals |
-| `GstnConnector` | `regulatory.py` | ✅ Real HTTP | GST verification |
-| `DgftConnector` | `regulatory.py` | ✅ Real HTTP | IEC / export licence |
-| `McaConnector` | `regulatory.py` | ✅ Real HTTP | Company registry |
-| `UdyamConnector` | `regulatory.py` | ✅ Real HTTP | MSME / manufacturer cert |
+| `GstnConnector` | `regulatory.py` | ⚠️ Headers fixed, path unverified | GST verification — API Setu subscription product; `_PROD_BASE` is a placeholder (404), needs real path |
+| `DgftConnector` | `regulatory.py` | ✅ Real HTTP (API Setu) | IEC verification via `dgft/v1/iec/{iec}`; needs `API_SETU_KEY` |
+| `McaConnector` | `regulatory.py` | ⚠️ Headers fixed, path unverified | Company registry — API Setu subscription product; `_BASE` is a placeholder (404), needs real path |
+| `UdyamConnector` | `regulatory.py` | ⚠️ Headers fixed, path unverified | MSME cert — API Setu subscription product; `_BASE` is a placeholder (404), needs real path |
 | `ViesConnector` | `regulatory.py` | ✅ Real HTTP | EU VAT validation |
 | `AllianzTradeConnector` | `regulatory.py` | ✅ Real HTTP | Buyer credit risk |
 | `SgsConnector` | `shields.py` | ✅ Wired (stub when `SGS_API_KEY` absent) | QC inspection booking + HMAC webhook verify |
@@ -1688,39 +1691,42 @@ shared/domain/              ← DealStatus enum, EventTopic enum, state machine
 
 ---
 
-### Summary Table (Last checked: 2026-06-26)
+### Summary Table (Last checked: 2026-06-27)
 
-| # | API / Service | Module | Status | Env Var(s) | Cost |
-|---|---------------|--------|--------|------------|------|
-| 1 | UN Comtrade | trade-min Phase 1 | ✅ Connected & verified | `COMTRADE_SUBSCRIPTION_KEY` (set & validated) | Free 500 calls/day |
-| 2 | Volza | trade-min Phase 1 | 🔑 Key needed | `VOLZA_API_KEY` | $0.10/search + $0.02/record |
-| 3 | Trademo Intel | trade-min Phase 1 | 🔑 Key needed | `TRADEMO_API_KEY` | Subscription |
-| 4 | ImportGenius | trade-min Phase 1 | 🔑 Key needed | `IMPORTGENIUS_API_KEY` | Enterprise plan |
-| 5 | Alibaba RFQ | trade-min Phase 2 | 🔑 Key needed | `ALIBABA_APP_KEY` + `ALIBABA_APP_SECRET` | Free developer tier |
-| 6 | GDELT Project | trade-min Phase 2 | ⚠️ Network blocked | None | Free (open) |
-| 7 | EU TED | trade-min Phase 2 | ✅ Connected | None | Free (open) |
-| 8 | ITC MacMap | trade-min Phase 3 | 🔑 Key needed | `MACMAP_API_KEY` | Subscription |
-| 9 | IndiaMART | trade-min Phase 4 | 🔑 Key needed | `INDIAMART_API_KEY` + `INDIAMART_MOBILE` | Seller plan |
-| 10 | TradeIndia | trade-min Phase 4 | 🔑 Key needed | `TRADEINDIA_API_KEY` | Paid membership |
-| 11 | GSTN (via API Setu) | sourcing / deals | 🔑 Key needed | `API_SETU_KEY` + `API_SETU_CLIENT_ID` | Free (govt) |
-| 12 | DGFT IEC | sourcing / deals | 🔓 No key needed | — | Free (open govt) |
-| 13 | MCA21 (via API Setu) | sourcing / deals | 🔑 Key needed | `API_SETU_KEY` + `API_SETU_CLIENT_ID` | Free (govt) |
-| 14 | Udyam (via API Setu) | sourcing / deals | 🔑 Key needed | `API_SETU_KEY` + `API_SETU_CLIENT_ID` | Free (govt) |
-| 15 | VIES (EU VAT) | deals | 🔓 No key needed | — | Free (open EU) |
-| 16 | Allianz Trade | deals | 🔑 Key needed | `ALLIANZ_TRADE_CLIENT_ID` + `_CLIENT_SECRET` | Per-check fee |
-| 17 | Groq LLM | negotiation / RAG | ✅ Connected | `LLM_GROQ_API_KEY` (default key active) | Pay-per-token |
-| 18 | Anthropic Claude | negotiation / RAG | 🔑 Key needed | `LLM_PRIMARY_API_KEY` | Pay-per-token |
-| 19 | OpenAI Embeddings | RAG | 🔑 Key needed | `RAG_EMBEDDING_API_KEY` | $0.02/1M tokens |
-| 20 | MongoDB Atlas | all services | ✅ Connected | `RAG_MONGO_URI` (default URI active) | Free M0 cluster |
-| 21 | Gmail SMTP | negotiation | 🔑 Key needed | `GMAIL_SENDER_ADDRESS` + `GMAIL_APP_PASSWORD` | Free |
-| 22 | Gmail IMAP | negotiation | 🔑 Key needed | `IMAP_USER` + `IMAP_PASSWORD` | Free |
-| 23 | Redis | negotiation | 🔓 Optional | `REDIS_URL` (falls back to in-memory) | Free (local) |
-| 24 | SGS / Intertek | shield-link | ✅ Wired (stub when no key) | Set `SGS_API_KEY` for live bookings | Per-inspection fee |
-| 25 | Cogoport | shield-link | ✅ Wired (stub when no key) | Set `COGOPORT_API_KEY` for live freight | Per-shipment fee |
-| 26 | Freightos | shield-link | ✅ Wired (stub when no key) | Set `FREIGHTOS_API_KEY` for live rates | Per-quote fee |
-| 27 | ICEGATE EDI | docugen + shield-link | ✅ Wired (stub when no key) | `ICEGATE_API_KEY` to enable live filing | Free (govt) |
-| 28 | Stripe Treasury | escrow-guard | ✅ Wired (stub when no key) | Set `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` | 0.25% per transfer |
-| 29 | Payoneer | escrow-guard | ✅ Wired (stub when no key) | Set `PAYONEER_CLIENT_ID` + `PAYONEER_CLIENT_SECRET` + `PAYONEER_WEBHOOK_SECRET` | 1–2% per payout |
+| # | API / Service | Module | Purpose — why we need it | Status | Env Var(s) | Cost |
+|---|---------------|--------|--------------------------|--------|------------|------|
+| 1 | UN Comtrade | trade-min Phase 1 | Global trade volumes by HS code & country — detects which markets import what India can supply (core demand-discovery signal) | ✅ Connected & verified | `COMTRADE_SUBSCRIPTION_KEY` (set & validated) | Free 500 calls/day |
+| 1a | **World Bank WITS** (TRAINS) | trade-min Phase 3 | Free applied import-tariff data at HS-6 — **replaces ITC MacMap** for the tariff gate | ✅ Connected & verified 2026-06-27 (US HS 020890 → 2.13% MFN; no key, ~31s cold→cached 7d) | None | **Free (open)** |
+| 1b | **US Census** Intl Trade | trade-min Phase 1 | Free official US import statistics — augments Comtrade for the US market | 🔑 Key needed — endpoint live (HTTP 302 w/o key), `CENSUS_API_KEY` not set | `CENSUS_API_KEY` | **Free** |
+| 1c | **EU Access2Markets** | trade-min Phase 3 (EU) | Free EU tariffs **+ NTBs + rules of origin** — preferred over WITS for EU destinations (richer data) | ⏳ Wired, endpoint-gated — `ACCESS2MARKETS_API_URL` unset ⇒ **WITS fallback active** | `ACCESS2MARKETS_API_URL` (+ `_API_KEY`) | **Free** |
+| 2 | Volza | trade-min Phase 1 | (Named BoL buyers) | 🗄️ Legacy — paid, retired from default | `VOLZA_API_KEY` | $0.10/search + $0.02/record |
+| 3 | Trademo Intel | trade-min Phase 1 | (Buyer risk profiling) | 🗄️ Legacy — paid, retired from default | `TRADEMO_API_KEY` | Subscription |
+| 4 | ImportGenius | trade-min Phase 1 | (US/LatAm BoL manifests) | 🗄️ Legacy — paid, retired from default | `IMPORTGENIUS_API_KEY` | Enterprise plan |
+| 5 | Alibaba RFQ | trade-min Phase 2 | Live buying-intent feed — finds buyers who posted an active sourcing request *right now* | 🔑 Key needed | `ALIBABA_APP_KEY` + `ALIBABA_APP_SECRET` | Free developer tier |
+| 6 | GDELT Project | trade-min Phase 2 | Supply-chain disruption news monitor — flags when a competitor origin can't supply (urgency boost) | ⚠️ Network blocked | None | Free (open) |
+| 7 | EU TED | trade-min Phase 2 | EU public procurement tenders — institutional demand signal for EU markets | ✅ Connected | None | Free (open) |
+| 8 | ITC MacMap | trade-min Phase 3 | (Tariffs/NTBs/RoO) | 🗄️ Replaced by WITS (#1a) — paid, retired | `MACMAP_API_KEY` | Subscription |
+| 9 | IndiaMART | trade-min Phase 4 | India's largest wholesale directory — discovers Indian manufacturer/supplier candidates to source from | 🔑 Key needed | `INDIAMART_API_KEY` + `INDIAMART_MOBILE` | Seller plan |
+| 10 | TradeIndia | trade-min Phase 4 | Fallback wholesale directory — supplementary supplier profiles | 🔑 Key needed | `TRADEINDIA_API_KEY` | Paid membership |
+| 11 | GSTN (via API Setu) | sourcing / deals | Validates the supplier's GST registration is ACTIVE — gatekeeper before any financial commitment | 🔑 Key needed + ⚠️ path unverified (subscription-gated; guessed path 404s) | `API_SETU_KEY` + `API_SETU_CLIENT_ID` | Free (govt) |
+| 12 | DGFT IEC | sourcing / deals | Confirms the supplier holds an active Import-Export Code and isn't on the denied-party list | 🔑 Key needed (via API Setu; endpoint live, returns 401 without key) | `API_SETU_KEY` + `API_SETU_CLIENT_ID` | Free (govt) |
+| 13 | MCA21 (via API Setu) | sourcing / deals | Company registry — CIN status + incorporation date (business age) to weed out shells/brokers | 🔑 Key needed + ⚠️ path unverified (subscription-gated; guessed path 404s) | `API_SETU_KEY` + `API_SETU_CLIENT_ID` | Free (govt) |
+| 14 | Udyam (via API Setu) | sourcing / deals | MSME certification — confirms a real manufacturing unit eligible for export incentives | 🔑 Key needed + ⚠️ path unverified (subscription-gated; guessed path 404s) | `API_SETU_KEY` + `API_SETU_CLIENT_ID` | Free (govt) |
+| 15 | VIES (EU VAT) | deals | Validates the EU buyer's VAT number — blocks onboarding of fake/unregistered EU entities | 🔓 No key needed | — | Free (open EU) |
+| 16 | Allianz Trade | deals | Buyer credit risk + trade credit insurance — sets the credit limit / whether 100% advance escrow is required | 🔑 Key needed | `ALLIANZ_TRADE_CLIENT_ID` + `_CLIENT_SECRET` | Per-check fee |
+| 17 | Groq LLM | negotiation / RAG | Default LLM that powers the negotiation agent's messages and the exception resolver's classification | ✅ Connected | `LLM_GROQ_API_KEY` (default key active) | Pay-per-token |
+| 18 | Anthropic Claude | negotiation / RAG | Optional higher-tier primary LLM for negotiation / exception reasoning (falls back to Groq if unset) | 🔑 Key needed | `LLM_PRIMARY_API_KEY` | Pay-per-token |
+| 19 | OpenAI Embeddings | RAG | Vector embeddings for the RAG knowledge base (trade playbooks, quality limits, compliance rules) | 🔑 Key needed | `RAG_EMBEDDING_API_KEY` | $0.02/1M tokens |
+| 20 | MongoDB Atlas | all services | Primary datastore for every service — deals, opportunities, documents, the shared cache, and RAG vectors | ✅ Connected | `RAG_MONGO_URI` (default URI active) | Free M0 cluster |
+| 21 | Gmail SMTP | negotiation | Sends outbound negotiation emails to buyers and suppliers | 🔑 Key needed | `GMAIL_SENDER_ADDRESS` + `GMAIL_APP_PASSWORD` | Free |
+| 22 | Gmail IMAP | negotiation | Monitors the inbox for buyer/supplier replies to drive negotiation rounds | 🔑 Key needed | `IMAP_USER` + `IMAP_PASSWORD` | Free |
+| 23 | Session locks (MongoDB) | negotiation | Prevents two concurrent requests from racing on the same negotiation session | ✅ Shared cache | in-memory dev → shared MongoDB cache (no Redis) | Free (reuses Atlas) |
+| 24 | SGS / Intertek | shield-link | Books pre-shipment QC inspection — the pass/fail result gates dispatch and escrow release | ✅ Wired (stub when no key) | Set `SGS_API_KEY` for live bookings | Per-inspection fee |
+| 25 | Cogoport | shield-link | Books ocean freight and tracks milestones (in-transit → arrived/cleared) | ✅ Wired (stub when no key) | Set `COGOPORT_API_KEY` for live freight | Per-shipment fee |
+| 26 | Freightos | shield-link | Fallback freight spot rates when the primary forwarder is unavailable | ✅ Wired (stub when no key) | Set `FREIGHTOS_API_KEY` for live rates | Per-quote fee |
+| 27 | ICEGATE EDI | docugen + shield-link | Files the Indian customs Shipping Bill and obtains the Let-Export-Order | ✅ Wired (stub when no key) | `ICEGATE_API_KEY` to enable live filing | Free (govt) |
+| 28 | Stripe Treasury | escrow-guard | Holds buyer funds in escrow (manual-capture PaymentIntent) until the deal is safe to fund | ✅ Wired (stub when no key) | Set `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` | 0.25% per transfer |
+| 29 | Payoneer | escrow-guard | Pays out the supplier in INR after customs clearance | ✅ Wired (stub when no key) | Set `PAYONEER_CLIENT_ID` + `PAYONEER_CLIENT_SECRET` + `PAYONEER_WEBHOOK_SECRET` | 1–2% per payout |
 
 ---
 
@@ -1967,7 +1973,7 @@ Used when IndiaMART yields insufficient quotes or for alternative price benchmar
 
 ---
 
-#### 11–14. API Setu (GSTN + MCA21 + Udyam) — 🔑 Key needed
+#### 11–14. API Setu (GSTN + MCA21 + Udyam) — 🔑 Key needed + ⚠️ paths unverified
 
 **What it does:** Three Indian government verification APIs covered by a single key:
 - **GSTN** — validates supplier GSTIN (GST registration active/cancelled)
@@ -1979,40 +1985,59 @@ re-scores. A failed GSTN check (`gst_verified = false`) hard-discards the suppli
 (`C_supplier = 0 → CMS = 0`).
 
 **Connectors:** `GstnConnector`, `McaConnector`, `UdyamConnector` in `shared/connectors/regulatory.py`  
-**Base URL (prod):** `https://apisetu.gov.in`  
-**Base URL (sandbox):** `https://sandbox.apisetu.gov.in`  
-**Auth:** `X-API-Key: <KEY>` header + optional `X-Client-Id: <ID>` header
+**Auth (fixed 2026-06-27):** `X-APISETU-APIKEY: <KEY>` + optional `X-APISETU-CLIENTID: <ID>`
+— the verified API Setu standard (the old `X-API-Key` / `X-Client-Id` names were wrong).
 
-**Cost:** Free — government service
+**Connection check (2026-06-27):** ⚠️ **Endpoint paths unverified.** Unlike DGFT
+(#15), the GSTN / MCA / Udyam products are **not** in the public API Setu catalog
+— they live in the **partner directory** (`partners.apisetu.gov.in`, e.g.
+"GSTN Tax Payer API V2") and require a subscription. The base paths currently in
+the connectors (`apisetu.gov.in/gstn/v1`, `/mca/v3`, `/udyam/v1`) are **placeholders
+that return HTTP 404** — they could not be probed to a 401 without a subscription.
+The auth headers are now correct, but the **production paths must be filled in
+after subscribing.**
+
+**Cost:** Free — government service (subscription approval required)
 
 **Steps to connect:**
-1. Create a developer account at https://apisetu.gov.in
-2. In the dashboard, apply for all three API products:
-   - **GSTN v1** (GST Network)
-   - **MCA v3** (Ministry of Corporate Affairs)
-   - **Udyam v1** (MSME Registry)
-3. Approval is typically instant for the sandbox; production approval may take 1–2 business days
-4. Copy your **API Key** and **Client ID** from the dashboard
-5. Add to `backend/.env`:
+1. Create a developer account at https://apisetu.gov.in and sign in to the
+   partner portal at https://partners.apisetu.gov.in
+2. Subscribe to the GSTN Tax Payer, MCA/CIN, and Udyam API products
+3. Copy the **production base URL + path template** shown for each subscribed
+   product and set them as `_PROD_BASE` / `_BASE` + the lookup path in
+   `regulatory.py` (replacing the ⚠️ placeholders)
+4. Copy your **API Key** and **Client ID** and add to `backend/.env`:
    ```
    API_SETU_KEY=<your-api-key>
    API_SETU_CLIENT_ID=<your-client-id>
    ```
-6. For testing, add `GSTN_USE_SANDBOX=1` to target the sandbox endpoint
+5. For testing, add `GSTN_USE_SANDBOX=1` to target the sandbox endpoint
 
 ---
 
-#### 15. DGFT IEC — 🔓 No key needed
+#### 15. DGFT IEC — 🔑 Key needed (via API Setu)
 
 **What it does:** Directorate General of Foreign Trade — verifies a supplier's
 Import-Export Code (IEC) status and checks against the denied-party list.
 
 **Connector:** `DgftConnector` in `shared/connectors/regulatory.py`  
-**Base URL:** `https://www.dgft.gov.in/CP/iecList/GovtAPI`  
-**Auth:** None — public government API
+**Base URL:** `https://apisetu.gov.in/dgft/v1` → `GET /iec/{iec}`  
+**Auth:** API Setu key — headers `X-APISETU-APIKEY` + `X-APISETU-CLIENTID`
+(reuses `API_SETU_KEY` / `API_SETU_CLIENT_ID`, same as GSTN/MCA/Udyam).
 
-**Cost:** Free  
-**Action required:** None — the connector works out of the box.
+**Connection check (2026-06-27):**
+- ✅ **Fixed.** The legacy free path `www.dgft.gov.in/CP/iecList/GovtAPI/IECDetails/{iec}`
+  was decommissioned (HTTP 404). The connector now targets the API Setu
+  **Importer-Exporter Details API** (`/dgft/v1/iec/{iec}`).
+- Live probe of the new endpoint returns **HTTP 401 `invalid_authentication`**
+  (JSON) without a key — i.e. the endpoint is live and only needs valid API Setu
+  credentials.
+
+**Cost:** Free (govt)  
+**Action required:** Set `API_SETU_KEY` (+ `API_SETU_CLIENT_ID`) in `.env` and
+subscribe to the DGFT "Importer-Exporter Details" product on
+https://apisetu.gov.in. Without the key the connector is skipped and sourcing
+falls back to the `iec_active` flag from the quote.
 
 ---
 
@@ -2218,19 +2243,17 @@ Activating it requires implementing `aioimaplib` polling in `email_dispatcher.py
 
 ---
 
-#### 24. Redis — 🔓 Optional (in-memory fallback active)
+#### 24. Session locks — ✅ MongoDB (shared cache)
 
-**What it does:** Distributed session locking for the Negotiation Agent — prevents
-two concurrent requests from racing on the same negotiation session.
+**What it does:** Prevents two concurrent requests from racing on the same
+negotiation session.
 
-**Status:** Optional. When `REDIS_URL` is not set, the agent falls back to an
-in-memory dict (fine for single-instance dev; not safe for multi-replica prod).
+**Status:** Single-instance dev uses an in-memory dict. For multi-replica
+deployments the shared MongoDB cache (`shared.cache`, the same cluster used
+everywhere) is the lock store — **no Redis required**. PortLess uses MongoDB as
+its one cache/lock backend.
 
-**Cost:** Free (local); Redis Cloud free tier available at https://redis.io/try-free/
-
-**Steps to connect (optional):**
-1. Run Redis locally: `docker run -p 6379:6379 redis:alpine`
-2. Add to `backend/.env`:  `REDIS_URL=redis://localhost:6379/0`
+**Cost:** Free (reuses the existing Atlas cluster).
 
 ---
 
@@ -2337,6 +2360,206 @@ Used at `QC_PASSED` (partial advance) and `CLEARED` (final margin release).
 4. Emit `payout.requested` and `payout.completed` events on success
 
 ---
+
+---
+
+## Trade-Min Cost-Reduction — Free / Low-Cost API Alternatives
+
+> **Why this section?** Several Trade-Min connectors are paid (Volza, Trademo,
+> ImportGenius, ITC MacMap, IndiaMART, TradeIndia). This maps each to a free or
+> cheaper alternative so the 5-phase opportunity pipeline can run end-to-end
+> without per-record fees — using **global** sources where possible and official
+> **per-country** sources where global ones fall short. Analysis added 2026-06-27.
+
+### What we're actually paying for (the key distinction)
+
+The paid trade APIs deliver **two very different things**, and only one of them is
+expensive to replace:
+
+1. **Aggregate trade statistics** — *"how much HS 090422 did Spain import from
+   India last year?"* → **fully replaceable for free** from official
+   government/IGO sources (UN Comtrade, World Bank WITS, Eurostat, US Census, DGCIS…).
+2. **Manifest-level *named-buyer* discovery** — *"which companies in Spain import
+   it, with shipment dates"* (Bill-of-Lading data) → **this is the proprietary,
+   expensive part.** Free coverage is essentially **US-only** (ImportYeti, via a
+   FOIA request). Most countries do not release named BoL data — which is exactly
+   why Volza / ImportGenius / Trademo charge per record.
+
+> **Design implication:** keep Phase 1 *demand sizing* on free official stats, and
+> treat *named-buyer discovery* as best-effort enrichment (US-only free, paid
+> elsewhere) rather than a hard dependency. `_safe_quote` + `_P1_WEIGHTS` already
+> redistribute weight when a source returns nothing, so dropping a paid source
+> degrades gracefully.
+
+### Current paid connectors (what to replace)
+
+| Connector | Phase | Cost today | What it provides |
+|---|---|---|---|
+| Volza | 1 | $0.10/search + $0.02/record | Named buyers from BoL manifests |
+| Trademo | 1 | Subscription | Named buyers + risk profiling |
+| ImportGenius | 1 | Enterprise plan | US / LatAm BoL manifests |
+| ITC MacMap | 3 | Subscription | Tariffs, NTBs, rules of origin |
+| IndiaMART | 4 | Seller plan | Indian supplier directory |
+| TradeIndia | 4 | Paid membership | Indian supplier directory |
+
+*(Already free: UN Comtrade 500/day, GDELT, EU TED, Alibaba RFQ dev tier.)*
+
+### Phase 1 — historical demand (aggregate stats) → **fully replaceable, free**
+
+| Source | Coverage | Free? | API base |
+|---|---|---|---|
+| UN Comtrade *(in use)* | Global, official, HS6 | ✅ 500 calls/day | `comtradeapi.un.org` |
+| **World Bank WITS** | Global trade **+ tariff**, HS6 | ✅ key-less | `https://wits.worldbank.org/API/V1` (SDMX/JSON) |
+| US Census Intl Trade | US imports/exports by HS | ✅ free (key) | `api.census.gov/data/timeseries/intltrade/imports/hs` |
+| Eurostat Comext | EU + many non-EU | ✅ free | `ec.europa.eu/eurostat` (Comext API / bulk) |
+| India DGCIS | India trade, 24-mo principal commodities | ✅ free (portal) | `ftddp.dgciskol.gov.in` / `data.gov.in` |
+| OEC | Global, rich data | ⚠️ API needs Pro/Premium token | `oec.world/en/resources/api` |
+
+➡ **Recommendation:** add a **`WitsConnector`** — one free API that covers **both**
+Phase 1 demand **and** Phase 3 tariffs globally. Layer Census / Eurostat / DGCIS as
+high-resolution per-country add-ons.
+
+### Phase 1 — named-buyer discovery (the genuine gap)
+
+| Source | Coverage | Free? | Notes |
+|---|---|---|---|
+| **ImportYeti** | US sea imports, BoL Jan-2015+ | ✅ free search | No official API → UI/export only; **US-only** |
+| Datamyne (Descartes) / TradeInt / Market Inside | Global | ❌ paid | Sometimes cheaper tiers than Volza |
+| *Workaround:* Comtrade/WITS + Alibaba RFQ + EU TED + GDELT | Global | ✅ | Size demand + capture **live intent** instead of named historical buyers |
+
+➡ **Recommendation:** outside the US, drop the hard dependency on named historical
+buyers; rely on the already-free **live-intent** signals (Alibaba RFQ, EU TED,
+GDELT) for actionable leads, and ImportYeti for US named buyers.
+
+### Phase 3 — tariff gate → **fully replaceable, free** (replaces MacMap)
+
+| Source | Coverage | Free? | API base |
+|---|---|---|---|
+| **World Bank WITS (TRAINS)** | Global, MFN + preferential, HS6 | ✅ | `wits.worldbank.org/API/V1/SDMX/V21` |
+| **EU Access2Markets** | EU + 120 markets; tariffs **+ NTBs + rules of origin** (direct MacMap analog) | ✅ | `trade.ec.europa.eu/access-to-markets` |
+| WTO Tariff & Trade Data | 150+ economies | ✅ | `ttd.wto.org` |
+| USITC DataWeb / HTS | US tariffs | ✅ (account for API) | `dataweb.usitc.gov` |
+| Country customs (EU TARIC, India ICEGATE/CBIC) | per-country | ✅ | — |
+
+➡ **Recommendation:** MacMap → **WITS** (global, same HS6) as default; **Access2Markets**
+for EU destinations (it also returns NTBs + rules of origin, matching MacMap's extra
+fields used in `_parse_macmap`).
+
+### Phase 4 — supplier discovery → **partly replaceable**
+
+| Source | Coverage | Free? | Notes |
+|---|---|---|---|
+| Alibaba supplier search | Global | ✅ dev tier | already integrated for RFQs |
+| OpenCorporates | Global company registry | ✅ free-tier API | identity/legitimacy, not product catalog |
+| India MCA / DGFT IEC | Indian exporters | ✅ (gov) | registry/IEC, not catalog |
+| FIEO / Export Promotion Council directories | India | ✅ public | member exporter lists |
+| Kompass / Europages / ThomasNet | Global / EU / US | ❌ mostly paid API (free search UI) | |
+
+➡ **Recommendation:** product-catalog directories are inherently commercial. For a
+free path, combine **Alibaba supplier search** + **registry/IEC data** (MCA, DGFT) +
+public **FIEO/EPC** directories; keep IndiaMART/TradeIndia as optional paid enrichment.
+
+### Country-wise free official sources (quick reference)
+
+| Region | Trade stats (free) | Tariffs (free) |
+|---|---|---|
+| 🌐 Global | UN Comtrade, World Bank WITS, WTO TTD | WITS TRAINS, WTO TTD |
+| 🇺🇸 USA | US Census Intl Trade API; ImportYeti (named BoL) | USITC DataWeb / HTS |
+| 🇪🇺 EU | Eurostat Comext | EU Access2Markets, TARIC |
+| 🇮🇳 India | DGCIS / data.gov.in; DGFT trade stats | ICEGATE / CBIC; WITS |
+| 🇬🇧 UK | uktradeinfo.com | trade-tariff.service.gov.uk (UK Global Tariff) |
+
+### Recommended free-first stack (keeps the whole flow at ~$0)
+
+- **Phase 1 demand:** UN Comtrade + World Bank WITS (global) → Census / Eurostat / DGCIS for per-country resolution
+- **Phase 1 buyers:** Alibaba RFQ + EU TED + GDELT (live intent, already free) + ImportYeti (US named buyers)
+- **Phase 2 signals:** unchanged (already free)
+- **Phase 3 tariffs:** World Bank WITS (default) / EU Access2Markets (EU destinations)
+- **Phase 4 suppliers:** Alibaba supplier search + MCA / DGFT registry + FIEO / EPC directories
+
+Net effect: the only capability genuinely lost vs. the paid stack is **non-US named
+historical buyers** — substituted by free **live-intent** signals, which are arguably
+more actionable for a "right-now" deal anyway.
+
+### Implementation notes & caveats
+
+- **Drop-in via the connector pattern:** each alternative is a new
+  `shared/connectors/*.py` adapter implementing `quote/book/status/webhook_verify`;
+  Phase 1 weight redistribution (`_P1_WEIGHTS`) and `_safe_quote` mean swapping
+  sources needs no pipeline changes — just register the connector.
+- **Formats:** WITS is SDMX (XML) + JSON; Comtrade/Census/Eurostat are JSON — add a
+  small per-connector normaliser to the existing `_extract_*` shape.
+- **Caching:** these are slow-changing → cache aggressively via `shared.cache`
+  (extend `cache_ttl_seconds` to include `wits`, `census`, `eurostat`) to stay within
+  free rate limits.
+- **Latency/granularity:** official stats are monthly/annual and lag ~1–3 months —
+  great for *demand trends*, not "shipped yesterday" (that's GDELT / RFQ's job).
+- **Legality:** ImportYeti has no official API — respect its ToS (prefer export/UI
+  over scraping). Non-US named BoL is generally not legally free.
+- **"Low-cost" ≠ free:** OEC API, USITC DataWeb API, and the DGCIS subscriber tier
+  need an account/token — treat as low-cost, not fully open.
+
+---
+
+### ✅ Implemented (2026-06-27) — what changed in the code
+
+The free-first stack above is now **wired into the default pipeline**:
+
+| New connector | File | Role | Connection status (checked 2026-06-27) |
+|---|---|---|---|
+| `WitsTariffConnector` (`wits_tariff`) | `trade_intel.py` | Phase 3 tariff gate — **replaces MacMap** | ✅ **Connected & verified** — live HTTP 200, US HS 020890 → 2.13% MFN (2023). No key. ~31s cold call → cached 7 days. |
+| `CensusTradeConnector` (`census`) | `trade_intel.py` | Phase 1 US demand — augments Comtrade | 🔑 **Key needed** — endpoint reachable (HTTP 302 redirect without key); `CENSUS_API_KEY` is currently empty, so Census is skipped and Comtrade alone drives Phase 1. |
+| `Access2MarketsConnector` (`access2markets`) | `trade_intel.py` | Phase 3 EU tariffs + NTBs + rules of origin | ⏳ **Wired, endpoint-gated** — `ACCESS2MARKETS_API_URL` unset, so EU tariffs **fall back to WITS** (verified). Set the URL to activate. |
+
+> **Status legend for the above:** ✅ verified working now · 🔑 endpoint live, just needs a free key · ⏳ implemented but inactive pending an endpoint/credential. The "replaced" connectors (`MacmapConnector`, `VolzaConnector`, `TrademoConnector`, `ImportGeniusConnector`) are 🗄️ **Legacy** — retained in code but not called by the default pipeline.
+
+**Pipeline rewiring** (`services/trade_min/service.py`, `config.py`):
+- Phase 1 now gathers **Comtrade + Census** only (was Comtrade + Volza + ImportGenius + Trademo).
+- Phase 3: **EU destinations** try **Access2Markets** first (adds NTBs + rules of origin), then fall back to **`wits_tariff`**; **non-EU** uses `wits_tariff` directly. (Both replace the paid `macmap`.)
+- `phase1_min_connectors` lowered **2 → 1** (UN Comtrade is authoritative + global on its own).
+- `_P1_WEIGHTS` → `{comtrade: 0.70, census: 0.30}`; `cache_ttl_seconds` adds `census`, `wits_tariff`, `access2markets` (7-day TTL).
+- `DataSource` literal extended with `census` / `wits_tariff` (old values kept so persisted opportunities still validate).
+
+**Mock + UI sync:** `backend/mocked/trade_min/scan_result.json` source tags updated
+(`volza`/`trademo`/`macmap` → `census`/`wits_tariff`); the UI flows these through
+`ui/src/mocks/adapter.ts`, and the Opportunity Radar / Autonomy Settings copy now
+reads "Comtrade, US Census & World Bank WITS".
+
+#### How to get the new API keys
+
+- **World Bank WITS** — **no key, no registration.** Fully open; works out of the box.
+- **US Census** (`CENSUS_API_KEY`, free, optional — only needed for the US market):
+  1. Request a key at https://api.census.gov/data/key_signup.html
+  2. Click the activation link in the confirmation email
+  3. Add `CENSUS_API_KEY=<key>` to `backend/.env`
+  *(Without it, Census is simply skipped and Comtrade alone drives Phase 1.)*
+- **EU Access2Markets** (`ACCESS2MARKETS_API_URL`, optional — EU markets only):
+  The official portal API is not openly documented (the "My Trade Assistant"
+  backend / Apitalks api.store wrapper need early-access registration). The
+  connector is fully wired but **endpoint-gated**: set `ACCESS2MARKETS_API_URL`
+  to the confirmed URL template (with `{reporter}`/`{partner}`/`{product}`
+  placeholders) and optional `ACCESS2MARKETS_API_KEY`. **Until set, EU tariffs
+  fall back to the verified WITS connector** — so the pipeline works either way.
+
+### Replaced / Legacy Trade-Min connectors (kept for future use)
+
+These connector classes remain in `trade_intel.py` and the registry but are **no
+longer called by the default pipeline**. They are retained so you can re-enable
+them later (e.g. if you buy a subscription) without re-implementing.
+
+| Connector | Replaced by | How to re-enable |
+|---|---|---|
+| `MacmapConnector` (Phase 3 tariff, paid) | `WitsTariffConnector` (free) | Set `MACMAP_API_KEY`; restore the `macmap` call in `_phase3_tariff_gate` |
+| `VolzaConnector` (named BoL buyers, paid) | *no free global equivalent* — live-intent signals (Alibaba RFQ / EU TED / GDELT) cover leads; ImportYeti for US | Set `VOLZA_API_KEY`; add `volza` back to the Phase 1 `gather` + `_P1_WEIGHTS` |
+| `TrademoConnector` (buyer risk, paid) | retired | Set `TRADEMO_API_KEY`; re-add to Phase 1 |
+| `ImportGeniusConnector` (US/LatAm BoL, paid) | retired | Set `IMPORTGENIUS_API_KEY`; re-add to Phase 1 |
+
+**Phase 4 supplier directories (`IndiaMART`, `TradeIndia`) — unchanged.** There is
+**no free product-catalog API** to drop in; they remain paid/optional. For a free
+path, combine the already-integrated **Alibaba supplier search** with **MCA / DGFT
+registry** data and public **FIEO / EPC** exporter directories (see Phase 4 table
+above). The `_extract_volza` / `_extract_importgenius` / `_extract_trademo`
+functions are likewise retained (dead but intact) for the same re-enable path.
 
 ---
 

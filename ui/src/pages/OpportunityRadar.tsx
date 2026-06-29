@@ -85,7 +85,7 @@ export function OpportunityRadar() {
         <div>
           <h1 className="text-lg font-bold">Opportunity Radar</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Live arbitrage signals from Comtrade, Volza, MacMap
+            Live arbitrage signals from Comtrade, US Census &amp; World Bank WITS
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -199,7 +199,7 @@ export function OpportunityRadar() {
           <Zap className="w-10 h-10 opacity-20" />
           <p className="text-sm">No opportunities detected yet</p>
           <p className="text-xs text-center max-w-xs">
-            Run a scan to query Comtrade, Volza, and MacMap for arbitrage signals
+            Run a scan to query Comtrade, US Census, and World Bank WITS for arbitrage signals
           </p>
           <Button size="sm" onClick={handleScan} disabled={scan.isPending}>
             <Zap className="w-3.5 h-3.5 mr-1.5" /> Run First Scan

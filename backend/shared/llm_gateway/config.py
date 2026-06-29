@@ -104,12 +104,12 @@ class LLMGatewaySettings(BaseSettings):
 
     # --------------------------------------- placeholder: rate limiting
     # TODO(rate_limiter): set rate_limit_enabled=true to enforce per-caller RPM/TPM.
-    #   Backend options: "memory" (single-process) or "redis" (multi-worker).
+    #   Backend options: "memory" (single-process) or "mongo" (multi-worker,
+    #   via the shared MongoDB cache).
     rate_limit_enabled: bool = False
     rate_limit_rpm: int = 60           # requests per minute per caller
     rate_limit_tpm: int = 100_000      # tokens per minute per caller
-    rate_limit_backend: str = "memory" # "memory" | "redis"
-    rate_limit_redis_url: str = ""
+    rate_limit_backend: str = "memory" # "memory" | "mongo"
 
     # ------------------------------------- placeholder: circuit breaker
     # TODO(circuit_breaker): set circuit_breaker_enabled=true to skip degraded models.
@@ -123,13 +123,12 @@ class LLMGatewaySettings(BaseSettings):
     cost_tracking_enabled: bool = False
     budget_per_caller_usd: float = 0.0 # 0 = no limit
 
-    # -------------------------------------------- placeholder: caching
-    # TODO(cache): set cache_enabled=true to skip identical LLM calls.
+    # -------------------------------------------- response caching
+    # Set cache_enabled=true to skip identical LLM calls. Backed by the shared
+    # MongoDB TTL cache (shared.cache) — see llm_gateway/cache.py. Keep the TTL
+    # short so live prices never go stale mid-negotiation.
     cache_enabled: bool = False
-    cache_backend: str = "memory"      # "memory" | "redis"
     cache_ttl_seconds: int = 120
-    cache_max_size: int = 1_000        # max entries for memory backend
-    cache_redis_url: str = ""
 
     # ------------------------------------------ placeholder: streaming
     # TODO(streaming): set stream_first_chunk_timeout_seconds when stream_chat() is wired.

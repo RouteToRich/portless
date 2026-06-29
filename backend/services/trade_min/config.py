@@ -80,8 +80,10 @@ class TradeMinConfig:
 
     # ── Phase 1 guardrails ────────────────────────────────────────────────
     # Abort the pipeline for this hs_code×market pair when fewer than this
-    # many Phase-1 connectors respond successfully.
-    phase1_min_connectors: int = 2
+    # many Phase-1 connectors respond successfully. Set to 1 now that Phase 1
+    # runs on free official statistics (UN Comtrade is authoritative and
+    # global on its own; US Census augments for the US market).
+    phase1_min_connectors: int = 1
 
     # ── Tariff gate (Phase 3) ─────────────────────────────────────────────
     # net_price_gap_pct < tariff_hard_discard_floor  → hard discard
@@ -105,14 +107,17 @@ class TradeMinConfig:
 
     # ── Raw API response cache TTLs (seconds), keyed by connector name ─────
     # Only connectors listed here are cached. Values are slow-changing:
-    #   comtrade — prior-year annual trade data is effectively immutable
-    #   macmap   — applied tariffs / NTBs change rarely
+    #   comtrade    — prior-year annual trade data is effectively immutable
+    #   census      — monthly US trade data, settled once published
+    #   wits_tariff — applied tariffs change rarely (free MacMap replacement)
     # Live signals (alibaba_rfq, gdelt_disruption, eu_ted) are deliberately
     # absent so they are always fetched fresh.
     cache_ttl_seconds: dict[str, int] = field(
         default_factory=lambda: {
-            "comtrade": 7 * _DAY,
-            "macmap":   7 * _DAY,
+            "comtrade":       7 * _DAY,
+            "census":         7 * _DAY,
+            "wits_tariff":    7 * _DAY,
+            "access2markets": 7 * _DAY,   # EU tariffs/NTBs (when configured)
         }
     )
 

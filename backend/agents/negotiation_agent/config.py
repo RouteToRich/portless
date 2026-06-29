@@ -49,9 +49,9 @@ class NegotiationSettings(BaseSettings):
     imap_poll_interval_seconds: int = 60
     imap_inbox_folder: str = "INBOX"
 
-    # ── Redis (optional, for session locks) ───────────────────────────────
-    # Falls back to in-memory dict when REDIS_URL is empty.
-    redis_url: str = ""
+    # ── Session locks ─────────────────────────────────────────────────────
+    # Uses an in-memory dict (single-instance dev). For multi-replica
+    # deployments use the shared MongoDB cache (shared.cache) as the lock store.
 
     # ── Business defaults ─────────────────────────────────────────────────
     default_max_rounds: int = 5

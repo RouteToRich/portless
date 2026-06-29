@@ -85,9 +85,16 @@ def _compute_age_years(date_str: str) -> float:
 
 
 def _apisetu_headers(key: str, client_id: str) -> dict[str, str]:
-    h = {"X-API-Key": key, "Accept": "application/json"}
+    """Standard API Setu auth headers.
+
+    API Setu authenticates with ``X-APISETU-APIKEY`` (+ optional
+    ``X-APISETU-CLIENTID``) — verified against the live DGFT product, which
+    returns HTTP 401 ``invalid_authentication`` without them. (The previous
+    ``X-API-Key`` / ``X-Client-Id`` names were non-standard and would fail auth.)
+    """
+    h = {"X-APISETU-APIKEY": key, "Accept": "application/json"}
     if client_id:
-        h["X-Client-Id"] = client_id
+        h["X-APISETU-CLIENTID"] = client_id
     return h
 
 
@@ -101,13 +108,20 @@ class GstnConnector(Connector):
     Verifies that a supplier's GST registration is ACTIVE and has no major
     filing defaults before a deal is financially committed.
 
-    API reference : https://apisetu.gov.in/gstn/v1
+    API reference : "GSTN Tax Payer API V2" in the API Setu partner directory
+                    (https://partners.apisetu.gov.in) — subscription required.
     Env vars      : API_SETU_KEY, API_SETU_CLIENT_ID
     Sandbox       : set GSTN_USE_SANDBOX=1 to target the sandbox base URL
+    Auth          : X-APISETU-APIKEY (+ X-APISETU-CLIENTID) via _apisetu_headers.
+
+    ⚠️ UNVERIFIED PATH: the base/path below is a placeholder — the guessed public
+    route returns HTTP 404. The real production path is revealed only after
+    subscribing to the GSTN Tax Payer product on the API Setu partner portal.
+    Replace _PROD_BASE / the lookup path with the subscribed endpoint.
     """
 
     name = "gstn"
-    _PROD_BASE = "https://apisetu.gov.in/gstn/v1"
+    _PROD_BASE = "https://apisetu.gov.in/gstn/v1"   # ⚠️ placeholder — see note above
     _SAND_BASE = "https://sandbox.apisetu.gov.in/gstn/v1"
 
     def __init__(self) -> None:
@@ -166,51 +180,63 @@ class GstnConnector(Connector):
 # ---------------------------------------------------------------------------
 
 class DgftConnector(Connector):
-    """DGFT Developer Portal: IEC status + denied-party list check.
+    """DGFT Importer-Exporter Details API (via API Setu).
 
     Verifies that a supplier holds an active Importer-Exporter Code and is
     not listed on DGFT's Denied Entities register.
 
-    API reference : https://developer.dgft.gov.in
-    Auth          : No key required for basic IEC status queries.
+    API reference : https://apisetu.gov.in/dgft  (Importer-Exporter Details v1)
+    Endpoint      : GET /v1/iec/{iec}
+    Auth          : API Setu key — headers X-APISETU-APIKEY + X-APISETU-CLIENTID.
+                    Uses the same API_SETU_KEY / API_SETU_CLIENT_ID as GSTN/MCA/Udyam.
+    Sandbox       : set DGFT_USE_SANDBOX=1 to target the sandbox base URL.
     Denied list   : The full denied-entity list is a downloadable file.
                     Production deployments should cache it and check locally.
+
+    Note: the legacy free ``www.dgft.gov.in/CP/iecList/GovtAPI`` path was
+    decommissioned (returns HTTP 404); IEC verification now goes through API Setu.
     """
 
     name = "dgft"
-    _IEC_BASE = "https://www.dgft.gov.in/CP/iecList/GovtAPI"
+    _PROD_BASE = "https://apisetu.gov.in/dgft/v1"
+    _SAND_BASE = "https://sandbox.apisetu.gov.in/dgft/v1"
 
     def __init__(self) -> None:
-        # No authentication required for DGFT public APIs
-        pass
+        self._key = os.environ["API_SETU_KEY"]
+        self._client_id = os.environ.get("API_SETU_CLIENT_ID", "")
+        self._base = (
+            self._SAND_BASE if os.environ.get("DGFT_USE_SANDBOX") else self._PROD_BASE
+        )
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Verify IEC number status.
+        """Verify IEC number status via the API Setu DGFT endpoint.
 
         Expected request keys:
             iec  (str) – 10-digit IEC number
 
         Returns:
             iec, status ("ACTIVE" | "CANCELLED" | "SURRENDERED" | "UNKNOWN"),
-            entity_name, nature_of_concern
+            entity_name, nature_of_concern, pan, iec_issue_date
         """
         iec = request["iec"].strip().upper()
 
         async def _fetch() -> dict[str, Any]:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(
-                    f"{self._IEC_BASE}/IECDetails/{iec}",
-                    headers={"Accept": "application/json"},
-                    follow_redirects=True,
+                    f"{self._base}/iec/{iec}",
+                    headers=_apisetu_headers(self._key, self._client_id),
                 )
                 resp.raise_for_status()
                 data = resp.json()
             return {
-                "iec": iec,
-                "status": (data.get("iecStatus") or data.get("status") or "UNKNOWN").upper(),
+                "iec": data.get("iec") or iec,
+                "status": str(
+                    data.get("iecStatus") or data.get("status") or "UNKNOWN"
+                ).upper(),
                 "entity_name": data.get("entityName") or "",
                 "nature_of_concern": data.get("natureOfConcern") or "",
-                "file_number": data.get("fileNumber") or "",
+                "pan": data.get("pan") or "",
+                "iec_issue_date": data.get("iecIssueDate") or "",
             }
 
         return await _cached_lookup("regulatory:dgft", ("dgft", iec), _fetch)
@@ -258,12 +284,18 @@ class McaConnector(Connector):
     listings.  Ensures the supplier is a legitimately registered company and
     not a shell or broker.
 
-    API reference : https://apisetu.gov.in/mca/v3
+    API reference : MCA / CIN lookup in the API Setu partner directory
+                    (https://partners.apisetu.gov.in) — subscription required.
     Env vars      : API_SETU_KEY, API_SETU_CLIENT_ID
+    Auth          : X-APISETU-APIKEY (+ X-APISETU-CLIENTID) via _apisetu_headers.
+
+    ⚠️ UNVERIFIED PATH: the base/path below is a placeholder — the guessed public
+    route returns HTTP 404. Replace _BASE / the lookup path with the production
+    endpoint shown after subscribing to the MCA product on API Setu.
     """
 
     name = "mca"
-    _BASE = "https://apisetu.gov.in/mca/v3"
+    _BASE = "https://apisetu.gov.in/mca/v3"   # ⚠️ placeholder — see note above
 
     def __init__(self) -> None:
         self._key = os.environ["API_SETU_KEY"]
@@ -323,12 +355,18 @@ class UdyamConnector(Connector):
     out retail brokers and validates that RFQs are sent to real manufacturing
     units eligible for government export incentives.
 
-    API reference : https://apisetu.gov.in/udyam/v1
+    API reference : Udyam / MSME lookup in the API Setu partner directory
+                    (https://partners.apisetu.gov.in) — subscription required.
     Env vars      : API_SETU_KEY, API_SETU_CLIENT_ID
+    Auth          : X-APISETU-APIKEY (+ X-APISETU-CLIENTID) via _apisetu_headers.
+
+    ⚠️ UNVERIFIED PATH: the base/path below is a placeholder — the guessed public
+    route returns HTTP 404. Replace _BASE / the lookup path with the production
+    endpoint shown after subscribing to the Udyam product on API Setu.
     """
 
     name = "udyam"
-    _BASE = "https://apisetu.gov.in/udyam/v1"
+    _BASE = "https://apisetu.gov.in/udyam/v1"   # ⚠️ placeholder — see note above
 
     def __init__(self) -> None:
         self._key = os.environ["API_SETU_KEY"]

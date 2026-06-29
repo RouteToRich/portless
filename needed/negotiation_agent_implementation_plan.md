@@ -31,7 +31,7 @@ The agent acquires, parses, and enforces business information using distinct lay
 | **Foundation LLM** | **Claude / GPT-class** (routed via LiteLLM) | Reasoning/negotiation: frontier model. Bulk extraction: smaller/cheaper model. |
 | **Retrieval Engine (RAG)** | **PostgreSQL with `pgvector`** | Indexes trade playbooks, quality limits (e.g. moisture cap, color ASTA), and regional compliance rules. |
 | **Negotiation Memory** | **PostgreSQL (`negotiation_sessions` + `negotiation_rounds`)** | Persists full negotiation flow for context continuity across rounds and sessions. |
-| **Session Cache & Locks** | **Redis** | Tracks real-time active counter rounds, locks session routes, and maintains short-term conversational context. |
+| **Session Cache & Locks** | **MongoDB TTL cache (`shared.cache`)** | Tracks real-time active counter rounds, locks session routes, and maintains short-term conversational context. |
 | **Deterministic Guards** | **Pure Python Functions (FastAPI)** | Enforces mathematically absolute margin validations ($\ge 8\%$) including travel + QC + doc costs. |
 | **Schema Parser** | **Pydantic v2** | Structurally compiles model responses and guarantees execution tool parameters. |
 | **Real-time API Bridges** | **Cogoport SDK / FX APIs** | Fetches live transportation bids and multi-currency conversions. |
@@ -609,7 +609,7 @@ CYCLE 3: CONVERGENCE & SIGN-OFF
 
 ### Phase 1: Database & Negotiation State Setup (Week 1)
 * Create PostgreSQL schemas: `negotiation_sessions` (session state, parties, parameters) and `negotiation_rounds` (per-round bids, counters, reasoning, margin snapshots).
-* Configure Redis session locks to track active round counts per `trade_match_id`.
+* Configure MongoDB-backed session locks (shared TTL cache) to track active round counts per `trade_match_id`.
 * Implement `max_rounds` (default: 5) convergence boundary at the database tier.
 * Define `CostEnvelope` and `StartNegotiationRequest` Pydantic models in `agents/negotiation_agent/schemas.py`.
 

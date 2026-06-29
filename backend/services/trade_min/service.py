@@ -101,11 +101,13 @@ _EU_MARKETS = frozenset({
     "SE", "DK", "FI", "IE", "PT", "HU", "CZ", "RO",
 })
 
+# Phase-1 demand sources — FREE official statistics only.
+#   comtrade — global, authoritative (UN); census — US high-resolution.
+# (The paid Volza / Trademo / ImportGenius sources were retired; see
+#  workflow.md → "Replaced / Legacy Trade-Min connectors".)
 _P1_WEIGHTS: dict[str, float] = {
-    "comtrade":     0.40,
-    "volza":        0.25,
-    "importgenius": 0.15,
-    "trademo":      0.20,
+    "comtrade": 0.70,
+    "census":   0.30,
 }
 
 
@@ -209,7 +211,7 @@ async def _phase1_historical_demand(
     now = datetime.now(timezone.utc)
     prev_year = str(now.year - 1)
 
-    comtrade_r, volza_r, ig_r, trademo_r = await asyncio.gather(
+    comtrade_r, census_r = await asyncio.gather(
         _safe_quote("comtrade", {
             "hs_code": hs_code,
             "period": prev_year,
@@ -217,22 +219,11 @@ async def _phase1_historical_demand(
             "flow_code": "M",
             "partner_code": "356",
         }),
-        _safe_quote("volza", {
+        # US Census augments Comtrade for the US market (returns empty otherwise,
+        # or is skipped entirely when CENSUS_API_KEY is unset).
+        _safe_quote("census", {
             "hs_code": hs_code,
-            "importer_country": market,
-            "start_date": f"{now.year - 1}-01-01",
-            "end_date": f"{now.year - 1}-12-31",
-            "page_size": 100,
-        }),
-        _safe_quote("importgenius", {
-            "hs_code": hs_code,
-            "country": market,
-            "limit": 100,
-        }),
-        _safe_quote("trademo", {
-            "hs_code": hs_code,
-            "buyer_country": market,
-            "limit": 50,
+            "market": market,
         }),
     )
 
@@ -242,11 +233,9 @@ async def _phase1_historical_demand(
 
     for cname, r in [
         ("comtrade", comtrade_r),
-        ("volza", volza_r),
-        ("importgenius", ig_r),
-        ("trademo", trademo_r),
+        ("census", census_r),
     ]:
-        if r is not None:
+        if r is not None and (r.get("records") or r.get("total_records")):
             active_weights[cname] = _P1_WEIGHTS[cname]
             connector_data[cname] = r
 
@@ -268,41 +257,17 @@ async def _phase1_historical_demand(
 
     scores: list[tuple[str, float]] = []  # (connector, weighted_score)
 
-    if "comtrade" in connector_data:
+    for cname in ("comtrade", "census"):
+        if cname not in connector_data:
+            continue
         score, signals, buyers, gap = _extract_comtrade(
-            connector_data["comtrade"], hs_code, market, now
+            connector_data[cname], hs_code, market, now, source=cname
         )
-        scores.append(("comtrade", score * norm_weights["comtrade"]))
-        result.demand_signals.extend(signals)
-        result.buyer_signals.extend(buyers)
-        if gap:
-            result.gross_price_gap_pct = gap
-
-    if "volza" in connector_data:
-        score, signals, buyers, gap = _extract_volza(
-            connector_data["volza"], hs_code, market, now, config
-        )
-        scores.append(("volza", score * norm_weights["volza"]))
+        scores.append((cname, score * norm_weights[cname]))
         result.demand_signals.extend(signals)
         result.buyer_signals.extend(buyers)
         if gap and result.gross_price_gap_pct == 0.0:
             result.gross_price_gap_pct = gap
-
-    if "importgenius" in connector_data:
-        score, signals, buyers = _extract_importgenius(
-            connector_data["importgenius"], hs_code, market, now
-        )
-        scores.append(("importgenius", score * norm_weights["importgenius"]))
-        result.demand_signals.extend(signals)
-        result.buyer_signals.extend(buyers)
-
-    if "trademo" in connector_data:
-        score, signals, buyers = _extract_trademo(
-            connector_data["trademo"], hs_code, market, now
-        )
-        scores.append(("trademo", score * norm_weights["trademo"]))
-        result.demand_signals.extend(signals)
-        result.buyer_signals.extend(buyers)
 
     result.demand_index = round(sum(s for _, s in scores), 2)
 
@@ -314,8 +279,13 @@ async def _phase1_historical_demand(
 
 
 def _extract_comtrade(
-    data: dict, hs_code: str, market: str, now: datetime
+    data: dict, hs_code: str, market: str, now: datetime, source: str = "comtrade"
 ) -> tuple[float, list[DemandSignal], list[BuyerSignal], float]:
+    """Extract a demand signal from a Comtrade-shaped payload.
+
+    Shared by both the UN Comtrade and US Census connectors (Census returns the
+    same record shape); ``source`` labels the originating connector.
+    """
     records = data.get("records", [])
     total = data.get("total_records", len(records))
     score = min(total / 5.0, 100.0)
@@ -332,11 +302,11 @@ def _extract_comtrade(
     return (
         score,
         [DemandSignal(
-            source="comtrade",
+            source=source,
             signal_type="historical",
             urgency_tier=1,
             normalized_value=round(score, 2),
-            weight=_P1_WEIGHTS["comtrade"],
+            weight=_P1_WEIGHTS.get(source, 0.0),
             raw_summary=f"{total} import records for HS {hs_code} in {market} ({data.get('period', '')})",
             fetched_at=now,
         )],
@@ -367,7 +337,7 @@ def _extract_volza(
         signal_type="manifest",
         urgency_tier=1,
         normalized_value=round(score, 2),
-        weight=_P1_WEIGHTS["volza"],
+        weight=_P1_WEIGHTS.get("volza", 0.0),
         raw_summary=(
             f"{len(unique_buyers)} unique buyers in {market} for HS {hs_code} "
             f"(total {total} manifests)"
@@ -422,7 +392,7 @@ def _extract_importgenius(
         signal_type="manifest",
         urgency_tier=1,
         normalized_value=round(score, 2),
-        weight=_P1_WEIGHTS["importgenius"],
+        weight=_P1_WEIGHTS.get("importgenius", 0.0),
         raw_summary=f"{len(importers)} repeat importers of HS {hs_code} in {market}",
         fetched_at=now,
     )]
@@ -457,7 +427,7 @@ def _extract_trademo(
         signal_type="manifest",
         urgency_tier=1,
         normalized_value=round(score, 2),
-        weight=_P1_WEIGHTS["trademo"],
+        weight=_P1_WEIGHTS.get("trademo", 0.0),
         raw_summary=f"{len(companies)} high-volume buyers (Trademo) for HS {hs_code} in {market}",
         fetched_at=now,
     )]
@@ -589,17 +559,36 @@ async def _phase3_tariff_gate(
     now = datetime.now(timezone.utc)
     vat = _COUNTRY_VAT_PCT.get(market, 0.0)
 
-    raw = await _safe_quote("macmap", {
-        "hs_code": hs_code,
-        "reporter_iso2": market,
-        "partner_iso2": "IN",
-    })
+    tariff_req = {"hs_code": hs_code, "reporter_iso2": market, "partner_iso2": "IN"}
 
-    if raw is None:
-        # MacMap unavailable — return zero-duty placeholder so pipeline continues.
-        # Confidence score deducts points when tariff_data.source == "macmap" and
-        # applied_duty_pct == 0 with no ntb_flags (ambiguous; not confirmed viable).
-        logger.info("MacMap unavailable for %s×%s — tariff unverified", hs_code, market)
+    # EU destinations: prefer Access2Markets (adds NTBs + rules of origin); it
+    # returns applied_duty_pct=None when its endpoint isn't configured, so we
+    # transparently fall back to WITS below.
+    if market in _EU_MARKETS:
+        a2m = await _safe_quote("access2markets", tariff_req)
+        a2m_applied = a2m.get("applied_duty_pct") if a2m else None
+        if a2m_applied is not None:
+            return TariffData(
+                hs_code=hs_code,
+                destination_country=market,
+                applied_duty_pct=round(float(a2m_applied), 2),
+                gst_vat_pct=vat,
+                ntb_flags=a2m.get("ntb_flags", []),
+                rules_of_origin=a2m.get("rules_of_origin"),
+                total_landed_cost_add_pct=round(float(a2m_applied) + vat, 2),
+                fetched_at=now,
+            )
+
+    # World Bank WITS (free) replaces the paid ITC MacMap for the tariff gate.
+    raw = await _safe_quote("wits_tariff", tariff_req)
+
+    applied = raw.get("applied_duty_pct") if raw else None
+    if applied is None:
+        # WITS has no published line for this market/product/year — return a
+        # zero-duty placeholder so the pipeline continues. _compute_confidence
+        # awards no tariff points when applied_duty_pct == 0 with no ntb_flags
+        # (ambiguous; not confirmed viable).
+        logger.info("WITS tariff unavailable for %s×%s — tariff unverified", hs_code, market)
         return TariffData(
             hs_code=hs_code,
             destination_country=market,
@@ -609,7 +598,14 @@ async def _phase3_tariff_gate(
             fetched_at=now,
         )
 
-    return _parse_macmap(raw, hs_code, market, vat, now)
+    return TariffData(
+        hs_code=hs_code,
+        destination_country=market,
+        applied_duty_pct=round(float(applied), 2),
+        gst_vat_pct=vat,
+        total_landed_cost_add_pct=round(float(applied) + vat, 2),
+        fetched_at=now,
+    )
 
 
 def _parse_macmap(
