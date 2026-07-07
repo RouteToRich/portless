@@ -21,7 +21,7 @@ from shared.bus.publisher import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 
 from .config import settings
-from .email_dispatcher import EmailDispatcher, EmailMessage, InboxMonitor
+from .email_dispatcher import EmailDispatcher, EmailMessage
 from .email_history import (
     EmailDirection,
     EmailHistoryRecord,
@@ -45,7 +45,6 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 _dispatcher = EmailDispatcher()
-_inbox_monitor = InboxMonitor()
 
 _SMTP_FROM = "portless-trade@portless.io"
 
@@ -472,11 +471,6 @@ async def list_rounds(negotiation_id: str) -> list[NegotiationRound]:
     return await get_repository().list_rounds(negotiation_id)
 
 
-async def monitor_inbox() -> None:
-    """Start the IMAP inbox monitor (placeholder — see InboxMonitor for TODO)."""
-    await _inbox_monitor.start()
-
-
 # ---------------------------------------------------------------------------
 # Email history helpers — called by HITL callbacks and router
 # ---------------------------------------------------------------------------
@@ -503,6 +497,7 @@ async def send_approved_email(email_id: str, modified_body: str | None = None) -
             body=body_to_send,
             negotiation_id=record.negotiation_id,
             round_no=record.round_no,
+            email_id=record.email_id,
         ))
         now = datetime.now(timezone.utc)
         new_status = EmailStatus.MODIFIED_SENT if modified_body else EmailStatus.SENT
@@ -541,6 +536,41 @@ async def reject_email(email_id: str) -> None:
 async def list_email_history(negotiation_id: str) -> list[EmailHistoryRecord]:
     """Return all email records for the given negotiation, oldest first."""
     return await get_email_repository().list_by_negotiation(negotiation_id)
+
+
+async def get_email_threads(
+    deal_id: str | None = None,
+) -> list[object]:
+    """Return all negotiation sessions with their full email threads attached.
+
+    Used by GET /negotiation-agent/email-threads to power the Negotiation
+    Inbox page in the UI.  Sessions are sorted most-recently-updated first.
+    Email queries run in parallel via asyncio.gather for performance.
+    """
+    from .schemas import NegotiationEmailThread  # local import avoids circulars
+
+    sessions = await get_repository().list_sessions(deal_id=deal_id)
+    if not sessions:
+        return []
+
+    email_lists = await asyncio.gather(
+        *[get_email_repository().list_by_negotiation(s.negotiation_id) for s in sessions]
+    )
+
+    threads = []
+    for session, emails in zip(sessions, email_lists):
+        sorted_emails = sorted(emails, key=lambda e: e.created_at)
+        pending = sum(
+            1 for e in sorted_emails
+            if e.status == EmailStatus.PENDING_APPROVAL
+        )
+        thread_data = session.model_dump()
+        thread_data["emails"] = [e.model_dump() for e in sorted_emails]
+        thread_data["pending_approval_count"] = pending
+        threads.append(NegotiationEmailThread(**thread_data))
+
+    threads.sort(key=lambda t: t.updated_at, reverse=True)
+    return threads
 
 
 async def record_inbound_email(

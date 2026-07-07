@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from . import service
 from .email_history import EmailHistoryRecord
 from .schemas import (
+    NegotiationEmailThread,
     NegotiationResponse,
     NegotiationRound,
     NegotiationSession,
@@ -62,3 +63,15 @@ async def get_email_history(negotiation_id: str) -> list[EmailHistoryRecord]:
 @router.get("/negotiations", response_model=list[NegotiationSession])
 async def list_negotiations(deal_id: str | None = None) -> list[NegotiationSession]:
     return await service.list_negotiations(deal_id=deal_id)
+
+
+@router.get("/email-threads", response_model=list[NegotiationEmailThread])
+async def get_email_threads(
+    deal_id: str | None = None,
+) -> list[NegotiationEmailThread]:
+    """Return all negotiation sessions with their full email conversation.
+
+    Used by the Negotiation Inbox UI page.  Sorted most-recently-active first.
+    Pass ``deal_id`` to restrict to a single deal's negotiations.
+    """
+    return await service.get_email_threads(deal_id=deal_id)

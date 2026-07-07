@@ -222,3 +222,39 @@ class NegotiationResponse(BaseModel):
     outbound_buyer_message: str | None = None
     outbound_supplier_message: str | None = None
     negotiated_terms: NegotiatedTerms | None = None
+
+
+# ---------------------------------------------------------------------------
+# Email thread aggregation response (for the Negotiation Inbox UI)
+# ---------------------------------------------------------------------------
+
+class NegotiationEmailThread(BaseModel):
+    """A NegotiationSession with its full email conversation attached.
+
+    Returned by GET /negotiation-agent/email-threads for the UI inbox page.
+    """
+
+    model_config = {"extra": "ignore"}  # safely absorbs extra session fields
+
+    negotiation_id: str
+    deal_id: str
+    trade_match_id: str
+    buyer_id: str
+    seller_id: str
+    product_code: str
+    buyer_country_code: str
+    buyer_target_price: float
+    supplier_quote_price: float
+    status: NegotiationStatus
+    round_no: int
+    current_bid: float | None = None
+    current_ask: float | None = None
+    agreed_price: float | None = None
+    margin_at_current: float | None = None
+    hitl_required: bool = False
+    emails: list[Any] = Field(default_factory=list)
+    """EmailHistoryRecord dicts, sorted oldest-first."""
+    pending_approval_count: int = 0
+    """Number of outbound drafts currently awaiting operator approval."""
+    created_at: datetime
+    updated_at: datetime

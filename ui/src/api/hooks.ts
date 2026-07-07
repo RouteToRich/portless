@@ -224,6 +224,14 @@ export function useNegotiationEmails(negotiationId: string | undefined) {
   });
 }
 
+export function useNegotiationEmailThreads(dealId?: string) {
+  return useQuery({
+    queryKey: ["negotiation-email-threads", dealId ?? "all"],
+    queryFn: () => NegotiationApi.getEmailThreads(dealId),
+    refetchInterval: 15000,
+  });
+}
+
 export function useRunNegotiationRound(negotiationId: string) {
   const qc = useQueryClient();
   return useMutation({

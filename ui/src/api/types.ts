@@ -214,6 +214,13 @@ export interface NegotiationResponse {
   session: NegotiationSession;
 }
 
+export interface NegotiationEmailThread extends NegotiationSession {
+  buyer_target_price: number;
+  supplier_quote_price: number;
+  emails: EmailHistoryRecord[];
+  pending_approval_count: number;
+}
+
 export interface RunRoundRequest {
   inbound_price?: number | null;
   inbound_message?: string | null;

@@ -15,17 +15,20 @@ logger = logging.getLogger(__name__)
 async def on_startup() -> None:
     from .email_history import init_email_repository
     from .repository import init_repository
-    from .service import monitor_inbox
 
     await init_repository()
     await init_email_repository()
-    await monitor_inbox()
+
+    # Seed demo data when the in-memory fallback is active (no MongoDB or unreachable)
+    from .repository import InMemoryNegotiationRepository, get_repository
+    if isinstance(get_repository(), InMemoryNegotiationRepository):
+        from ._mock_seed import seed_mock_negotiation_data
+        await seed_mock_negotiation_data()
+
     logger.info("NegotiationAgent startup complete")
 
 
 async def on_shutdown() -> None:
-    from .service import _inbox_monitor
-    await _inbox_monitor.stop()
     logger.info("NegotiationAgent shutdown complete")
 
 

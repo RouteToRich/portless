@@ -10,6 +10,7 @@ import type {
   EscrowHold,
   FreightRecord,
   MatchScore,
+  NegotiationEmailThread,
   NegotiationResponse,
   NegotiationRound,
   NegotiationSession,
@@ -94,6 +95,12 @@ export const NegotiationApi = {
   getEmails: (negotiationId: string) =>
     api
       .get<EmailHistoryRecord[]>(`/negotiation-agent/negotiations/${negotiationId}/emails`)
+      .then((r) => r.data),
+  getEmailThreads: (dealId?: string) =>
+    api
+      .get<NegotiationEmailThread[]>("/negotiation-agent/email-threads", {
+        params: dealId ? { deal_id: dealId } : undefined,
+      })
       .then((r) => r.data),
   runRound: (
     negotiationId: string,

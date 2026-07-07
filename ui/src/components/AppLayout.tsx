@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   LogOut,
   Menu,
+  MessageSquare,
   Moon,
   Package2,
   Search,
@@ -29,25 +30,27 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const NAV = [
-  { to: "/radar",     label: "Opportunity Radar",  icon: Zap },
-  { to: "/deals",     label: "Deal Board",          icon: LayoutGrid },
-  { to: "/approvals", label: "Approvals Inbox",     icon: Bell },
-  { to: "/money",     label: "Money & Margin",      icon: TrendingUp },
-  { to: "/exceptions",label: "Exceptions",          icon: AlertTriangle },
-  { to: "/autonomy",  label: "Autonomy Settings",   icon: Settings2 },
-  { to: "/health",    label: "System Health",       icon: Activity },
-  { to: "/knowledge", label: "Knowledge Base",      icon: BrainCircuit },
+  { to: "/radar",        label: "Opportunity Radar",  icon: Zap },
+  { to: "/deals",        label: "Deal Board",          icon: LayoutGrid },
+  { to: "/approvals",    label: "Approvals Inbox",     icon: Bell },
+  { to: "/negotiations", label: "Negotiation Inbox",   icon: MessageSquare },
+  { to: "/money",        label: "Money & Margin",      icon: TrendingUp },
+  { to: "/exceptions",   label: "Exceptions",          icon: AlertTriangle },
+  { to: "/autonomy",     label: "Autonomy Settings",   icon: Settings2 },
+  { to: "/health",       label: "System Health",       icon: Activity },
+  { to: "/knowledge",    label: "Knowledge Base",      icon: BrainCircuit },
 ];
 
 const PAGE_TITLES: Record<string, string> = {
-  "/radar":      "Opportunity Radar",
-  "/deals":      "Deal Board",
-  "/approvals":  "Approvals Inbox",
-  "/money":      "Money & Margin",
-  "/exceptions": "Exceptions",
-  "/autonomy":   "Autonomy Settings",
-  "/health":     "System Health",
-  "/knowledge":  "Knowledge Base",
+  "/radar":        "Opportunity Radar",
+  "/deals":        "Deal Board",
+  "/approvals":    "Approvals Inbox",
+  "/negotiations": "Negotiation Inbox",
+  "/money":        "Money & Margin",
+  "/exceptions":   "Exceptions",
+  "/autonomy":     "Autonomy Settings",
+  "/health":       "System Health",
+  "/knowledge":    "Knowledge Base",
 };
 
 export function AppLayout() {

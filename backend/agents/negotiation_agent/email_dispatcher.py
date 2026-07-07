@@ -21,9 +21,10 @@ Configuration (.env)
 Leave GMAIL_SENDER_ADDRESS empty to disable real sending — messages are logged
 only, so local dev and CI work without any credentials.
 
-IMAP inbox monitoring
----------------------
-InboxMonitor is a skeleton — see module-level TODO for implementation notes.
+Inbound email monitoring
+------------------------
+Inbox monitoring has been extracted to services/email_monitor/.
+Configure IMAP polling or provider webhooks (SendGrid / Mailgun) there.
 """
 from __future__ import annotations
 
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 _GMAIL_SMTP_HOST = "smtp.gmail.com"
 _GMAIL_SMTP_PORT = 587  # STARTTLS
+_PORTLESS_DOMAIN = "portless.io"
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +54,8 @@ class EmailMessage:
     body: str
     negotiation_id: str
     round_no: int
+    email_id: str = ""
+    """Set to EmailHistoryRecord.email_id so Message-ID is embedded for reply threading."""
     cc: list[str] = field(default_factory=list)
 
 
@@ -81,7 +85,16 @@ class EmailDispatcher:
         mime = MIMEMultipart("alternative")
         mime["From"] = f"{settings.smtp_from_name} <{self._sender}>"
         mime["To"] = msg.to_address
-        mime["Subject"] = msg.subject
+        # Append [NEG:...] token so the Email Monitor can map replies via
+        # subject-line fallback when In-Reply-To/References headers are lost.
+        subject = msg.subject
+        if msg.negotiation_id:
+            subject += f" [NEG:{msg.negotiation_id}]"
+        mime["Subject"] = subject
+        # Embed a structured Message-ID so genuine replies carry In-Reply-To
+        # that the Email Monitor mapper can parse unambiguously.
+        if msg.email_id and msg.negotiation_id:
+            mime["Message-ID"] = f"<{msg.email_id}.{msg.negotiation_id}@{_PORTLESS_DOMAIN}>"
         if msg.cc:
             mime["Cc"] = ", ".join(msg.cc)
         mime.attach(MIMEText(msg.body, "plain", "utf-8"))
@@ -134,48 +147,6 @@ class EmailDispatcher:
             raise
 
 
-# ---------------------------------------------------------------------------
-# IMAP inbox monitor (placeholder)
-# ---------------------------------------------------------------------------
-
-class InboxMonitor:
-    """Polls a Gmail INBOX for buyer/supplier replies.
-
-    Currently a skeleton — implement with aioimaplib when ready.
-
-    TODO (production):
-      - Open async IMAP SSL connection to imap.gmail.com:993 using aioimaplib
-      - Poll IMAP_INBOX_FOLDER every IMAP_POLL_INTERVAL_SECONDS seconds
-      - Match emails by In-Reply-To / References header to negotiation_id
-      - Extract counter_price from structured body or route to HITL for parsing
-      - Call service.run_round() with extracted RoundRequest
-    """
-
-    def __init__(self) -> None:
-        self._running = False
-        self._task: asyncio.Task[None] | None = None
-
-    async def start(self) -> None:
-        if not settings.imap_host:
-            logger.info(
-                "InboxMonitor: IMAP_HOST not set — Gmail inbox monitoring disabled."
-            )
-            return
-
-        logger.info(
-            "InboxMonitor: Gmail IMAP configured (host=%s folder=%s interval=%ds) "
-            "— polling NOT yet implemented (placeholder).",
-            settings.imap_host,
-            settings.imap_inbox_folder,
-            settings.imap_poll_interval_seconds,
-        )
-
-    async def stop(self) -> None:
-        self._running = False
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        logger.info("InboxMonitor stopped.")
+# InboxMonitor has been extracted to services/email_monitor/.
+# See services/email_monitor/imap_poller.py (ImapPoller) and
+# services/email_monitor/router.py for webhook endpoints.

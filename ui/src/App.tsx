@@ -6,6 +6,7 @@ import { DealBoard } from "./pages/DealBoard";
 import { DealDetail } from "./pages/DealDetail";
 import { ApprovalsInbox } from "./pages/ApprovalsInbox";
 import { MoneyMargin } from "./pages/MoneyMargin";
+import { NegotiationInbox } from "./pages/NegotiationInbox";
 import { Exceptions } from "./pages/Exceptions";
 import { AutonomySettings } from "./pages/AutonomySettings";
 import { SystemHealth } from "./pages/SystemHealth";
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="/deals" element={<DealBoard />} />
           <Route path="/deals/:dealId" element={<DealDetail />} />
           <Route path="/approvals" element={<ApprovalsInbox />} />
+          <Route path="/negotiations" element={<NegotiationInbox />} />
           <Route path="/money" element={<MoneyMargin />} />
           <Route path="/exceptions" element={<Exceptions />} />
           <Route path="/autonomy" element={<AutonomySettings />} />

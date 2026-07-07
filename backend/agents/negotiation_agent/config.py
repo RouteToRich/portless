@@ -38,16 +38,9 @@ class NegotiationSettings(BaseSettings):
     gmail_app_password: str = ""
     smtp_from_name: str = "PortLess Trade Agent"
 
-    # ── IMAP inbox monitoring (placeholder) ───────────────────────────────
-    # Monitor the configured inbox for buyer/supplier replies and route them
-    # to the active negotiation session via run_round().
-    imap_host: str = ""
-    imap_port: int = 993
-    imap_user: str = ""
-    imap_password: str = ""
-    imap_use_ssl: bool = True
-    imap_poll_interval_seconds: int = 60
-    imap_inbox_folder: str = "INBOX"
+    # ── Inbound email monitoring ──────────────────────────────────────────
+    # IMAP polling and webhook ingestion are handled by services/email_monitor/.
+    # Configure IMAP_MONITOR_USER + IMAP_MONITOR_PASSWORD in .env there.
 
     # ── Session locks ─────────────────────────────────────────────────────
     # Uses an in-memory dict (single-instance dev). For multi-replica
