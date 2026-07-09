@@ -2,7 +2,7 @@
 
 .PHONY: install dev up down gateway deals trade-min match-engine sourcing negotiator \
         dealmaker shield-link docugen escrow-guard hitl-approval exception-resolver \
-        email-monitor
+        email-gateway email-processor
 
 install:
 	pip install -r requirements.txt
@@ -54,5 +54,8 @@ hitl-approval:
 exception-resolver:
 	uvicorn services.exception_resolver.main:app --reload --port 8011
 
-email-monitor:
-	uvicorn services.email_monitor.main:app --reload --port 8012
+email-gateway:
+	uvicorn services.email_gateway.main:app --reload --port 8012
+
+email-processor:
+	uvicorn services.email_processor.main:app --reload --port 8013

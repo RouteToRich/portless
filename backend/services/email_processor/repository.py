@@ -1,4 +1,4 @@
-"""Persistence layer for Email Monitor — InMemory + MongoDB Motor."""
+"""Persistence layer for Email Processor — InMemory + MongoDB Motor."""
 from __future__ import annotations
 
 import logging
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
-class EmailMonitorRepository(Protocol):
+class EmailProcessorRepository(Protocol):
     async def save(self, record: InboundEmailRecord) -> None: ...
     async def get(self, inbound_id: str) -> InboundEmailRecord | None: ...
     async def list_all(
@@ -27,7 +27,7 @@ class EmailMonitorRepository(Protocol):
 # In-memory fallback (dev / CI)
 # ---------------------------------------------------------------------------
 
-class InMemoryEmailMonitorRepository:
+class InMemoryEmailProcessorRepository:
     def __init__(self) -> None:
         self._store: dict[str, dict[str, Any]] = {}
 
@@ -62,7 +62,7 @@ class InMemoryEmailMonitorRepository:
 # MongoDB Motor repository
 # ---------------------------------------------------------------------------
 
-class MongoEmailMonitorRepository:
+class MongoEmailProcessorRepository:
     def __init__(self, uri: str, db_name: str, collection: str) -> None:
         import motor.motor_asyncio as motor  # type: ignore[import]
         client: Any = motor.AsyncIOMotorClient(uri)
@@ -107,30 +107,30 @@ class MongoEmailMonitorRepository:
 # Init / teardown
 # ---------------------------------------------------------------------------
 
-_repository: EmailMonitorRepository | None = None
+_repository: EmailProcessorRepository | None = None
 
 
 async def init_repository() -> None:
     global _repository
-    if settings.email_monitor_mongo_uri:
-        repo = MongoEmailMonitorRepository(
-            settings.email_monitor_mongo_uri,
-            settings.email_monitor_mongo_db_name,
-            settings.email_monitor_inbound_collection,
+    if settings.email_processor_mongo_uri:
+        repo = MongoEmailProcessorRepository(
+            settings.email_processor_mongo_uri,
+            settings.email_processor_mongo_db_name,
+            settings.email_processor_inbound_collection,
         )
         try:
             await repo._ensure_indexes()
-            logger.info("EmailMonitor: MongoDB repository ready")
+            logger.info("EmailProcessor: MongoDB repository ready")
         except Exception as exc:
             logger.warning(
-                "EmailMonitor: MongoDB index creation failed (%s) — using in-memory fallback", exc
+                "EmailProcessor: MongoDB index creation failed (%s) — using in-memory fallback", exc
             )
-            _repository = InMemoryEmailMonitorRepository()
+            _repository = InMemoryEmailProcessorRepository()
             return
         _repository = repo
     else:
-        logger.info("EmailMonitor: EMAIL_MONITOR_MONGO_URI not set — using in-memory repository")
-        _repository = InMemoryEmailMonitorRepository()
+        logger.info("EmailProcessor: EMAIL_PROCESSOR_MONGO_URI not set — using in-memory repository")
+        _repository = InMemoryEmailProcessorRepository()
 
 
 async def close_repository() -> None:
@@ -138,7 +138,7 @@ async def close_repository() -> None:
     _repository = None
 
 
-def get_repository() -> EmailMonitorRepository:
+def get_repository() -> EmailProcessorRepository:
     if _repository is None:
-        raise RuntimeError("EmailMonitor repository not initialised — call init_repository() first")
+        raise RuntimeError("EmailProcessor repository not initialised — call init_repository() first")
     return _repository

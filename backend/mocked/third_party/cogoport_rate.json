@@ -1,0 +1,27 @@
+{
+  "_provider": "Cogoport — freight booking & rates",
+  "_category": "logistics / freight + inland trucking",
+  "_used_by": "shield_link via shared/connectors/shields.py",
+  "_cost": "Per-booking (key needed)",
+  "_app_status": "Wired — representative shape (stub when COGOPORT_API_KEY absent)",
+  "_endpoint": "POST https://api.cogoport.com/v1/rates/search  (Authorization: Bearer ...)",
+  "_docs": "https://cogoport.com/ (partner API access)",
+  "_note": "Representative rate/booking response. On book, status='confirmed' with a booking ext_ref; the freight webhook (ARRIVED) transitions the deal CLEARED.",
+  "rate_id": "COGO-RATE-5521904",
+  "status": "available",
+  "origin": "INNSA",
+  "destination": "AEJEA",
+  "shipping_line": "Cogo Consolidated",
+  "container_type": "20GP",
+  "price": {
+    "total": 1180,
+    "currency": "USD",
+    "line_items": [
+      { "code": "OCEAN_FREIGHT", "amount": 900 },
+      { "code": "ORIGIN_HANDLING", "amount": 150 },
+      { "code": "DOCUMENTATION", "amount": 130 }
+    ]
+  },
+  "transit_days": 8,
+  "valid_until": "2026-01-25"
+}

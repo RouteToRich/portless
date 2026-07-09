@@ -1,4 +1,4 @@
-"""Email Monitor service — processes inbound emails and advances negotiations.
+"""Email Processor service — processes inbound emails and advances negotiations.
 
 Processing pipeline for each inbound email:
 
@@ -100,6 +100,7 @@ async def process_inbound(
         message_id=raw.message_id,
         in_reply_to=raw.in_reply_to,
         references=raw.references,
+        attachments=raw.attachments,
         source=raw.source,
         status=InboundEmailStatus.RECEIVED,
         received_at=raw.received_at,
@@ -213,6 +214,7 @@ async def process_inbound(
                 party=mapping.party or "buyer",
                 channel="email",
                 inbound_message=raw.body_text,
+                attachment_refs=[a.filename for a in raw.attachments] or None,
             ),
         )
 

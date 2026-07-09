@@ -66,6 +66,29 @@ To pass, the pair must score **75 or above**. The score is made of three parts:
 
 ---
 
+## Phase 3½: The Automatic Haggling (Negotiation by Email) 🤝📧
+
+A great match isn't a finished deal yet — the buyer and the supplier still have to **agree on a final price**. PortLess does this haggling for you, automatically, over email.
+
+Here's the clever part. PortLess runs its own little **digital post office** with two workers, each with one simple job:
+
+* **📮 The Mail Room (Email Gateway):** This worker owns the email account. It does exactly two things — it **sends** letters out, and it **checks the mailbox every 15 minutes** for new replies. It never reads or understands the letters; it just moves them.
+* **🧠 The Negotiation Assistant (Email Processor):** When the Mail Room finds a new reply, it hands the letter over. The Assistant works out *which deal* the reply belongs to, reads the new price the other side is offering, and continues the negotiation — deciding the next counter-offer.
+
+A typical back-and-forth looks like this:
+
+1. PortLess drafts a polite offer: *"We can offer $2.95/kg — can you do better?"*
+2. **A human quickly approves it** (a safety check so no rogue email ever goes out), and the Mail Room sends it.
+3. The supplier replies by email: *"We can do $2.42/kg, final offer."*
+4. Within 15 minutes the Mail Room spots the reply and hands it to the Assistant.
+5. The Assistant recognizes the deal, reads the $2.42 price, and picks the next move — accept, counter again, or call in a human if it's stuck.
+
+This repeats until both sides agree (or the system decides the deal isn't worth it). The upshot: the price gets negotiated toward the best possible number **while you sleep** — and every outgoing message still gets a human thumbs-up first.
+
+> 💡 **Why two workers instead of one?** Keeping the "postman" (sending/fetching mail) separate from the "negotiator" (understanding replies) means each does one job well. We can change how mail is sent without touching the haggling brain, and vice-versa.
+
+---
+
 ## Phase 4: Executing the Deal (Shipping & Money on Autopilot)
 
 When a match is successful, the system executes the deal. No one from PortLess ever touches the cargo or manually carries cash. It is all run through independent, professional services integrated directly into our code:
@@ -180,3 +203,16 @@ Only when we have both prices does the system calculate the **Composite Match Sc
 1. **Inspection Anywhere:** SGS and Bureau Veritas have thousands of field officers stationed in every agricultural, chemical, and industrial hub in India. Whether the factory is in a remote village in Rajasthan or an industrial zone in Tamil Nadu, an inspector can reach it.
 2. **Trucking Anywhere:** Platforms like Cogoport work with a massive network of domestic transport fleets. They can arrange container trucks to drive directly to inland factories, load the cargo, and transport them safely to any major port (like Mundra in Gujarat, Nhava Sheva in Mumbai, or Chennai in Tamil Nadu).
 3. **Digital Customs:** Since Indian Customs (ICEGATE) is fully centralized and digital, our system and partner Custom House Agents (CHAs) can file papers and clear cargo at any sea port, airport, or Inland Container Depot (ICD) across India from a single dashboard.
+
+---
+
+### Q8: How does PortLess handle the back-and-forth emails with buyers and suppliers?
+**Answer:** Through its own **digital post office**, split into two workers so each does one job well:
+* **📮 The Mail Room** owns the email account. It **sends** approved messages and **checks the inbox every 15 minutes** for replies — nothing more.
+* **🧠 The Negotiation Assistant** takes each new reply, figures out which deal it belongs to (by matching hidden tags the system stamps on every outgoing email), reads the offered price, and continues the haggling automatically.
+
+Two safety nets keep this trustworthy:
+1. **Nothing is sent without a human's OK.** Every outgoing negotiation email waits for a quick operator approval before the Mail Room delivers it.
+2. **When in doubt, it asks a human.** If the Assistant can't confidently read a reply (e.g., no clear price, or it can't tell which deal it belongs to), it doesn't guess — it flags the email for an operator to handle.
+
+Replies can also arrive through other channels (a web form, or forwarded by email providers like SendGrid/Mailgun); they all funnel into the same Negotiation Assistant, so the haggling logic is identical no matter how the message arrived.

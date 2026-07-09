@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     escrow_guard_url: str = "http://localhost:8009"
     hitl_approval_url: str = "http://localhost:8010"
     exception_resolver_url: str = "http://localhost:8011"
+    email_gateway_url: str = "http://localhost:8012"
+    email_processor_url: str = "http://localhost:8013"
 
     # --- Regulatory verification connector credentials ---
     api_setu_key: str = ""

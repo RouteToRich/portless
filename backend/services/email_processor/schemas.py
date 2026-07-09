@@ -1,4 +1,4 @@
-"""Pydantic models for the Email Monitor service."""
+"""Pydantic models for the Email Processor service."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -50,6 +50,21 @@ class InboundEmailStatus(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# Attachment
+# ---------------------------------------------------------------------------
+
+class EmailAttachment(BaseModel):
+    """A single email attachment captured from any inbound source."""
+
+    filename: str
+    content_type: str = "application/octet-stream"
+    size: int = 0
+    """Size of the decoded attachment in bytes."""
+    content_b64: str = ""
+    """Base64-encoded attachment bytes. May be empty when only metadata is captured."""
+
+
+# ---------------------------------------------------------------------------
 # Unified inbound email (normalised from any source)
 # ---------------------------------------------------------------------------
 
@@ -65,6 +80,8 @@ class InboundRawEmail(BaseModel):
     """In-Reply-To header value — the Message-ID this email is replying to."""
     references: list[str] = Field(default_factory=list)
     """All Message-IDs from the References header (email thread chain)."""
+    attachments: list[EmailAttachment] = Field(default_factory=list)
+    """Attachments extracted from the email (PDF/Excel quotes, packing lists, …)."""
     source: InboundEmailSource
     received_at: datetime
     raw_headers: dict[str, str] = Field(default_factory=dict)
@@ -98,6 +115,7 @@ class InboundEmailRecord(BaseModel):
     message_id: str = ""
     in_reply_to: str = ""
     references: list[str] = Field(default_factory=list)
+    attachments: list[EmailAttachment] = Field(default_factory=list)
     source: InboundEmailSource
     status: InboundEmailStatus
     negotiation_id: str | None = None
@@ -181,9 +199,25 @@ class ManualInboundRequest(BaseModel):
     from_address: str
     subject: str
     body_text: str
+    attachments: list[EmailAttachment] = Field(default_factory=list)
     negotiation_id: str | None = None
     """Supply to skip automatic mapping entirely."""
     party: str | None = None
     """'buyer' or 'supplier' — required when negotiation_id is provided."""
     counter_price: float | None = None
     """Supply to skip automatic price extraction."""
+
+
+class InboundApiRequest(BaseModel):
+    """Body for ``POST /email-processor/inbound`` — a fetched email forwarded by
+    the Email Gateway's IMAP poller or any external fetcher (cron job, lambda).
+
+    This is the "receiving API" the transport calls with each fetched email
+    (sender, subject, content, attachments). The optional override fields carry
+    the IMAP folder party-hint or an operator-supplied negotiation id/price so
+    the receiver can skip auto-mapping / auto-price-extraction when known.
+    """
+    email: InboundRawEmail
+    negotiation_id_override: str | None = None
+    party_override: str | None = None
+    counter_price_override: float | None = None

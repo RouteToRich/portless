@@ -1,6 +1,7 @@
-"""HTTP routes for the Email Monitor service."""
+"""HTTP routes for the Email Processor service."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -8,10 +9,13 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request, status
+from starlette.datastructures import UploadFile
 
 from . import service
 from .config import settings
 from .schemas import (
+    EmailAttachment,
+    InboundApiRequest,
     InboundEmailRecord,
     InboundEmailSource,
     InboundEmailStatus,
@@ -22,12 +26,43 @@ from .schemas import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/email-monitor", tags=["email-monitor"])
+router = APIRouter(prefix="/email-processor", tags=["email-processor"])
 
 
 @router.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "email_monitor"}
+    return {"status": "ok", "service": "email_processor"}
+
+
+# ---------------------------------------------------------------------------
+# Receiving API — structured inbound email (IMAP poller / external fetcher)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/inbound",
+    response_model=ProcessingResult,
+    status_code=status.HTTP_201_CREATED,
+    summary="Receive a fetched inbound email (IMAP poller / external fetcher)",
+)
+async def inbound_api(payload: InboundApiRequest) -> ProcessingResult:
+    """Receiving API — the entry point for a fetched inbound email.
+
+    Accepts one fetched email as structured JSON (sender, subject, content,
+    attachments) and runs the full pipeline: it matches the email to a **live**
+    negotiation in the DB (terminal negotiations are skipped), persists the
+    inbound record, extracts the counter-price, and — once the record is
+    stored — triggers the negotiation orchestration agent via ``run_round()``.
+
+    The Email Gateway's IMAP poller calls this endpoint when
+    ``FORWARD_VIA_HTTP=true``; external fetchers (a standalone cron job / lambda
+    that polls IMAP) can call it directly.
+    """
+    return await service.process_inbound(
+        payload.email,
+        negotiation_id_override=payload.negotiation_id_override,
+        party_override=payload.party_override,
+        counter_price_override=payload.counter_price_override,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +81,7 @@ async def inbound_sendgrid(request: Request) -> ProcessingResult:
     **SendGrid dashboard setup:**
     1. Settings → Mail Settings → Inbound Parse → Add Host & URL
        - Hostname: ``mail.portless.io`` (set this as your MX domain's MX record)
-       - URL: ``https://api.portless.io/email-monitor/inbound/sendgrid``
+       - URL: ``https://api.portless.io/email-processor/inbound/sendgrid``
        - Enable **"POST the raw, full MIME message"**
     2. Signature verification: Settings → Mail Settings → Inbound Parse
        → Signature Verification → copy Public Key →
@@ -59,7 +94,8 @@ async def inbound_sendgrid(request: Request) -> ProcessingResult:
     if settings.sendgrid_webhook_public_key:
         _verify_sendgrid_signature(request)
 
-    return await service.process_inbound(_sendgrid_form_to_raw(form))
+    attachments = await _extract_form_attachments(form)
+    return await service.process_inbound(_sendgrid_form_to_raw(form, attachments))
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +115,7 @@ async def inbound_mailgun(request: Request) -> ProcessingResult:
     1. Add and verify your sending domain in Mailgun.
     2. Sending → Routes → Create Route
        - Filter: ``match_recipient("portless-trade@<your-mailgun-domain>")``
-       - Action: ``forward("https://api.portless.io/email-monitor/inbound/mailgun")``
+       - Action: ``forward("https://api.portless.io/email-processor/inbound/mailgun")``
        - Priority: 10
     3. Settings → API Security → HTTP Webhook Signing Key →
        set ``MAILGUN_SIGNING_KEY`` in .env
@@ -96,7 +132,8 @@ async def inbound_mailgun(request: Request) -> ProcessingResult:
             signature=str(form.get("signature", "")),
         )
 
-    return await service.process_inbound(_mailgun_form_to_raw(form))
+    attachments = await _extract_form_attachments(form)
+    return await service.process_inbound(_mailgun_form_to_raw(form, attachments))
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +163,7 @@ async def inbound_manual(payload: ManualInboundRequest) -> ProcessingResult:
         to_address=settings.portless_trade_address,
         subject=payload.subject,
         body_text=payload.body_text,
+        attachments=payload.attachments,
         source=InboundEmailSource.MANUAL,
         received_at=datetime.now(timezone.utc),
     )
@@ -215,6 +253,28 @@ def _verify_sendgrid_signature(request: Request) -> None:
 # Payload normalisation helpers
 # ---------------------------------------------------------------------------
 
+async def _extract_form_attachments(form) -> list[EmailAttachment]:  # type: ignore[type-arg]
+    """Read every uploaded file part from a provider webhook multipart form.
+
+    SendGrid posts attachments as ``attachment1``, ``attachment2``, … file
+    parts; Mailgun as ``attachment-1``, ``attachment-2``, …. Both arrive as
+    Starlette ``UploadFile`` values, so a generic scan captures either.
+    """
+    attachments: list[EmailAttachment] = []
+    for key, value in form.multi_items():
+        if isinstance(value, UploadFile):
+            data = await value.read()
+            attachments.append(
+                EmailAttachment(
+                    filename=value.filename or key,
+                    content_type=value.content_type or "application/octet-stream",
+                    size=len(data),
+                    content_b64=base64.b64encode(data).decode("ascii"),
+                )
+            )
+    return attachments
+
+
 def _parse_raw_headers(raw_block: str) -> tuple[str, str, list[str]]:
     """Parse a raw SMTP header block → (message_id, in_reply_to, references)."""
     message_id, in_reply_to = "", ""
@@ -231,7 +291,9 @@ def _parse_raw_headers(raw_block: str) -> tuple[str, str, list[str]]:
     return message_id, in_reply_to, references
 
 
-def _sendgrid_form_to_raw(form) -> InboundRawEmail:  # type: ignore[type-arg]
+def _sendgrid_form_to_raw(
+    form, attachments: list[EmailAttachment] | None = None
+) -> InboundRawEmail:  # type: ignore[type-arg]
     from email.utils import parseaddr
 
     msg_id, in_reply_to, refs = _parse_raw_headers(str(form.get("headers", "")))
@@ -245,13 +307,16 @@ def _sendgrid_form_to_raw(form) -> InboundRawEmail:  # type: ignore[type-arg]
         message_id=msg_id,
         in_reply_to=in_reply_to,
         references=refs,
+        attachments=attachments or [],
         source=InboundEmailSource.SENDGRID_WEBHOOK,
         received_at=datetime.now(timezone.utc),
         raw_headers={"raw_block": str(form.get("headers", ""))},
     )
 
 
-def _mailgun_form_to_raw(form) -> InboundRawEmail:  # type: ignore[type-arg]
+def _mailgun_form_to_raw(
+    form, attachments: list[EmailAttachment] | None = None
+) -> InboundRawEmail:  # type: ignore[type-arg]
     from email.utils import parseaddr
 
     # message-headers is a JSON array of [name, value] pairs
@@ -276,6 +341,7 @@ def _mailgun_form_to_raw(form) -> InboundRawEmail:  # type: ignore[type-arg]
         message_id=headers_dict.get("message-id", ""),
         in_reply_to=headers_dict.get("in-reply-to", ""),
         references=references,
+        attachments=attachments or [],
         source=InboundEmailSource.MAILGUN_WEBHOOK,
         received_at=datetime.now(timezone.utc),
         raw_headers=headers_dict,

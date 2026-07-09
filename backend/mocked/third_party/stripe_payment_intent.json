@@ -1,0 +1,27 @@
+{
+  "_provider": "Stripe (Treasury / PaymentIntents) — escrow hold",
+  "_category": "payments / escrow",
+  "_used_by": "escrow_guard via shared/connectors/payments.py",
+  "_cost": "Per-transaction (free TEST mode / sandbox)",
+  "_app_status": "Wired — real PaymentIntent object shape (stub when STRIPE_SECRET_KEY absent)",
+  "_endpoint": "POST https://api.stripe.com/v1/payment_intents  (Authorization: Bearer sk_test_...)",
+  "_docs": "https://docs.stripe.com/api/payment_intents/object",
+  "_note": "Raw Stripe PaymentIntent. amount is in the smallest currency unit (cents): 5120000 = USD 51,200.00. status='requires_payment_method' at creation; the funded webhook (payment_intent.succeeded) flips it to 'succeeded'.",
+  "id": "pi_3QabcdEf12345678",
+  "object": "payment_intent",
+  "amount": 5120000,
+  "amount_received": 0,
+  "currency": "usd",
+  "status": "requires_payment_method",
+  "client_secret": "pi_3QabcdEf12345678_secret_Xy9zAbC",
+  "capture_method": "manual",
+  "confirmation_method": "automatic",
+  "customer": "cus_QbuyerIberia01",
+  "description": "PortLess escrow hold — DEAL-20240101-001",
+  "metadata": {
+    "deal_id": "DEAL-20240101-001",
+    "party": "buyer"
+  },
+  "created": 1737019200,
+  "livemode": false
+}

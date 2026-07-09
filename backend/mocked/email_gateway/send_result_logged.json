@@ -1,0 +1,7 @@
+{
+  "_endpoint": "POST /email-gateway/send (200)",
+  "_note": "SendEmailResult in dev/CI — no Gmail credentials, so the message is logged only. A configured send that fails returns HTTP 502 (EmailSendError).",
+  "outcome": "logged",
+  "message_id": "<EMAIL-A1B2C3D4.NEG-001-2024@portless.io>",
+  "detail": "Gmail not configured — message logged only."
+}

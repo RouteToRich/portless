@@ -4,7 +4,7 @@ Matching strategy (applied in strict priority order):
 
   1. In-Reply-To header
      Parse <EMAIL-{id}.{negotiation_id}@portless.io> from the In-Reply-To
-     header.  The EmailDispatcher embeds this Message-ID on every outbound
+     header.  The Email Sender service embeds this Message-ID on every outbound
      email, so genuine replies always carry this header.
 
   2. References header
@@ -13,7 +13,7 @@ Matching strategy (applied in strict priority order):
      thread history is in References.
 
   3. Subject [NEG:{negotiation_id}] token
-     The EmailDispatcher appends [NEG:{uuid}] to every outbound subject.
+     The Email Sender service appends [NEG:{uuid}] to every outbound subject.
      Email clients that strip In-Reply-To/References still preserve the
      subject line, making this a reliable fallback.
 
@@ -30,7 +30,7 @@ query against the negotiation agent's email_history collection.  This
 creates a tight coupling and a false-positive risk: the same supplier
 email could be involved in multiple concurrent negotiations.  The three
 header-based strategies above are unambiguous and should cover all real
-traffic once the EmailDispatcher embeds Message-ID correctly.
+traffic once the Email Sender service embeds Message-ID correctly.
 
 In production microservices mode
 ─────────────────────────────────

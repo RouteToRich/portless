@@ -5,10 +5,14 @@ Orchestrates:
   2. run_round()         — ingest inbound counter-offer, run one graph pass
   3. get_negotiation()   — read session state
   4. list_rounds()       — retrieve round history
-  5. monitor_inbox()     — placeholder (see email_dispatcher.InboxMonitor)
-  6. list_email_history()  — email audit trail for a negotiation
-  7. send_approved_email() — called by HITL callback when operator approves
-  8. reject_email()        — called by HITL callback when operator rejects
+  5. list_email_history()  — email audit trail for a negotiation
+  6. send_approved_email() — called by HITL callback when operator approves;
+                             delegates SMTP transport to the Email Sender service
+  7. reject_email()        — called by HITL callback when operator rejects
+
+Email transport (IMAP fetch + SMTP send) lives in services/email_gateway/;
+inbound processing lives in services/email_processor/. This flow calls the
+Email Gateway to deliver approved drafts.
 """
 from __future__ import annotations
 
@@ -21,7 +25,6 @@ from shared.bus.publisher import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 
 from .config import settings
-from .email_dispatcher import EmailDispatcher, EmailMessage
 from .email_history import (
     EmailDirection,
     EmailHistoryRecord,
@@ -43,8 +46,6 @@ from .schemas import (
 )
 
 logger = logging.getLogger(__name__)
-
-_dispatcher = EmailDispatcher()
 
 _SMTP_FROM = "portless-trade@portless.io"
 
@@ -491,7 +492,13 @@ async def send_approved_email(email_id: str, modified_body: str | None = None) -
     body_to_send = modified_body or record.body
 
     try:
-        await _dispatcher.send(EmailMessage(
+        # SMTP transport is a separate service (the Email Gateway; single
+        # responsibility). In the monolith this is an in-process call; in
+        # microservice mode swap for EmailGatewayClient().send_email(...) over HTTP.
+        from services.email_gateway.sender import send_email  # type: ignore[import]
+        from services.email_gateway.schemas import SendEmailRequest  # type: ignore[import]
+
+        await send_email(SendEmailRequest(
             to_address=record.to_address,
             subject=record.subject,
             body=body_to_send,

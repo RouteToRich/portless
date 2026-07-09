@@ -302,6 +302,8 @@ async def issue_pi(req: IssuePiRequest) -> PiResponse:
         buyer_name=buyer_name,
         buyer_address=buyer_address,
         buyer_vat_number=buyer_vat_number,
+        qc_provider=req.qc_provider,
+        escrow_provider=req.escrow_provider,
         storage_uri=storage_uri,
         content_hash=content_hash,
         issued_at=now,

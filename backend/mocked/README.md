@@ -14,7 +14,7 @@ Complete set of realistic JSON responses for every PortLess service. Use these t
 mocked/
 ├── health/                    API Gateway health checks (System Health screen)
 │   ├── gateway_ok.json        GET /health — gateway online
-│   ├── downstream_all_ok.json GET /health/downstream — all 11 services "ok"
+│   ├── downstream_all_ok.json GET /health/downstream — all 13 services "ok"
 │   └── downstream_degraded.json  GET /health/downstream — 2 services unreachable
 │
 ├── rag/                       RAG knowledge base (Knowledge Base screen)
@@ -42,6 +42,20 @@ mocked/
 ├── negotiation_agent/
 │   ├── negotiation_agreed.json      2-round negotiation → AGREED
 │   └── negotiation_failed.json      3-round negotiation → FAILED
+│
+├── email_gateway/                Outbound email transport (IMAP fetch + SMTP send)
+│   ├── send_request.json         POST /email-gateway/send — SendEmailRequest body
+│   ├── send_result_sent.json     SendEmailResult — delivered (Gmail configured)
+│   └── send_result_logged.json   SendEmailResult — log-only (dev/CI, no creds)
+│
+├── email_processor/              Inbound email processing (match → price → advance)
+│   ├── inbound_api_request.json  POST /email-processor/inbound — InboundApiRequest (w/ attachment)
+│   ├── inbound_processed.json    ProcessingResult — matched live negotiation → run_round() → PROCESSED
+│   ├── inbound_needs_operator.json  ProcessingResult — mapped but no price → PARSE_INBOUND_EMAIL HITL
+│   ├── inbound_unmatched.json    ProcessingResult — no negotiation match → UNMATCHED (audit)
+│   ├── inbound_record.json       GET /email-processor/inbound/{id} — full InboundEmailRecord
+│   ├── inbound_list.json         GET /email-processor/inbound — mixed statuses
+│   └── sendgrid_webhook_request.json  Provider webhook form-field reference
 │
 ├── dealmaker/
 │   ├── pi_issued.json               POST /dealmaker/pi — PI with line items
@@ -86,11 +100,24 @@ mocked/
 │   ├── exception_negotiation_failed.json NEGOTIATION_FAILED — HIGH, CANCEL→ESCALATED
 │   └── exception_list.json            GET /exception-resolver/exceptions — 4 items
 │
-└── flows/                      End-to-end sequence maps
-    ├── happy_path_full_flow.json    All 17 steps DRAFT → PAID
-    ├── qc_failure_exception_flow.json  QC_FAILED → DISPUTE path
-    └── payment_failure_flow.json   Payout failure → retry path
+├── flows/                      End-to-end sequence maps
+│   ├── happy_path_full_flow.json    All 17 steps DRAFT → PAID
+│   ├── qc_failure_exception_flow.json  QC_FAILED → DISPUTE path
+│   └── payment_failure_flow.json   Payout failure → retry path
+│
+└── third_party/                Raw upstream responses for every external API
+    │                           (what shared/connectors/* receive) — see its README
+    ├── un_comtrade.json · us_census_trade.json · gdelt_news.json
+    ├── wits_tariff.json · macmap_tariff.json · alibaba_rfq.json
+    ├── indiamart_leads.json · volza_import_records.json · eu_ted_tenders.json
+    ├── vies_vat.json · apisetu_{gstn,dgft_iec,mca,udyam}.json · allianz_trade_credit.json
+    └── sgs_inspection.json · freightos_rate.json · cogoport_rate.json
+        · icegate_shipping_bill.json · stripe_payment_intent.json · payoneer_payout.json
 ```
+
+> **`third_party/`** holds realistic *upstream* API responses (real shapes,
+> cross-checked against public docs where available) so you can test connector
+> parsing and run the pipeline without live keys. See `third_party/README.md`.
 
 ---
 
@@ -128,6 +155,8 @@ mocked/
 | `RELEASE_SUPPLIER_PAYOUT` | Escrow-Guard before payout | L2 (auto-approve, notify) |
 | `FILE_CUSTOMS` | DocuGen/Shield-Link for CHA filing | L1 |
 | `RESOLVE_EXCEPTION` | Exception Resolver on escalation | L1 |
+| `SEND_NEGOTIATION_EMAIL` | Negotiation Agent before each outbound draft (sent via Email Gateway) | L0 |
+| `PARSE_INBOUND_EMAIL` | Email Processor when a mapped reply has no extractable price | L0 |
 
 ---
 

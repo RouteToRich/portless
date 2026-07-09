@@ -1,0 +1,9 @@
+{
+  "_endpoint": "POST /email-processor/inbound (201)",
+  "_note": "ProcessingResult — mapped to a live negotiation but no price could be extracted from the body. A PARSE_INBOUND_EMAIL HITL approval (L0) is created so an operator can supply the price.",
+  "inbound_id": "IN-3C88E7FD55",
+  "status": "needs_operator",
+  "negotiation_id": "NEG-001-2024",
+  "round_no": null,
+  "message": "Price extraction failed. HITL approval APPR-EMAIL-20240116-002 created for operator."
+}

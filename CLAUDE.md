@@ -28,6 +28,8 @@ make shield-link        # port 8007
 make escrow-guard       # port 8009
 make hitl-approval      # port 8010
 make exception-resolver # port 8011
+make email-gateway      # port 8012  (IMAP fetch + SMTP send transport)
+make email-processor    # port 8013  (inbound matching + persistence)
 
 # Docker — one container per service
 make up    # docker compose up --build
@@ -223,13 +225,15 @@ Complete realistic JSON fixtures for every service, all deal states, and all err
 | `match_engine` | ✅ Full | Deterministic CMS formula |
 | `deals` | ✅ Full | State machine, MongoDB, orchestration |
 | `sourcing` | ✅ Full | RFQ dispatch + GSTN/DGFT/MCA/Udyam verification |
-| `negotiation_agent` | ✅ Full | LangGraph 3-node, email, RAG |
+| `negotiation_agent` | ✅ Full | LangGraph 3-node, RAG; drafts + HITL-gates emails, delegates SMTP to `email_gateway` |
 | `dealmaker` | ✅ Full | PI/PO, Jinja2 HTML, SHA-256, margin guard, idempotency |
 | `docugen` | ✅ Full | CI/PL/CoO/SDF/Shipping Bill templates, ICEGATE stub |
 | `shield_link` | ✅ Full | QC + freight + CHA; HMAC webhooks; graceful stubs |
 | `escrow_guard` | ✅ Full | Stripe hold + Payoneer payout; HMAC webhooks; graceful stubs |
 | `hitl_approval` | ✅ Full | L0/L1/L2/L3 gates; SSE stream; webhook notify; saga callbacks; timeout watcher |
 | `exception_resolver` | ✅ Full | LangGraph agent; LLM classify+plan; AUTO_FIX/ESCALATE/CANCEL/MONITOR; HITL saga; MongoDB |
+| `email_gateway` | ✅ Full | **Transport only** — single IMAP + SMTP config. Automatic IMAP poll (15 min) forwards inbound mail to `email_processor`; sends outbound via `POST /email-gateway/send` (called from the negotiation flow after HITL approval) |
+| `email_processor` | ✅ Full | **Inbound processing only** — receives fetched/pushed emails (Gateway forward, SendGrid/Mailgun webhooks, manual), maps to live negotiation, extracts price, persists, triggers `run_round()` |
 
 ### Connectors
 

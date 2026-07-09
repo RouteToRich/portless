@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from .base import Connector
 from .demand_signals import AlibabaRfqConnector, EuTedConnector, GdeltDisruptionConnector
+from .escrow import EscrowComConnector, TazapayEscrowConnector
 from .payments import PayoneerConnector, StripeTreasuryConnector
 from .regulatory import (
     AllianzTradeConnector,
@@ -63,7 +64,8 @@ CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
     # -------------------------------------------------------------------------
     # LEGACY / PAID — retired from the default pipeline, kept for future use.
     # Re-enable by setting their API keys + restoring them to the Phase 1/3/4
-    # connector lists in services/trade_min/service.py. See workflow.md →
+    # connector lists in services/trade_min/service.py. See
+    # workflow-implementation.md →
     # "Replaced / Legacy Trade-Min connectors (kept for future use)".
     # -------------------------------------------------------------------------
 
@@ -198,6 +200,22 @@ CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
     # multi-currency virtual cards.  Used as the fallback settlement rail when
     # Stripe Treasury is unavailable in a target corridor.
     PayoneerConnector.name: PayoneerConnector,
+
+    # -------------------------------------------------------------------------
+    # GROUP 6 — Neutral Escrow (Escrow-Guard, buyer-selectable)
+    # Licensed third-party custodians that hold the buyer's funds in a
+    # segregated account and release them to PortLess in tranches as the trade
+    # advances. The buyer picks which one they trust on the PI. See
+    # services/escrow_guard/workflow_escrow_guard.md.
+    # -------------------------------------------------------------------------
+
+    # Tazapay: cross-border B2B escrow — local pay-in + INR payout; strongest
+    # India-corridor fit. Stub when TAZAPAY_API_KEY absent.
+    TazapayEscrowConnector.name: TazapayEscrowConnector,
+
+    # Escrow.com: established licensed escrow with milestone transactions;
+    # wire-centric. Stub when ESCROW_COM_API_KEY absent.
+    EscrowComConnector.name: EscrowComConnector,
 }
 
 

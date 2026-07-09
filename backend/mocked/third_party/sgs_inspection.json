@@ -1,0 +1,20 @@
+{
+  "_provider": "SGS / Intertek — pre-shipment QC inspection",
+  "_category": "quality control (QC)",
+  "_used_by": "shield_link via shared/connectors/shields.py",
+  "_cost": "Per-inspection",
+  "_app_status": "Wired — representative shape (stub when SGS_API_KEY absent)",
+  "_endpoint": "POST https://api.sgs.com/inspection/v1/orders  (Authorization: Bearer ...)",
+  "_docs": "https://www.sgs.com/ (partner API access)",
+  "_note": "Representative booking response. status='booked' → deal SUPPLIER_DISPATCH_READY; the SGS webhook (result PASS/FAIL) transitions QC_PASSED/QC_FAILED. ext_ref is the provider reference the webhook echoes.",
+  "ext_ref": "SGS-IN-2026-778812",
+  "status": "booked",
+  "order_type": "pre_shipment_inspection",
+  "deal_reference": "DEAL-20240101-001",
+  "commodity": "Turmeric Finger",
+  "quantity_mt": 20,
+  "inspection_site": "Guntur, Andhra Pradesh, IN",
+  "scheduled_date": "2026-01-18",
+  "inspection_scope": ["moisture", "curcumin_content", "foreign_matter", "packaging"],
+  "created_at": "2026-01-16T12:10:00Z"
+}

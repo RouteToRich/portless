@@ -773,7 +773,7 @@ class TradeIndiaConnector(Connector):
 # These let the opportunity pipeline run end-to-end at $0:
 #   - WitsTariffConnector  → replaces the paid ITC MacMap (Phase 3 tariff gate)
 #   - CensusTradeConnector → free US demand source augmenting UN Comtrade (Phase 1)
-# See workflow.md → "Trade-Min Cost-Reduction" for the full rationale.
+# See workflow-implementation.md → "Trade-Min Cost-Reduction" for the full rationale.
 # ---------------------------------------------------------------------------
 
 # ISO-3166 alpha-2 → numeric code (WITS / Census use numeric reporters).

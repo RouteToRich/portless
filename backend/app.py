@@ -16,7 +16,8 @@ every module at its own prefix:
   /escrow-guard/...       Escrow Guard
   /hitl-approval/...      HITL Approval Service
   /exception-resolver/... Exception Resolver
-  /email-monitor/...      Email Monitor (inbound IMAP + webhooks)
+  /email-gateway/...      Email Gateway (IMAP fetch + SMTP send transport)
+  /email-processor/...    Email Processor (inbound matching + persistence + webhooks)
 
 Run:
     cd backend
@@ -48,7 +49,8 @@ from services.docugen.router import router as docugen_router
 from services.escrow_guard.router import router as escrow_guard_router
 from services.hitl_approval.router import router as hitl_approval_router
 from services.exception_resolver.router import router as exception_resolver_router
-from services.email_monitor.router import router as email_monitor_router
+from services.email_processor.router import router as email_processor_router
+from services.email_gateway.router import router as email_gateway_router
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,8 @@ _SERVICE_ROUTERS = [
     escrow_guard_router,
     hitl_approval_router,
     exception_resolver_router,
-    email_monitor_router,
+    email_processor_router,
+    email_gateway_router,
 ]
 
 
@@ -162,20 +165,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.warning("RAG startup skipped (knowledge base will run degraded): %s", exc)
 
-    # ── Email Monitor: MongoDB repository + IMAP poller ───────────────────
-    from services.email_monitor.main import on_startup as em_startup, on_shutdown as em_shutdown
+    # ── Email Processor: inbound repository (start before the Gateway, which
+    #    forwards fetched mail to the Processor in-process) ──────────────────
+    from services.email_processor.main import on_startup as ep_startup, on_shutdown as ep_shutdown
     try:
-        await em_startup()
+        await ep_startup()
     except Exception as exc:
-        logger.error("EmailMonitor startup failed (service will run degraded): %s", exc)
+        logger.error("EmailProcessor startup failed (service will run degraded): %s", exc)
+
+    # ── Email Gateway: IMAP pollers + SMTP send ──────────────────────────
+    from services.email_gateway.main import on_startup as eg_startup, on_shutdown as eg_shutdown
+    try:
+        await eg_startup()
+    except Exception as exc:
+        logger.error("EmailGateway startup failed (service will run degraded): %s", exc)
 
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
     try:
-        await em_shutdown()
+        await eg_shutdown()
     except Exception as exc:
-        logger.warning("EmailMonitor shutdown error: %s", exc)
+        logger.warning("EmailGateway shutdown error: %s", exc)
+
+    try:
+        await ep_shutdown()
+    except Exception as exc:
+        logger.warning("EmailProcessor shutdown error: %s", exc)
 
     try:
         await auth_close()

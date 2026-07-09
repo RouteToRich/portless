@@ -1,0 +1,14 @@
+{
+  "_endpoint": "POST /email-processor/inbound/sendgrid",
+  "_note": "SendGrid Inbound Parse posts multipart/form-data. These are the fields the processor reads (attachments arrive as file parts attachment1..N). Mailgun's /inbound/mailgun equivalent uses From/To/Subject/body-plain/message-headers.",
+  "from": "Krishna Spices <krishna@krishnaspices.in>",
+  "to": "portless-trade@portless.io",
+  "subject": "Re: PortLess Trade — Turmeric Finger Round 2 [NEG:NEG-001-2024]",
+  "text": "We can do USD 1,640/MT FOB Nhava Sheva. Final offer.",
+  "html": "",
+  "headers": "Message-ID: <CAF=krishna.reply.98213@mail.krishnaspices.in>\nIn-Reply-To: <EMAIL-A1B2C3D4.NEG-001-2024@portless.io>\nReferences: <EMAIL-A1B2C3D4.NEG-001-2024@portless.io>",
+  "attachments": "1",
+  "attachment1": "(binary file part: krishna_proforma_turmeric.pdf, application/pdf)",
+  "SPF": "pass",
+  "dkim": "{@krishnaspices.in : pass}"
+}

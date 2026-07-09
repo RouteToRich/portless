@@ -107,7 +107,7 @@ class TestAutoFixDocumentError:
             decision=RemediationDecision.AUTO_FIX,
         )
         with (
-            patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+            patch("services.exception_resolver.service.run_agent", new=AsyncMock(
                 return_value=(analysis, {"success": True, "action": "document_regenerated"})
             )),
         ):
@@ -120,7 +120,7 @@ class TestAutoFixDocumentError:
     @pytest.mark.asyncio
     async def test_steps_populated(self):
         analysis = _mock_analysis(decision=RemediationDecision.AUTO_FIX)
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": True, "action": "document_regenerated"})
         )):
             resp = await raise_exception(_req())
@@ -133,7 +133,7 @@ class TestAutoFixDocumentError:
             category=ExceptionCategory.DOCUMENT_ERROR,
             decision=RemediationDecision.AUTO_FIX,
         )
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": False, "approval_id": "APPR-FALLBACK", "error": "regen failed"})
         )):
             resp = await raise_exception(_req())
@@ -153,7 +153,7 @@ class TestEscalate:
             severity=ExceptionSeverity.HIGH,
             decision=RemediationDecision.ESCALATE,
         )
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": True, "approval_id": "APPR-QC-01", "action": "hitl_escalated"})
         )):
             resp = await raise_exception(_req(source_service="shield_link", detail="SGS QC failed"))
@@ -168,7 +168,7 @@ class TestEscalate:
             category=ExceptionCategory.PAYMENT_FAILED,
             decision=RemediationDecision.ESCALATE,
         )
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": False, "error": "HITL service down"})
         )):
             resp = await raise_exception(_req(source_service="escrow_guard"))
@@ -188,7 +188,7 @@ class TestCancel:
             severity=ExceptionSeverity.CRITICAL,
             decision=RemediationDecision.CANCEL,
         )
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(
                 analysis,
                 {"success": True, "approval_id": "APPR-CANCEL-01", "cancel_recommended": True}
@@ -211,7 +211,7 @@ class TestMonitor:
             severity=ExceptionSeverity.LOW,
             decision=RemediationDecision.MONITOR,
         )
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": True, "action": "monitoring"})
         )):
             resp = await raise_exception(_req(source_service="shield_link"))
@@ -266,7 +266,7 @@ class TestGetException:
     @pytest.mark.asyncio
     async def test_get_existing(self):
         analysis = _mock_analysis(decision=RemediationDecision.MONITOR)
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": True, "action": "monitoring"})
         )):
             created = await raise_exception(_req())
@@ -289,7 +289,7 @@ class TestListExceptions:
     @pytest.mark.asyncio
     async def test_filter_by_deal_id(self):
         analysis = _mock_analysis(decision=RemediationDecision.MONITOR)
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": True, "action": "monitoring"})
         )):
             await raise_exception(_req(deal_id="DEAL-LIST-A"))
@@ -303,7 +303,7 @@ class TestListExceptions:
     @pytest.mark.asyncio
     async def test_filter_by_status(self):
         analysis = _mock_analysis(decision=RemediationDecision.MONITOR)
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": True, "action": "monitoring"})
         )):
             await raise_exception(_req(deal_id="DEAL-S-01"))
@@ -315,7 +315,7 @@ class TestListExceptions:
     @pytest.mark.asyncio
     async def test_list_all(self):
         analysis = _mock_analysis(decision=RemediationDecision.MONITOR)
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": True, "action": "monitoring"})
         )):
             for i in range(3):
@@ -338,7 +338,7 @@ class TestExceptionIdFormat:
     @pytest.mark.asyncio
     async def test_id_prefix(self):
         analysis = _mock_analysis(decision=RemediationDecision.MONITOR)
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": True, "action": "monitoring"})
         )):
             resp = await raise_exception(_req())
@@ -347,7 +347,7 @@ class TestExceptionIdFormat:
     @pytest.mark.asyncio
     async def test_unique_ids(self):
         analysis = _mock_analysis(decision=RemediationDecision.MONITOR)
-        with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+        with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
             return_value=(analysis, {"success": True, "action": "monitoring"})
         )):
             r1 = await raise_exception(_req())
@@ -384,7 +384,7 @@ async def test_all_categories_escalate(category, monkeypatch):
         category=category,
         decision=RemediationDecision.ESCALATE,
     )
-    with patch("services.exception_resolver.agent.run_agent", new=AsyncMock(
+    with patch("services.exception_resolver.service.run_agent", new=AsyncMock(
         return_value=(analysis, {"success": True, "approval_id": "APPR-TEST", "action": "hitl_escalated"})
     )):
         resp = await raise_exception(_req())

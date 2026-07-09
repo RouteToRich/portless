@@ -28,6 +28,7 @@ class EscrowGuardRepository(Protocol):
     async def get_hold_by_deal(self, deal_id: str) -> EscrowHoldRecord | None: ...
     async def get_hold_by_ext_ref(self, ext_ref: str) -> EscrowHoldRecord | None: ...
     async def get_hold_by_idempotency_key(self, key: str) -> EscrowHoldRecord | None: ...
+    async def list_holds(self) -> list[EscrowHoldRecord]: ...
 
     # Payouts
     async def save_payout(self, payout: PayoutRecord) -> None: ...
@@ -66,6 +67,9 @@ class InMemoryEscrowGuardRepository:
             if h.idempotency_key == key:
                 return h
         return None
+
+    async def list_holds(self) -> list[EscrowHoldRecord]:
+        return list(self._holds.values())
 
     # -- payouts --------------------------------------------------------------
     async def save_payout(self, payout: PayoutRecord) -> None:
@@ -127,6 +131,13 @@ class MongoEscrowGuardRepository:
             return None
         doc.pop("_id", None)
         return EscrowHoldRecord(**doc)
+
+    async def list_holds(self) -> list[EscrowHoldRecord]:
+        results = []
+        async for doc in self._holds.find({}):
+            doc.pop("_id", None)
+            results.append(EscrowHoldRecord(**doc))
+        return results
 
     # -- payouts --------------------------------------------------------------
     async def save_payout(self, payout: PayoutRecord) -> None:

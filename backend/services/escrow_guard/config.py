@@ -25,6 +25,17 @@ class EscrowGuardSettings(BaseSettings):
     default_payment_provider: str = "stripe"
     payout_provider: str = "payoneer"
 
+    # ── Neutral staged-release escrow (target multi-provider model) ─────────
+    # Provider used when the buyer expresses no preference. One of the
+    # registered escrow connectors: "tazapay" | "escrow_com".
+    escrow_default_provider: str = "tazapay"
+
+    # Final-tranche buyer-acceptance window. After the last proof-gated tranche
+    # releases, the buyer has this long to accept or dispute; on lapse the final
+    # tranche auto-releases (silence = consent).
+    inspection_window_hours: int = 72
+    inspection_watcher_interval_seconds: int = 60
+
     # ── Portless entity (for ledger) ──────────────────────────────────────
     portless_entity_name: str = "PortLess Trade Solutions Pvt Ltd"
 

@@ -9,5 +9,7 @@
   "docugen": "ok",
   "escrow-guard": "unreachable",
   "hitl-approval": "ok",
-  "exception-resolver": "ok"
+  "exception-resolver": "ok",
+  "email-gateway": "ok",
+  "email-processor": "unreachable"
 }

@@ -20,6 +20,8 @@ SERVICE_APPS = [
     ("services.escrow_guard.main", "/escrow-guard/health"),
     ("services.hitl_approval.main", "/hitl-approval/health"),
     ("services.exception_resolver.main", "/exception-resolver/health"),
+    ("services.email_processor.main", "/email-processor/health"),
+    ("services.email_gateway.main", "/email-gateway/health"),
 ]
 
 

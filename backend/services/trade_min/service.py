@@ -104,7 +104,7 @@ _EU_MARKETS = frozenset({
 # Phase-1 demand sources — FREE official statistics only.
 #   comtrade — global, authoritative (UN); census — US high-resolution.
 # (The paid Volza / Trademo / ImportGenius sources were retired; see
-#  workflow.md → "Replaced / Legacy Trade-Min connectors".)
+#  workflow-implementation.md → "Replaced / Legacy Trade-Min connectors".)
 _P1_WEIGHTS: dict[str, float] = {
     "comtrade": 0.70,
     "census":   0.30,

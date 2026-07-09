@@ -1,0 +1,29 @@
+{
+  "_provider": "GSTN (Search Taxpayer) via API Setu",
+  "_category": "regulatory / supplier GST verification (India)",
+  "_used_by": "sourcing verification via shared/connectors/regulatory.py",
+  "_cost": "Key needed (API_SETU_KEY; govt, free tier)",
+  "_app_status": "Wired — real field shape (GST Search Taxpayer)",
+  "_endpoint": "GET https://apisetu.gov.in/gstn/v1/taxpayers/{gstin}",
+  "_docs": "https://apisetu.gov.in/",
+  "_note": "Raw upstream response. sts=Active is the pass condition; lgnm=legal name, tradeNam=trade name, ctb=constitution of business, pradr=principal address.",
+  "gstin": "36AABCK1234F1Z5",
+  "lgnm": "KRISHNA SPICES AND AGRO PRIVATE LIMITED",
+  "tradeNam": "Krishna Spices & Agro",
+  "sts": "Active",
+  "ctb": "Private Limited Company",
+  "rgdt": "01/07/2017",
+  "dty": "Regular",
+  "nba": ["Manufacturing", "Wholesale Business", "Export"],
+  "pradr": {
+    "addr": {
+      "bno": "12-4-56",
+      "st": "Kothapet Main Road",
+      "loc": "Guntur",
+      "dst": "Guntur",
+      "stcd": "Andhra Pradesh",
+      "pncd": "522001"
+    },
+    "ntr": "Factory / Manufacturing"
+  }
+}

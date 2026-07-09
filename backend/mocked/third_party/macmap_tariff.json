@@ -1,0 +1,18 @@
+{
+  "_provider": "ITC MacMap (Market Access Map) — applied tariffs",
+  "_category": "tariff gate (Phase 3)",
+  "_used_by": "trade_min / match_engine via shared/connectors/trade_intel.py",
+  "_cost": "Key needed (free registration; some endpoints gated)",
+  "_app_status": "Wired — representative shape (public JSON schema not fully documented)",
+  "_endpoint": "GET https://api.macmap.org/v2/duties/?reporter=784&partner=699&product=091030",
+  "_docs": "https://macmap.org/tools/macmap-api",
+  "_note": "Representative response — verify field names against your issued MacMap key/docs.",
+  "reporter": "784",
+  "partner": "699",
+  "product": "091030",
+  "duties": [
+    { "dutyType": "MFN", "rateType": "advalorem", "rate": 5.0, "unit": "%", "year": 2023 },
+    { "dutyType": "Preferential", "rateType": "advalorem", "rate": 0.0, "unit": "%", "agreement": "CEPA", "year": 2023 }
+  ],
+  "nonTariffMeasures": []
+}

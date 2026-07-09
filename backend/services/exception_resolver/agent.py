@@ -98,15 +98,22 @@ async def _auto_fix_document_error(record: ExceptionRecord) -> dict[str, Any]:
     try:
         from services.docugen import service as docugen_service
         from services.docugen.schemas import GenerateDocumentRequest
+        from shared.domain.enums import DocumentType
 
-        doc_type = record.context.get("document_type", "CI")
-        req = GenerateDocumentRequest(
-            deal_id=record.deal_id,
-            document_type=doc_type,
-            context=record.context,
-        )
+        # Resolve the document type from context (accepts either the enum value
+        # e.g. "CI" or the enum name e.g. "COMMERCIAL_INVOICE"); default to CI.
+        raw = record.context.get("document_type") or record.context.get("doc_type") or "CI"
+        try:
+            doc_type = DocumentType(raw)
+        except ValueError:
+            try:
+                doc_type = DocumentType[raw]
+            except KeyError:
+                doc_type = DocumentType.COMMERCIAL_INVOICE
+
+        req = GenerateDocumentRequest(deal_id=record.deal_id, doc_type=doc_type)
         doc = await docugen_service.generate_document(req)
-        return {"success": True, "document_id": doc.document_id, "action": "document_regenerated"}
+        return {"success": True, "document_id": doc.doc_id, "action": "document_regenerated"}
     except Exception as exc:
         logger.error("Auto-fix document_error failed: %s", exc)
         return {"success": False, "error": str(exc)}

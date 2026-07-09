@@ -1,0 +1,30 @@
+{
+  "_provider": "Freightos (WebCargo) — freight rate estimator",
+  "_category": "logistics / freight",
+  "_used_by": "shield_link via shared/connectors/shields.py",
+  "_cost": "Free tier (estimator) / paid marketplace rates",
+  "_app_status": "Wired — representative shape (stub when FREIGHTOS_API_KEY absent)",
+  "_endpoint": "GET https://ship.freightos.com/api/shippingCalculator?loadtype=container&origin=Nhava%20Sheva,IN&destination=Jebel%20Ali,AE",
+  "_docs": "https://developers.freightos.com/apis",
+  "_note": "Representative estimator response. priceEstimate is a min/max range; transitTimes in days. The connector maps this to a freight quote and (on booking) creates a TPO → deal IN_TRANSIT.",
+  "response": {
+    "estimatedFreightRates": {
+      "mode": "ocean",
+      "loadType": "container",
+      "numContainers": 1,
+      "containerType": "20GP",
+      "priceEstimate": {
+        "min": 950,
+        "max": 1450,
+        "currency": "USD"
+      },
+      "transitTimes": {
+        "min": 6,
+        "max": 10,
+        "unit": "days"
+      },
+      "originPort": "INNSA",
+      "destinationPort": "AEJEA"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "_provider": "World Bank WITS — TRAINS tariff (SDMX-JSON)",
+  "_category": "tariff gate (Phase 3) — free MacMap alternative",
+  "_used_by": "trade_min / match_engine tariff gate via shared/connectors/trade_intel.py",
+  "_cost": "Free (open)",
+  "_app_status": "Real HTTP",
+  "_endpoint": "GET https://wits.worldbank.org/API/V1/SDMX/V21/rest/data/DF_WITS_Tariff_TRAINS/.784.091030.reported/?startperiod=2022&endperiod=2022&format=JSON",
+  "_docs": "https://wits.worldbank.org/witsapiintro.aspx",
+  "_note": "Simplified/flattened view of the SDMX-JSON tariff response. TARIFFTYPE = MFN | PREF; OBS_VALUE = simple-average ad-valorem rate (%). UAE (784) MFN duty on HS 091030.",
+  "reporter": "784",
+  "reporterName": "United Arab Emirates",
+  "partner": "000",
+  "productCode": "091030",
+  "productName": "Turmeric (curcuma)",
+  "year": "2022",
+  "observations": [
+    { "TARIFFTYPE": "MFN", "OBS_VALUE": 5.0, "unit": "percent", "nomenCode": "H5" },
+    { "TARIFFTYPE": "PREF", "OBS_VALUE": 0.0, "unit": "percent", "agreement": "GCC-India (indicative)" }
+  ]
+}

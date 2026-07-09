@@ -47,6 +47,13 @@ class IssuePiRequest(BaseModel):
     buyer_vat_number: str | None = None
     product_description: str | None = None
 
+    # Buyer selections captured on the PI — flow downstream to Shield-Link (which
+    # QC team to book) and Escrow-Guard (which neutral escrow to open). See
+    # workflow_dealmaker.md §3.1. ``escrow_provider`` None → Escrow-Guard uses its
+    # configured default.
+    qc_provider: Literal["sgs", "bureau_veritas", "intertek", "cotecna", "qima"] = "sgs"
+    escrow_provider: Literal["tazapay", "escrow_com"] | None = None
+
     # Idempotency — re-submitting the same key returns the existing PI
     idempotency_key: str | None = None
 
@@ -70,6 +77,10 @@ class PiRecord(BaseModel):
     buyer_name: str
     buyer_address: str
     buyer_vat_number: str | None
+
+    # Buyer selections captured on the PI (target — see workflow_dealmaker.md §3.1)
+    qc_provider: str | None = None
+    escrow_provider: str | None = None
 
     # Derived / rendered
     storage_uri: str | None = None

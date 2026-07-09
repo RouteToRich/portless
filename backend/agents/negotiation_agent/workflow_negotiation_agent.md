@@ -454,7 +454,7 @@ status=HITL_PENDING
 status=ROUND
   └── Waiting for: buyer or seller to reply (email, portal, WhatsApp, Telegram)
         └── Operator ingests reply by calling run_round() with the counter_price + inbound_message
-        └── (Future) InboxMonitor auto-ingests IMAP emails and calls run_round() automatically
+        └── services/email_gateway/ fetches IMAP emails (every 15 min) → services/email_processor/ calls run_round() automatically
 
 status=AGREED  ← terminal
 status=FAILED  ← terminal
@@ -474,8 +474,12 @@ POST /negotiation-agent/negotiations/{id}/round
 }
 ```
 
-**Automatic (IMAP monitor — planned):**
-`InboxMonitor` in `email_dispatcher.py` polls the configured Gmail IMAP inbox every 60 seconds, parses the reply, identifies the `negotiation_id` from the email thread Subject line, and calls `run_round()` programmatically. This makes the agent fully autonomous for email-based channels.
+**Automatic (IMAP monitor):**
+The `services/email_gateway/` service polls the Gmail IMAP inbox every 15 minutes and forwards
+each fetched email to `services/email_processor/`, which identifies the `negotiation_id` from the
+thread headers / subject token and calls `run_round()` programmatically. This makes the agent
+fully autonomous for email-based channels. Transport (IMAP + SMTP, the Gateway) and inbound
+processing (the Processor) are separate services, each with a single responsibility.
 
 ### Session lock
 
@@ -518,7 +522,7 @@ send_approved_email()    reject_email()
    modified_body)
     │
     ▼
-EmailDispatcher.send()
+email_gateway.sender.send_email()   [services/email_gateway/ — POST /email-gateway/send]
   Gmail SMTP or log-only (dev)
     │
     ▼
@@ -794,7 +798,7 @@ hitl_approval.callbacks.execute_callback()
        ▼
 negotiation_agent.service.send_approved_email(email_id, modified_body?)
   │
-  └── EmailDispatcher.send()  → Gmail SMTP
+  └── email_gateway.sender.send_email()  → Gmail SMTP  [services/email_gateway/]
   └── EmailHistoryRecord updated: status=SENT or MODIFIED_SENT
 
 HITL Approval REJECTED
@@ -1175,9 +1179,9 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 | HITL gate for every outbound email (L0) | ✅ | `service.py` | `SEND_NEGOTIATION_EMAIL` approval |
 | PENDING_APPROVAL → SENT/MODIFIED_SENT on approve | ✅ | `service.py` | Via `send_approved_email()` |
 | PENDING_APPROVAL → REJECTED on reject | ✅ | `service.py` | Via `reject_email()` |
-| SMTP dispatch via Gmail (aiosmtplib STARTTLS) | ✅ | `email_dispatcher.py` | Log-only fallback when unconfigured |
-| Message-ID embedding for reply threading | ✅ | `email_dispatcher.py` | `<EMAIL-id.neg-id@portless.io>` |
-| [NEG:uuid] subject token injection | ✅ | `email_dispatcher.py` | Fallback thread matching |
+| SMTP dispatch via Gmail (aiosmtplib STARTTLS) | ✅ | `services/email_gateway/sender.py` | Email Gateway; called from `send_approved_email()`; log-only fallback when unconfigured |
+| Message-ID embedding for reply threading | ✅ | `services/email_gateway/sender.py` | `<EMAIL-id.neg-id@portless.io>` |
+| [NEG:uuid] subject token injection | ✅ | `services/email_gateway/sender.py` | Fallback thread matching |
 | RECEIVED record for inbound emails | ✅ | `service.py` | `record_inbound_email()` |
 | EmailHistoryRecord MongoDB persistence | ✅ | `email_history.py` | Motor + InMemory fallback |
 | `/email-threads` UI inbox endpoint | ✅ | `router.py` | Aggregates session + emails; sorted by updated_at |
@@ -1199,14 +1203,14 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 
 | Feature | Status | File(s) | Notes |
 |---------|--------|---------|-------|
-| Email Monitor service (SendGrid webhook) | ✅ | `email_monitor/router.py` | Full webhook + HMAC verification |
-| Email Monitor service (Mailgun webhook) | ✅ | `email_monitor/router.py` | Full webhook + HMAC verification |
-| Manual inbound submission endpoint | ✅ | `email_monitor/router.py` | `POST /email-monitor/inbound/manual` |
-| Inbound email deduplication by Message-ID | ✅ | `email_monitor/service.py` | Idempotent re-delivery safe |
-| Price extraction from email body (regex) | ✅ | `email_monitor/service.py` | 5 pattern variants, configurable min/max |
-| Negotiation mapping (In-Reply-To / References / Subject token) | ✅ | `email_monitor/mapper.py` | 3-tier priority matching |
-| IMAP inbox poller (Gmail aioimaplib) | ⚠️ | `email_monitor/imap_poller.py` | Class skeleton complete; reconnection + error back-off wired; **actual aioimaplib IMAP connection not implemented** (marked `── IMPLEMENT ──`) |
-| Email Monitor mounted in monolith (`app.py`) | ✅ | `app.py` | Router registered + `on_startup`/`on_shutdown` wired in `app.py` lifespan |
+| Email Processor (SendGrid webhook) | ✅ | `email_processor/router.py` | Full webhook + HMAC verification |
+| Email Processor (Mailgun webhook) | ✅ | `email_processor/router.py` | Full webhook + HMAC verification |
+| Manual inbound submission endpoint | ✅ | `email_processor/router.py` | `POST /email-processor/inbound/manual` |
+| Inbound email deduplication by Message-ID | ✅ | `email_processor/service.py` | Idempotent re-delivery safe |
+| Price extraction from email body (regex) | ✅ | `email_processor/service.py` | 5 pattern variants, configurable min/max |
+| Negotiation mapping (In-Reply-To / References / Subject token) | ✅ | `email_processor/mapper.py` | 3-tier priority matching; live sessions only |
+| IMAP inbox poller (Gmail aioimaplib) | ✅ | `email_gateway/imap_poller.py` | Fully implemented; fetches UNSEEN, marks \Seen, parses bodies + attachments, forwards to Processor; 15-min interval + error back-off |
+| Email Gateway + Processor mounted in monolith (`app.py`) | ✅ | `app.py` | Routers registered + `on_startup`/`on_shutdown` wired (Processor before Gateway) |
 
 ### Channels
 
@@ -1236,9 +1240,7 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 | Feature | Priority | Notes |
 |---------|----------|-------|
 | Live commodity price enrichment in RAG | High | Inject intraday CME/Comdty/Volza prices as additional context before each LLM call |
-| IMAP poller — complete aioimaplib implementation | High | Fill in `── IMPLEMENT ──` sections in `imap_poller.py`; enables fully autonomous email negotiation |
-| Complete IMAP `_fetch_unseen()` with aioimaplib | High | Fill in `── IMPLEMENT ──` in `email_monitor/imap_poller.py`; enables fully autonomous email negotiation without operator intervention |
-| PDF / Excel attachment parsing | Medium | `attachment_refs` stub exists in `RoundRequest`; needs document parser (pypdf / openpyxl) + price extraction |
+| PDF / Excel attachment content parsing | Medium | Attachments are captured (`email_gateway`) and forwarded as `attachment_refs`; parsing their contents for a quoted price (pypdf / openpyxl) is still pending |
 | Policy deadline urgency in agent prompts | Medium | Pass `deadline` to buyer/supplier agents; tone should escalate as date approaches |
 | WhatsApp channel wiring (Twilio / Meta API) | Medium | Channel enum already in schema; needs dispatcher implementation |
 | HTML email templates | Medium | Emails are plain-text; branded HTML with price table and round summary |

@@ -30,17 +30,12 @@ class NegotiationSettings(BaseSettings):
     negotiation_llm_temperature: float = 0.3
     negotiation_llm_max_tokens: int = 2048
 
-    # ── Email outbound (Gmail SMTP via aiosmtplib) ────────────────────────
-    # Gmail App Password is required — NOT the regular account password.
-    # Create one at: https://myaccount.google.com/apppasswords
-    # Leave GMAIL_SENDER_ADDRESS empty to run in log-only mode (dev/CI).
-    gmail_sender_address: str = ""
-    gmail_app_password: str = ""
-    smtp_from_name: str = "PortLess Trade Agent"
-
-    # ── Inbound email monitoring ──────────────────────────────────────────
-    # IMAP polling and webhook ingestion are handled by services/email_monitor/.
-    # Configure IMAP_MONITOR_USER + IMAP_MONITOR_PASSWORD in .env there.
+    # ── Email transport (separate services) ───────────────────────────────
+    # All email I/O lives in services/email_gateway/ (single IMAP + SMTP config):
+    # it fetches inbound mail over IMAP and sends outbound over SMTP. Inbound
+    # processing (match to negotiation, extract price, persist) lives in
+    # services/email_processor/. The negotiation flow calls the Email Gateway to
+    # deliver approved drafts.
 
     # ── Session locks ─────────────────────────────────────────────────────
     # Uses an in-memory dict (single-instance dev). For multi-replica
