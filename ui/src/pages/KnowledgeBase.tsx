@@ -10,9 +10,12 @@ import {
   Loader2,
   BrainCircuit,
   RefreshCw,
+  Cpu,
+  HardDrive,
+  Waypoints,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useRagStats, useRagUpload, useRagJob } from "@/api/hooks";
+import { useRagStats, useRagUpload, useRagJob, useRagFiles } from "@/api/hooks";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -28,8 +31,19 @@ function bytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatDate(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
+const FILE_STORE_LABEL: Record<string, string> = {
+  mongodb: "MongoDB GridFS",
+};
+
 export function KnowledgeBase() {
   const stats = useRagStats();
+  const persistedFiles = useRagFiles();
   const upload = useRagUpload();
   const [files, setFiles] = useState<File[]>([]);
   const [strategy, setStrategy] = useState<Strategy>("recursive");
@@ -84,7 +98,10 @@ export function KnowledgeBase() {
           variant="outline"
           size="sm"
           className="h-8 gap-1.5 text-xs"
-          onClick={() => stats.refetch()}
+          onClick={() => {
+            stats.refetch();
+            persistedFiles.refetch();
+          }}
         >
           <RefreshCw className={cn("w-3.5 h-3.5", stats.isFetching && "animate-spin")} />
           Refresh
@@ -110,10 +127,32 @@ export function KnowledgeBase() {
           {stats.data && (
             <div className="text-right">
               <p className="text-[10px] text-muted-foreground">Collection</p>
-              <p className="text-xs font-mono">{stats.data.collection}</p>
+              <p className="text-xs font-mono">
+                {stats.data.db}.{stats.data.collection}
+              </p>
             </div>
           )}
         </CardContent>
+        {stats.data && (
+          <CardContent className="flex flex-wrap items-center gap-2 pt-0 pb-4">
+            <Badge variant="outline" className="gap-1.5 text-[10px] font-normal">
+              <Cpu className="w-3 h-3 text-[#a78bfa]" />
+              {stats.data.embedding_provider === "openai"
+                ? stats.data.embedding_model
+                : "Local hash embeddings (offline)"}
+            </Badge>
+            <Badge variant="outline" className="gap-1.5 text-[10px] font-normal">
+              <HardDrive className="w-3 h-3 text-[#2ec28a]" />
+              {FILE_STORE_LABEL[stats.data.file_store_backend] ?? stats.data.file_store_backend}
+            </Badge>
+            {stats.data.graph_retrieval_enabled && (
+              <Badge variant="outline" className="gap-1.5 text-[10px] font-normal">
+                <Waypoints className="w-3 h-3 text-[#f5a623]" />
+                Graph retrieval on
+              </Badge>
+            )}
+          </CardContent>
+        )}
       </Card>
 
       {/* Dropzone */}
@@ -247,6 +286,57 @@ export function KnowledgeBase() {
           </CardContent>
         </Card>
       )}
+
+      {/* Persisted documents — proves uploads survive restarts in MongoDB GridFS */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+            Persisted Documents
+          </p>
+          {persistedFiles.data && (
+            <span className="text-[10px] text-muted-foreground">
+              {persistedFiles.data.count} file{persistedFiles.data.count !== 1 ? "s" : ""} in{" "}
+              {FILE_STORE_LABEL[persistedFiles.data.backend] ?? persistedFiles.data.backend}
+            </span>
+          )}
+        </div>
+
+        {persistedFiles.isLoading ? (
+          <Skeleton className="h-16 w-full rounded-xl" />
+        ) : persistedFiles.isError ? (
+          <Card>
+            <CardContent className="py-4 text-sm text-[#ff5d6c]">
+              Could not load persisted documents — check the RAG service is reachable.
+            </CardContent>
+          </Card>
+        ) : !persistedFiles.data || persistedFiles.data.files.length === 0 ? (
+          <Card>
+            <CardContent className="py-6 text-center text-xs text-muted-foreground">
+              No documents persisted yet. Uploaded files are written to MongoDB GridFS
+              before ingestion, so they survive a service restart.
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-1.5">
+            {persistedFiles.data.files.map((f) => (
+              <div
+                key={f.file_id}
+                className="flex items-center gap-3 px-3 py-2 rounded-lg border border-border bg-card"
+              >
+                <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
+                <span className="flex-1 text-sm truncate">{f.filename}</span>
+                <span className="text-[10px] text-muted-foreground shrink-0 hidden sm:inline">
+                  {formatDate(f.uploaded_at)}
+                </span>
+                <span className="text-[10px] text-muted-foreground shrink-0">{bytes(f.size)}</span>
+                <Badge variant="outline" className="text-[9px] font-mono shrink-0">
+                  {f.file_id.slice(0, 10)}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

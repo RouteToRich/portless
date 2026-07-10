@@ -104,6 +104,10 @@ class StatsResponse(BaseModel):
     total_chunks: int
     collection: str
     db: str
+    embedding_provider: str
+    embedding_model: str
+    file_store_backend: str
+    graph_retrieval_enabled: bool
 
 
 # ──────────────────────────────────────────────────── in-memory job registry
@@ -171,10 +175,10 @@ async def upload_and_ingest(
 ) -> IngestResponse:
     """Accept browser file uploads, persist the bytes durably, then ingest.
 
-    Each file is first stored in the configured file store (MongoDB GridFS by
-    default — see file_store.py) so it survives restarts. A transient working
-    copy is then written to a temp dir and fed into the path-based ``/ingest``
-    pipeline. Swap the backend to S3 later via RAG_FILE_STORE_BACKEND.
+    Each file is first stored in MongoDB GridFS (see file_store.py — the sole
+    file-storage backend; no S3/blob store is used) so it survives restarts. A
+    transient working copy is then written to a temp dir and fed into the
+    path-based ``/ingest`` pipeline.
     """
     if not files:
         raise HTTPException(
@@ -392,7 +396,12 @@ async def list_files(limit: int = 100) -> dict[str, Any]:
     summary="RAG document stats",
 )
 async def get_stats() -> StatsResponse:
-    """Return the total number of indexed chunks."""
+    """Return indexed-chunk count plus the *active* embedding model, file-store
+    backend, and graph-retrieval status — so the UI always reflects ground
+    truth (whichever .env actually won: root vs. module-local override) rather
+    than requiring anyone to go spelunking through config files."""
+    from .file_store import get_file_store
+
     embeddings = get_embeddings()
     vector_store = VectorStore(embeddings)
     total = await vector_store.count()
@@ -400,6 +409,12 @@ async def get_stats() -> StatsResponse:
         total_chunks=total,
         collection=settings.chunks_collection,
         db=settings.mongo_db_name,
+        embedding_provider=settings.embedding_provider,
+        embedding_model=(
+            settings.embedding_model if settings.embedding_provider == "openai" else "local-hash"
+        ),
+        file_store_backend=get_file_store().backend,
+        graph_retrieval_enabled=settings.graph_retrieval_enabled,
     )
 
 

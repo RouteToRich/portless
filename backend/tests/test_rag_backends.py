@@ -1,18 +1,20 @@
-"""Tests for the RAG graph-DB (Neo4j) and S3 file-store backends.
+"""Tests for the RAG graph-DB (Neo4j) backend, the MongoDB-only file store, and
+embeddings routed through the LLM Gateway.
 
-The real drivers (neo4j, boto3) are mocked, so these run offline. They cover:
+MongoDB is the sole persistence/vector/blob-storage technology in this app — no
+S3 or other object store exists anywhere. The real Neo4j driver is mocked, so
+these run offline. They cover:
   • entity extraction heuristic
   • GraphStore backend resolution (disabled → no-op; configured → Neo4j; no URI → no-op)
   • Neo4jGraphStore upsert / retrieve / delete Cypher wiring
-  • S3FileStore save / read + factory selection and validation
+  • file store factory (MongoDB GridFS — the only backend)
+  • embeddings delegate to the LLM Gateway's GatewayEmbeddings
 """
 from __future__ import annotations
 
 import asyncio
-import sys
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from langchain_core.documents import Document
 
 from shared.rag.src.file_store import (
@@ -176,55 +178,67 @@ def test_graph_store_unimplemented_backend_falls_back_to_noop(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# S3 file store
+# File store — MongoDB GridFS is the only backend (no S3 anywhere in the app)
 # ---------------------------------------------------------------------------
 
-def _install_fake_boto3(monkeypatch, client):
-    fake_boto3 = MagicMock()
-    fake_boto3.client = MagicMock(return_value=client)
-    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
-
-
-def test_s3_file_store_save_and_read(monkeypatch):
-    body = MagicMock()
-    body.read = MagicMock(return_value=b"hello world")
-    client = MagicMock()
-    client.put_object = MagicMock(return_value={})
-    client.get_object = MagicMock(return_value={"Body": body})
-    _install_fake_boto3(monkeypatch, client)
-
-    monkeypatch.setattr("shared.rag.src.file_store.settings.file_store_backend", "s3")
-    monkeypatch.setattr("shared.rag.src.file_store.settings.s3_bucket", "my-bucket")
-    monkeypatch.setattr("shared.rag.src.file_store.settings.s3_prefix", "rag/")
-    monkeypatch.setattr("shared.rag.src.file_store.settings.s3_access_key_id", "")
-    monkeypatch.setattr("shared.rag.src.file_store.settings.s3_secret_access_key", "")
-
-    store = get_file_store()
-    assert store.backend == "s3"
-
-    stored = run(store.save("quote.txt", b"hello world", content_type="text/plain"))
-    assert stored.backend == "s3"
-    assert stored.size == 11
-    client.put_object.assert_called_once()
-    kwargs = client.put_object.call_args.kwargs
-    assert kwargs["Bucket"] == "my-bucket"
-    assert kwargs["Key"].startswith("rag/")
-    assert kwargs["Key"].endswith("quote.txt")
-
-    data = run(store.read(stored.file_id))
-    assert data == b"hello world"
-
-
-def test_s3_file_store_requires_bucket(monkeypatch):
-    _install_fake_boto3(monkeypatch, MagicMock())
-    monkeypatch.setattr("shared.rag.src.file_store.settings.file_store_backend", "s3")
-    monkeypatch.setattr("shared.rag.src.file_store.settings.s3_bucket", "")
-    with pytest.raises(ValueError):
-        get_file_store()
-
-
-def test_file_store_factory_defaults_to_mongodb(monkeypatch):
-    monkeypatch.setattr("shared.rag.src.file_store.settings.file_store_backend", "mongodb")
+def test_file_store_factory_returns_mongodb_gridfs():
     store = get_file_store()
     assert isinstance(store, MongoGridFSFileStore)
     assert store.backend == "mongodb"
+
+
+def test_file_store_has_no_s3_backend():
+    # Guards against S3 support being re-introduced silently.
+    import shared.rag.src.file_store as fs
+
+    assert not hasattr(fs, "S3FileStore")
+
+
+# ---------------------------------------------------------------------------
+# Embeddings routed through the LLM Gateway
+# ---------------------------------------------------------------------------
+
+class _FakeLocalEmbeddings:
+    def __init__(self, n_features: int = 1536) -> None:
+        self.n = n_features
+
+    def embed_documents(self, texts):
+        return [[0.0] * self.n for _ in texts]
+
+    def embed_query(self, text):
+        return [0.0] * self.n
+
+
+def test_rag_get_embeddings_routes_through_gateway():
+    from shared.llm_gateway.embeddings import GatewayEmbeddings
+    from shared.rag.src.embeddings import get_embeddings
+
+    e = get_embeddings()
+    assert isinstance(e, GatewayEmbeddings)      # RAG delegates to the gateway class
+    assert e._impl_cache is None                 # lazy — no provider SDK built at construction
+
+
+def test_gateway_embeddings_uses_openai_when_key_present():
+    from shared.llm_gateway.embeddings import GatewayEmbeddings
+
+    e = GatewayEmbeddings(provider="openai", api_key="sk-test-key", dimensions=1536)
+    assert type(e._impl).__name__ == "OpenAIEmbeddings"   # routed via gateway, not local
+
+
+def test_gateway_embeddings_falls_back_to_local_without_key(monkeypatch):
+    import shared.llm_gateway.embeddings as emb
+
+    monkeypatch.setattr(emb, "LocalHashEmbeddings", _FakeLocalEmbeddings)
+    monkeypatch.setattr(emb.llm_gateway_settings, "primary_api_key", "")  # no gateway key either
+    e = emb.GatewayEmbeddings(provider="openai", api_key="", dimensions=8)
+    assert isinstance(e._impl, _FakeLocalEmbeddings)
+    assert e.embed_query("hello") == [0.0] * 8
+
+
+def test_gateway_embeddings_local_provider(monkeypatch):
+    import shared.llm_gateway.embeddings as emb
+
+    monkeypatch.setattr(emb, "LocalHashEmbeddings", _FakeLocalEmbeddings)
+    e = emb.GatewayEmbeddings(provider="local", dimensions=16)
+    assert isinstance(e._impl, _FakeLocalEmbeddings)
+    assert len(e.embed_query("x")) == 16

@@ -22,15 +22,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Module .env lives one level above src/ (i.e. backend/shared/rag/.env)
 _MODULE_ENV = Path(__file__).parent.parent / ".env"
-
-_DEFAULT_MONGO_URI = (
-    "mongodb+srv://richminds84_db_user:8M7dOW4srdGAy7aM"
-    "@cluster0.taios8r.mongodb.net/?appName=Cluster0"
-)
 
 
 class RAGSettings(BaseSettings):
@@ -43,8 +39,12 @@ class RAGSettings(BaseSettings):
     )
 
     # ──────────────────────────────────────────────── MongoDB Atlas
-    mongo_uri: str = _DEFAULT_MONGO_URI
-    mongo_db_name: str = "rag"
+    mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("RAG_MONGO_URI", "MONGO_URI")
+    )
+    mongo_db_name: str = Field(
+        default="portless", validation_alias=AliasChoices("RAG_MONGO_DB_NAME", "MONGO_DB_NAME")
+    )
     chunks_collection: str = "chunks"
     parents_collection: str = "parent_docs"
     ingestion_jobs_collection: str = "ingestion_jobs"
@@ -92,22 +92,10 @@ class RAGSettings(BaseSettings):
     enable_pdf_ocr: bool = False
 
     # ──────────────────────────── Uploaded-file storage (raw bytes)
-    # Where raw uploaded knowledge files are persisted durably. "mongodb"
-    # stores bytes in GridFS — no external infra needed. Swap to "s3" later
-    # by setting RAG_FILE_STORE_BACKEND=s3 and filling the s3_* fields; the
-    # S3 implementation lives in file_store.py (S3FileStore).
-    file_store_backend: str = "mongodb"          # "mongodb" | "s3"
+    # Raw uploaded knowledge files are persisted in MongoDB GridFS — the sole
+    # backend (no S3/blob store is used anywhere in this app). GridFS lives in
+    # the same shared database (mongo_db_name) as every other collection.
     file_store_gridfs_bucket: str = "rag_files"  # GridFS bucket name
-    # S3 / blob-store settings — only read when file_store_backend="s3".
-    # Leave the credential fields empty to use the ambient AWS credential chain
-    # (IAM role / ~/.aws / env). Fill them in for an explicit key pair or an
-    # S3-compatible store (MinIO, R2, etc.).
-    s3_bucket: str = ""                           # RAG_S3_BUCKET
-    s3_region: str = ""                           # RAG_S3_REGION
-    s3_endpoint_url: str = ""                     # RAG_S3_ENDPOINT_URL — MinIO/R2/etc.
-    s3_access_key_id: str = ""                    # RAG_S3_ACCESS_KEY_ID (placeholder)
-    s3_secret_access_key: str = ""                # RAG_S3_SECRET_ACCESS_KEY (placeholder)
-    s3_prefix: str = ""                           # RAG_S3_PREFIX — optional key prefix
 
     # ──────────────────────────────────────────────── Security
     use_llm_prompt_injection_classifier: bool = False

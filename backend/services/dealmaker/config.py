@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -16,8 +17,12 @@ class DealMakerSettings(BaseSettings):
     )
 
     # ── MongoDB ────────────────────────────────────────────────────────────
-    dealmaker_mongo_uri: str = ""
-    dealmaker_mongo_db_name: str = "dealmaker"
+    dealmaker_mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("DEALMAKER_MONGO_URI", "MONGO_URI")
+    )
+    dealmaker_mongo_db_name: str = Field(
+        default="portless", validation_alias=AliasChoices("DEALMAKER_MONGO_DB_NAME", "MONGO_DB_NAME")
+    )
     dealmaker_pi_collection: str = "proforma_invoices"
     dealmaker_po_collection: str = "purchase_orders"
 

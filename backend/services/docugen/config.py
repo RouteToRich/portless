@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -16,8 +17,12 @@ class DocuGenSettings(BaseSettings):
     )
 
     # ── MongoDB ────────────────────────────────────────────────────────────
-    docugen_mongo_uri: str = ""
-    docugen_mongo_db_name: str = "docugen"
+    docugen_mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("DOCUGEN_MONGO_URI", "MONGO_URI")
+    )
+    docugen_mongo_db_name: str = Field(
+        default="portless", validation_alias=AliasChoices("DOCUGEN_MONGO_DB_NAME", "MONGO_DB_NAME")
+    )
     docugen_docs_collection: str = "documents"
 
     # ── Document storage ───────────────────────────────────────────────────

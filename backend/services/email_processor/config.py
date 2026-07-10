@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -22,8 +23,13 @@ class EmailProcessorSettings(BaseSettings):
     )
 
     # ── MongoDB ────────────────────────────────────────────────────────────
-    email_processor_mongo_uri: str = ""
-    email_processor_mongo_db_name: str = "email_processor"
+    email_processor_mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("EMAIL_PROCESSOR_MONGO_URI", "MONGO_URI")
+    )
+    email_processor_mongo_db_name: str = Field(
+        default="portless",
+        validation_alias=AliasChoices("EMAIL_PROCESSOR_MONGO_DB_NAME", "MONGO_DB_NAME"),
+    )
     email_processor_inbound_collection: str = "inbound_emails"
 
     # ── PortLess email identity ────────────────────────────────────────────

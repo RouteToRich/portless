@@ -167,7 +167,7 @@ class LLMClient:
         if tracker is not None:
             # Explicit tracker passed — use it as-is (sync or async)
             self._tracker: Any = tracker
-        elif self._settings.mongo_tracker_enabled:
+        elif self._settings.mongo_tracker_enabled and self._settings.mongo_uri:
             # Auto-select MongoDB tracker (Motor client is lazy-connect — no I/O here)
             from .db_tracker import MongoTracker
             self._tracker = MongoTracker.from_settings(self._settings)

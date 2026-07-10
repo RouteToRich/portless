@@ -21,13 +21,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Module directory — used to resolve the module-local .env file path
 _HERE = Path(__file__).parent
-
-# Groq API key — override with LLM_GROQ_API_KEY env var in production
-_DEFAULT_GROQ_API_KEY = "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"
 
 
 class LLMGatewaySettings(BaseSettings):
@@ -57,7 +55,10 @@ class LLMGatewaySettings(BaseSettings):
 
     # ----------------------------------------------- Groq fallback chain
     # Shared across all three fallback slots unless overridden per-slot.
-    groq_api_key: str = _DEFAULT_GROQ_API_KEY
+    # Read from LLM_GROQ_API_KEY. Empty → the Groq fallback endpoints are skipped;
+    # set this (or a primary model) or the chain is empty and chat() raises
+    # LLMConfigurationError. Never hardcode a key here.
+    groq_api_key: str = ""
 
     fallback_1_model: str = "qwen/qwen3-32b"
     fallback_1_connector: str = "groq"
@@ -90,11 +91,12 @@ class LLMGatewaySettings(BaseSettings):
     # Primary persistence for LLM request tracking.
     # Set LLM_MONGO_TRACKER_ENABLED=false to fall back to JSONL file tracker.
     mongo_tracker_enabled: bool = True
-    mongo_uri: str = (
-        "mongodb+srv://richminds84_db_user:8M7dOW4srdGAy7aM"
-        "@cluster0.taios8r.mongodb.net/?appName=Cluster0"
+    mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("LLM_MONGO_URI", "MONGO_URI")
     )
-    mongo_db_name: str = "gateway"
+    mongo_db_name: str = Field(
+        default="portless", validation_alias=AliasChoices("LLM_MONGO_DB_NAME", "MONGO_DB_NAME")
+    )
     mongo_collection: str = "llm_requests"
     # Connection pool / timeout configuration (milliseconds)
     mongo_max_pool_size: int = 50

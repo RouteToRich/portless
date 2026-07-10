@@ -16,7 +16,11 @@ A single, dependency-injected client (`LLMClient`) that every agent/service uses
 - **Observability** — every attempt (success, fallback, error) is persisted by a tracker.
 - **Provider independence** — Groq / OpenAI / Anthropic (via LangChain) and any OpenAI-compatible HTTP endpoint, chosen per-endpoint by a `connector` string.
 
-> **Scope note — chat only.** This gateway does **not** do embeddings. There is no `embed()` method. Embeddings are owned by the RAG module (`shared/rag/embeddings.py` → `GatewayEmbeddings`), which merely *reuses* the gateway's OpenAI key. Configure embedding models via `RAG_EMBEDDING_*`, not here.
+> **Scope note.** Primarily a **chat/completion** gateway. As of 2026-07-10 it also
+> provides **embeddings** via `GatewayEmbeddings` (`embeddings.py`) — the single
+> place any embedding-provider SDK is instantiated. RAG calls it (passing its
+> `RAG_EMBEDDING_*` config); the gateway resolves the provider + key (RAG key →
+> gateway primary OpenAI key) and falls back to local hash embeddings offline.
 
 ---
 
@@ -90,6 +94,7 @@ Trackers write to **MongoDB** (`MongoTracker`) or a **JSONL file** (`RequestTrac
 | Fatal-vs-transient error classification | ✅ | `classify_error()` |
 | Connectors: groq / openai / anthropic | ✅ | via LangChain |
 | Connector: `http` (OpenAI-compatible) | ✅ | raw httpx |
+| Embeddings (`GatewayEmbeddings`: OpenAI + local fallback) | ✅ | `embeddings.py`; RAG routes through it; lazy backend, key via gateway. Tested. |
 | Request tracking — JSONL file | ✅ | `RequestTracker` |
 | Request tracking — MongoDB | ✅ | `MongoTracker` (Motor, lazy connect) |
 | Response cache (opt-in) | ✅ | `cache.py`; **tested** (`tests/test_llm_response_cache.py`). NOTE: `__init__` docstring still calls it a "placeholder" — stale. |

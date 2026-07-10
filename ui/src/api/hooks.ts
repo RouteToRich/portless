@@ -308,7 +308,19 @@ export function useRagUpload() {
   return useMutation({
     mutationFn: ({ files, chunkStrategy }: { files: File[]; chunkStrategy?: string }) =>
       RagApi.upload(files, chunkStrategy),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["rag", "stats"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["rag", "stats"] });
+      qc.invalidateQueries({ queryKey: ["rag", "files"] });
+    },
+  });
+}
+
+// Files durably persisted in MongoDB GridFS — proves ingestion survives restarts.
+export function useRagFiles() {
+  return useQuery({
+    queryKey: ["rag", "files"],
+    queryFn: () => RagApi.files(),
+    refetchInterval: 15000,
   });
 }
 
@@ -323,6 +335,7 @@ export function useRagJob(jobId: string | null) {
       const s = query.state.data?.status;
       if (s === "completed" || s === "failed") {
         qc.invalidateQueries({ queryKey: ["rag", "stats"] });
+        qc.invalidateQueries({ queryKey: ["rag", "files"] });
         return false;
       }
       return 1500;

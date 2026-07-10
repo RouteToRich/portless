@@ -12,6 +12,7 @@ from pathlib import Path
 _HOUR = 3600
 _DAY = 24 * _HOUR
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -27,14 +28,20 @@ class TradeMinSettings(BaseSettings):
     )
 
     # ── MongoDB ────────────────────────────────────────────────────────────
-    trade_mongo_uri: str = ""
-    trade_mongo_db_name: str = "trade"
+    trade_mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("TRADE_MONGO_URI", "MONGO_URI")
+    )
+    trade_mongo_db_name: str = Field(
+        default="portless", validation_alias=AliasChoices("TRADE_MONGO_DB_NAME", "MONGO_DB_NAME")
+    )
     trade_mongo_collection: str = "opportunities"
 
     # ── Raw API response cache ────────────────────────────────────────────
-    # Collection (same Atlas DB) holding cached raw connector responses, with
+    # Collection (same shared DB) holding cached raw connector responses, with
     # a TTL index. Falls back to in-memory when trade_mongo_uri is absent.
-    trade_cache_collection: str = "api_cache"
+    # Named distinctly from shared.cache's "api_cache" collection since both now
+    # live in the same database.
+    trade_cache_collection: str = "trade_api_cache"
     # Kill switch — set TRADE_CACHE_ENABLED=0 to always hit the live API.
     trade_cache_enabled: bool = True
 

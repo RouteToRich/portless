@@ -16,8 +16,6 @@ langchain-openai>=0.1
 langchain-anthropic>=0.1
 langchain-groq>=0.2
 langgraph>=0.1
-# Optional RAG backends — only imported when enabled (lazy import + graceful fallback):
-#   neo4j : RAG_GRAPH_RETRIEVAL_ENABLED=true, RAG_GRAPH_DB_BACKEND=neo4j
-#   boto3 : RAG_FILE_STORE_BACKEND=s3
+# Optional graph-retrieval backend — only imported when enabled (lazy import +
+# graceful fallback to a no-op): RAG_GRAPH_RETRIEVAL_ENABLED=true, RAG_GRAPH_DB_BACKEND=neo4j
 neo4j>=5.14
-boto3>=1.34

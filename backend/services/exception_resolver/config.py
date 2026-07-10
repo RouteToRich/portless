@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -16,8 +17,13 @@ class ExceptionResolverSettings(BaseSettings):
     )
 
     # ── MongoDB ────────────────────────────────────────────────────────────
-    exception_resolver_mongo_uri: str = ""
-    exception_resolver_mongo_db_name: str = "exception_resolver"
+    exception_resolver_mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("EXCEPTION_RESOLVER_MONGO_URI", "MONGO_URI")
+    )
+    exception_resolver_mongo_db_name: str = Field(
+        default="portless",
+        validation_alias=AliasChoices("EXCEPTION_RESOLVER_MONGO_DB_NAME", "MONGO_DB_NAME"),
+    )
     exception_resolver_collection: str = "exceptions"
 
     # ── Agent behaviour ────────────────────────────────────────────────────

@@ -1044,14 +1044,15 @@ uses `LocalHashEmbeddings` (offline, zero cost, lower quality — fine for dev/C
 
 ---
 
-#### 21. MongoDB Atlas — ✅ Connected (default credentials active)
+#### 21. MongoDB Atlas — persistence layer
 
 **What it does:** Primary persistence layer for all services — opportunities,
 deals, RFQs, negotiation sessions, LLM call tracking, and RAG vector search.
 Atlas Vector Search powers semantic document retrieval.
 
-**Cluster:** `cluster0.taios8r.mongodb.net` (M0 free tier)  
-**Config:** Hardcoded default URI in `shared/rag/src/config.py` and `shared/llm_gateway/config.py`
+**Cluster:** your own Atlas cluster (M0 free tier works for dev)  
+**Config:** set a single `MONGO_URI` in `.env` — every service uses it (each with
+its own DB name). No connection string is hardcoded in the code.
 
 **Cost:** M0 cluster is free. Paid tiers start at ~$57/month (M10).
 

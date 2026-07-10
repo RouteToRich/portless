@@ -122,6 +122,10 @@ export interface RagStats {
   total_chunks: number;
   collection: string;
   db: string;
+  embedding_provider: string;
+  embedding_model: string;
+  file_store_backend: string;
+  graph_retrieval_enabled: boolean;
 }
 
 export interface RagIngestResponse {
@@ -138,6 +142,22 @@ export interface RagJobStatus {
   error?: string | null;
   started_at: string;
   completed_at?: string | null;
+}
+
+// A file persisted in the RAG file store (MongoDB GridFS — the sole backend).
+export interface RagFile {
+  file_id: string;
+  filename: string;
+  size: number;
+  backend: string;
+  content_type?: string | null;
+  uploaded_at?: string | null;
+}
+
+export interface RagFilesResponse {
+  backend: string;
+  count: number;
+  files: RagFile[];
 }
 
 export interface CreateDealRequest {

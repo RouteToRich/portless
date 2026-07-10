@@ -1,5 +1,9 @@
 {
   "total_chunks": 1284,
-  "collection": "rag_chunks",
-  "db": "portless_rag"
+  "collection": "chunks",
+  "db": "portless",
+  "embedding_provider": "openai",
+  "embedding_model": "text-embedding-3-small",
+  "file_store_backend": "mongodb",
+  "graph_retrieval_enabled": false
 }

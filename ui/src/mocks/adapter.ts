@@ -283,7 +283,7 @@ function publicUser(u: MockUser) {
   return { user_id: u.user_id, email: u.email, name: u.name, created_at: new Date().toISOString() };
 }
 
-// ── RAG ingest job simulation ────────────────────────────────────────────
+// ── RAG ingest job + GridFS file-store simulation ────────────────────────
 // Track upload start times so a polled job reports running for ~2.5s then
 // completes — mirroring the real background ingestion flow.
 const ragJobs = new Map<string, number>();
@@ -300,9 +300,57 @@ function ragJobStatus(id: string) {
     completed_at: done ? new Date().toISOString() : null,
   };
 }
-function ragStartJob() {
+
+// Mirrors the real /rag/files list (MongoDB GridFS) so the Knowledge Base
+// page's "Persisted Documents" panel reflects actual uploads in mock mode too.
+interface MockRagFile {
+  file_id: string;
+  filename: string;
+  size: number;
+  backend: string;
+  content_type: string | null;
+  uploaded_at: string;
+}
+const ragFiles: MockRagFile[] = [
+  {
+    file_id: "gridfs-seed-0001",
+    filename: "trade-playbook-rice-hs1006.pdf",
+    size: 482_311,
+    backend: "mongodb",
+    content_type: "application/pdf",
+    uploaded_at: new Date(Date.now() - 86_400_000 * 3).toISOString(),
+  },
+  {
+    file_id: "gridfs-seed-0002",
+    filename: "supplier-terms-glossary.md",
+    size: 18_204,
+    backend: "mongodb",
+    content_type: "text/markdown",
+    uploaded_at: new Date(Date.now() - 86_400_000).toISOString(),
+  },
+];
+
+function ragStartJob(body: RawObj) {
   const id = `rag-job-${Date.now().toString(16)}`;
   ragJobs.set(id, Date.now());
+
+  // The real endpoint is multipart/form-data; extract File entries so the
+  // mock file store (below) grows with whatever was actually dropped in the
+  // UI, just like the real MongoDB GridFS-backed store does.
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    const files = body.getAll("files").filter((f): f is File => f instanceof File);
+    files.forEach((f, i) => {
+      ragFiles.push({
+        file_id: `gridfs-${Date.now().toString(16)}-${i}`,
+        filename: f.name,
+        size: f.size,
+        backend: "mongodb",
+        content_type: f.type || null,
+        uploaded_at: new Date().toISOString(),
+      });
+    });
+  }
+
   return { job_id: id, status: "pending", message: `Accepted. Poll /rag/ingest/${id}.` };
 }
 
@@ -407,9 +455,10 @@ const routes: Record<string, Handler> = {
   // RAG knowledge base
   "GET /rag/stats": () => ragStats,
   "GET /rag/health": () => ({ status: "ok", mongodb: "ok", vector_index: "ok" }),
-  "POST /rag/upload": () => ragStartJob(),
-  "POST /rag/ingest": () => ragStartJob(),
+  "POST /rag/upload": ({ body }) => ragStartJob(body),
+  "POST /rag/ingest": ({ body }) => ragStartJob(body),
   "GET /rag/ingest/:id": ({ id }) => ragJobStatus(id),
+  "GET /rag/files": () => ({ backend: "mongodb", count: ragFiles.length, files: ragFiles }),
 
   // Deal-detail sub-resources
   "GET /match-engine/matches": () => normalizeMatchScore(matchScoreFixture as RawObj),

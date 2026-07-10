@@ -32,6 +32,7 @@ Future features (placeholders — NOT YET IMPLEMENTED):
 from .config import LLMGatewaySettings, llm_gateway_settings, LLM_TEMPERATURE, LLM_MAX_TOKENS
 from .auth import JWTValidator, InvalidTokenError, TokenClaims, require_valid_token
 from .client import LLMClient, LLMResponse, LLMExhaustedException, LLMConfigurationError
+from .embeddings import GatewayEmbeddings, LocalHashEmbeddings
 from .fallback import FallbackChain, ModelEndpoint, classify_error
 from .tracker import RequestTracker, RequestRecord
 
@@ -64,6 +65,9 @@ __all__ = [
     "LLMResponse",
     "LLMExhaustedException",
     "LLMConfigurationError",
+    # embeddings
+    "GatewayEmbeddings",
+    "LocalHashEmbeddings",
     # fallback
     "FallbackChain",
     "ModelEndpoint",

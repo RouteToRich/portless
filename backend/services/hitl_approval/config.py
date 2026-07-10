@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -16,8 +17,12 @@ class HitlApprovalSettings(BaseSettings):
     )
 
     # ── MongoDB ────────────────────────────────────────────────────────────
-    hitl_approval_mongo_uri: str = ""
-    hitl_approval_mongo_db_name: str = "hitl_approval"
+    hitl_approval_mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("HITL_APPROVAL_MONGO_URI", "MONGO_URI")
+    )
+    hitl_approval_mongo_db_name: str = Field(
+        default="portless", validation_alias=AliasChoices("HITL_APPROVAL_MONGO_DB_NAME", "MONGO_DB_NAME")
+    )
     hitl_approval_collection: str = "approvals"
 
     # ── UI integration ─────────────────────────────────────────────────────

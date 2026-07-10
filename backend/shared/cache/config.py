@@ -2,15 +2,17 @@
 
 Env-var prefix: ``CACHE_`` (e.g. ``CACHE_ENABLED``, ``CACHE_MONGO_URI``).
 
-The cache reuses the same Atlas cluster as the rest of the app. When
-``CACHE_MONGO_URI`` is left empty it falls back to the LLM-gateway's default
-Mongo URI (which already points at the shared cluster), and if Mongo is
-unreachable it degrades to an in-process in-memory cache.
+The cache writes to the single shared app database (``MONGO_DB_NAME``, default
+"portless") like every other module. ``mongo_uri`` / ``mongo_db_name`` resolve
+from ``CACHE_MONGO_URI`` / ``CACHE_MONGO_DB_NAME`` first, then the shared
+``MONGO_URI`` / ``MONGO_DB_NAME``. If Mongo is unreachable the cache degrades to
+an in-process in-memory backend.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -27,10 +29,14 @@ class CacheSettings(BaseSettings):
     # Master kill switch — set CACHE_ENABLED=0 to bypass and always hit live.
     enabled: bool = True
 
-    # Mongo target. Empty uri → fall back to the LLM-gateway default cluster,
-    # then to in-memory if that is unreachable.
-    mongo_uri: str = ""
-    mongo_db_name: str = "cache"
+    # Mongo target. Resolves to the shared MONGO_URI when CACHE_MONGO_URI is
+    # unset; empty → in-memory.
+    mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("CACHE_MONGO_URI", "MONGO_URI")
+    )
+    mongo_db_name: str = Field(
+        default="portless", validation_alias=AliasChoices("CACHE_MONGO_DB_NAME", "MONGO_DB_NAME")
+    )
     collection: str = "api_cache"
 
     def resolved_uri(self) -> str:

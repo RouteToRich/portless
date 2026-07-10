@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -16,8 +17,12 @@ class EscrowGuardSettings(BaseSettings):
     )
 
     # ── MongoDB ────────────────────────────────────────────────────────────
-    escrow_guard_mongo_uri: str = ""
-    escrow_guard_mongo_db_name: str = "escrow_guard"
+    escrow_guard_mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("ESCROW_GUARD_MONGO_URI", "MONGO_URI")
+    )
+    escrow_guard_mongo_db_name: str = Field(
+        default="portless", validation_alias=AliasChoices("ESCROW_GUARD_MONGO_DB_NAME", "MONGO_DB_NAME")
+    )
     escrow_guard_holds_collection: str = "escrow_holds"
     escrow_guard_payouts_collection: str = "payouts"
 

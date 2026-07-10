@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
@@ -16,8 +17,12 @@ class ShieldLinkSettings(BaseSettings):
     )
 
     # ── MongoDB ────────────────────────────────────────────────────────────
-    shield_link_mongo_uri: str = ""
-    shield_link_mongo_db_name: str = "shield_link"
+    shield_link_mongo_uri: str = Field(
+        default="", validation_alias=AliasChoices("SHIELD_LINK_MONGO_URI", "MONGO_URI")
+    )
+    shield_link_mongo_db_name: str = Field(
+        default="portless", validation_alias=AliasChoices("SHIELD_LINK_MONGO_DB_NAME", "MONGO_DB_NAME")
+    )
     shield_link_tpo_collection: str = "third_party_orders"
 
     # ── Default providers ─────────────────────────────────────────────────

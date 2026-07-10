@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 10.0
     log_level: str = "INFO"
 
+    # --- Shared MongoDB (single connection string + single database) ---
+    # Set MONGO_URI once and every service/module uses it, writing to the SAME
+    # database (MONGO_DB_NAME) via its own collection(s) — one Mongo database for
+    # the whole app, not one per service. A service-specific <SERVICE>_MONGO_URI /
+    # <SERVICE>_MONGO_DB_NAME still overrides these when set. Empty MONGO_URI →
+    # services degrade to their in-memory stores.
+    mongo_uri: str = ""
+    mongo_db_name: str = "portless"
+
     # --- UI / CORS ---
     cors_allow_origins: list[str] = [
         "http://localhost:5173",

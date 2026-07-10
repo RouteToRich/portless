@@ -255,21 +255,29 @@ All other connectors (`trade_intel.py`, `demand_signals.py`, `regulatory.py`) ma
 Copy `.env.example` to `.env`. All services degrade gracefully (in-memory store, stub connectors) when credentials are absent. Key vars:
 
 ```
-# MongoDB (each service has its own DB; all fall back to in-memory)
-TRADE_MONGO_URI
-DEALS_MONGO_URI
-SOURCING_MONGO_URI
-NEGOTIATION_MONGO_URI
-DEALMAKER_MONGO_URI
-DOCUGEN_MONGO_URI
-SHIELD_LINK_MONGO_URI
-ESCROW_GUARD_MONGO_URI
-HITL_APPROVAL_MONGO_URI
-RAG_MONGO_URI            # default URI hardcoded in rag/src/config.py
+# MongoDB — ONE connection string + ONE database for the whole app.
+# Set MONGO_URI and MONGO_DB_NAME once; every service/module (all 11 backend
+# services + RAG + LLM Gateway + the shared cache) persists into that SAME
+# database via its own collection(s) — a genuinely single-database deployment,
+# not one database per service. The RAG vector store ($vectorSearch) and GridFS
+# file storage (uploaded documents) also live in this same database — MongoDB
+# is the only persistence/vector/blob-storage backend in the app; no S3 or other
+# object store is used. Leave everything blank → all services fall back to
+# in-memory stores (dev/CI only).
+MONGO_URI                 # single cluster URL used by every service/module
+MONGO_DB_NAME              # single database name (default: portless)
+# Optional per-service overrides (each falls back to MONGO_URI / MONGO_DB_NAME
+# when unset) — only set these if you deliberately want one service on a
+# different cluster/database:
+#   TRADE_MONGO_URI, DEALS_MONGO_URI, SOURCING_MONGO_URI, NEGOTIATION_MONGO_URI,
+#   DEALMAKER_MONGO_URI, DOCUGEN_MONGO_URI, SHIELD_LINK_MONGO_URI,
+#   ESCROW_GUARD_MONGO_URI, HITL_APPROVAL_MONGO_URI, EXCEPTION_RESOLVER_MONGO_URI,
+#   EMAIL_PROCESSOR_MONGO_URI, RAG_MONGO_URI, LLM_MONGO_URI, CACHE_MONGO_URI
+#   (…and the matching <SERVICE>_MONGO_DB_NAME for each)
 
-# LLM
-LLM_GROQ_API_KEY         # default key hardcoded in llm_gateway/config.py
-LLM_PRIMARY_API_KEY      # Claude (optional; Groq chain used if absent)
+# LLM (all LLM calls go through shared/llm_gateway; no keys are hardcoded)
+LLM_GROQ_API_KEY         # Groq fallback-chain key — required unless a primary model is set
+LLM_PRIMARY_API_KEY      # Claude/OpenAI primary (optional; Groq chain used if absent)
 
 # Regulatory (trade-min verification pipeline)
 API_SETU_KEY             # GSTN + MCA + Udyam

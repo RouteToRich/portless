@@ -3,6 +3,7 @@
 > **Module:** `shared/rag/` (code in `src/`)
 > **Purpose:** production retrieval-augmented generation — MongoDB Atlas vector store + hybrid retrieval + grounded LLM answers.
 > **Engine:** two async LangGraph pipelines (ingestion + query).
+> **Persistence:** MongoDB is the *only* store used anywhere in RAG — vector search, keyword-search documents, parent docs, and uploaded raw files (GridFS) all live in the **single shared app database** (`MONGO_DB_NAME`, default `portless`), in their own collections. No blob store (S3, etc.) or separate vector DB is used.
 > **Last reviewed:** 2026-07-10.
 > Legend: ✅ implemented · ⚠️ partial / optional / needs infra · ❌ not implemented · 💡 nice-to-have
 > See also: `README.md`, `RAG_IMPLEMENTATION_FLOWS.md` (deep dives), `workflow_llm_gateway.md` (generation backend).
@@ -22,11 +23,10 @@ A self-contained RAG engine any service can call to answer a question grounded i
 ```
 Callers                         RAG                          Callees
 ───────                         ───                          ───────
-negotiation_agent   ──▶  query() / ingest()   ──▶  MongoDB Atlas ($vectorSearch + doc fetch)
-(any service)       ──▶                        ──▶  LLM Gateway (answer generation)
-POST /rag/upload    ──▶  file_store            ──▶  OpenAI embeddings (or local hash fallback)
+negotiation_agent   ──▶  query() / ingest()   ──▶  MongoDB Atlas ($vectorSearch + doc fetch — shared DB)
+(any service)       ──▶                        ──▶  LLM Gateway (answer generation + embeddings)
+POST /rag/upload    ──▶  file_store            ──▶  MongoDB GridFS (raw uploaded files — same shared DB)
                                                ──▶  Neo4j (optional graph retrieval)
-                                               ──▶  S3 / GridFS (raw uploaded files)
 ```
 
 ---
@@ -55,13 +55,13 @@ Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validati
 
 | Area | Vars | Notes |
 |---|---|---|
-| MongoDB Atlas | `RAG_MONGO_URI` ⚠️, `RAG_MONGO_DB_NAME`, `*_COLLECTION` | ⚠️ hardcoded default URI with creds in `config.py`. |
+| MongoDB | `RAG_MONGO_URI` / `RAG_MONGO_DB_NAME` (fall back to the app-wide `MONGO_URI` / `MONGO_DB_NAME`), `*_COLLECTION` | No hardcoded credentials — resolves from env only (fixed 2026-07-10). Writes into the single shared app database, same as every other service. |
 | Vector index | `RAG_VECTOR_INDEX_NAME`, `RAG_EMBEDDING_DIMENSIONS` (1536), `RAG_VECTOR_SIMILARITY` | Index **must exist** — `ensure_vector_index()` or Atlas UI. |
-| Embeddings | `RAG_EMBEDDING_PROVIDER` (openai/local), `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_API_KEY` | Falls back to `LocalHashEmbeddings` if no key. |
+| Embeddings | `RAG_EMBEDDING_PROVIDER` (openai/local), `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_API_KEY` | Routed through the LLM Gateway's `GatewayEmbeddings`; falls back to `LocalHashEmbeddings` if no key. |
 | Retrieval / rerank | `RAG_RETRIEVAL_TOP_K`, `RAG_KEYWORD_SEARCH_FETCH_LIMIT`, `RAG_USE_CROSS_ENCODER_RERANKER` | Cross-encoder off by default. |
 | Generation | `RAG_TEMPERATURE`, `RAG_MAX_TOKENS` | Via LLM Gateway. |
 | **Graph** | `RAG_GRAPH_RETRIEVAL_ENABLED`, `RAG_GRAPH_DB_BACKEND` (neo4j), `RAG_GRAPH_DB_URI/USER/PASSWORD/DATABASE` | Neo4j implemented; arangodb/falkordb → no-op. |
-| **File store** | `RAG_FILE_STORE_BACKEND` (mongodb/s3), `RAG_S3_BUCKET/REGION/ENDPOINT_URL/ACCESS_KEY_ID/SECRET_ACCESS_KEY/PREFIX` | GridFS default; S3/blob implemented. |
+| **File store** | `RAG_FILE_STORE_GRIDFS_BUCKET` (default `rag_files`) | **MongoDB GridFS only** — the sole backend. No S3/blob-store config exists anywhere in the app (removed 2026-07-10). |
 
 ---
 
@@ -82,7 +82,7 @@ Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validati
 | Citation validation | ✅ | `citations.py` |
 | Answer evaluation metrics | ✅ | `evaluation.py` |
 | Authorization (user/team ACL) filtering | ✅ | `authorization.py` |
-| Embeddings — OpenAI + local-hash fallback | ✅ | `embeddings.py` |
+| Embeddings — OpenAI + local-hash fallback | ✅ | Routed through `shared.llm_gateway.GatewayEmbeddings` (2026-07-10); RAG imports no provider SDK directly. `embeddings.py` is a thin adapter. |
 | Chunking (recursive/semantic) + parent docs | ✅ | `chunking.py` |
 | Document loading (PDF/text) | ✅ | `loader.py` |
 | FastAPI router + CLI | ✅ | `router.py`, `cli.py` |
@@ -93,8 +93,7 @@ Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validati
 |---|---|---|
 | Graph store — **Neo4j** | ✅ | `graph_store.py`: Document/Chunk/Entity nodes, PART_OF/MENTIONS/ADJACENT_TO edges; entity-overlap retrieval; delegating wrapper + graceful no-op fallback. Gated by `RAG_GRAPH_RETRIEVAL_ENABLED`. |
 | Graph store — arangodb / falkordb | ❌ | Reserved; fall back to no-op. |
-| File store — MongoDB GridFS | ✅ | Default. |
-| File store — **S3 / blob** | ✅ | `file_store.py`: boto3 via `asyncio.to_thread`; S3-compatible (MinIO/R2) via endpoint_url. |
+| File store — **MongoDB GridFS** | ✅ | Sole backend (`file_store.py`). S3/blob support was implemented then **removed 2026-07-10** — the app is MongoDB-only for every persistence need (documents, vectors, files). |
 
 ### Gaps / partial
 
@@ -122,21 +121,21 @@ Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validati
 
 ## 7. Pending tasks
 
-1. **Install RAG's Python deps** — `pip install -r shared/rag/requirements.txt` (rank_bm25, langchain-text-splitters, scikit-learn, pypdf, …) + `neo4j`/`boto3` for those backends. *Currently not installed in this env — the module can't run without them.*
+1. **Install RAG's Python deps** — `pip install -r shared/rag/requirements.txt` (rank_bm25, langchain-text-splitters, scikit-learn, pypdf, …) + `neo4j` if graph retrieval is enabled. *Currently not installed in this env — the module can't run without them.*
 2. **Create the Atlas vector-search index** — `ensure_vector_index()` at startup or via the Atlas UI. `$vectorSearch` fails without it (the #1 "not working" cause).
 3. **Ingest documents** — the vector store starts **empty**; run `ingest([...])` before querying, or every query returns nothing.
-4. **Rotate the hardcoded Mongo URI** out of `config.py` into env.
-5. **Write tests for the core pipeline** — fusion, knee-point, citation validation, evaluation, embedding fallback are all uncovered.
-6. **(optional) Upgrade graph entity extraction** to real NER for recall.
+4. **Write tests for the core pipeline** — fusion, knee-point, citation validation, evaluation, embedding fallback are all uncovered.
+5. **(optional) Upgrade graph entity extraction** to real NER for recall.
 
-> **"Is RAG workable if I set the configs?"** — Necessary but not sufficient. You also need: **(1)** deps installed, **(2)** Atlas + vector index provisioned (and Neo4j/S3 if enabled), **(3)** the env configs, **(4)** documents ingested. All four → workable.
+> **"Is RAG workable if I set the configs?"** — Necessary but not sufficient. You also need: **(1)** deps installed, **(2)** Atlas + vector index provisioned (and Neo4j if graph retrieval is enabled), **(3)** the env configs (`MONGO_URI` at minimum), **(4)** documents ingested. All four → workable.
 
 ---
 
 ## 8. Suggestions / notes
 
-- The **core retrieval + generation path has no hollow stubs** — the only formerly-stubbed pieces (graph DB, S3) are now implemented; arangodb/falkordb and advanced eval remain deliberate, gated future work.
-- **Verification, not code, is the real gap:** the pipeline is fully coded but the core nodes are untested, and nothing has been proven against live Atlas + embeddings. A one-shot smoke run (install deps → set Atlas URI + embedding key → create index → `ingest()` → `query()`) is the fastest way to confirm end-to-end.
+- The **core retrieval + generation path has no hollow stubs** — the formerly-stubbed graph DB piece is now implemented (Neo4j); arangodb/falkordb and advanced eval remain deliberate, gated future work.
+- **MongoDB is the only persistence/vector/blob-storage technology in this app.** Vector search, keyword-search documents, parent docs, and uploaded raw files (GridFS) all live in the one shared database. S3/blob-store support was implemented on 2026-07-10 and **removed the same day** in favor of this MongoDB-only design — there is no external object store anywhere.
+- **Verification, not code, is the real gap:** the pipeline is fully coded but the core nodes are untested, and nothing has been proven against live Atlas + embeddings. A one-shot smoke run (install deps → set `MONGO_URI` + embedding key → create index → `ingest()` → `query()`) is the fastest way to confirm end-to-end.
 - The package `__init__.py` is **lazy (PEP 562)** so submodules import without dragging in the whole pipeline + optional deps — keep it that way when adding exports.
 
 ---
@@ -151,7 +150,7 @@ Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validati
 | `src/chunking.py` · `src/parent_store.py` · `src/loader.py` | Chunking, parent-doc store, document loading |
 | `src/rerank.py` · `src/citations.py` · `src/evaluation.py` · `src/security.py` · `src/authorization.py` | Rerank, citations, eval, injection filter, ACL |
 | `src/graph_store.py` | **Neo4j** graph store + no-op fallback + entity extraction |
-| `src/file_store.py` | GridFS (default) + **S3/blob** file stores |
-| `src/config.py` | `RAGSettings` (env `RAG_`); ⚠️ hardcoded Mongo URI |
+| `src/file_store.py` | MongoDB GridFS — the sole file-storage backend (no S3) |
+| `src/config.py` | `RAGSettings` (env `RAG_`); no hardcoded credentials — resolves `MONGO_URI`/`MONGO_DB_NAME` |
 | `src/router.py` · `src/cli.py` | FastAPI routes + CLI |
-| `tests/test_rag_backends.py` | Graph + S3 backend tests (15) |
+| `tests/test_rag_backends.py` | Graph store + GridFS file store + gateway-embeddings tests (18) |

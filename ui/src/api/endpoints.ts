@@ -17,6 +17,7 @@ import type {
   AuthUser,
   Opportunity,
   QcRecord,
+  RagFilesResponse,
   RagIngestResponse,
   RagJobStatus,
   RagStats,
@@ -147,6 +148,9 @@ export const RagApi = {
   stats: () => api.get<RagStats>("/rag/stats").then((r) => r.data),
   jobStatus: (jobId: string) =>
     api.get<RagJobStatus>(`/rag/ingest/${jobId}`).then((r) => r.data),
+  // Files durably persisted in the RAG file store (MongoDB GridFS).
+  files: (limit = 100) =>
+    api.get<RagFilesResponse>("/rag/files", { params: { limit } }).then((r) => r.data),
   upload: (files: File[], chunkStrategy = "recursive") => {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
