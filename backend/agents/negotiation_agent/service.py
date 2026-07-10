@@ -77,15 +77,76 @@ def _session_to_response(session: NegotiationSession, reasoning: str = "", **ext
     )
 
 
-def _graph_state_to_status(routing: str) -> NegotiationStatus:
-    mapping: dict[str, NegotiationStatus] = {
-        "NEGOTIATION_AGREED": "AGREED",
-        "NEGOTIATION_FAILED": "FAILED",
-        "HITL_APPROVAL": "HITL_PENDING",
-        "CALL_BUYER_AGENT": "ROUND",
-        "CALL_SUPPLIER_AGENT": "ROUND",
+def _graph_state_to_status(routing: str, hitl_required: bool = False) -> NegotiationStatus:
+    if routing == "NEGOTIATION_AGREED":
+        return "AGREED"
+    if routing == "NEGOTIATION_FAILED":
+        return "FAILED"
+    if routing == "HITL_APPROVAL":
+        return "HITL_PENDING"
+    # An agent drafted an outbound message this pass; it is L0-gated for approval.
+    # Reflect HITL_PENDING when the draft was flagged (near-floor / first-outbound),
+    # otherwise ROUND (active round, awaiting the next reply).
+    return "HITL_PENDING" if hitl_required else "ROUND"
+
+
+# ---------------------------------------------------------------------------
+# Conversation history — party-scoped transcript fed to the drafting agents
+# ---------------------------------------------------------------------------
+
+_HISTORY_MAX_MESSAGES = 10
+_HISTORY_BODY_CHARS = 400
+
+
+def _format_history(records: list[EmailHistoryRecord], party: str) -> str:
+    """Build a compact, party-scoped transcript of *actually communicated* emails.
+
+    Only messages the counterpart truly saw are included — outbound that reached
+    ``SENT`` / ``MODIFIED_SENT`` and inbound that is ``RECEIVED``. Unsent drafts
+    (``DRAFT`` / ``PENDING_APPROVAL`` / ``REJECTED`` / ``FAILED``) are excluded so
+    the agent never "continues" from a message that was never sent. Scoping by
+    ``party`` keeps the buyer thread out of the supplier agent's context and
+    vice-versa, so neither side's price can leak across.
+    """
+    relevant = [
+        r for r in records
+        if r.party == party and (
+            (r.direction == EmailDirection.INBOUND and r.status == EmailStatus.RECEIVED)
+            or (
+                r.direction == EmailDirection.OUTBOUND
+                and r.status in (EmailStatus.SENT, EmailStatus.MODIFIED_SENT)
+            )
+        )
+    ]
+    relevant.sort(key=lambda r: r.created_at)
+    relevant = relevant[-_HISTORY_MAX_MESSAGES:]
+
+    lines: list[str] = []
+    for r in relevant:
+        who = f"PortLess → {party}" if r.direction == EmailDirection.OUTBOUND else f"{party} → PortLess"
+        body = " ".join((r.body or "").split())
+        if len(body) > _HISTORY_BODY_CHARS:
+            body = body[:_HISTORY_BODY_CHARS] + "…"
+        lines.append(f"[round {r.round_no}] {who}: {body}")
+    return "\n".join(lines)
+
+
+async def _build_conversation_history(negotiation_id: str) -> dict[str, str]:
+    """Return party-scoped conversation transcripts for the drafting agents.
+
+    Sourced from the ``email_history`` audit log so each agent can continue its
+    thread coherently (reference prior offers, avoid re-conceding). Best-effort —
+    returns empty strings on any error so drafting never breaks.
+    """
+    try:
+        records = await get_email_repository().list_by_negotiation(negotiation_id)
+    except Exception as exc:
+        logger.warning("Could not load conversation history for %s: %s", negotiation_id, exc)
+        return {"buyer": "", "supplier": ""}
+    return {
+        "buyer": _format_history(records, "buyer"),
+        "supplier": _format_history(records, "supplier"),
     }
-    return mapping.get(routing, "ROUND")
 
 
 async def _create_and_gate_email(
@@ -202,7 +263,11 @@ async def _post_graph_notify(
     if session.status == "AGREED" and session.agreed_price:
         await _compute_realized_cms(session, repo)
 
-    get_publisher().publish(DomainEvent(
+    # Hand off to the deal pipeline on a terminal outcome (AGREED / FAILED).
+    if session.status in ("AGREED", "FAILED"):
+        await _sync_deal_status(session)
+
+    await get_publisher().publish(DomainEvent(
         topic=EventTopic.NEGOTIATION_ROUND,
         deal_id=session.deal_id,
         payload={
@@ -219,15 +284,36 @@ async def _post_graph_notify(
 
 
 async def _compute_realized_cms(session: NegotiationSession, repo: NegotiationRepository) -> None:
-    """Call Match Engine post-agreement to compute Realized CMS."""
+    """Call Match Engine post-agreement to compute Realized CMS.
+
+    Scores the agreed price (as buyer target) against the supplier's final ask with
+    pass-through verification — the supplier was already verified during Sourcing
+    before the deal reached negotiation. Best-effort: a failure never blocks the
+    agreement.
+    """
     try:
         from services.match_engine.service import score_match  # type: ignore[import]
-        cms_result = await score_match(
-            opportunity_id=session.trade_match_id,
-            buyer_price=session.agreed_price or session.buyer_target_price,
-            supplier_price=session.current_ask or session.supplier_quote_price,
+        from services.match_engine.schemas import (  # type: ignore[import]
+            ScoreRequest,
+            SupplierVerification,
         )
-        session.realized_cms = getattr(cms_result, "composite_score", None)
+
+        req = ScoreRequest(
+            deal_id=session.deal_id,
+            supplier_id=session.seller_id,
+            buyer_target_price=session.agreed_price or session.buyer_target_price,
+            supplier_quote_price=session.current_ask or session.supplier_quote_price,
+            currency="USD",
+            verification=SupplierVerification(
+                gst_verified=True, iec_active=True, dgft_denied=False
+            ),
+            supplier_to_port_km=300.0,
+            business_age_years=0.0,
+            udyam_registered=False,
+            annual_shipment_count=0,
+        )
+        resp = await score_match(req)
+        session.realized_cms = getattr(resp, "composite_score", None)
         session.updated_at = datetime.now(timezone.utc)
         await repo.save_session(session)
         logger.info(
@@ -237,6 +323,52 @@ async def _compute_realized_cms(session: NegotiationSession, repo: NegotiationRe
         )
     except Exception as exc:
         logger.warning("Realized CMS computation failed (non-fatal): %s", exc)
+
+
+async def _sync_deal_status(session: NegotiationSession) -> None:
+    """Advance the parent deal when the negotiation reaches a terminal outcome.
+
+    This is the hand-off to the rest of the pipeline:
+      AGREED → deal ``NEGOTIATION_AGREED``  (unblocks DealMaker PI issuance)
+      FAILED → deal ``NEGOTIATION_FAILED``  (routes to Exception Resolver / re-match)
+
+    The deal-service transition emits the corresponding domain event, so this is
+    the single point where the negotiation outcome propagates to other services.
+    Best-effort and idempotent: if the deal is already at the target status, or the
+    transition isn't currently valid, it is logged and swallowed — a failed hand-off
+    never crashes the round (it surfaces as the deal simply staying in NEGOTIATING).
+    """
+    target = {"AGREED": "NEGOTIATION_AGREED", "FAILED": "NEGOTIATION_FAILED"}.get(session.status)
+    if target is None:
+        return
+    try:
+        from services.deals.service import get_deal, update_status  # type: ignore[import]
+        from services.deals.schemas import UpdateStatusRequest  # type: ignore[import]
+        from shared.domain.enums import DealStatus
+
+        deal = await get_deal(session.deal_id)
+        current = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+        if current == target:
+            return  # already advanced — idempotent no-op
+
+        reason = (
+            f"Negotiation {session.negotiation_id} agreed at {session.agreed_price}"
+            if session.status == "AGREED"
+            else f"Negotiation {session.negotiation_id} failed after {session.round_no} round(s)"
+        )
+        await update_status(
+            session.deal_id,
+            UpdateStatusRequest(target_status=DealStatus(target), reason=reason),
+        )
+        logger.info(
+            "Deal %s → %s (from negotiation %s)",
+            session.deal_id, target, session.negotiation_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not sync deal %s to %s from negotiation %s: %s",
+            session.deal_id, target, session.negotiation_id, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +420,8 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         "inbound_message": None,
         "inbound_price": None,
         "operator_override_price": None,
+        "buyer_history": "",
+        "supplier_history": "",
         "current_bid": session.buyer_target_price,
         "current_ask": session.supplier_quote_price,
         "current_margin": 0.0,
@@ -310,7 +444,10 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         logger.error("Graph execution failed on start_negotiation: %s", exc)
         final_state = {**initial_state, "routing": "HITL_APPROVAL", "error": str(exc), "hitl_required": True}
 
-    session.status = _graph_state_to_status(final_state.get("routing", "HITL_APPROVAL"))
+    session.status = _graph_state_to_status(
+        final_state.get("routing", "HITL_APPROVAL"),
+        final_state.get("hitl_required", False),
+    )
     session.round_no = session.round_no + 1
     session.current_bid = final_state.get("current_bid", session.current_bid)
     session.current_ask = final_state.get("current_ask", session.current_ask)
@@ -373,6 +510,8 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
     else:
         session.current_ask = effective_price
 
+    history = await _build_conversation_history(negotiation_id)
+
     state: NegotiationGraphState = {
         "session": session,
         "logistics_cost": 0.0,
@@ -381,6 +520,8 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
         "inbound_message": request.inbound_message,
         "inbound_price": effective_price,
         "operator_override_price": request.operator_override_price,
+        "buyer_history": history["buyer"],
+        "supplier_history": history["supplier"],
         "current_bid": session.current_bid,
         "current_ask": session.current_ask,
         "current_margin": session.margin_at_current or 0.0,
@@ -403,7 +544,10 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
         logger.error("Graph execution failed on run_round: %s", exc)
         final_state = {**state, "routing": "HITL_APPROVAL", "error": str(exc), "hitl_required": True}
 
-    session.status = _graph_state_to_status(final_state.get("routing", "HITL_APPROVAL"))
+    session.status = _graph_state_to_status(
+        final_state.get("routing", "HITL_APPROVAL"),
+        final_state.get("hitl_required", False),
+    )
     session.round_no += 1
     session.current_bid = final_state.get("current_bid", session.current_bid)
     session.current_ask = final_state.get("current_ask", session.current_ask)

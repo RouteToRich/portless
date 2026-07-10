@@ -47,17 +47,15 @@ class DocumentRecord(BaseModel):
     doc_id: str
     deal_id: str
     doc_type: DocumentType
-    status: Literal["PENDING", "RENDERED", "SIGNED", "FAILED"] = "PENDING"
+    status: Literal["PENDING", "RENDERED", "FAILED"] = "PENDING"
 
     # Rendered artifact
     storage_uri: str | None = None
     content_hash: str | None = None
-    signed: bool = False
 
     # Audit timestamps
     created_at: datetime
     rendered_at: datetime | None = None
-    signed_at: datetime | None = None
 
     # Idempotency
     idempotency_key: str | None = None
@@ -141,7 +139,6 @@ class DocumentResponse(BaseModel):
     status: str
     storage_uri: str | None = None
     content_hash: str | None = None
-    signed: bool = False
     created_at: datetime
     rendered_at: datetime | None = None
 
@@ -154,7 +151,6 @@ class DocumentResponse(BaseModel):
             status=r.status,
             storage_uri=r.storage_uri,
             content_hash=r.content_hash,
-            signed=r.signed,
             created_at=r.created_at,
             rendered_at=r.rendered_at,
         )

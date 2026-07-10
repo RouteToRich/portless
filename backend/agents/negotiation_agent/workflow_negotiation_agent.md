@@ -24,6 +24,7 @@
 13. [Configuration Reference](#13-configuration-reference)
 14. [Layman's Guide — Plain English with Real-World Scenarios](#14-laymans-guide--plain-english-with-real-world-scenarios)
 15. [Implementation Status](#15-implementation-status)
+16. [Known Issues & Gaps (2026-07-10 review)](#16-known-issues--gaps-2026-07-10-review)
 
 ---
 
@@ -94,6 +95,15 @@ PortLess acts as a **neutral intermediary**: the Buyer-Facing Agent always talks
 margin% = (buyer_price - supplier_price - logistics - cost_envelope) / buyer_price × 100
 Initial = (430 - 480 - 20 - 25) / 430 × 100 = −22%  ← well below floor, negotiation needed
 ```
+
+> ✅ **Fixed 2026-07-10.** An earlier build short-circuited to `HITL_APPROVAL`
+> *before* any agent drafted a message, so no email was created for margins below
+> the warning band. The graph now **drafts first, then gates**: the near-floor and
+> first-outbound conditions set `hitl_required=True` on the resulting draft instead
+> of terminating the pass, and every draft is L0-gated for operator approval. The
+> walk-through below is accurate again — one nuance: a non-terminal round ends the
+> graph pass after a *single* outbound draft (it no longer loops internally). See
+> [§16](#16-known-issues--gaps-2026-07-10-review).
 
 ---
 
@@ -261,12 +271,13 @@ POST /negotiation-agent/negotiations/neg-3f8a1.../round
 }
 ```
 
-Because `operator_override_price` is set, the orchestrator sees the override flag and routes directly to `NEGOTIATION_AGREED`:
-- `agreed_price = 447.0`
+`operator_override_price` sets the effective price for that party (here the buyer bid → 447.0); it is **not** a direct "agree now" flag — the orchestrator never reads it. On the next orchestrator pass the deterministic convergence guard runs: with `bid=447.0` and `ask≈447.05` the gap (0.05) is within the concession step, and *if* the override yields a margin ≥ floor, `check_convergence()` returns true, so routing becomes `NEGOTIATION_AGREED` and `agreed_price = midpoint(bid, ask)`:
 - Session saved: `status=AGREED`
-- `_compute_realized_cms()` calls Match Engine to recompute the final CMS score.
-- Domain event `negotiation.agreed` published.
+- `_compute_realized_cms()` attempts to recompute the final CMS via Match Engine (⚠️ currently a no-op — wrong call signature; see [§16.2](#16-known-issues--gaps-2026-07-10-review)).
+- Domain event `negotiation.round` published (payload carries `status=AGREED`).
 - Deal transitions to `NEGOTIATION_AGREED` → dealmaker issues a PI.
+
+> ⚠️ If the override price still leaves margin below the floor, convergence does **not** fire — the guard routes to `HITL_APPROVAL` (near floor) or `NEGOTIATION_FAILED` (max rounds) instead. There is no code path that forces `AGREED` from the override flag alone.
 
 ---
 
@@ -310,8 +321,9 @@ The LLM payload includes the full `rag_context` string so the orchestrator under
 ### Node 2: `buyer_agent_node`
 
 Drafts a message to the **buyer**. Key behaviors:
-- Computes midpoint and presents a counter at or above it (never reveals cost floor).
+- Presents a counter **at or above `floor_price`** — the minimum CIF price it may quote. The LLM never receives the supplier's raw ask, the midpoint, logistics, or the cost envelope — only this non-invertible floor — so the supplier's price cannot leak into a buyer email (hardened 2026-07-10).
 - Uses RAG context to anchor the message (e.g., "Thailand benchmark is $xxx").
+- Receives a **party-scoped** `conversation_history` (prior *sent/received* buyer emails, from `email_history`) so it continues the thread instead of restarting each round. The supplier thread is never included — this prevents the supplier's price from leaking to the buyer-facing LLM.
 - Signals "final offer" when `concession_budget_remaining < 0.5 × concession_step`.
 - Outputs `counter_price_usd`, `outbound_message`, `negotiated_terms` (JSON).
 - Updates `current_bid` in the state.
@@ -320,7 +332,8 @@ Drafts a message to the **buyer**. Key behaviors:
 
 Drafts a message to the **supplier**. Key behaviors:
 - Computes `implied_max = bid × (1 − floor%) − logistics − cost_envelope`.
-- Never reveals the buyer's actual bid or PortLess margin.
+- The LLM receives only `implied_max_supplier_price_usd` (its price ceiling), **never the buyer's raw bid** — so the buyer's price cannot leak into a supplier email (hardened 2026-07-10).
+- Receives a **party-scoped** `conversation_history` (prior sent/received supplier emails) to continue the thread; the buyer thread is never included.
 - Uses `inbound_supplier_message` to acknowledge their reply before countering.
 - Updates `current_ask` in the state.
 
@@ -1133,8 +1146,9 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 
 ## 15. Implementation Status
 
-> Last reviewed: 2026-07-07.  
-> Legend: ✅ Fully implemented · ⚠️ Partial / stub · ❌ Not started · 💡 Nice-to-have
+> Last reviewed: 2026-07-10.  
+> Legend: ✅ Fully implemented · ⚠️ Partial / stub · ❌ Not started / broken · 💡 Nice-to-have  
+> **See [§16](#16-known-issues--gaps-2026-07-10-review) for the code-vs-doc audit** — several rows below were corrected on 2026-07-10.
 
 ### Core negotiation engine
 
@@ -1163,11 +1177,11 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 |---------|--------|-------|
 | `start_negotiation()` — session init + first graph tick | ✅ | Includes RAG load, crash-safe session write |
 | `run_round()` — ingest counter-offer + graph run | ✅ | Updates bid/ask, saves round record |
-| Operator override price (`operator_override_price`) | ✅ | Forces NEGOTIATION_AGREED routing |
+| Operator override price (`operator_override_price`) | ⚠️ | Sets the effective bid/ask for the round; does **not** force `NEGOTIATION_AGREED` — agreement still requires the convergence guard. See §16.3 |
 | Deal idempotency (reuse existing session) | ✅ | Reuses non-terminal session for same `deal_id` |
 | NegotiationSession MongoDB persistence | ✅ | Motor + InMemory fallback |
 | NegotiationRound immutable audit log | ✅ | One record per `run_round()` call |
-| Post-agreement Realized CMS via Match Engine | ✅ | Non-fatal; logs warning on failure |
+| Post-agreement Realized CMS via Match Engine | ✅ | Fixed 2026-07-10 — builds a proper `ScoreRequest`; `realized_cms` now populated. See §16.2 |
 | `negotiation.round` domain event publishing | ✅ | After every round; NoopPublisher in dev |
 | List negotiations / get session / list rounds | ✅ | 3 read endpoints |
 
@@ -1228,10 +1242,12 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 | REST API — all 7 endpoints | ✅ | start, run_round, get, list, rounds, emails, email-threads |
 | HTTP client for microservice mode | ✅ | `client.py` — `NegotiationAgentClient` |
 | HITL saga callback `SEND_NEGOTIATION_EMAIL` | ✅ | Wired in `hitl_approval/callbacks.py` |
-| Deal status transition on AGREED/FAILED | ✅ | Via `deals.service` patch in orchestration flow |
-| Dealmaker PI trigger on AGREED | ✅ | Downstream deal transition to `NEGOTIATION_AGREED` |
+| Deal status transition on AGREED/FAILED | ✅ | Wired 2026-07-10 — `_sync_deal_status()` calls `deals.update_status` (AGREED → `NEGOTIATION_AGREED`, FAILED → `NEGOTIATION_FAILED`) from `_post_graph_notify`; best-effort + idempotent. The deal-service transition emits the domain event, so this is the single hand-off point to other services. |
+| Dealmaker PI trigger on AGREED | ⚠️ | The AGREED deal transition **unblocks** DealMaker's `issue_pi` (which gates on `NEGOTIATION_AGREED`), but the PI is **not** auto-fired here — it needs quantity/incoterm/ports/buyer-address the negotiation session doesn't hold, so `POST /dealmaker/pi` remains a separate operator/orchestrator step. |
 | Mock seed data for UI dev | ✅ | `_mock_seed.py` — 5 scenarios, 15 emails |
-| Integration / end-to-end tests | ❌ | Unit tests in `tests/test_negotiation_agent.py` cover schemas/guards; no full flow test |
+| Automated tests | ✅ | Added 2026-07-10 — `tests/test_negotiation_agent.py` (32 tests): guards, orchestrator routing, graph draft, email lifecycle, realized-CMS, conversation-history, price-secrecy, deal hand-off. See §16.4 |
+| Conversation-history context in agent drafts | ✅ | Party-scoped transcript of sent/received emails injected into buyer/supplier LLM payloads so drafts continue the thread. `web search` enrichment still pending (§9). |
+| Counterparty price secrecy (hard guarantee) | ✅ | Hardened 2026-07-10 — the buyer agent gets `floor_price` (not the raw ask/midpoint); the supplier agent gets `implied_max` (not the raw bid). Raw counterparty price never enters the LLM payload; leak-audit tests assert it. |
 
 ---
 
@@ -1250,3 +1266,103 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 | LLM rate limiting / circuit breaker | Low | Noted in `llm.py` as future; add via token-bucket + half-open state |
 | Multi-party negotiations (3+ parties) | Low | Current design is strictly bilateral buyer ↔ supplier |
 | Telegram channel wiring | Low | Channel enum already in schema |
+
+---
+
+## 16. Known Issues & Gaps (2026-07-10 review)
+
+A code-vs-doc audit on **2026-07-10** found that sections 1–14 described the
+**intended** design while the shipped code diverged. Items **16.1, 16.2 and 16.4
+were fixed the same day** (see the ✅ resolution notes); **16.3** was a doc-only
+overstatement (now corrected) and **16.5** has been cleaned up. Ranked
+most-impactful first.
+
+### 16.1 — Agent nodes are suppressed for below-floor margins → few / no emails drafted (High)
+
+`orchestrator_node` evaluates its guards in priority order and **returns to
+`__end__` as soon as one fires, before any buyer/supplier agent node runs**. Two
+of those guards dominate the body of a real negotiation:
+
+- **Near-floor guard** — `is_near_margin_floor()` returns
+  `margin_pct < margin_floor_pct + hitl_margin_warning_pct`. Because a negotiation
+  runs *below* the floor until it converges, this is true on essentially every
+  early round (a −22 % opening margin counts as "near floor"), so routing goes to
+  `HITL_APPROVAL` rather than to an agent.
+- **First-outbound guard** — `is_first_round AND hitl_on_first_outbound`
+  (default `True`) routes to `HITL_APPROVAL` on round 0.
+
+When routing is `HITL_APPROVAL` / `NEGOTIATION_AGREED` / `NEGOTIATION_FAILED`, no
+agent node runs, so `buyer_outbound_message` / `supplier_outbound_message` stay
+empty and `_post_graph_notify()` creates **no email draft and no
+`SEND_NEGOTIATION_EMAIL` approval**. Net effect: the agents draft a counter-offer
+(and therefore an email) only in the narrow window where margin is *already*
+≥ floor + warning — i.e. when the deal is already profitable. During the hard part
+of the negotiation the agent produces no outreach, and the autonomous email
+back-and-forth in §2/§14 does not occur unless an operator manually drives each
+round with `operator_override_price`.
+
+**This is the answer to "does the agent email whenever needed?":** the *decision*
+to draft an email is driven purely by graph output (did an agent node produce a
+message?), and the *send* is correctly gated by the DB-status lifecycle
+(DRAFT → PENDING_APPROVAL → SENT via an L0 HITL approval — see §7, which is
+accurate). But the guard layer suppresses the agent nodes for below-floor margins,
+so the drafting step rarely runs in practice.
+
+**Recommended fix (needs a design decision):** gate the *email send* (already
+L0-HITL-gated in `_create_and_gate_email`), not the *drafting*. Let the agent node
+run and draft the message, then route to HITL for approval. Concrete options:
+(a) reorder so the agent drafts first and the HITL gate applies to the resulting
+draft; (b) narrow `is_near_margin_floor` to the warning *band*
+(`floor ≤ margin < floor + warn`) so deeply-negative margins keep negotiating;
+(c) drop the redundant first-outbound short-circuit, since every email already
+passes an L0 gate regardless.
+
+**✅ Fixed 2026-07-10 (option a).** `orchestrator_node` no longer returns before
+drafting: near-floor and first-outbound now set `hitl_required=True` and fall
+through to agent routing (with a safety clamp that forces a buyer/supplier route on
+any non-terminal pass), and the agent nodes end the pass after one draft
+(`buyer_agent` / `supplier_agent` → `END`). A below-floor round now produces exactly
+one L0-gated outbound draft. Covered by
+`tests/test_negotiation_agent.py::test_graph_below_floor_drafts_one_message_and_ends`
+plus the orchestrator routing tests.
+
+### 16.2 — `_compute_realized_cms()` always fails (Medium)
+
+`service._compute_realized_cms()` calls
+`score_match(opportunity_id=…, buyer_price=…, supplier_price=…)`, but Match
+Engine's real signature is `score_match(payload: ScoreRequest) -> ScoreResponse`.
+The call raises `TypeError` on every invocation; it is wrapped in `try/except` and
+logged as "non-fatal", so **`realized_cms` is never populated** after an agreement.
+Fix: build a `ScoreRequest` and pass it, exactly as `sourcing._rescore` and
+`deals._score_seller` already do.
+
+**✅ Fixed 2026-07-10.** `_compute_realized_cms()` now builds a `ScoreRequest`
+(agreed price as buyer target vs the supplier's final ask, pass-through
+verification) and reads `resp.composite_score`. Covered by
+`test_compute_realized_cms_populates_score`.
+
+### 16.3 — `operator_override_price` is not an "agree now" flag (Medium, doc-only)
+
+`operator_override_price` only sets the effective bid/ask for that round
+(`service.run_round`). The orchestrator never reads it, so **no code path forces
+`NEGOTIATION_AGREED` from the override alone** — agreement still requires the
+convergence guard (gap ≤ step AND margin ≥ floor). The §2 "Operator Override →
+AGREED" narrative and the §15 override row overstated this; both corrected in this
+revision.
+
+### 16.4 — No automated tests (Medium)
+
+~~There is no `tests/test_negotiation_agent.py`.~~
+
+**✅ Fixed 2026-07-10.** Added `tests/test_negotiation_agent.py` (32 tests):
+`guards.py` pure functions, orchestrator routing (AGREED / FAILED / near-floor /
+first-outbound / healthy / terminal-clamp), a graph end-to-end draft, the email
+lifecycle (send / modify / reject / fail / inbound), realized-CMS, party-scoped
+conversation-history injection, the price-secrecy hardening (raw counterparty
+price / BATNA never enter either agent's LLM payload), and the deal hand-off
+(AGREED/FAILED → `deals.update_status`, idempotent + error-safe).
+
+### 16.5 — Stale bytecode (Low)
+
+`__pycache__/email_dispatcher.cpython-313.pyc` had no corresponding source — the
+module was renamed to `email_history.py`. **✅ Removed 2026-07-10.**

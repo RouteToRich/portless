@@ -50,6 +50,8 @@ class NegotiationGraphState(TypedDict, total=False):
     inbound_message: str | None
     inbound_price: float | None
     operator_override_price: float | None
+    buyer_history: str        # party-scoped transcript of prior buyer emails
+    supplier_history: str     # party-scoped transcript of prior supplier emails
 
     # Mutable per-node outputs
     current_bid: float | None
@@ -150,25 +152,21 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
             "reasoning": f"Max rounds ({policy.max_rounds}) exhausted without convergence",
         }
 
+    # Not terminal: an agent will draft a counter this pass. The near-floor and
+    # first-outbound conditions no longer short-circuit *before* a message is
+    # drafted — they flag the resulting draft for mandatory HITL review instead.
+    # (Every outbound email is L0-gated in _post_graph_notify regardless, so an
+    # operator must still sign off before any message is actually sent.)
+    force_hitl = bool(near_floor) or bool(
+        state.get("is_first_round") and settings.hitl_on_first_outbound
+    )
+    hitl_reason = ""
     if near_floor:
-        return {
-            **state,
-            "routing": "HITL_APPROVAL",
-            "current_margin": margin_pct,
-            "hitl_required": True,
-            "reasoning": (
-                f"Margin {margin_pct:.2f}% near floor {policy.margin_floor_pct}% — HITL required"
-            ),
-        }
-
-    if state.get("is_first_round") and settings.hitl_on_first_outbound:
-        return {
-            **state,
-            "routing": "HITL_APPROVAL",
-            "current_margin": margin_pct,
-            "hitl_required": True,
-            "reasoning": "First outbound message requires operator approval",
-        }
+        hitl_reason = (
+            f"Margin {margin_pct:.2f}% near floor {policy.margin_floor_pct}% — draft gated for HITL. "
+        )
+    elif force_hitl:
+        hitl_reason = "First outbound — draft gated for HITL. "
 
     # Delegate routing decision to LLM Gateway
     payload = {
@@ -214,13 +212,20 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
             hitl_required=False,
         )
 
+    # Safety clamp: on a non-terminal pass we must route to an agent so a message
+    # is drafted. If the LLM returned a terminal/HITL routing, fall back to a
+    # deterministic buyer/supplier choice based on the last inbound party.
+    routing = decision.action_routing
+    if routing not in ("CALL_BUYER_AGENT", "CALL_SUPPLIER_AGENT"):
+        routing = "CALL_SUPPLIER_AGENT" if state.get("party") == "buyer" else "CALL_BUYER_AGENT"
+
     return {
         **state,
         "orchestrator_decision": decision,
-        "routing": decision.action_routing,
+        "routing": routing,
         "current_margin": margin_pct,
-        "hitl_required": decision.hitl_required,
-        "reasoning": decision.reasoning,
+        "hitl_required": decision.hitl_required or force_hitl,
+        "reasoning": hitl_reason + (decision.reasoning or ""),
     }
 
 
@@ -232,26 +237,30 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
     session: NegotiationSession = state["session"]
     bid = _current_bid(state)
     ask = _current_ask(state)
-    midpoint = compute_midpoint_price(bid, ask)
     logistics = state.get("logistics_cost", 0.0)
-    _, margin = verify_payout_and_margin(session, bid, ask, logistics)
     env_total = session.cost_envelope.total() if session.cost_envelope else 0.0
-    budget_remaining = bid - (
-        session.policy.margin_floor_pct / 100 * bid + ask + logistics + env_total
-    )
+    floor_pct = session.policy.margin_floor_pct
+    # Minimum CIF price the buyer must pay for PortLess to clear its margin floor.
+    # It is derived from the supplier ask + costs, but the LLM never receives the
+    # raw ask, the midpoint, logistics, or the cost envelope — so the supplier's
+    # actual price cannot be recovered from this bound. (The node keeps `ask` only
+    # for the deterministic LLM-failure fallback below, never in the payload.)
+    denom = max(1.0 - floor_pct / 100.0, 0.01)
+    floor_price = round((ask + logistics + env_total) / denom, 2)
+    midpoint = compute_midpoint_price(bid, ask)  # local only — fallback, not sent
 
     payload = {
         "buyer_id": session.buyer_id,
-        "current_ask": ask,
         "current_bid": bid,
+        "floor_price": floor_price,
         "round_no": session.round_no,
         "max_rounds": session.policy.max_rounds,
         "target_margin_pct": session.policy.target_margin_pct,
-        "margin_floor_pct": session.policy.margin_floor_pct,
-        "midpoint_price": midpoint,
-        "concession_budget_remaining": round(budget_remaining, 4),
+        "margin_floor_pct": floor_pct,
+        "concession_budget_remaining": round(bid - floor_price, 4),
         "rag_context": session.rag_context,
         "inbound_buyer_message": state.get("inbound_message") or "",
+        "conversation_history": state.get("buyer_history", ""),
     }
 
     try:
@@ -296,7 +305,6 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
     payload = {
         "seller_id": session.seller_id,
         "current_ask": ask,
-        "current_bid": bid,
         "implied_max_supplier_price_usd": round(implied_max, 4),
         "round_no": session.round_no,
         "max_rounds": session.policy.max_rounds,
@@ -304,6 +312,7 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
         "margin_floor_pct": session.policy.margin_floor_pct,
         "rag_context": session.rag_context,
         "inbound_supplier_message": state.get("inbound_message") or "",
+        "conversation_history": state.get("supplier_history", ""),
         "product_code": session.product_code,
         "concession_budget_remaining": round(implied_max - ask, 4),
     }
@@ -378,6 +387,10 @@ def build_negotiation_graph() -> Any:
             "__end__": END,
         },
     )
-    graph.add_edge("buyer_agent", "orchestrator")
-    graph.add_edge("supplier_agent", "orchestrator")
+    # One inbound → one outbound per graph pass: after an agent drafts its message
+    # the pass ends (it does not loop back to the orchestrator for another internal
+    # round). Convergence is re-evaluated on the next run_round() call, once a real
+    # counter-offer has arrived.
+    graph.add_edge("buyer_agent", END)
+    graph.add_edge("supplier_agent", END)
     return graph.compile()

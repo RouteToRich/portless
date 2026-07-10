@@ -98,10 +98,16 @@ class RAGSettings(BaseSettings):
     # S3 implementation lives in file_store.py (S3FileStore).
     file_store_backend: str = "mongodb"          # "mongodb" | "s3"
     file_store_gridfs_bucket: str = "rag_files"  # GridFS bucket name
-    # S3 placeholders — only read when file_store_backend="s3"
-    s3_bucket: str = ""
-    s3_region: str = ""
-    s3_endpoint_url: str = ""                     # for S3-compatible stores (MinIO etc.)
+    # S3 / blob-store settings — only read when file_store_backend="s3".
+    # Leave the credential fields empty to use the ambient AWS credential chain
+    # (IAM role / ~/.aws / env). Fill them in for an explicit key pair or an
+    # S3-compatible store (MinIO, R2, etc.).
+    s3_bucket: str = ""                           # RAG_S3_BUCKET
+    s3_region: str = ""                           # RAG_S3_REGION
+    s3_endpoint_url: str = ""                     # RAG_S3_ENDPOINT_URL — MinIO/R2/etc.
+    s3_access_key_id: str = ""                    # RAG_S3_ACCESS_KEY_ID (placeholder)
+    s3_secret_access_key: str = ""                # RAG_S3_SECRET_ACCESS_KEY (placeholder)
+    s3_prefix: str = ""                           # RAG_S3_PREFIX — optional key prefix
 
     # ──────────────────────────────────────────────── Security
     use_llm_prompt_injection_classifier: bool = False
@@ -109,13 +115,19 @@ class RAGSettings(BaseSettings):
     # ──────────────────────────────────────────────── Evaluation
     advanced_eval_provider: str = "local"  # "local" | "ragas" | "deepeval" | "llm"
 
-    # ─────────────────────── placeholder: graph retrieval (future)
-    # TODO(graph_rag): set graph_retrieval_enabled=true when graph DB is wired.
-    #   Supported backends: "neo4j", "arangodb", "falkordb"
+    # ─────────────────────────────────── graph retrieval (hybrid RAG)
+    # Set graph_retrieval_enabled=true and fill graph_db_uri/user/password to add
+    # a relationship-aware retrieval leg alongside vector + keyword search. The
+    # Neo4j backend is implemented (graph_store.py); "arangodb" / "falkordb" fall
+    # back to a no-op until a backend is added. When disabled, the query pipeline
+    # runs exactly as before (empty graph results, fused harmlessly by RRF).
     graph_retrieval_enabled: bool = False
     graph_retrieval_top_k: int = 8
-    graph_db_uri: str = ""                  # e.g. bolt://localhost:7687 for Neo4j
     graph_db_backend: str = "neo4j"         # "neo4j" | "arangodb" | "falkordb"
+    graph_db_uri: str = ""                  # e.g. bolt://localhost:7687 (or neo4j+s://…)
+    graph_db_user: str = ""                 # RAG_GRAPH_DB_USER (placeholder)
+    graph_db_password: str = ""             # RAG_GRAPH_DB_PASSWORD (placeholder)
+    graph_db_database: str = ""             # RAG_GRAPH_DB_DATABASE — blank = server default
 
 
 settings = RAGSettings()

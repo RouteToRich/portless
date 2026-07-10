@@ -48,7 +48,6 @@ from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from rank_bm25 import BM25Okapi
 
 from .config import settings
 
@@ -300,6 +299,8 @@ class VectorStore:
 
         if not raw_docs:
             return []
+
+        from rank_bm25 import BM25Okapi  # lazy — optional dependency
 
         texts = [d["content"] for d in raw_docs]
         tokenized = [_tokenize(t) for t in texts]

@@ -13,10 +13,12 @@ the same process (combined monolith) or across HTTP (microservice):
   3. Pick the highest-scoring SOURCE candidate as the winning supplier
   4. Emit ``deal.created`` and mark the opportunity CONVERTED
 
-``update_status`` enforces the deal state machine from
-``shared.domain.state_machine``.  Business guards (margin floor, dual-doc
-match) are NOT called yet because the guard stubs raise ``NotImplementedError``
-— they will be wired once Sourcing resolves the financial data.
+``update_status`` enforces the deal state machine topology from
+``shared.domain.state_machine``.  The deterministic business guards
+(``margin_floor_ok``, ``dual_doc_match_ok``) are implemented there but are
+applied by the caller at the point the financial / document inputs exist
+(e.g. the margin floor at PO issuance in DealMaker), not inside this
+topology-only transition check.
 
 Exceptions
 ----------
@@ -325,9 +327,10 @@ async def update_status(deal_id: str, payload: UpdateStatusRequest) -> DealRecor
 
     Topology check (``can_transition``) is always enforced.
 
-    Business guards (``margin_floor_ok``, ``dual_doc_match_ok``) are NOT called
-    yet — the guard stubs raise ``NotImplementedError`` until Sourcing resolves
-    the financial inputs.  Add guard calls here once the stubs are implemented.
+    The deterministic business guards (``margin_floor_ok``, ``dual_doc_match_ok``)
+    are implemented in ``shared.domain.state_machine`` but are evaluated by the
+    caller that holds the financial / document inputs (e.g. DealMaker enforces the
+    margin floor at PO issuance), not inside this topology-only check.
     """
     repo = get_repository()
     deal = await repo.get(deal_id)
