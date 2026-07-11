@@ -324,6 +324,13 @@ export function useRagFiles() {
   });
 }
 
+// Test-chat: runs the full RAG pipeline for one question (no server-side history).
+export function useRagQuery() {
+  return useMutation({
+    mutationFn: (question: string) => RagApi.query(question),
+  });
+}
+
 // Polls a running ingestion job until it completes or fails.
 export function useRagJob(jobId: string | null) {
   const qc = useQueryClient();

@@ -39,6 +39,7 @@ import dealDispute from "@mocked/deals/deal_detail_dispute.json";
 
 // RAG knowledge base.
 import ragStats from "@mocked/rag/stats.json";
+import ragQueryFixture from "@mocked/rag/query.json";
 
 // Deal-detail sub-resources.
 import matchScoreFixture from "@mocked/match_engine/score_result.json";
@@ -330,6 +331,14 @@ const ragFiles: MockRagFile[] = [
   },
 ];
 
+// Reuses the single realistic query.json fixture for every question, just
+// swapping in the asked question so the test-chat panel feels responsive
+// without needing a fixture per possible question.
+function ragQueryAnswer(body: RawObj) {
+  const question = String(body.question ?? "").trim() || "What documents are needed?";
+  return { ...ragQueryFixture, question };
+}
+
 function ragStartJob(body: RawObj) {
   const id = `rag-job-${Date.now().toString(16)}`;
   ragJobs.set(id, Date.now());
@@ -459,6 +468,7 @@ const routes: Record<string, Handler> = {
   "POST /rag/ingest": ({ body }) => ragStartJob(body),
   "GET /rag/ingest/:id": ({ id }) => ragJobStatus(id),
   "GET /rag/files": () => ({ backend: "mongodb", count: ragFiles.length, files: ragFiles }),
+  "POST /rag/query": ({ body }) => ragQueryAnswer(body),
 
   // Deal-detail sub-resources
   "GET /match-engine/matches": () => normalizeMatchScore(matchScoreFixture as RawObj),

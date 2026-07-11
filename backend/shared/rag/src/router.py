@@ -297,6 +297,7 @@ async def rag_query(request: QueryRequest) -> QueryResponse:
             "section": chunk.metadata.get("section"),
             "page_number": chunk.metadata.get("page_number"),
             "chunk_id": chunk.metadata.get("chunk_id"),
+            "content": chunk.page_content,
         }
         for chunk in result.get("selected_chunks", [])
     ]

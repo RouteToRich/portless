@@ -20,7 +20,8 @@ mocked/
 ├── rag/                       RAG knowledge base (Knowledge Base screen)
 │   ├── stats.json             GET /rag/stats — indexed chunk count
 │   ├── ingest_accepted.json   POST /rag/upload — 202 job accepted
-│   └── job_completed.json     GET /rag/ingest/{job_id} — completed job
+│   ├── job_completed.json     GET /rag/ingest/{job_id} — completed job
+│   └── query.json             POST /rag/query — test-chat answer + retrieved chunks
 │
 ├── deals/                     Deal service responses
 │   ├── deal_list.json         GET /deals — 4 deals in different states

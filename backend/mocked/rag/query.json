@@ -1,0 +1,36 @@
+{
+  "question": "What are the standard payment terms for a rice export deal under HS 1006?",
+  "answer": "Standard payment terms for HS 1006 (rice) export deals are typically 30% advance via escrow hold and 70% against shipping documents released after QC pass [1]. Suppliers on the approved panel default to a Letter of Credit at sight when the deal value exceeds $50,000, falling back to escrow-guard milestone releases below that threshold [2].",
+  "sources": [
+    {
+      "source": "trade-playbook-rice-hs1006.pdf",
+      "title": "Rice HS1006 Trade Playbook",
+      "section": "Payment Structuring",
+      "page_number": 4,
+      "chunk_id": "chunk-rice-0004",
+      "content": "For HS 1006 rice shipments, the recommended payment structure is 30% advance payment held in escrow at PI acceptance, with the remaining 70% released against shipping documents (Bill of Lading, Certificate of Origin, QC pass certificate) once SGS inspection clears. This structure balances supplier cash-flow needs against buyer risk on quality non-conformance."
+    },
+    {
+      "source": "supplier-terms-glossary.md",
+      "title": "Supplier Terms Glossary",
+      "section": "Payment Instruments",
+      "page_number": null,
+      "chunk_id": "chunk-glossary-0012",
+      "content": "Letter of Credit (LC) at sight: default instrument for deals above $50,000 with approved-panel suppliers. Below that threshold, escrow-guard milestone releases (advance + on-QC + on-dispatch) are preferred for lower transaction overhead and faster supplier payout cycles."
+    }
+  ],
+  "citation_validation": {
+    "valid": true,
+    "cited_numbers": [1, 2],
+    "missing_citations": false,
+    "invalid_citations": [],
+    "available_citations": [1, 2]
+  },
+  "evaluation_metrics": {
+    "faithfulness": 0.91,
+    "context_precision": 1.0,
+    "answer_relevance": 0.78,
+    "evaluator": "local",
+    "advanced_notes": "Local lexical metrics only."
+  }
+}

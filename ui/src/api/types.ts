@@ -160,6 +160,40 @@ export interface RagFilesResponse {
   files: RagFile[];
 }
 
+// RAG chat / test console — POST /rag/query (full retrieve → generate pipeline)
+export interface RagSourceChunk {
+  source?: string | null;
+  title?: string | null;
+  section?: string | null;
+  page_number?: number | null;
+  chunk_id?: string | null;
+  content?: string | null;
+}
+
+export interface RagCitationValidation {
+  valid: boolean;
+  cited_numbers: number[];
+  missing_citations: boolean;
+  invalid_citations: number[];
+  available_citations: number[];
+}
+
+export interface RagEvaluationMetrics {
+  faithfulness: number;
+  context_precision: number;
+  answer_relevance: number;
+  evaluator: string;
+  advanced_notes: string;
+}
+
+export interface RagQueryResponse {
+  question: string;
+  answer: string;
+  sources: RagSourceChunk[];
+  citation_validation: RagCitationValidation;
+  evaluation_metrics: RagEvaluationMetrics;
+}
+
 export interface CreateDealRequest {
   operator_id: string;
   hs_code: string;

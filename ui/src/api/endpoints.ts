@@ -20,6 +20,7 @@ import type {
   RagFilesResponse,
   RagIngestResponse,
   RagJobStatus,
+  RagQueryResponse,
   RagStats,
   ResolveApprovalRequest,
   TokenResponse,
@@ -161,4 +162,7 @@ export const RagApi = {
       })
       .then((r) => r.data);
   },
+  // Full retrieve → rerank → generate pipeline, used by the Knowledge Base test chat.
+  query: (question: string) =>
+    api.post<RagQueryResponse>("/rag/query", { question }).then((r) => r.data),
 };

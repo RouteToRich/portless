@@ -20,6 +20,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ChatPanel } from "@/components/rag/ChatPanel";
 
 const ACCEPTED = ".pdf,.txt,.md,.markdown,.docx,.html,.csv,.json";
 const STRATEGIES = ["recursive", "semantic"] as const;
@@ -80,7 +81,8 @@ export function KnowledgeBase() {
   }
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-6 max-w-7xl items-start">
+    <div className="space-y-4 min-w-0">
       {/* Header */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -336,6 +338,12 @@ export function KnowledgeBase() {
             ))}
           </div>
         )}
+      </div>
+    </div>
+
+      {/* Test chat — query the pipeline and inspect retrieved chunks */}
+      <div className="xl:sticky xl:top-4 h-[calc(100vh-6rem)] min-h-[520px]">
+        <ChatPanel />
       </div>
     </div>
   );
