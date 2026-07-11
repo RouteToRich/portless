@@ -11,11 +11,40 @@ PyJWT>=2.8
 motor>=3.3
 apscheduler>=3.10
 jinja2>=3.1
-langchain>=0.2
-langchain-openai>=0.1
-langchain-anthropic>=0.1
-langchain-groq>=0.2
-langgraph>=0.1
+# Pinned below 1.0: LangChain's 1.x line (released independently of this repo)
+# restructures langchain_core.language_models (BaseChatModel import breaks) and
+# likely more — this codebase is written against the pre-1.0 API. An unbounded
+# `uv pip install <anything-unrelated>` will happily re-resolve these to latest
+# 1.x otherwise, since a bare `>=` constraint doesn't stop that — it already
+# happened once. Bump the ceiling deliberately if the code is ever migrated.
+langchain>=0.2,<1.0
+langchain-core>=0.2,<1.0
+langchain-community>=0.2,<1.0
+langchain-text-splitters>=0.2,<1.0
+langchain-openai>=0.1,<1.0
+langchain-anthropic>=0.1,<1.0
+langchain-groq>=0.2,<1.0
+langgraph>=0.1,<1.0
+# Gemini embeddings (shared.llm_gateway.embeddings.GeminiEmbeddings) — used
+# directly via the google-genai SDK, no LangChain integration package needed.
+google-genai>=1.0
 # Optional graph-retrieval backend — only imported when enabled (lazy import +
 # graceful fallback to a no-op): RAG_GRAPH_RETRIEVAL_ENABLED=true, RAG_GRAPH_DB_BACKEND=neo4j
 neo4j>=5.14
+
+# --- RAG module (backend/shared/rag) ---
+# Core pipeline
+rank-bm25
+numpy
+scikit-learn
+# PDF loading
+pypdf
+pdfplumber
+# Cross-encoder reranker — active (RAG_USE_CROSS_ENCODER_RERANKER=true).
+sentence-transformers>=3.0
+# The following are optional — only needed when the matching RAG setting is
+# enabled; safe to leave uninstalled otherwise (see backend/shared/rag/config.py).
+# pdf2image              # RAG_ENABLE_PDF_OCR=true
+# pytesseract            # RAG_ENABLE_PDF_OCR=true
+# ragas                  # ADVANCED_EVAL_PROVIDER=ragas
+# deepeval               # ADVANCED_EVAL_PROVIDER=deepeval

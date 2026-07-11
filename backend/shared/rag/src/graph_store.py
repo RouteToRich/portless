@@ -1,19 +1,23 @@
 """Graph store for relationship-aware (hybrid) RAG retrieval.
 
 Backends (select via ``RAG_GRAPH_DB_BACKEND``):
+  • ``mongo``    — implemented here (MongoStore below); same shared MongoDB
+    database as everything else in the app, no new connection/credentials.
   • ``neo4j``    — implemented here (Cypher over the async Neo4j driver).
   • ``arangodb`` / ``falkordb`` — reserved; fall back to the no-op store until wired.
 
 Activation:
-  Set ``RAG_GRAPH_RETRIEVAL_ENABLED=true`` and provide ``RAG_GRAPH_DB_URI`` (+
-  ``RAG_GRAPH_DB_USER`` / ``RAG_GRAPH_DB_PASSWORD``). When disabled — or when the
-  backend/credentials are missing, or the ``neo4j`` driver isn't installed — the
+  Set ``RAG_GRAPH_RETRIEVAL_ENABLED=true`` and ``RAG_GRAPH_DB_BACKEND=mongo``
+  (the recommended default — no extra service to run) or ``neo4j`` (+
+  ``RAG_GRAPH_DB_URI`` / ``USER`` / ``PASSWORD``). When disabled — or when the
+  backend/credentials are missing, or a required driver isn't installed — the
   store degrades to a safe no-op that returns empty results, so the vector +
   keyword + RRF pipeline keeps working unchanged. ``graph.py`` never has to change:
   it always talks to the ``GraphStore`` wrapper, which delegates to whichever
   backend resolved at import time.
 
-Graph schema (Neo4j):
+Graph schema (identical shape across backends — Mongo just stores it as
+documents with array fields instead of separate nodes/edges):
   (:Document {source, title})
   (:Chunk    {chunk_id, content, source, section, page_number})
   (:Entity   {name})
@@ -22,8 +26,9 @@ Graph schema (Neo4j):
   (Chunk)-[:ADJACENT_TO]->(Chunk)   -- consecutive chunks of the same source
 
 Entity extraction is a lightweight, dependency-free heuristic (capitalised tokens
-+ numeric codes minus stopwords). Swap ``_extract_entities`` for spaCy / an LLM
-NER call for higher precision — no other code needs to change.
++ numeric codes minus stopwords), shared by every backend. Swap
+``_extract_entities`` for spaCy / an LLM NER call for higher precision — no
+other code needs to change.
 """
 from __future__ import annotations
 
@@ -162,6 +167,156 @@ class NoopGraphStore:
         return 0
 
 
+# ─────────────────────────────────────────────────── Mongo backend
+
+_GRAPH_INDEXES = [
+    {"keys": [("chunk_id", 1)], "options": {"unique": True, "name": "graph_chunk_id_unique"}},
+    {"keys": [("entities", 1)], "options": {"name": "graph_entities_idx"}},
+    {"keys": [("source", 1)], "options": {"name": "graph_source_idx"}},
+]
+
+
+async def ensure_graph_indexes() -> None:
+    """Create the Mongo graph store's indexes. Safe/idempotent to call on every
+    startup; a no-op unless graph retrieval is enabled with backend=mongo."""
+    if not settings.graph_retrieval_enabled or (settings.graph_db_backend or "").lower() != "mongo":
+        return
+    from shared.llm_gateway.mongo_connection import get_connection
+
+    conn = await get_connection(uri=settings.mongo_uri, db_name=settings.mongo_db_name)
+    await conn.ensure_indexes(settings.graph_chunks_collection, _GRAPH_INDEXES)
+
+
+class MongoGraphStore:
+    """Relationship-aware store backed by the app's shared MongoDB database.
+
+    Same graph shape as Neo4jGraphStore (PART_OF / MENTIONS / ADJACENT_TO), but
+    modeled as plain documents with array fields rather than separate nodes and
+    edges — the single-hop "shared entity count" retrieval this pipeline
+    actually does is a set-intersection query, which Mongo's aggregation
+    pipeline handles natively via $setIntersection (no $graphLookup needed
+    unless a future multi-hop traversal is added).
+
+    Document shape (one per chunk, collection ``RAG_GRAPH_CHUNKS_COLLECTION``):
+        {chunk_id, source, title, content, section, page_number,
+         entities: [str], adjacent_to: [chunk_id]}
+    """
+
+    async def _collection(self) -> Any:
+        from shared.llm_gateway.mongo_connection import get_connection
+
+        conn = await get_connection(uri=settings.mongo_uri, db_name=settings.mongo_db_name)
+        return conn.get_collection(settings.graph_chunks_collection)
+
+    async def upsert_chunks(self, chunks: list[Document]) -> int:
+        rows = [_chunk_fields(c) for c in chunks]
+        if not rows:
+            return 0
+
+        # Adjacency: link consecutive chunks that share a source document —
+        # same forward-pass logic as Neo4jGraphStore's pairs computation.
+        adjacency: dict[str, list[str]] = {}
+        prev_by_source: dict[str, str] = {}
+        for row in rows:
+            src = row["source"]
+            if src and src in prev_by_source:
+                adjacency.setdefault(prev_by_source[src], []).append(row["chunk_id"])
+            if src:
+                prev_by_source[src] = row["chunk_id"]
+
+        from pymongo import UpdateOne
+
+        operations = [
+            UpdateOne(
+                {"chunk_id": row["chunk_id"]},
+                {
+                    "$set": {
+                        "chunk_id": row["chunk_id"],
+                        "source": row["source"],
+                        "title": row["title"],
+                        "content": row["content"],
+                        "section": row["section"],
+                        "page_number": row["page"],
+                        "entities": row["entities"],
+                        "adjacent_to": adjacency.get(row["chunk_id"], []),
+                    }
+                },
+                upsert=True,
+            )
+            for row in rows
+        ]
+
+        collection = await self._collection()
+        await collection.bulk_write(operations, ordered=False)
+        logger.info(
+            "MongoGraphStore: upserted %d chunk(s), %d adjacency edge(s).",
+            len(rows),
+            sum(len(v) for v in adjacency.values()),
+        )
+        return len(rows)
+
+    async def retrieve(
+        self, question: str, top_k: int, metadata_filter: dict[str, Any] | None = None
+    ) -> list[ScoredDocument]:
+        entities = _extract_entities(question)
+        if not entities:
+            return []  # nothing to traverse — let vector/keyword carry the query
+
+        source = None
+        if metadata_filter:
+            source = metadata_filter.get("source") or metadata_filter.get("metadata.source")
+
+        match: dict[str, Any] = {"entities": {"$in": entities}}
+        if source:
+            match["source"] = source
+
+        pipeline = [
+            {"$match": match},
+            {
+                "$project": {
+                    "_id": 0,
+                    "chunk_id": 1,
+                    "content": 1,
+                    "source": 1,
+                    "section": 1,
+                    "page_number": 1,
+                    "shared": {"$size": {"$setIntersection": ["$entities", entities]}},
+                }
+            },
+            {"$sort": {"shared": -1}},
+            {"$limit": int(top_k)},
+        ]
+
+        collection = await self._collection()
+        records = [doc async for doc in collection.aggregate(pipeline)]
+
+        denom = float(len(entities)) or 1.0
+        out: list[ScoredDocument] = []
+        for rec in records:
+            shared = float(rec.get("shared", 0) or 0)
+            doc = Document(
+                page_content=rec.get("content") or "",
+                metadata={
+                    "source": rec.get("source") or "",
+                    "section": rec.get("section") or "",
+                    "page_number": rec.get("page_number"),
+                    "chunk_id": rec.get("chunk_id") or "",
+                },
+            )
+            out.append(ScoredDocument(document=doc, score=min(shared / denom, 1.0), source="graph"))
+        logger.debug(
+            "MongoGraphStore: retrieved %d graph candidate(s) for %d query entities.",
+            len(out),
+            len(entities),
+        )
+        return out
+
+    async def delete_by_source(self, source: str) -> int:
+        collection = await self._collection()
+        result = await collection.delete_many({"source": source})
+        return int(result.deleted_count)
+
+
 # ─────────────────────────────────────────────────── Neo4j backend
 
 class Neo4jGraphStore:
@@ -263,6 +418,13 @@ def _resolve_graph_backend() -> Any:
         return NoopGraphStore(warn=False)
 
     backend = (settings.graph_db_backend or "neo4j").lower()
+    if backend == "mongo":
+        logger.info(
+            "RAG graph store: MongoDB backend (collection=%s, same shared database)",
+            settings.graph_chunks_collection,
+        )
+        return MongoGraphStore()
+
     if backend == "neo4j" and settings.graph_db_uri:
         try:
             driver = _build_neo4j_driver(

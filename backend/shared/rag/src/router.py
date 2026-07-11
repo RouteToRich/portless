@@ -32,7 +32,7 @@ from .config import settings
 from .graph import ingest, query
 from .vector_store import VectorStore, ensure_indexes
 from .parent_store import MongoParentStore
-from .graph_store import GraphStore
+from .graph_store import GraphStore, ensure_graph_indexes
 from .embeddings import get_embeddings
 
 logger = logging.getLogger(__name__)
@@ -125,6 +125,11 @@ async def startup() -> None:
         logger.info("RAG module: MongoDB indexes ensured.")
     except Exception as exc:
         logger.warning("RAG module startup index check failed: %s", exc)
+
+    try:
+        await ensure_graph_indexes()
+    except Exception as exc:
+        logger.warning("RAG module graph-store index check failed: %s", exc)
 
 
 # ──────────────────────────────────────────────────────── endpoints
@@ -401,6 +406,8 @@ async def get_stats() -> StatsResponse:
     backend, and graph-retrieval status — so the UI always reflects ground
     truth (whichever .env actually won: root vs. module-local override) rather
     than requiring anyone to go spelunking through config files."""
+    from shared.llm_gateway.config import llm_gateway_settings
+
     from .file_store import get_file_store
 
     embeddings = get_embeddings()
@@ -410,9 +417,11 @@ async def get_stats() -> StatsResponse:
         total_chunks=total,
         collection=settings.chunks_collection,
         db=settings.mongo_db_name,
-        embedding_provider=settings.embedding_provider,
+        embedding_provider=llm_gateway_settings.embedding_provider,
         embedding_model=(
-            settings.embedding_model if settings.embedding_provider == "openai" else "local-hash"
+            "local-hash"
+            if llm_gateway_settings.embedding_provider == "local"
+            else llm_gateway_settings.embedding_model
         ),
         file_store_backend=get_file_store().backend,
         graph_retrieval_enabled=settings.graph_retrieval_enabled,

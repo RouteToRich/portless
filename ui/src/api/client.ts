@@ -14,7 +14,10 @@ export const USER_KEY = "portless_user";
 
 export const api = axios.create({
   baseURL,
-  timeout: 15000,
+  // RAG queries (embed -> hybrid search -> rerank -> LLM generate) and Mongo
+  // fallback retries can legitimately run well past 15s, so give every
+  // request up to 2 minutes rather than aborting client-side.
+  timeout: 120000,
   headers: { "Content-Type": "application/json" },
 });
 

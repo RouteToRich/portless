@@ -1,15 +1,10 @@
 """Embeddings for the RAG module — routed through the LLM Gateway.
 
-Every embedding call goes through ``shared.llm_gateway.GatewayEmbeddings`` so it
-shares the gateway's provider + credential management, exactly like chat calls do.
-RAG only supplies its provider / model / dimensions from ``RAGSettings``; the
-gateway owns the actual provider SDK call and the offline ``LocalHashEmbeddings``
-fallback.
-
-Key resolution (handled inside the gateway):
-  1. RAG_EMBEDDING_API_KEY (passed here as ``api_key``)
-  2. the gateway's primary OpenAI key (LLM_PRIMARY_API_KEY when primary=openai)
-  3. none → LocalHashEmbeddings
+Every embedding call goes through ``shared.llm_gateway.GatewayEmbeddings``, which
+owns the model/provider/credential config *and* the actual provider SDK call /
+offline ``LocalHashEmbeddings`` fallback. RAG declares no embedding-model config
+of its own — see ``LLM_EMBEDDING_*`` in ``shared/llm_gateway/.env`` /
+``shared/llm_gateway/config.py`` for the single source of truth.
 """
 from __future__ import annotations
 
@@ -19,20 +14,13 @@ from langchain_core.embeddings import Embeddings
 # keep working; the implementations now live in the LLM Gateway.
 from shared.llm_gateway.embeddings import GatewayEmbeddings, LocalHashEmbeddings
 
-from .config import settings
-
 __all__ = ["get_embeddings", "GatewayEmbeddings", "LocalHashEmbeddings"]
 
 
 def get_embeddings() -> Embeddings:
-    """Return the app's embedding client, configured from RAG settings.
+    """Return the app's embedding client.
 
-    Delegates to the LLM Gateway's ``GatewayEmbeddings`` — RAG does not import any
-    provider SDK directly.
+    Delegates entirely to the LLM Gateway's ``GatewayEmbeddings`` — RAG passes no
+    model config and does not import any provider SDK directly.
     """
-    return GatewayEmbeddings(
-        provider=settings.embedding_provider,
-        model=settings.embedding_model,
-        api_key=settings.embedding_api_key,
-        dimensions=settings.embedding_dimensions,
-    )
+    return GatewayEmbeddings()

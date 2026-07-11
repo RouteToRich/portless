@@ -15,7 +15,16 @@ Optional primary (tried first if LLM_PRIMARY_API_KEY is set):
   Set LLM_PRIMARY_MODEL, LLM_PRIMARY_API_KEY, LLM_PRIMARY_CONNECTOR.
   E.g. for Claude: LLM_PRIMARY_CONNECTOR=anthropic, LLM_PRIMARY_MODEL=claude-sonnet-4-6
 
+Embeddings (LLM_EMBEDDING_PROVIDER / LLM_EMBEDDING_MODEL / LLM_EMBEDDING_API_KEY /
+LLM_EMBEDDING_DIMENSIONS): the single source of truth for which embedding model the
+whole app uses (shared.llm_gateway.embeddings.GatewayEmbeddings). Callers such as
+RAG never declare a model/provider/key of their own — they just ask for vectors.
+
 Auth is disabled by default (LLM_AUTH_ENABLED=false). Enable when JWT infra is ready.
+
+This module — and ONLY this module — should ever declare an LLM/embedding model
+name, provider, or API key. Every other module's config.py must reach models
+exclusively through shared.llm_gateway.client.LLMClient / .embeddings.GatewayEmbeddings.
 """
 from __future__ import annotations
 
@@ -71,6 +80,17 @@ class LLMGatewaySettings(BaseSettings):
     fallback_3_model: str = "openai/gpt-oss-safeguard-20b"
     fallback_3_connector: str = "groq"
     fallback_3_api_key: str = ""
+
+    # ----------------------------------------------------- Embeddings
+    # Single source of truth for the whole app's embedding model — RAG (and
+    # any future caller) requests vectors from GatewayEmbeddings with no model
+    # config of its own. embedding_api_key falls back to primary_api_key when
+    # primary_connector="openai" and embedding_api_key is empty; empty either
+    # way (or provider="local") means LocalHashEmbeddings (offline, no API call).
+    embedding_provider: str = "openai"     # "openai" | "gemini" | "local"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_api_key: str = ""
+    embedding_dimensions: int = 1536       # text-embedding-3-small = 1536
 
     # -------------------------------------------------- request / retry
     request_timeout_seconds: float = 60.0

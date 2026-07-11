@@ -1,12 +1,15 @@
-"""Tests for the RAG graph-DB (Neo4j) backend, the MongoDB-only file store, and
-embeddings routed through the LLM Gateway.
+"""Tests for the RAG graph-DB (Mongo + Neo4j) backends, the MongoDB-only file
+store, and embeddings routed through the LLM Gateway.
 
 MongoDB is the sole persistence/vector/blob-storage technology in this app — no
-S3 or other object store exists anywhere. The real Neo4j driver is mocked, so
-these run offline. They cover:
-  • entity extraction heuristic
-  • GraphStore backend resolution (disabled → no-op; configured → Neo4j; no URI → no-op)
+S3 or other object store exists anywhere (the graph store's "mongo" backend
+keeps that true for graph retrieval too). The real Neo4j driver and Mongo
+collection are both mocked, so these run offline. They cover:
+  • entity extraction heuristic (shared by every graph backend)
+  • GraphStore backend resolution (disabled → no-op; mongo; neo4j configured;
+    neo4j without URI → no-op; unimplemented backend → no-op)
   • Neo4jGraphStore upsert / retrieve / delete Cypher wiring
+  • MongoGraphStore upsert / retrieve / delete aggregation-pipeline wiring
   • file store factory (MongoDB GridFS — the only backend)
   • embeddings delegate to the LLM Gateway's GatewayEmbeddings
 """
@@ -23,6 +26,7 @@ from shared.rag.src.file_store import (
 )
 from shared.rag.src.graph_store import (
     GraphStore,
+    MongoGraphStore,
     Neo4jGraphStore,
     NoopGraphStore,
     _extract_entities,
@@ -144,6 +148,70 @@ def test_neo4j_delete_by_source_returns_count():
 
 
 # ---------------------------------------------------------------------------
+# MongoGraphStore
+# ---------------------------------------------------------------------------
+
+def _make_mongo_store(aggregate_return=None):
+    """Return (store, collection) with MongoGraphStore._collection() mocked out
+    so no real MongoDB connection is touched."""
+    collection = MagicMock()
+    collection.bulk_write = AsyncMock()
+    collection.aggregate = MagicMock(return_value=_AsyncIter(aggregate_return or []))
+    collection.delete_many = AsyncMock(return_value=MagicMock(deleted_count=0))
+    store = MongoGraphStore()
+    store._collection = AsyncMock(return_value=collection)
+    return store, collection
+
+
+def test_mongo_upsert_writes_bulk_and_counts():
+    store, collection = _make_mongo_store()
+    chunks = [
+        Document(page_content="Thailand White Rice from Bangkok", metadata={"source": "doc1", "chunk_id": "c1"}),
+        Document(page_content="Rice price benchmark in Vietnam", metadata={"source": "doc1", "chunk_id": "c2"}),
+    ]
+    n = run(store.upsert_chunks(chunks))
+    assert n == 2
+    collection.bulk_write.assert_awaited_once()
+    ops = collection.bulk_write.await_args.args[0]
+    assert len(ops) == 2
+
+
+def test_mongo_upsert_empty_is_noop():
+    store, collection = _make_mongo_store()
+    assert run(store.upsert_chunks([])) == 0
+    collection.bulk_write.assert_not_awaited()
+
+
+def test_mongo_retrieve_returns_scored_docs():
+    records = [
+        {"chunk_id": "c1", "content": "Thailand rice", "source": "doc1", "section": "", "page_number": None, "shared": 2},
+        {"chunk_id": "c2", "content": "Vietnam rice", "source": "doc1", "section": "", "page_number": None, "shared": 1},
+    ]
+    store, _ = _make_mongo_store(aggregate_return=records)
+    results = run(store.retrieve("Thailand Rice benchmark", top_k=8))
+
+    assert len(results) == 2
+    assert results[0].source == "graph"
+    assert results[0].document.page_content == "Thailand rice"
+    assert 0.0 <= results[0].score <= 1.0
+    assert results[0].document.metadata["chunk_id"] == "c1"
+
+
+def test_mongo_retrieve_empty_when_no_query_entities():
+    store, collection = _make_mongo_store()
+    # all-lowercase question → no entities → short-circuits without touching the DB
+    results = run(store.retrieve("what is the current price today", top_k=8))
+    assert results == []
+    collection.aggregate.assert_not_called()
+
+
+def test_mongo_delete_by_source_returns_count():
+    store, collection = _make_mongo_store()
+    collection.delete_many = AsyncMock(return_value=MagicMock(deleted_count=5))
+    assert run(store.delete_by_source("doc1")) == 5
+
+
+# ---------------------------------------------------------------------------
 # GraphStore backend resolution
 # ---------------------------------------------------------------------------
 
@@ -165,9 +233,18 @@ def test_graph_store_resolves_neo4j_when_configured(monkeypatch):
 
 
 def test_graph_store_enabled_without_uri_falls_back_to_noop(monkeypatch):
+    # Pin backend=neo4j explicitly — mongo (now the default) needs no URI at
+    # all, so this test only makes sense for the neo4j path.
     monkeypatch.setattr("shared.rag.src.graph_store.settings.graph_retrieval_enabled", True)
+    monkeypatch.setattr("shared.rag.src.graph_store.settings.graph_db_backend", "neo4j")
     monkeypatch.setattr("shared.rag.src.graph_store.settings.graph_db_uri", "")
     assert isinstance(GraphStore()._impl, NoopGraphStore)
+
+
+def test_graph_store_resolves_mongo_when_configured(monkeypatch):
+    monkeypatch.setattr("shared.rag.src.graph_store.settings.graph_retrieval_enabled", True)
+    monkeypatch.setattr("shared.rag.src.graph_store.settings.graph_db_backend", "mongo")
+    assert isinstance(GraphStore()._impl, MongoGraphStore)
 
 
 def test_graph_store_unimplemented_backend_falls_back_to_noop(monkeypatch):

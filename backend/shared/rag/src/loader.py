@@ -70,10 +70,10 @@ def format_text_documents(path: Path, text: str) -> list[Document]:
     """
     if path.suffix.lower() == ".md":
         return [
-            format_document(path, section_text, section=section)
+            _format_document(path, section_text, section=section)
             for section, section_text in _split_markdown_sections(text)
         ]
-    return [format_document(path, text, section=_extract_title(text) or path.stem)]
+    return [_format_document(path, text, section=_extract_title(text) or path.stem)]
 
 
 def format_document(path: Path, text: str) -> Document:

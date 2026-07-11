@@ -43,17 +43,24 @@ const FILE_STORE_LABEL: Record<string, string> = {
 };
 
 export function KnowledgeBase() {
+  const [jobId, setJobId] = useState<string | null>(null);
+  const job = useRagJob(jobId);
+  // job.isError (e.g. a 404 from a job the backend no longer knows about)
+  // must short-circuit this — React Query keeps the last successful
+  // "pending"/"running" snapshot around even after the query starts
+  // erroring, which would otherwise freeze `running` true forever.
+  const running =
+    !job.isError && (job.data?.status === "pending" || job.data?.status === "running");
+
+  // No automatic refetching — only the initial mount and the manual
+  // "Refresh" button below update these (both hit MongoDB directly).
   const stats = useRagStats();
   const persistedFiles = useRagFiles();
   const upload = useRagUpload();
   const [files, setFiles] = useState<File[]>([]);
   const [strategy, setStrategy] = useState<Strategy>("recursive");
   const [dragging, setDragging] = useState(false);
-  const [jobId, setJobId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  const job = useRagJob(jobId);
-  const running = job.data?.status === "pending" || job.data?.status === "running";
 
   function addFiles(list: FileList | null) {
     if (!list) return;
@@ -81,7 +88,7 @@ export function KnowledgeBase() {
   }
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-6 max-w-7xl items-start">
+    <div className="grid grid-cols-1 xl:grid-cols-[460px_minmax(0,1fr)] gap-6 items-start w-full">
     <div className="space-y-4 min-w-0">
       {/* Header */}
       <div className="flex items-center justify-between gap-3">

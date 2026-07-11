@@ -11,12 +11,15 @@ Vector database: MongoDB Atlas with $vectorSearch aggregation.
 Atlas Vector Search index (create once in Atlas UI or via ensure_vector_index()):
   - Index type:    vectorSearch
   - Field path:    embedding
-  - numDimensions: RAG_EMBEDDING_DIMENSIONS (default 1536 for text-embedding-3-small)
+  - numDimensions: LLM_EMBEDDING_DIMENSIONS (in shared/llm_gateway/.env; default
+                   1536 for text-embedding-3-small)
   - Similarity:    RAG_VECTOR_SIMILARITY     (default cosine)
 
-Embeddings: routed through llm-gateway API key.
-  - RAG_EMBEDDING_PROVIDER=openai  → OpenAIEmbeddings using llm-gateway primary key
-  - RAG_EMBEDDING_PROVIDER=local   → LocalHashEmbeddings (offline / zero cost)
+Embeddings: RAG has no embedding-model config of its own — it calls
+shared.llm_gateway.embeddings.GatewayEmbeddings(), which reads
+LLM_EMBEDDING_PROVIDER / LLM_EMBEDDING_MODEL / LLM_EMBEDDING_API_KEY /
+LLM_EMBEDDING_DIMENSIONS from shared/llm_gateway/.env (the single source of
+truth for every model/provider/key in the app). See shared/llm_gateway/config.py.
 """
 from __future__ import annotations
 
@@ -55,16 +58,11 @@ class RAGSettings(BaseSettings):
     # ──────────────────────────────────────────── Atlas Vector Search
     # The index must exist before queries run — see ensure_vector_index() in
     # vector_store.py for programmatic creation or the Atlas UI instructions.
+    # numDimensions comes from the LLM Gateway's embedding config
+    # (LLM_EMBEDDING_DIMENSIONS in shared/llm_gateway/.env) — RAG declares no
+    # embedding-model config of its own; see shared.llm_gateway.embeddings.
     vector_index_name: str = "vector_index"
-    embedding_dimensions: int = 1536       # text-embedding-3-small = 1536
     vector_similarity: str = "cosine"      # "cosine" | "euclidean" | "dotProduct"
-
-    # ─────────────────────────── Embeddings (via llm-gateway credentials)
-    # embedding_provider="openai" reads embedding_api_key, then falls back to
-    # LLM_PRIMARY_API_KEY env var, then LocalHashEmbeddings if still empty.
-    embedding_provider: str = "openai"     # "openai" | "local"
-    embedding_model: str = "text-embedding-3-small"
-    embedding_api_key: str = ""            # override with RAG_EMBEDDING_API_KEY
 
     # ──────────────────────────────────────────────────── Chunking
     chunk_size: int = 900
@@ -104,18 +102,22 @@ class RAGSettings(BaseSettings):
     advanced_eval_provider: str = "local"  # "local" | "ragas" | "deepeval" | "llm"
 
     # ─────────────────────────────────── graph retrieval (hybrid RAG)
-    # Set graph_retrieval_enabled=true and fill graph_db_uri/user/password to add
-    # a relationship-aware retrieval leg alongside vector + keyword search. The
-    # Neo4j backend is implemented (graph_store.py); "arangodb" / "falkordb" fall
-    # back to a no-op until a backend is added. When disabled, the query pipeline
-    # runs exactly as before (empty graph results, fused harmlessly by RRF).
+    # Set graph_retrieval_enabled=true to add a relationship-aware retrieval leg
+    # alongside vector + keyword search. Backends: "mongo" (recommended — same
+    # shared MongoDB, no new credentials/services), "neo4j" (needs
+    # graph_db_uri/user/password), or "arangodb"/"falkordb" (reserved, no-op
+    # until wired). When disabled, the query pipeline runs exactly as before
+    # (empty graph results, fused harmlessly by RRF).
     graph_retrieval_enabled: bool = False
     graph_retrieval_top_k: int = 8
-    graph_db_backend: str = "neo4j"         # "neo4j" | "arangodb" | "falkordb"
-    graph_db_uri: str = ""                  # e.g. bolt://localhost:7687 (or neo4j+s://…)
-    graph_db_user: str = ""                 # RAG_GRAPH_DB_USER (placeholder)
-    graph_db_password: str = ""             # RAG_GRAPH_DB_PASSWORD (placeholder)
-    graph_db_database: str = ""             # RAG_GRAPH_DB_DATABASE — blank = server default
+    graph_db_backend: str = "neo4j"         # "mongo" | "neo4j" | "arangodb" | "falkordb"
+    graph_db_uri: str = ""                  # neo4j only, e.g. bolt://localhost:7687 (or neo4j+s://…)
+    graph_db_user: str = ""                 # neo4j only — RAG_GRAPH_DB_USER (placeholder)
+    graph_db_password: str = ""             # neo4j only — RAG_GRAPH_DB_PASSWORD (placeholder)
+    graph_db_database: str = ""             # neo4j only — RAG_GRAPH_DB_DATABASE, blank = server default
+    # mongo backend only — collection name in the same shared database
+    # (mongo_uri / mongo_db_name above); no separate connection needed.
+    graph_chunks_collection: str = "graph_chunks"
 
 
 settings = RAGSettings()

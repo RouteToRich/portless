@@ -295,32 +295,31 @@ export function useMatchScore(dealId: string | undefined) {
 
 // ── RAG Knowledge Base ────────────────────────────────────────────────────────
 
+// No automatic polling — stats hit MongoDB directly, so the only refetch
+// triggers are the initial mount and the page's manual "Refresh" button
+// (stats.refetch()).
 export function useRagStats() {
   return useQuery({
     queryKey: ["rag", "stats"],
     queryFn: RagApi.stats,
-    refetchInterval: 15000,
+    refetchInterval: false,
   });
 }
 
 export function useRagUpload() {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ files, chunkStrategy }: { files: File[]; chunkStrategy?: string }) =>
       RagApi.upload(files, chunkStrategy),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["rag", "stats"] });
-      qc.invalidateQueries({ queryKey: ["rag", "files"] });
-    },
   });
 }
 
 // Files durably persisted in MongoDB GridFS — proves ingestion survives restarts.
+// Same policy as useRagStats: no automatic polling, manual "Refresh" only.
 export function useRagFiles() {
   return useQuery({
     queryKey: ["rag", "files"],
     queryFn: () => RagApi.files(),
-    refetchInterval: 15000,
+    refetchInterval: false,
   });
 }
 
@@ -331,18 +330,25 @@ export function useRagQuery() {
   });
 }
 
-// Polls a running ingestion job until it completes or fails.
+// Polls a running ingestion job until it completes or fails — this is the
+// job-progress indicator only; it does NOT refresh stats/files (see above,
+// those are manual-refresh-only now).
 export function useRagJob(jobId: string | null) {
-  const qc = useQueryClient();
   return useQuery({
     queryKey: ["rag", "job", jobId],
     queryFn: () => RagApi.jobStatus(jobId as string),
     enabled: Boolean(jobId),
+    // A 404 (e.g. the backend restarted and the in-memory job registry was
+    // wiped) is definitive — the job is gone, retrying can't fix it.
+    retry: false,
     refetchInterval: (query) => {
+      // React Query keeps the last *successful* data around even once a
+      // later fetch starts failing — without this check, a stale
+      // "pending"/"running" snapshot from before a 404 would freeze `status`
+      // forever and this would never stop polling.
+      if (query.state.status === "error") return false;
       const s = query.state.data?.status;
       if (s === "completed" || s === "failed") {
-        qc.invalidateQueries({ queryKey: ["rag", "stats"] });
-        qc.invalidateQueries({ queryKey: ["rag", "files"] });
         return false;
       }
       return 1500;

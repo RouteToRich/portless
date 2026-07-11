@@ -5,7 +5,7 @@ Storage schema (chunks collection):
     "_id":      ObjectId,
     "chunk_id": str  (stable, derived from source+section+index),
     "content":  str,
-    "embedding": [float, ...],   # length = RAG_EMBEDDING_DIMENSIONS
+    "embedding": [float, ...],   # length = LLM_EMBEDDING_DIMENSIONS (shared/llm_gateway/.env)
     "metadata": {
         "source":            str,
         "content_hash":      str,
@@ -49,6 +49,8 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
+from shared.llm_gateway.config import llm_gateway_settings
+
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -86,7 +88,7 @@ _VECTOR_INDEX_DEFINITION = {
             {
                 "type": "vector",
                 "path": "embedding",
-                "numDimensions": settings.embedding_dimensions,
+                "numDimensions": llm_gateway_settings.embedding_dimensions,
                 "similarity": settings.vector_similarity,
             },
             {"type": "filter", "path": "metadata.authorized_users"},
