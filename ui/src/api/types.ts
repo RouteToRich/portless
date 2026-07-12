@@ -108,6 +108,8 @@ export interface AuthUser {
   user_id: string;
   email: string;
   name: string;
+  org_id: string | null;
+  is_portless: boolean;
   created_at?: string | null;
 }
 
@@ -115,6 +117,15 @@ export interface TokenResponse {
   access_token: string;
   token_type: string;
   user: AuthUser;
+}
+
+// Organizations (Portless platform staff only — see /auth/organizations, /auth/users)
+export interface Organization {
+  org_id: string;
+  name: string;
+  created_by: string;
+  known_emails: string[];
+  created_at: string;
 }
 
 // RAG knowledge base

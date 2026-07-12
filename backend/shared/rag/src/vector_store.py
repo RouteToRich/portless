@@ -380,8 +380,9 @@ def hybrid_fusion(
     top_k: int,
     rrf_k: int = 60,
     graph_results: list[ScoredDocument] | None = None,
+    web_results: list[ScoredDocument] | None = None,
 ) -> list[ScoredDocument]:
-    """Reciprocal Rank Fusion across semantic, keyword, and (future) graph results.
+    """Reciprocal Rank Fusion across semantic, keyword, graph, and web results.
 
     Each result set contributes 1/(rrf_k + rank) to a document's fused score.
     A chunk appearing near the top of multiple lists receives a strong combined
@@ -390,7 +391,7 @@ def hybrid_fusion(
     by_id: dict[str, ScoredDocument] = {}
     fused_scores: dict[str, float] = {}
 
-    for result_set in [semantic_results, keyword_results, graph_results or []]:
+    for result_set in [semantic_results, keyword_results, graph_results or [], web_results or []]:
         for rank, result in enumerate(result_set, start=1):
             doc_id = _doc_id(result.document)
             by_id[doc_id] = result

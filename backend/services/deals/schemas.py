@@ -71,6 +71,10 @@ class DealRecord(BaseModel):
     # ── Identity ─────────────────────────────────────────────────────────
     deal_id: str
     operator_id: str
+    org_id: str
+    """Owning organization (see services/auth/organization.py) — stamped from
+    the authenticated caller at creation, never client-supplied. Every list/
+    get is scoped to this unless the caller is Portless platform staff."""
     hs_code: str
     market: str
     status: DealStatus = DealStatus.DRAFT

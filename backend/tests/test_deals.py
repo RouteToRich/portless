@@ -59,10 +59,17 @@ def run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
+_ORG = "acme.com"
+
+
 def _create_request(**overrides) -> CreateDealRequest:
     defaults = dict(operator_id="OP-1", hs_code="1006", market="ES")
     defaults.update(overrides)
     return CreateDealRequest(**defaults)
+
+
+def _create(payload: CreateDealRequest, org_id: str = _ORG):
+    return create_deal(payload, org_id=org_id)
 
 
 def _seed(**overrides) -> dict:
@@ -100,6 +107,7 @@ def _make_deal(status: DealStatus = DealStatus.DRAFT, **overrides) -> DealRecord
     defaults = dict(
         deal_id="DEAL-X",
         operator_id="OP-1",
+        org_id=_ORG,
         hs_code="1006",
         market="ES",
         status=status,
@@ -117,7 +125,7 @@ def _make_deal(status: DealStatus = DealStatus.DRAFT, **overrides) -> DealRecord
 
 def test_create_deal_without_opportunity_is_draft(_repo):
     with patch("services.deals.service._emit_event", AsyncMock()):
-        deal = run(create_deal(_create_request()))
+        deal = run(_create(_create_request()))
 
     assert deal.status == DealStatus.DRAFT
     assert deal.match_results == []
@@ -134,7 +142,7 @@ def test_create_deal_with_opportunity_seeds_matching():
         patch("services.deals.service._mark_opportunity_converted", convert),
         patch("services.deals.service._emit_event", AsyncMock()),
     ):
-        deal = run(create_deal(_create_request(opportunity_id="OPP-1")))
+        deal = run(_create(_create_request(opportunity_id="OPP-1")))
 
     assert deal.status == DealStatus.MATCHING
     assert len(deal.match_results) == 2
@@ -154,7 +162,7 @@ def test_create_deal_picks_highest_source_ignoring_discard():
         patch("services.deals.service._mark_opportunity_converted", AsyncMock()),
         patch("services.deals.service._emit_event", AsyncMock()),
     ):
-        deal = run(create_deal(_create_request(opportunity_id="OPP-1")))
+        deal = run(_create(_create_request(opportunity_id="OPP-1")))
 
     assert deal.winning_supplier_id == "S1"
     assert deal.winning_cms == 85.0
@@ -169,7 +177,7 @@ def test_create_deal_no_source_is_matching_without_winner():
         patch("services.deals.service._mark_opportunity_converted", AsyncMock()),
         patch("services.deals.service._emit_event", AsyncMock()),
     ):
-        deal = run(create_deal(_create_request(opportunity_id="OPP-1")))
+        deal = run(_create(_create_request(opportunity_id="OPP-1")))
 
     # Seed present → MATCHING regardless of SOURCE; no winner selected.
     assert deal.status == DealStatus.MATCHING
@@ -185,7 +193,7 @@ def test_create_deal_seed_miss_falls_back_to_draft():
         patch("services.deals.service._mark_opportunity_converted", convert),
         patch("services.deals.service._emit_event", AsyncMock()),
     ):
-        deal = run(create_deal(_create_request(opportunity_id="OPP-GONE")))
+        deal = run(_create(_create_request(opportunity_id="OPP-GONE")))
 
     assert deal.status == DealStatus.DRAFT
     assert deal.match_results == []
@@ -200,7 +208,7 @@ def test_create_deal_isolates_scoring_error():
         patch("services.deals.service._mark_opportunity_converted", AsyncMock()),
         patch("services.deals.service._emit_event", AsyncMock()),
     ):
-        deal = run(create_deal(_create_request(opportunity_id="OPP-1")))
+        deal = run(_create(_create_request(opportunity_id="OPP-1")))
 
     # The failed seller is dropped; the deal still forms with the good score.
     assert len(deal.match_results) == 1
@@ -210,7 +218,7 @@ def test_create_deal_isolates_scoring_error():
 def test_create_deal_emits_deal_created():
     emit = AsyncMock()
     with patch("services.deals.service._emit_event", emit):
-        deal = run(create_deal(_create_request()))
+        deal = run(_create(_create_request()))
 
     emit.assert_awaited_once()
     assert emit.call_args.args[0] == EventTopic.DEAL_CREATED
@@ -304,7 +312,7 @@ def test_get_deal_unknown_raises():
 
 def test_get_deal_after_create():
     with patch("services.deals.service._emit_event", AsyncMock()):
-        created = run(create_deal(_create_request()))
+        created = run(_create(_create_request()))
     fetched = run(get_deal(created.deal_id))
     assert fetched.deal_id == created.deal_id
 
@@ -319,3 +327,15 @@ def test_list_deals_filters_by_status_and_operator(_repo):
 
     op_a = run(list_deals(operator_id="OP-A"))
     assert {d.deal_id for d in op_a} == {"D1", "D2"}
+
+
+def test_list_deals_filters_by_org(_repo):
+    run(_repo.save(_make_deal(DealStatus.DRAFT, deal_id="D1", org_id="acme.com")))
+    run(_repo.save(_make_deal(DealStatus.DRAFT, deal_id="D2", org_id="acme.com")))
+    run(_repo.save(_make_deal(DealStatus.DRAFT, deal_id="D3", org_id="other.com")))
+
+    acme = run(list_deals(org_id="acme.com"))
+    assert {d.deal_id for d in acme} == {"D1", "D2"}
+
+    unrestricted = run(list_deals(org_id=None))
+    assert {d.deal_id for d in unrestricted} == {"D1", "D2", "D3"}

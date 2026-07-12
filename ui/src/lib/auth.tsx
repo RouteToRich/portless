@@ -11,7 +11,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, name: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -52,12 +52,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [persist]
   );
 
-  const logout = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-    setUser(null);
-    qc.clear(); // drop the previous user's cached data
-    navigate("/login", { replace: true });
+  const logout = useCallback(async () => {
+    try {
+      // Revoke the token server-side (shared/auth/blacklist.py) so it can't
+      // be replayed. Best-effort — proceed with local cleanup even if this
+      // fails (backend unreachable, token already expired, etc.).
+      await AuthApi.logout();
+    } catch {
+      // ignore — local cleanup below still runs
+    } finally {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+      setUser(null);
+      qc.clear(); // drop the previous user's cached data
+      navigate("/login", { replace: true });
+    }
   }, [navigate, qc]);
 
   const value = useMemo<AuthContextValue>(

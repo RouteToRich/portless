@@ -14,6 +14,10 @@ Endpoints:
     DELETE /rag/documents/{source}  — delete all chunks for a source path
     GET    /rag/health              — liveness + MongoDB ping
     GET    /rag/stats               — document count stats
+
+Every endpoint except /rag/health is restricted to Portless platform staff
+(shared.auth.dependencies.require_portless) — the Knowledge Base is a
+platform-staff-only feature, not something regular organization users see.
 """
 from __future__ import annotations
 
@@ -25,8 +29,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
+
+from shared.auth.dependencies import AuthUser, require_portless
 
 from .config import settings
 from .graph import ingest, query
@@ -108,6 +114,7 @@ class StatsResponse(BaseModel):
     embedding_model: str
     file_store_backend: str
     graph_retrieval_enabled: bool
+    web_search_enabled: bool
 
 
 # ──────────────────────────────────────────────────── in-memory job registry
@@ -143,6 +150,7 @@ async def startup() -> None:
 async def start_ingest(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
+    _: AuthUser = Depends(require_portless),
 ) -> IngestResponse:
     """Submit an ingestion job.  Returns immediately with a job_id to poll."""
     job_id = str(uuid.uuid4())
@@ -177,6 +185,7 @@ async def upload_and_ingest(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(..., description="Knowledge files to ingest."),
     chunk_strategy: str = Form("recursive"),
+    _: AuthUser = Depends(require_portless),
 ) -> IngestResponse:
     """Accept browser file uploads, persist the bytes durably, then ingest.
 
@@ -263,7 +272,7 @@ async def upload_and_ingest(
     response_model=JobStatusResponse,
     summary="Poll ingestion job status",
 )
-async def get_ingest_status(job_id: str) -> JobStatusResponse:
+async def get_ingest_status(job_id: str, _: AuthUser = Depends(require_portless)) -> JobStatusResponse:
     """Check the status of a previously submitted ingestion job."""
     job = _jobs.get(job_id)
     if not job:
@@ -279,7 +288,7 @@ async def get_ingest_status(job_id: str) -> JobStatusResponse:
     response_model=QueryResponse,
     summary="Ask a question via RAG",
 )
-async def rag_query(request: QueryRequest) -> QueryResponse:
+async def rag_query(request: QueryRequest, _: AuthUser = Depends(require_portless)) -> QueryResponse:
     """Run the full RAG pipeline (embed → retrieve → rerank → generate)."""
     try:
         result = await query(
@@ -321,7 +330,7 @@ async def rag_query(request: QueryRequest) -> QueryResponse:
     response_model=DeleteResponse,
     summary="Delete all chunks and parents for a source",
 )
-async def delete_document(source: str) -> DeleteResponse:
+async def delete_document(source: str, _: AuthUser = Depends(require_portless)) -> DeleteResponse:
     """Remove all vector chunks, parent docs, and graph nodes for a given source path."""
     embeddings = get_embeddings()
     vector_store = VectorStore(embeddings)
@@ -383,7 +392,7 @@ async def health_check() -> HealthResponse:
     "/files",
     summary="List persisted uploaded files",
 )
-async def list_files(limit: int = 100) -> dict[str, Any]:
+async def list_files(limit: int = 100, _: AuthUser = Depends(require_portless)) -> dict[str, Any]:
     """Return files persisted in the configured file store (default: GridFS)."""
     from .file_store import get_file_store
 
@@ -401,7 +410,7 @@ async def list_files(limit: int = 100) -> dict[str, Any]:
     response_model=StatsResponse,
     summary="RAG document stats",
 )
-async def get_stats() -> StatsResponse:
+async def get_stats(_: AuthUser = Depends(require_portless)) -> StatsResponse:
     """Return indexed-chunk count plus the *active* embedding model, file-store
     backend, and graph-retrieval status — so the UI always reflects ground
     truth (whichever .env actually won: root vs. module-local override) rather
@@ -425,6 +434,7 @@ async def get_stats() -> StatsResponse:
         ),
         file_store_backend=get_file_store().backend,
         graph_retrieval_enabled=settings.graph_retrieval_enabled,
+        web_search_enabled=settings.web_search_enabled,
     )
 
 

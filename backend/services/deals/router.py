@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from shared.auth.dependencies import AuthUser, get_current_user
+from shared.auth.dependencies import AuthUser, get_current_user, require_org_scope
 
 from . import service
 from .schemas import (
@@ -19,14 +19,16 @@ from .service import DealNotFoundError, InvalidTransitionError
 router = APIRouter(prefix="/deals", tags=["deals"])
 
 
-async def _owned_deal(deal_id: str, user: AuthUser) -> DealRecord:
-    """Fetch a deal and enforce that it belongs to the caller (else 404)."""
+async def _org_deal(deal_id: str, user: AuthUser) -> DealRecord:
+    """Fetch a deal and enforce that it belongs to the caller's organization
+    (else 404). Portless platform staff (org_filter is None) bypass this."""
+    org_filter = require_org_scope(user)
     try:
         deal = await service.get_deal(deal_id)
     except DealNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    if deal.operator_id != user.user_id:
-        # Hide existence of other users' deals.
+    if org_filter is not None and deal.org_id != org_filter:
+        # Hide existence of other organizations' deals.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Deal {deal_id!r} not found")
     return deal
 
@@ -50,15 +52,16 @@ async def list_deals(
     status: DealStatus | None = Query(default=None),
     user: AuthUser = Depends(get_current_user),
 ) -> list[DealRecord]:
-    """List the authenticated user's deals, newest first.
+    """List deals visible to the authenticated user, newest first.
 
-    Always scoped to the caller (``operator_id`` == user id) for multi-tenancy.
-    Use ``status`` to filter by lifecycle state (e.g. ``MATCHING``).
+    Scoped to every deal in the caller's organization (multi-tenancy) —
+    Portless platform staff see deals across every organization. Use
+    ``status`` to filter by lifecycle state (e.g. ``MATCHING``).
     """
     return await service.list_deals(
         limit=limit,
         status=status,
-        operator_id=user.user_id,
+        org_id=require_org_scope(user),
     )
 
 
@@ -69,11 +72,13 @@ async def create_deal(
 ) -> DealRecord:
     """Create a new deal owned by the authenticated user.
 
-    The deal's ``operator_id`` is forced to the caller's id so it is tied to
-    their account regardless of the request body.
+    The deal's ``operator_id`` and ``org_id`` are forced to the caller's
+    identity/organization so it is tied to their account regardless of the
+    request body.
     """
     payload.operator_id = user.user_id
-    return await service.create_deal(payload)
+    org_id = user.org_id if user.is_portless else require_org_scope(user)
+    return await service.create_deal(payload, org_id=org_id)
 
 
 @router.get("/{deal_id}", response_model=DealRecord)
@@ -81,8 +86,8 @@ async def get_deal(
     deal_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> DealRecord:
-    """Fetch a single deal owned by the caller (404 if not theirs)."""
-    return await _owned_deal(deal_id, user)
+    """Fetch a single deal in the caller's organization (404 if not theirs)."""
+    return await _org_deal(deal_id, user)
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +105,7 @@ async def update_status(
     Topology is enforced by the state machine in ``shared.domain.state_machine``.
     Returns ``422`` when the transition is not permitted, ``404`` if not theirs.
     """
-    await _owned_deal(deal_id, user)  # ownership gate
+    await _org_deal(deal_id, user)  # organization ownership gate
     try:
         return await service.update_status(deal_id, payload)
     except DealNotFoundError as exc:
@@ -144,12 +149,12 @@ async def get_match_scores(
     deal_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> list[MatchResult]:
-    """Return Match Engine scores for one of the caller's deals.
+    """Return Match Engine scores for one of the caller's organization's deals.
 
     The list is sorted by composite score descending so the winning candidate
     appears first.  ``decision`` is either ``SOURCE`` (viable) or ``DISCARD``.
     """
-    deal = await _owned_deal(deal_id, user)
+    deal = await _org_deal(deal_id, user)
 
     return sorted(
         deal.match_results,

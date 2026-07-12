@@ -170,6 +170,24 @@ async def _transition_deal(deal_id: str, target_status: str, reason: str) -> Non
         raise
 
 
+async def _register_buyer_organization(buyer_name: str, buyer_email: str | None) -> None:
+    """Best-effort: register/update a Portless-visible Organization entry for
+    the buyer once the deal is signed (PI accepted). Never raises — a lookup
+    failure here must never block PI acceptance, which already committed.
+    """
+    if not buyer_email:
+        return
+    try:
+        from services.auth.service import find_or_create_organization_for_deal  # type: ignore[import]
+
+        await find_or_create_organization_for_deal(buyer_name, buyer_email)
+    except Exception as exc:
+        logger.warning(
+            "DealMaker: could not register organization for buyer %r (%s): %s",
+            buyer_name, buyer_email, exc,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Document storage helpers
 # ---------------------------------------------------------------------------
@@ -350,6 +368,8 @@ async def accept_pi(pi_id: str, req: AcceptPiRequest) -> PiResponse:
       • Updates PI status to ``ACCEPTED``
       • Transitions deal → ``PI_ACCEPTED``
       • Emits ``pi.accepted``
+      • Best-effort: registers an Organization entry for the buyer with
+        ``req.buyer_email`` (see _register_buyer_organization) if supplied
     """
     repo = get_repository()
     pi = await repo.get_pi(pi_id)
@@ -364,6 +384,7 @@ async def accept_pi(pi_id: str, req: AcceptPiRequest) -> PiResponse:
     await repo.save_pi(updated)
 
     await _transition_deal(pi.deal_id, "PI_ACCEPTED", f"PI {pi_id} accepted by buyer")
+    await _register_buyer_organization(pi.buyer_name, req.buyer_email)
     await _emit(
         EventTopic.PI_ACCEPTED,
         pi.deal_id,

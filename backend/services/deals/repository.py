@@ -8,9 +8,10 @@ Two concrete implementations satisfy the same ``DealRepository`` Protocol:
     process restart; acceptable for local dev / CI.
 
 ``MongoDealRepository``
-    Motor + MongoDB Atlas.  Five indexes:
+    Motor + MongoDB Atlas.  Six indexes:
       - deal_id (unique)
       - operator_id (list by operator)
+      - org_id (multi-tenancy — list/filter by owning organization)
       - status   (filter by lifecycle status)
       - opportunity_id (sparse — back-ref from Trade-Min)
       - created_at (descending — default sort)
@@ -48,6 +49,7 @@ class DealRepository(Protocol):
         limit: int = 100,
         status: DealStatus | None = None,
         operator_id: str | None = None,
+        org_id: str | None = None,
     ) -> list[DealRecord]: ...
     async def mark_status(
         self,
@@ -77,12 +79,15 @@ class InMemoryFallbackRepository:
         limit: int = 100,
         status: DealStatus | None = None,
         operator_id: str | None = None,
+        org_id: str | None = None,
     ) -> list[DealRecord]:
         deals = list(self._store.values())
         if status is not None:
             deals = [d for d in deals if d.status == status]
         if operator_id is not None:
             deals = [d for d in deals if d.operator_id == operator_id]
+        if org_id is not None:
+            deals = [d for d in deals if d.org_id == org_id]
         return sorted(deals, key=lambda d: d.created_at, reverse=True)[:limit]
 
     async def mark_status(
@@ -133,12 +138,15 @@ class MongoDealRepository:
         limit: int = 100,
         status: DealStatus | None = None,
         operator_id: str | None = None,
+        org_id: str | None = None,
     ) -> list[DealRecord]:
         filt: dict = {}
         if status is not None:
             filt["status"] = status.value
         if operator_id is not None:
             filt["operator_id"] = operator_id
+        if org_id is not None:
+            filt["org_id"] = org_id
         cursor = self._col.find(filt).sort("created_at", -1).limit(limit)
         docs = await cursor.to_list(length=limit)
         result = []
@@ -182,6 +190,7 @@ async def _create_indexes(collection) -> None:
     await collection.create_indexes([
         IndexModel([("deal_id", ASCENDING)], unique=True, name="deal_id_unique"),
         IndexModel([("operator_id", ASCENDING)], name="operator_id"),
+        IndexModel([("org_id", ASCENDING)], name="org_id"),
         IndexModel([("status", ASCENDING)], name="status"),
         IndexModel([("opportunity_id", ASCENDING)], sparse=True, name="opportunity_id"),
         IndexModel([("created_at", DESCENDING)], name="created_at_desc"),

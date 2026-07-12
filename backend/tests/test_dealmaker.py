@@ -250,6 +250,47 @@ class TestAcceptPi:
         with pytest.raises(PiStateError):
             run(accept_pi(pi_id, AcceptPiRequest()))
 
+    def test_registers_buyer_organization_when_email_supplied(self, _repo):
+        pi_id = self._create_pi_record(_repo, status="SENT")
+        register = AsyncMock()
+        with (
+            patch("services.dealmaker.service._transition_deal", AsyncMock()),
+            patch("services.dealmaker.service._emit", AsyncMock()),
+            patch("services.dealmaker.service._register_buyer_organization", register),
+        ):
+            run(accept_pi(pi_id, AcceptPiRequest(buyer_email="buyer@acme.com")))
+
+        register.assert_awaited_once_with("Acme", "buyer@acme.com")
+
+    def test_skips_organization_registration_when_no_email(self, _repo):
+        pi_id = self._create_pi_record(_repo, status="SENT")
+        with (
+            patch("services.dealmaker.service._transition_deal", AsyncMock()),
+            patch("services.dealmaker.service._emit", AsyncMock()),
+            patch(
+                "services.auth.service.find_or_create_organization_for_deal",
+                AsyncMock(),
+            ) as find_or_create,
+        ):
+            resp = run(accept_pi(pi_id, AcceptPiRequest()))
+
+        assert resp.status == "ACCEPTED"
+        find_or_create.assert_not_called()
+
+    def test_org_registration_failure_does_not_block_acceptance(self, _repo):
+        pi_id = self._create_pi_record(_repo, status="SENT")
+        with (
+            patch("services.dealmaker.service._transition_deal", AsyncMock()),
+            patch("services.dealmaker.service._emit", AsyncMock()),
+            patch(
+                "services.auth.service.find_or_create_organization_for_deal",
+                AsyncMock(side_effect=RuntimeError("auth service down")),
+            ),
+        ):
+            resp = run(accept_pi(pi_id, AcceptPiRequest(buyer_email="buyer@acme.com")))
+
+        assert resp.status == "ACCEPTED"
+
 
 # ---------------------------------------------------------------------------
 # PO — issue

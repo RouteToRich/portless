@@ -59,10 +59,16 @@ def create_access_token(
     extra_claims: dict[str, Any] | None = None,
     ttl_minutes: int | None = None,
 ) -> str:
-    """Issue a signed HS256 access token. `subject` becomes the `sub` claim."""
+    """Issue a signed HS256 access token. `subject` becomes the `sub` claim.
+
+    Every token gets a unique `jti` — JWTs are otherwise stateless, so
+    logout (see shared/auth/blacklist.py) has nothing else to key a
+    revocation entry on.
+    """
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "sub": subject,
+        "jti": secrets.token_hex(16),
         "iat": now,
         "exp": now + timedelta(minutes=ttl_minutes or ACCESS_TTL_MINUTES),
         **(extra_claims or {}),

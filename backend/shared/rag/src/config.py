@@ -119,5 +119,15 @@ class RAGSettings(BaseSettings):
     # (mongo_uri / mongo_db_name above); no separate connection needed.
     graph_chunks_collection: str = "graph_chunks"
 
+    # ─────────────────────────────── Free web search (hybrid RAG, 4th leg)
+    # Adds a web-search retrieval leg (Tavily free tier) alongside vector +
+    # keyword + graph search. Disabled by default. The provider credential
+    # (TAVILY_API_KEY) lives in the root .env like other third-party connector
+    # keys, not here — see shared/rag/src/web_search.py. When the key is
+    # absent, or the request fails, the leg contributes no results (fails
+    # open — never fabricates search hits).
+    web_search_enabled: bool = False
+    web_search_top_k: int = 3
+
 
 settings = RAGSettings()

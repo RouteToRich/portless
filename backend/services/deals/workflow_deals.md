@@ -53,19 +53,34 @@ PATCH /deals/{id}/status {target_status}
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/deals/health` | Health |
-| `GET` | `/deals` | List (filter: status, operator_id, limit) |
-| `POST` | `/deals` | Create + seed + score |
-| `GET` | `/deals/{deal_id}` | Fetch one (404 if absent) |
-| `PATCH` | `/deals/{deal_id}/status` | Guarded transition |
-| `PATCH` | `/deals/{deal_id}/financials` | Patch margin / target price / winner / CMS |
-| `GET` | `/deals/{deal_id}/match-scores` | Match history for the deal |
+| `GET` | `/deals/health` | Health | Public |
+| `GET` | `/deals` | List — scoped to the caller's organization (all orgs for Portless staff); filter: status, limit | Portless + non-Portless |
+| `POST` | `/deals` | Create + seed + score | Portless only |
+| `GET` | `/deals/{deal_id}` | Fetch one (404 if absent) | Portless only |
+| `PATCH` | `/deals/{deal_id}/status` | Guarded transition | Portless only |
+| `PATCH` | `/deals/{deal_id}/financials` | Patch margin / target price / winner / CMS | Portless only |
+| `GET` | `/deals/{deal_id}/match-scores` | Match history for the deal | Portless only |
+
+`GET /deals` is the *only* endpoint in this table (besides health) a
+non-Portless caller can reach at all — `shared/auth/middleware.py`'s
+non-Portless allowlist 403s everything else app-wide, before the request
+even reaches this router's own `require_org_scope`/`_org_deal` checks. The
+Ops Console mirrors this: a non-Portless login renders
+`ui/src/pages/OrgDeals.tsx` (deal_id, hs_code, status only — no drill-in),
+never `DealBoard.tsx` or `DealDetail.tsx`.
 
 ## 5. Data & persistence
 
 `DealRecord` keyed by `deal_id`; Mongo indexes: `deal_id` (unique), `operator_id`,
-`status`, `opportunity_id` (sparse), `created_at desc`. `mark_status()` is an
-atomic `$set` + `$push status_history`.
+`org_id`, `status`, `opportunity_id` (sparse), `created_at desc`. `mark_status()`
+is an atomic `$set` + `$push status_history`.
+
+`org_id` ties every deal to the creating user's organization — assigned by a
+Portless admin via the Organizations admin UI, not derived from the user's
+email (see `services/auth/organization.py`) — and is stamped server-side,
+never client-supplied. `GET /deals` and `GET /deals/{id}` are scoped to
+`org_id == caller's org` except for Portless
+platform staff (`is_portless` JWT claim), who see every organization's deals.
 
 ## 6. Completion status
 

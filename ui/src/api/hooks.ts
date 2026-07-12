@@ -10,6 +10,7 @@ import {
   MatchApi,
   NegotiationApi,
   OpportunitiesApi,
+  OrganizationsApi,
   RagApi,
   ShieldApi,
 } from "./endpoints";
@@ -90,11 +91,12 @@ export function useScanOpportunities() {
 
 // ── Approvals ────────────────────────────────────────────────────────────────
 
-export function useApprovals(status?: string) {
+export function useApprovals(status?: string, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ["approvals", status ?? "all"],
     queryFn: () => ApprovalsApi.list(status),
     refetchInterval: 10000,
+    enabled: options?.enabled ?? true,
   });
 }
 
@@ -290,6 +292,33 @@ export function useMatchScore(dealId: string | undefined) {
     queryKey: ["match-score", dealId],
     queryFn: () => MatchApi.getScore(dealId as string),
     enabled: Boolean(dealId),
+  });
+}
+
+// ── Organizations admin (Portless platform staff only) ─────────────────────────
+
+export function useOrganizations() {
+  return useQuery({ queryKey: ["organizations"], queryFn: OrganizationsApi.list });
+}
+
+export function useCreateOrganization() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => OrganizationsApi.create(name),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["organizations"] }),
+  });
+}
+
+export function useAdminUsers() {
+  return useQuery({ queryKey: ["admin-users"], queryFn: OrganizationsApi.listUsers });
+}
+
+export function useAssignUserOrg() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, orgId }: { userId: string; orgId: string }) =>
+      OrganizationsApi.assignUserOrg(userId, orgId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-users"] }),
   });
 }
 

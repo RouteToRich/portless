@@ -204,8 +204,11 @@ def _new_deal_id() -> str:
 # Public service API
 # ---------------------------------------------------------------------------
 
-async def create_deal(payload: CreateDealRequest) -> DealRecord:
+async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
     """Create a new deal, optionally orchestrating Match Engine scoring.
+
+    ``org_id`` ties the deal to the caller's organization (stamped by the
+    router from the authenticated user, never client-supplied).
 
     When ``opportunity_id`` is provided:
       • Fetches the Trade-Min MatchEngineSeed
@@ -256,6 +259,7 @@ async def create_deal(payload: CreateDealRequest) -> DealRecord:
     deal = DealRecord(
         deal_id=deal_id,
         operator_id=payload.operator_id,
+        org_id=org_id,
         hs_code=payload.hs_code,
         market=payload.market,
         status=initial_status,
@@ -316,10 +320,15 @@ async def list_deals(
     limit: int = 100,
     status: DealStatus | None = None,
     operator_id: str | None = None,
+    org_id: str | None = None,
 ) -> list[DealRecord]:
-    """List deals, sorted by creation time descending."""
+    """List deals, sorted by creation time descending.
+
+    ``org_id=None`` means unrestricted (Portless platform staff); callers that
+    need per-org isolation must pass the caller's org explicitly.
+    """
     repo = get_repository()
-    return await repo.list_active(limit=limit, status=status, operator_id=operator_id)
+    return await repo.list_active(limit=limit, status=status, operator_id=operator_id, org_id=org_id)
 
 
 async def update_status(deal_id: str, payload: UpdateStatusRequest) -> DealRecord:

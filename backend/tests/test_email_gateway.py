@@ -53,8 +53,15 @@ def enabled(monkeypatch):
 # Config
 # ---------------------------------------------------------------------------
 
-def test_poll_interval_default_is_15_minutes():
+def test_poll_interval_default_is_15_minutes(monkeypatch):
     # Assert the code default independent of any local .env override.
+    # _env_file=None only skips the dotenv *file* — a real process env var
+    # (e.g. IMAP_POLL_INTERVAL_SECONDS from backend/.env, populated into
+    # os.environ by shared/config.py's load_dotenv() as a side effect of
+    # importing almost anything in the backend) still shadows the class
+    # default, so it must be explicitly cleared for this assertion to be
+    # meaningful regardless of what else has already been imported this run.
+    monkeypatch.delenv("IMAP_POLL_INTERVAL_SECONDS", raising=False)
     from services.email_gateway.config import EmailGatewaySettings
     assert EmailGatewaySettings(_env_file=None).imap_poll_interval_seconds == 900
 

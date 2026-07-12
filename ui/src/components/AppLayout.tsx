@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Bell,
   BrainCircuit,
+  Building2,
   LayoutGrid,
   LogOut,
   Menu,
@@ -38,19 +39,32 @@ const NAV = [
   { to: "/exceptions",   label: "Exceptions",          icon: AlertTriangle },
   { to: "/autonomy",     label: "Autonomy Settings",   icon: Settings2 },
   { to: "/health",       label: "System Health",       icon: Activity },
-  { to: "/knowledge",    label: "Knowledge Base",      icon: BrainCircuit },
+];
+
+// Portless platform staff only — everyone else never sees these links.
+const PORTLESS_NAV = [
+  { to: "/knowledge",           label: "Knowledge Base", icon: BrainCircuit },
+  { to: "/admin/organizations", label: "Organizations",  icon: Building2 },
+];
+
+// Regular (non-Portless) organization users see nothing but their own
+// org's deals — matches the backend's non-Portless allowlist (see
+// shared/auth/middleware.py), not just a UI convention.
+const NON_PORTLESS_NAV = [
+  { to: "/deals", label: "Deals", icon: LayoutGrid },
 ];
 
 const PAGE_TITLES: Record<string, string> = {
-  "/radar":        "Opportunity Radar",
-  "/deals":        "Deal Board",
-  "/approvals":    "Approvals Inbox",
-  "/negotiations": "Negotiation Inbox",
-  "/money":        "Money & Margin",
-  "/exceptions":   "Exceptions",
-  "/autonomy":     "Autonomy Settings",
-  "/health":       "System Health",
-  "/knowledge":    "Knowledge Base",
+  "/radar":              "Opportunity Radar",
+  "/deals":              "Deal Board",
+  "/approvals":          "Approvals Inbox",
+  "/negotiations":       "Negotiation Inbox",
+  "/money":              "Money & Margin",
+  "/exceptions":         "Exceptions",
+  "/autonomy":           "Autonomy Settings",
+  "/health":             "System Health",
+  "/knowledge":          "Knowledge Base",
+  "/admin/organizations": "Organizations",
 };
 
 export function AppLayout() {
@@ -59,7 +73,10 @@ export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const { user, logout } = useAuth();
-  const { data: approvals } = useApprovals("PENDING");
+  // Non-Portless users can't reach /hitl-approval/* at all (see
+  // shared/auth/middleware.py) — skip the query entirely rather than firing
+  // a request that will always 403.
+  const { data: approvals } = useApprovals("PENDING", { enabled: Boolean(user?.is_portless) });
   const { data: health, isError: healthError } = useGatewayHealth();
 
   const initials = (user?.name || user?.email || "U")
@@ -71,10 +88,15 @@ export function AppLayout() {
 
   const pendingCount = approvals?.length ?? 0;
   const isOnline = !healthError && health?.status === "ok";
+  const navItems = user?.is_portless ? [...NAV, ...PORTLESS_NAV] : NON_PORTLESS_NAV;
 
   const pageTitle =
-    PAGE_TITLES[location.pathname] ??
-    (location.pathname.startsWith("/deals/") ? "Deal Detail" : "PortLess");
+    location.pathname === "/deals"
+      ? user?.is_portless
+        ? "Deal Board"
+        : "Deals"
+      : PAGE_TITLES[location.pathname] ??
+        (location.pathname.startsWith("/deals/") ? "Deal Detail" : "PortLess");
 
   const closeSidebar = () => setSidebarOpen(false);
 
@@ -120,7 +142,7 @@ export function AppLayout() {
           <p className="px-2 mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
             Platform
           </p>
-          {NAV.map((item) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             const isPending = item.to === "/approvals" && pendingCount > 0;
             return (
@@ -241,27 +263,29 @@ export function AppLayout() {
             />
           </div>
 
-          {/* Notification bell */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <NavLink
-                to="/approvals"
-                className="relative flex items-center justify-center w-8 h-8 rounded-lg hover:bg-secondary transition-colors"
-              >
-                <Bell className="w-4 h-4 text-muted-foreground" />
-                {pendingCount > 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center w-4 h-4 text-[9px] font-bold rounded-full bg-destructive text-destructive-foreground">
-                    {pendingCount > 9 ? "9+" : pendingCount}
-                  </span>
-                )}
-              </NavLink>
-            </TooltipTrigger>
-            <TooltipContent>
-              {pendingCount > 0
-                ? `${pendingCount} pending approval${pendingCount !== 1 ? "s" : ""}`
-                : "No pending approvals"}
-            </TooltipContent>
-          </Tooltip>
+          {/* Notification bell — Approvals Inbox isn't reachable for non-Portless users */}
+          {user?.is_portless && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <NavLink
+                  to="/approvals"
+                  className="relative flex items-center justify-center w-8 h-8 rounded-lg hover:bg-secondary transition-colors"
+                >
+                  <Bell className="w-4 h-4 text-muted-foreground" />
+                  {pendingCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center w-4 h-4 text-[9px] font-bold rounded-full bg-destructive text-destructive-foreground">
+                      {pendingCount > 9 ? "9+" : pendingCount}
+                    </span>
+                  )}
+                </NavLink>
+              </TooltipTrigger>
+              <TooltipContent>
+                {pendingCount > 0
+                  ? `${pendingCount} pending approval${pendingCount !== 1 ? "s" : ""}`
+                  : "No pending approvals"}
+              </TooltipContent>
+            </Tooltip>
+          )}
 
           {/* Theme toggle */}
           <Tooltip>

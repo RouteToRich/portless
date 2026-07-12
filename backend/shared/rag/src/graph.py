@@ -8,10 +8,15 @@ Ingestion pipeline:
 
 Query pipeline:
   embed_query → semantic_search ──┐
-                keyword_search ──┤→ hybrid_fusion → parent_child_expand
-                  graph_search ──┘
+                keyword_search ──┤
+                  graph_search ──┤→ hybrid_fusion → parent_child_expand
+                    web_search ──┘
   → rerank → knee_point_select → safety_filter
   → augment → generate → validate_citations → evaluate → END
+
+safety_filter (prompt-injection screening) runs on the full merged chunk
+list after knee-point selection, so web-search chunks are screened exactly
+like internal chunks before anything reaches augment/generate.
 """
 from __future__ import annotations
 
@@ -35,6 +40,7 @@ from .parent_store import MongoParentStore
 from .rerank import rerank, select_by_knee_point
 from .security import afilter_prompt_injection_chunks
 from .vector_store import ScoredDocument, VectorStore, expand_parent_context, hybrid_fusion
+from .web_search import WebSearchStore
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +65,7 @@ class QueryState(TypedDict, total=False):
     semantic_results: list[ScoredDocument]
     keyword_results: list[ScoredDocument]
     graph_results: list[ScoredDocument]
+    web_results: list[ScoredDocument]
     hybrid_chunks: list[ScoredDocument]
     parent_chunks: list[ScoredDocument]
     reranked_chunks: list[ScoredDocument]
@@ -93,6 +100,7 @@ def build_query_graph():
     graph.add_node("semantic_search", _semantic_search)
     graph.add_node("keyword_search", _keyword_search)
     graph.add_node("graph_search", _graph_search)
+    graph.add_node("web_search", _web_search)
     graph.add_node("hybrid_fusion", _fuse_results)
     graph.add_node("parent_child_expand", _parent_child_expand)
     graph.add_node("rerank", _rerank_results)
@@ -107,7 +115,8 @@ def build_query_graph():
     graph.add_edge("embed_query", "semantic_search")
     graph.add_edge("semantic_search", "keyword_search")
     graph.add_edge("keyword_search", "graph_search")
-    graph.add_edge("graph_search", "hybrid_fusion")
+    graph.add_edge("graph_search", "web_search")
+    graph.add_edge("web_search", "hybrid_fusion")
     graph.add_edge("hybrid_fusion", "parent_child_expand")
     graph.add_edge("parent_child_expand", "rerank")
     graph.add_edge("rerank", "knee_point_select")
@@ -223,13 +232,33 @@ async def _graph_search(state: QueryState) -> QueryState:
     }
 
 
+async def _web_search(state: QueryState) -> QueryState:
+    """Fetch free web search results (Tavily) as a fourth retrieval leg.
+
+    No-op (empty result) when RAG_WEB_SEARCH_ENABLED is false or
+    TAVILY_API_KEY is unset — see web_search.py for why this fails open
+    rather than returning a stub.
+    """
+    if not settings.web_search_enabled:
+        return {"web_results": []}
+    results = await WebSearchStore().retrieve(state["question"], top_k=settings.web_search_top_k)
+    return {
+        "web_results": filter_authorized_results(
+            results,
+            user_id=state.get("user_id"),
+            team_id=state.get("team_id"),
+        )
+    }
+
+
 async def _fuse_results(state: QueryState) -> QueryState:
-    """Merge semantic, keyword, and graph candidates with Reciprocal Rank Fusion."""
+    """Merge semantic, keyword, graph, and web candidates with Reciprocal Rank Fusion."""
     fused = hybrid_fusion(
         state.get("semantic_results", []),
         state.get("keyword_results", []),
         top_k=settings.retrieval_top_k * 2,
         graph_results=state.get("graph_results"),
+        web_results=state.get("web_results"),
     )
     return {"hybrid_chunks": fused}
 

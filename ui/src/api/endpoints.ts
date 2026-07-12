@@ -16,6 +16,7 @@ import type {
   NegotiationSession,
   AuthUser,
   Opportunity,
+  Organization,
   QcRecord,
   RagFilesResponse,
   RagIngestResponse,
@@ -34,6 +35,21 @@ export const AuthApi = {
   login: (payload: { email: string; password: string }) =>
     api.post<TokenResponse>("/auth/login", payload).then((r) => r.data),
   me: () => api.get<AuthUser>("/auth/me").then((r) => r.data),
+  // Revokes the current bearer token server-side (shared/auth/blacklist.py)
+  // so it can't be replayed even if it leaked before its natural expiry.
+  logout: () => api.post<void>("/auth/logout").then(() => undefined),
+};
+
+// Organizations admin — Portless platform staff only (403 for everyone else).
+export const OrganizationsApi = {
+  list: () => api.get<Organization[]>("/auth/organizations").then((r) => r.data),
+  create: (name: string) =>
+    api.post<Organization>("/auth/organizations", { name }).then((r) => r.data),
+  listUsers: () => api.get<AuthUser[]>("/auth/users").then((r) => r.data),
+  assignUserOrg: (userId: string, orgId: string) =>
+    api
+      .patch<AuthUser>(`/auth/users/${userId}/organization`, { org_id: orgId })
+      .then((r) => r.data),
 };
 
 export const HealthApi = {

@@ -100,6 +100,12 @@ class AcceptPiRequest(BaseModel):
     accepted_by: str | None = None
     """Identifier of the person or system confirming acceptance (audit trail)."""
     notes: str | None = None
+    buyer_email: str | None = None
+    """Buyer's communication email, if known at acceptance time. Best-effort:
+    registers/updates a Portless-admin-visible Organization entry for the
+    buyer (named after the PI's buyer_name) with this email attached, so a
+    later signup from that address can be matched to the right org — see
+    services/auth/service.py::find_or_create_organization_for_deal."""
 
 
 class PiResponse(BaseModel):

@@ -117,7 +117,7 @@ also runs standalone on its own port.
 | 8011 | `exception_resolver` | `/exception-resolver` | ✅ | LangGraph LLM agent; AUTO_FIX/ESCALATE/CANCEL/MONITOR |
 | 8012 | `email_gateway` | `/email-gateway` | ✅ | Email **transport**: IMAP fetch (auto) + SMTP send (API) |
 | 8013 | `email_processor` | `/email-processor` | ✅ | Inbound **processing**: match to live negotiation, extract price, persist, advance |
-| — | `auth` | — | ✅ | JWT users (MongoDB `portless_auth` + in-memory fallback), wired in `app.py` lifespan |
+| — | `auth` | — | ✅ | JWT users + admin-provisioned organizations (Portless-allowlist admin UI; shared MongoDB `portless` db, `users`/`organizations` collections + in-memory fallback), wired in `app.py` lifespan |
 
 > **Docker-compose gap:** `docker-compose.yml` defines services only through
 > `exception-resolver` (8011). `email_gateway` (8012) and `email_processor`
@@ -157,7 +157,7 @@ unset — so the whole platform runs with **no database at all** in dev/CI.
 | HITL Approval | `HITL_APPROVAL_MONGO_URI` | — | in-memory |
 | Email Processor | `EMAIL_PROCESSOR_MONGO_URI` | email_processor | in-memory |
 | Exception Resolver | `EXCEPTION_RESOLVER_MONGO_URI` | — | in-memory |
-| Auth (users) | `AUTH_MONGO_URI` | portless_auth | in-memory |
+| Auth (users) | `AUTH_MONGO_URI` (falls back to shared `MONGO_URI`) | portless (shared) | in-memory |
 | RAG vectors | `RAG_MONGO_URI` | rag | LocalHash / degraded |
 | LLM call tracking | `LLM_MONGO_URI` | llm_gateway | disabled (no tracking) |
 | Shared cache (API responses + session locks) | shared cache config | — | in-memory (no Redis needed) |
