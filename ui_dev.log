@@ -1,0 +1,7 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
+[2m  [32m➜[39m  [1mNetwork[22m[2m: use [22m[1m--host[22m[2m to expose[22m
+
+  Press Ctrl+C to stop
+
+[2m11:36:10 am[22m [36m[1m[vite][22m[39m [32m✨ optimized dependencies changed. reloading[39m

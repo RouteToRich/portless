@@ -1,0 +1,19 @@
+
+> portless-web@0.1.0 dev
+> vite
+
+Re-optimizing dependencies because vite config has changed
+
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m1064[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
+[2m  [32m➜[39m  [1mNetwork[22m[2m: use [22m[1m--host[22m[2m to expose[22m
+[2m12:34:34 pm[22m [36m[1m[vite][22m[39m [32m.env changed, restarting server...[39m
+[2m12:34:34 pm[22m [36m[1m[vite][22m[39m server restarted.
+[2m12:34:40 pm[22m [36m[1m[vite][22m[39m [32m.env changed, restarting server...[39m
+[2m12:34:41 pm[22m [36m[1m[vite][22m[39m server restarted.
+[2m12:45:10 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ApprovalsInbox.tsx, /src/index.css[22m
+[2m12:45:15 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ApprovalsInbox.tsx, /src/index.css[22m
+[2m12:51:16 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ApprovalsInbox.tsx, /src/index.css[22m
+[2m12:51:30 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ApprovalsInbox.tsx, /src/index.css[22m
+[2m12:51:44 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ApprovalsInbox.tsx, /src/index.css[22m

@@ -1,0 +1,31 @@
+Defaulting to user installation because normal site-packages is not writeable
+Requirement already satisfied: google-api-python-client in c:\users\sunda\appdata\roaming\python\python313\site-packages (2.193.0)
+Requirement already satisfied: google-auth in c:\users\sunda\appdata\roaming\python\python313\site-packages (2.49.1)
+Collecting google-auth-oauthlib
+  Downloading google_auth_oauthlib-1.4.0-py3-none-any.whl.metadata (2.6 kB)
+Requirement already satisfied: httplib2<1.0.0,>=0.19.0 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-api-python-client) (0.31.2)
+Requirement already satisfied: google-auth-httplib2<1.0.0,>=0.2.0 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-api-python-client) (0.3.0)
+Requirement already satisfied: google-api-core!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.0,<3.0.0,>=1.31.5 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-api-python-client) (2.30.0)
+Requirement already satisfied: uritemplate<5,>=3.0.1 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-api-python-client) (4.2.0)
+Requirement already satisfied: pyasn1-modules>=0.2.1 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-auth) (0.4.2)
+Requirement already satisfied: cryptography>=38.0.3 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-auth) (46.0.3)
+Requirement already satisfied: googleapis-common-protos<2.0.0,>=1.56.3 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-api-core!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.0,<3.0.0,>=1.31.5->google-api-python-client) (1.72.0)
+Requirement already satisfied: protobuf<7.0.0,>=4.25.8 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-api-core!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.0,<3.0.0,>=1.31.5->google-api-python-client) (5.29.5)
+Requirement already satisfied: proto-plus<2.0.0,>=1.22.3 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-api-core!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.0,<3.0.0,>=1.31.5->google-api-python-client) (1.27.2)
+Requirement already satisfied: requests<3.0.0,>=2.20.0 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-api-core!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.0,<3.0.0,>=1.31.5->google-api-python-client) (2.32.5)
+Requirement already satisfied: pyparsing<4,>=3.1 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from httplib2<1.0.0,>=0.19.0->google-api-python-client) (3.3.2)
+Requirement already satisfied: charset_normalizer<4,>=2 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from requests<3.0.0,>=2.20.0->google-api-core!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.0,<3.0.0,>=1.31.5->google-api-python-client) (3.4.3)
+Requirement already satisfied: idna<4,>=2.5 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from requests<3.0.0,>=2.20.0->google-api-core!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.0,<3.0.0,>=1.31.5->google-api-python-client) (3.10)
+Requirement already satisfied: urllib3<3,>=1.21.1 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from requests<3.0.0,>=2.20.0->google-api-core!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.0,<3.0.0,>=1.31.5->google-api-python-client) (2.3.0)
+Requirement already satisfied: certifi>=2017.4.17 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from requests<3.0.0,>=2.20.0->google-api-core!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.0,<3.0.0,>=1.31.5->google-api-python-client) (2025.8.3)
+Requirement already satisfied: requests-oauthlib>=0.7.0 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from google-auth-oauthlib) (2.0.0)
+Requirement already satisfied: cffi>=2.0.0 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from cryptography>=38.0.3->google-auth) (2.0.0)
+Requirement already satisfied: pycparser in c:\users\sunda\appdata\roaming\python\python313\site-packages (from cffi>=2.0.0->cryptography>=38.0.3->google-auth) (2.23)
+Requirement already satisfied: pyasn1<0.7.0,>=0.6.1 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from pyasn1-modules>=0.2.1->google-auth) (0.6.1)
+Requirement already satisfied: oauthlib>=3.0.0 in c:\users\sunda\appdata\roaming\python\python313\site-packages (from requests-oauthlib>=0.7.0->google-auth-oauthlib) (3.3.1)
+Downloading google_auth_oauthlib-1.4.0-py3-none-any.whl (19 kB)
+Installing collected packages: google-auth-oauthlib
+Successfully installed google-auth-oauthlib-1.4.0
+
+[notice] A new release of pip is available: 25.2 -> 26.1.2
+[notice] To update, run: python.exe -m pip install --upgrade pip

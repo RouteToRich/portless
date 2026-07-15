@@ -24,6 +24,7 @@ DocumentNotFoundError   — 404 on unknown doc_id
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -35,6 +36,7 @@ from uuid import uuid4
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from shared.bus import get_publisher
+from shared.connectors.google_drive import GoogleDriveError, get_connector as get_drive_connector
 from shared.domain.enums import DocumentType
 from shared.domain.events import DomainEvent, EventTopic
 
@@ -122,7 +124,20 @@ def _storage_dir() -> Path:
     return p
 
 
-def _write_document(filename: str, content: str) -> str:
+async def _write_document(deal_id: str, filename: str, content: str) -> str:
+    """Store rendered HTML under Google Drive (Portless/<deal_id>/<filename>)
+    when configured, else write to local disk. Returns the storage URI."""
+    drive = get_drive_connector()
+    if drive.is_configured():
+        try:
+            result = await asyncio.to_thread(drive.upload_document, deal_id, filename, content)
+            return result["web_view_link"] or f"gdrive://{result['file_id']}"
+        except GoogleDriveError as exc:
+            logger.error(
+                "DocuGen: Drive upload failed for %s (deal %s), falling back to local disk: %s",
+                filename, deal_id, exc,
+            )
+
     dest = _storage_dir() / filename
     dest.write_text(content, encoding="utf-8")
     return dest.as_uri()
@@ -399,7 +414,7 @@ async def generate_document(req: GenerateDocumentRequest) -> DocumentResponse:
         html = tmpl.render(**ctx)
 
         content_hash = _sha256(html)
-        storage_uri = _write_document(f"{doc_id}.html", html)
+        storage_uri = await _write_document(req.deal_id, f"{doc_id}.html", html)
 
         rendered = pending.model_copy(update={
             "status": "RENDERED",

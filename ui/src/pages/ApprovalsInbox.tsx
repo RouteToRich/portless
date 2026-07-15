@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { cn, fmtUSD, timeAgo, countdown } from "@/lib/utils";
 import type { ApprovalRecord } from "@/api/types";
-import { useApprovals, useApprovalStream } from "@/api/hooks";
+import { useApprovals, useApprovalStream, useNegotiationEmails } from "@/api/hooks";
 import { HitlApprovalCard } from "@/components/HitlApprovalCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -162,6 +162,16 @@ export function ApprovalsInbox() {
 
   const filteredPending = pending.filter(filterFn);
   const filteredResolved = resolved.filter(filterFn);
+
+  // The approval's callback_payload only carries email_id/negotiation_id/party
+  // (see negotiation_agent/service.py) — the full drafted subject/body lives
+  // in the negotiation's email history, so fetch it separately to display.
+  const selectedNegotiationId = selected?.callback_payload?.negotiation_id as string | undefined;
+  const { data: negotiationEmails } = useNegotiationEmails(
+    isEmailAction(selected?.action ?? "") ? selectedNegotiationId : undefined
+  );
+  const selectedEmailId = selected?.callback_payload?.email_id as string | undefined;
+  const draftEmail = negotiationEmails?.find((e) => e.email_id === selectedEmailId);
 
   return (
     <div className="flex flex-col gap-3 h-[calc(100vh-120px)] min-h-0">
@@ -337,7 +347,8 @@ export function ApprovalsInbox() {
                   }}
                 />
 
-                {/* Email preview for email actions */}
+                {/* Email preview for email actions — fetched from negotiation email
+                    history since callback_payload only carries email_id/negotiation_id */}
                 {isEmailAction(selected.action) && selected.callback_payload && (
                   <div className="rounded-xl border border-border bg-popover">
                     <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
@@ -345,19 +356,19 @@ export function ApprovalsInbox() {
                       <span className="text-sm font-semibold">Email Preview</span>
                     </div>
                     <div className="p-4 space-y-2">
-                      {(selected.callback_payload.subject as string | undefined) && (
-                        <div>
-                          <p className="text-[10px] text-muted-foreground">Subject</p>
-                          <p className="text-sm font-medium">
-                            {selected.callback_payload.subject as string}
-                          </p>
-                        </div>
-                      )}
-                      <Separator />
-                      {(selected.callback_payload.body as string | undefined) && (
-                        <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto scrollbar-thin">
-                          {selected.callback_payload.body as string}
-                        </div>
+                      {!draftEmail ? (
+                        <p className="text-xs text-muted-foreground">Loading draft…</p>
+                      ) : (
+                        <>
+                          <div>
+                            <p className="text-[10px] text-muted-foreground">Subject</p>
+                            <p className="text-sm font-medium">{draftEmail.subject}</p>
+                          </div>
+                          <Separator />
+                          <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+                            {draftEmail.body}
+                          </div>
+                        </>
                       )}
                     </div>
                   </div>
@@ -392,7 +403,7 @@ export function ApprovalsInbox() {
                         <p className="text-[10px] text-muted-foreground mb-1">
                           Modified email body:
                         </p>
-                        <div className="text-xs bg-card border border-border rounded p-2 whitespace-pre-wrap max-h-32 overflow-y-auto scrollbar-thin">
+                        <div className="text-xs bg-card border border-border rounded p-2 whitespace-pre-wrap">
                           {selected.modified_body}
                         </div>
                       </div>

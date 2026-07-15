@@ -32,6 +32,12 @@ google-genai>=1.0
 # graceful fallback to a no-op): RAG_GRAPH_RETRIEVAL_ENABLED=true, RAG_GRAPH_DB_BACKEND=neo4j
 neo4j>=5.14
 
+# Google Drive document storage (optional — dealmaker/docugen write locally
+# when GOOGLE_DRIVE_* env vars are unset; see shared/connectors/google_drive.py)
+google-api-python-client>=2.100
+google-auth>=2.23
+google-auth-oauthlib>=1.2
+
 # --- RAG module (backend/shared/rag) ---
 # Core pipeline
 rank-bm25

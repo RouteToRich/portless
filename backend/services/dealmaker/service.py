@@ -30,6 +30,7 @@ PiStateError        — PI status does not allow the requested operation; maps t
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -41,6 +42,7 @@ from uuid import uuid4
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from shared.bus import get_publisher
+from shared.connectors.google_drive import GoogleDriveError, get_connector as get_drive_connector
 from shared.domain.events import DomainEvent, EventTopic
 from shared.domain.state_machine import can_transition
 
@@ -198,8 +200,20 @@ def _storage_dir() -> Path:
     return p
 
 
-def _write_document(filename: str, content: str) -> str:
-    """Write rendered HTML to disk and return the file URI."""
+async def _write_document(deal_id: str, filename: str, content: str) -> str:
+    """Store rendered HTML under Google Drive (Portless/<deal_id>/<filename>)
+    when configured, else write to local disk. Returns the storage URI."""
+    drive = get_drive_connector()
+    if drive.is_configured():
+        try:
+            result = await asyncio.to_thread(drive.upload_document, deal_id, filename, content)
+            return result["web_view_link"] or f"gdrive://{result['file_id']}"
+        except GoogleDriveError as exc:
+            logger.error(
+                "DealMaker: Drive upload failed for %s (deal %s), falling back to local disk: %s",
+                filename, deal_id, exc,
+            )
+
     dest = _storage_dir() / filename
     dest.write_text(content, encoding="utf-8")
     return dest.as_uri()
@@ -302,7 +316,7 @@ async def issue_pi(req: IssuePiRequest) -> PiResponse:
     )
 
     content_hash = _sha256(html)
-    storage_uri = _write_document(f"{pi_id}.html", html)
+    storage_uri = await _write_document(req.deal_id, f"{pi_id}.html", html)
 
     # ── Persist record ────────────────────────────────────────────────────
     pi_record = PiRecord(
@@ -512,7 +526,7 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
     )
 
     content_hash = _sha256(html)
-    storage_uri = _write_document(f"{po_id}.html", html)
+    storage_uri = await _write_document(req.deal_id, f"{po_id}.html", html)
 
     # ── Persist record ────────────────────────────────────────────────────
     po_record = PoRecord(
