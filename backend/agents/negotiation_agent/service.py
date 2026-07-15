@@ -33,6 +33,7 @@ from .email_history import (
 )
 from .graph import NegotiationGraphState, build_negotiation_graph
 from .guards import compute_net_margin
+from .market_intel import fetch_both, get_usd_inr_rate
 from .rag import load_rag_context
 from .repository import NegotiationRepository, get_repository
 from .schemas import (
@@ -241,7 +242,7 @@ async def _post_graph_notify(
         tasks.append(_create_and_gate_email(
             session,
             "buyer",
-            f"{session.buyer_id}@portless.placeholder",
+            session.buyer_email or f"{session.buyer_id}@portless.placeholder",
             f"PortLess Trade Update — Round {session.round_no}",
             buyer_msg,
         ))
@@ -249,7 +250,7 @@ async def _post_graph_notify(
         tasks.append(_create_and_gate_email(
             session,
             "supplier",
-            f"{session.seller_id}@portless.placeholder",
+            session.seller_email or f"{session.seller_id}@portless.placeholder",
             f"PortLess Trade Quote — Round {session.round_no}",
             supplier_msg,
         ))
@@ -385,7 +386,11 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         return _session_to_response(existing)
 
     negotiation_id = str(uuid.uuid4())
-    rag_context = await load_rag_context(payload.product_code)
+    rag_context, market_context, usd_inr_rate = await asyncio.gather(
+        load_rag_context(payload.product_code),
+        fetch_both(payload.product_code, payload.buyer_country_code),
+        get_usd_inr_rate(),
+    )
 
     now = datetime.now(timezone.utc)
     session = NegotiationSession(
@@ -402,6 +407,8 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         policy=payload.policy,
         cost_envelope=payload.cost_envelope,
         batna=payload.batna,
+        buyer_email=payload.buyer_email,
+        seller_email=payload.seller_email,
         rag_context=rag_context,
         status="STARTED",
         round_no=0,
@@ -422,6 +429,9 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         "operator_override_price": None,
         "buyer_history": "",
         "supplier_history": "",
+        "buyer_market_context": market_context["buyer"],
+        "supplier_market_context": market_context["supplier"],
+        "usd_inr_rate": usd_inr_rate,
         "current_bid": session.buyer_target_price,
         "current_ask": session.supplier_quote_price,
         "current_margin": 0.0,
@@ -510,7 +520,11 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
     else:
         session.current_ask = effective_price
 
-    history = await _build_conversation_history(negotiation_id)
+    history, market_context, usd_inr_rate = await asyncio.gather(
+        _build_conversation_history(negotiation_id),
+        fetch_both(session.product_code, session.buyer_country_code),
+        get_usd_inr_rate(),
+    )
 
     state: NegotiationGraphState = {
         "session": session,
@@ -522,6 +536,9 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
         "operator_override_price": request.operator_override_price,
         "buyer_history": history["buyer"],
         "supplier_history": history["supplier"],
+        "buyer_market_context": market_context["buyer"],
+        "supplier_market_context": market_context["supplier"],
+        "usd_inr_rate": usd_inr_rate,
         "current_bid": session.current_bid,
         "current_ask": session.current_ask,
         "current_margin": session.margin_at_current or 0.0,

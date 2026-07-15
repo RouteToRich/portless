@@ -43,6 +43,7 @@ cd ../backend
 uvicorn services.api_gateway.main:app --reload --port 8000
 ```
 
-> **Status:** UI is wired to real gateway endpoints. Screens whose backend
-> service methods are still `NotImplementedError` show clean loading / error /
-> empty states until the corresponding service logic lands.
+> **Status:** UI is wired to real gateway endpoints; every backend service is
+> fully implemented (see `../CLAUDE.md`'s Implementation Status table).
+> Remaining `TODO`s above are UI-side screens/affordances that haven't been
+> built yet, not missing backend logic.

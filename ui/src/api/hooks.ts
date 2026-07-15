@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { TOKEN_KEY } from "./client";
 import {
   ApprovalsApi,
   DealsApi,
@@ -52,7 +53,12 @@ export function useCreateDeal() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (payload: CreateDealRequest) => DealsApi.create(payload),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["deals"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["deals"] });
+      // The source opportunity flips to CONVERTED server-side — refetch so
+      // the radar's "Start Deal" button reflects that without a manual reload.
+      qc.invalidateQueries({ queryKey: ["opportunities"] });
+    },
   });
 }
 
@@ -133,9 +139,12 @@ export function useApprovalStream() {
   const baseURL = import.meta.env.VITE_API_BASE_URL ?? "";
 
   useEffect(() => {
-    const url = baseURL
-      ? `${baseURL}/hitl-approval/stream`
-      : "/api/hitl-approval/stream";
+    // EventSource can't set an Authorization header, so the token travels as
+    // a query param — the backend's AuthMiddleware narrowly allows this only
+    // for this one SSE path (see shared/auth/middleware.py).
+    const token = localStorage.getItem(TOKEN_KEY);
+    const path = baseURL ? `${baseURL}/hitl-approval/stream` : "/api/hitl-approval/stream";
+    const url = token ? `${path}?token=${encodeURIComponent(token)}` : path;
 
     let es: EventSource;
     let retryTimeout: ReturnType<typeof setTimeout>;

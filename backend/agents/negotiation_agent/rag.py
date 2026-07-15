@@ -12,7 +12,10 @@ agent degrades gracefully in dev / early-stage deployments.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +73,9 @@ async def load_rag_context(hs_code: str) -> str:
 
     Falls back to static stubs if the pipeline is unavailable.
     """
+    if not settings.rag_enabled:
+        return _fallback(hs_code)
+
     question = (
         f"Negotiation tactics, price benchmarks, payment terms, and trade rules "
         f"for product HS code {hs_code}. Include typical buyer/supplier concession "
@@ -78,9 +84,9 @@ async def load_rag_context(hs_code: str) -> str:
     try:
         from shared.rag.src import query as rag_query  # type: ignore[import]
 
-        result = await rag_query(
-            question=question,
-            metadata_filter={"hs_code": hs_code},
+        result = await asyncio.wait_for(
+            rag_query(question=question, metadata_filter={"hs_code": hs_code}),
+            timeout=settings.rag_timeout_seconds,
         )
         answer: str = result.get("answer", "")
 

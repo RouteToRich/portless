@@ -52,6 +52,17 @@ detail page, or any of the other Ops Console pages (`ui/src/App.tsx`'s
 grant a non-Portless user access to a new endpoint; there is intentionally
 no per-endpoint opt-out.
 
+**SSE query-token exception (`_QUERY_TOKEN_PATH_SUFFIXES`).** The browser's
+native `EventSource` API — the only client for the HITL SSE stream — cannot
+set an `Authorization` header. `AuthMiddleware` therefore accepts a `?token=`
+query param as the bearer token for any request path suffix-matched against
+`_QUERY_TOKEN_PATH_SUFFIXES` (today: just `/hitl-approval/stream`), instead
+of weakening the header check anywhere else. Suffix matching (not exact
+path) so this still works whether the app is mounted at `/hitl-approval/stream`
+(monolith) or behind `/api/hitl-approval/stream` (gateway-proxied). The token
+still goes through the normal `decode_token()` / revocation-blacklist check —
+only *where the token travels* differs for this one path.
+
 At signup, a Portless-allowlisted email is auto-assigned the reserved
 `PORTLESS_ORG_ID` ("portless") constant — a fixed label, not derived from
 their email — purely so any record they personally create has a valid

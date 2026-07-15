@@ -19,6 +19,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 
+// 409 = already resolved (e.g. a double-click, or another operator/tab got
+// there first) — the request was correctly rejected, not failed. Refresh
+// instead of showing an error for state the UI just hasn't caught up to yet.
+function isAlreadyResolved(err: unknown): boolean {
+  return (err as { response?: { status?: number } })?.response?.status === 409;
+}
+
 function emailStatusBadge(status: EmailHistoryRecord["status"]) {
   switch (status) {
     case "pending_approval":
@@ -90,8 +97,13 @@ function EmailCard({ email, onResolved }: EmailCardProps) {
       });
       toast.success("Email approved and sent");
       onResolved();
-    } catch {
-      toast.error("Failed to approve email");
+    } catch (err) {
+      if (isAlreadyResolved(err)) {
+        toast.info("Already resolved — refreshing");
+        onResolved();
+      } else {
+        toast.error("Failed to approve email");
+      }
     }
   }
 
@@ -104,8 +116,13 @@ function EmailCard({ email, onResolved }: EmailCardProps) {
       });
       toast.success("Email rejected");
       onResolved();
-    } catch {
-      toast.error("Failed to reject email");
+    } catch (err) {
+      if (isAlreadyResolved(err)) {
+        toast.info("Already resolved — refreshing");
+        onResolved();
+      } else {
+        toast.error("Failed to reject email");
+      }
     }
   }
 
@@ -123,8 +140,14 @@ function EmailCard({ email, onResolved }: EmailCardProps) {
       toast.success("Modified email sent");
       setShowModify(false);
       onResolved();
-    } catch {
-      toast.error("Failed to send modified email");
+    } catch (err) {
+      if (isAlreadyResolved(err)) {
+        toast.info("Already resolved — refreshing");
+        setShowModify(false);
+        onResolved();
+      } else {
+        toast.error("Failed to send modified email");
+      }
     }
   }
 

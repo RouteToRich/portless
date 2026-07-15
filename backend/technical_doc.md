@@ -89,7 +89,7 @@
 
 | Purpose | Tool | Notes |
 |---|---|---|
-| Tests | `pytest` (+ `httpx` test client) | `asyncio_mode = auto`; 238-test suite |
+| Tests | `pytest` (+ `httpx` test client) | `asyncio_mode = auto`; 492-test suite |
 | Lint | `ruff` | line-length 100, target `py311` |
 | Container | Docker (`python:3.11-slim`) + docker-compose | one image, per-service env |
 | Build metadata | `pyproject.toml` (setuptools) | `requires-python >= 3.11` |

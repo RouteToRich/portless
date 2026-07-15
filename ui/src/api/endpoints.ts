@@ -69,9 +69,9 @@ export const DealsApi = {
 };
 
 export const OpportunitiesApi = {
-  list: () => api.get<Opportunity[]>("/opportunities").then((r) => r.data),
+  list: () => api.get<Opportunity[]>("/trade-min/opportunities").then((r) => r.data),
   scan: (payload: { hs_codes?: string[]; target_markets?: string[] }) =>
-    api.post<Opportunity[]>("/opportunities/scan", payload).then((r) => r.data),
+    api.post<Opportunity[]>("/trade-min/scan", payload).then((r) => r.data),
 };
 
 export const ApprovalsApi = {

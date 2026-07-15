@@ -32,6 +32,7 @@
 | `trade_min.service.get_match_seed()` / `mark_opportunity_converted()` | Seed a deal from a detected opportunity |
 | `match_engine.service.score_match()` | Compute initial CMS at creation |
 | `shared.domain.state_machine.can_transition()` | Guard every transition |
+| `shared.orchestration.auto_flow.start()` | Fire-and-forget auto-continuation task (dev/test only — see §3a) |
 
 *(Monolith uses in-process imports; microservice mode swaps for `DealsClient`.)*
 
@@ -48,6 +49,24 @@ PATCH /deals/{id}/status {target_status}
   → DealStatus(current); can_transition(current, target)?  reject if false
   → mark_status(): $set status + $push status_history
 ```
+
+### 3a. Auto-Flow orchestrator (`shared/orchestration/auto_flow.py`, dev/test only)
+
+Gated by `AUTO_FLOW_ENABLED` (`shared/config.py`, default `False`). When on,
+`create_deal()` fires a background `asyncio.create_task` for any deal that
+reaches `MATCHING` via an opportunity — it drives the deal through
+sourcing → negotiation → PI → escrow funding using the **real service-layer
+functions** (no HTTP, no business-logic mocking; only Trade-Min's
+opportunity data is ever mocked, via `TRADE_MIN_MOCK_MODE`). It stops and
+creates a normal HITL approval (at the deal's own `autonomy_profile`, usually
+L0) before `ISSUE_PO`, `BOOK_FREIGHT`, and `RELEASE_SUPPLIER_PAYOUT` — an
+operator resolves these the same way as any real HITL deployment. It polls
+for negotiation convergence rather than self-driving further rounds; real
+back-and-forth still happens over actual email or a manual "Run Round".
+Escrow-funded / QC-pass / freight-cleared webhooks are simulated a few
+seconds after each booking call, since the third-party connectors that would
+normally fire them are stubbed. This is an in-memory task, not a durable
+job — a server restart silently kills any in-flight run.
 
 ## 4. API endpoints
 
@@ -96,6 +115,9 @@ platform staff (`is_portless` JWT claim), who see every organization's deals.
 
 - `DEALS_MONGO_URI` — set for durable storage; unset → in-memory.
 - No external API keys required (this service is pure orchestration).
+- `AUTO_FLOW_ENABLED` — off by default; turns on the dev/test auto-continuation
+  task described in §3a. Not intended for production (autonomy/HITL gates
+  still apply, but the background driver itself is a dev/test convenience).
 
 ## 8. Nice-to-have / pending
 
@@ -109,4 +131,5 @@ platform staff (`is_portless` JWT claim), who see every organization's deals.
 
 `schemas.py` (DealRecord + requests) · `service.py` (create/get/update + guard) ·
 `repository.py` (InMemory + Mongo) · `router.py` · `client.py` (`DealsClient`) ·
-`config.py` · `main.py`.
+`config.py` · `main.py`. Dev/test auto-continuation driver lives outside this
+module at `shared/orchestration/auto_flow.py` (see §3a).

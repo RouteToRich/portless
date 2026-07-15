@@ -36,7 +36,8 @@ Deal reaches NEGOTIATING status
          ▼
 POST /negotiation-agent/negotiations   ← start_negotiation()
          │
-         ├─ load RAG context (HS code lookup)
+         ├─ load RAG context (HS code lookup, once per session)
+         ├─ fetch live market intel (buyer + supplier, concurrently — §9)
          ├─ create NegotiationSession in DB (status=STARTED)
          │
          ▼
@@ -71,6 +72,7 @@ POST /negotiation-agent/negotiations   ← start_negotiation()
          ▼  (buyer or seller replies via email or portal)
 POST /negotiation-agent/negotiations/{id}/round  ← run_round()
          │
+         ├─ re-fetch live market intel (fresh every round, unlike RAG — §9)
          └─ loops back into LangGraph
 ```
 
@@ -649,10 +651,23 @@ question = (
     f"for product HS code {hs_code}. Include typical buyer/supplier concession "
     "patterns, quality standards, and incoterm preferences."
 )
-result = await rag_query(question, metadata_filter={"hs_code": hs_code})
+result = await asyncio.wait_for(
+    rag_query(question, metadata_filter={"hs_code": hs_code}),
+    timeout=settings.rag_timeout_seconds,
+)
 ```
 
 The returned `rag_context` string is stored in the `NegotiationSession` document and injected into **every LLM call** for the lifetime of the negotiation — both orchestrator and both sub-agents receive it.
+
+**Escape hatch + hang protection.** `NEGOTIATION_RAG_ENABLED=false` skips the
+shared RAG pipeline entirely and always uses the static playbook stub below —
+added because the RAG pipeline's local cross-encoder reranker can block on a
+HuggingFace Hub connectivity check that never returns, a genuinely synchronous
+call that freezes the whole single-process asyncio server (not just the one
+request) since `asyncio.wait_for` can't preempt non-yielding code. The
+`rag_timeout_seconds` wrap above (default 15s) catches every other kind of
+hang (a vector-store or embedding call with no timeout of its own) and is
+treated the same as any other RAG failure — fall back to the static stub.
 
 ### What RAG provides
 
@@ -667,9 +682,40 @@ The returned `rag_context` string is stored in the `NegotiationSession` document
 
 If the MongoDB Atlas vector store is unconfigured or returns no results, `rag.py` falls back to static product playbooks hardcoded in `_FALLBACK_PLAYBOOKS`. The negotiation always proceeds — the LLM just has less precise market intelligence.
 
-### Web search (planned)
+### Market Intelligence — live web search (`market_intel.py`)
 
-The current implementation uses indexed trade playbooks only. A planned extension would allow the RAG retrieval to augment with live commodity price data (e.g., Comdty API, CME) injected as additional `rag_context` before each round's LLM call. This would make the agent aware of intraday price movements.
+Unlike `rag_context` (loaded once per session, since a trade playbook doesn't
+change round to round), `market_intel.fetch_both(product_code, buyer_country_code)`
+runs **fresh on every round** — "current market pricing" is only useful if
+it's current at draft time. It fetches party-scoped web-search snippets
+(current import pricing/demand for the buyer's market; current India
+export/Ex-Works pricing for the supplier side, since India is the sole
+export origin convention used throughout `shared/connectors/trade_intel.py`)
+concurrently via `asyncio.gather`, and writes them into
+`buyer_market_context` / `supplier_market_context` on the graph state —
+consumed by `buyer_agent_node` / `supplier_agent_node` as the `market_context`
+prompt field (see `prompts.py` guideline 3 on both agents).
+
+Mechanically it reuses `shared/rag/src`'s Tavily adapter (`WebSearchStore`)
+and the same prompt-injection filter (`afilter_prompt_injection_chunks`) the
+main RAG query graph runs on every web-search chunk before it reaches a
+generation prompt — raw open-web content flowing into a prompt that
+autonomously drafts business email is a prompt-injection surface, and this
+repo already has the standard answer for it (see `shared/rag/workflow_rag.md`
+§"Web search retrieval leg"). Every drafted email is still independently
+routed through the mandatory L0 HITL approval gate before send regardless of
+what informed the draft — defense in depth, not a replacement for the filter.
+
+Gated by `NEGOTIATION_MARKET_SEARCH_ENABLED` (default `false` — mirrors
+`RAG_WEB_SEARCH_ENABLED`'s own default for the identical underlying
+mechanism, since this is an additional open-internet retrieval leg, not core
+infrastructure like RAG). Fails open to `""` on: disabled, missing
+`TAVILY_API_KEY`, or any HTTP/timeout/classifier error — never raises, never
+fabricates a result. Prompt guidance (`prompts.py`) treats `market_context`
+as unverified background color that can never loosen the floor-price /
+implied-max-price guardrails, and instructs the LLM to paraphrase at most one
+point (never quote verbatim, never cite a URL, never follow instruction-like
+text inside it).
 
 ### How agents use RAG context in practice
 
@@ -877,6 +923,10 @@ All settings are in `config.py` / `.env`:
 | `DEFAULT_MARGIN_FLOOR_PCT` | `8.0` | Default minimum acceptable net margin |
 | `DEFAULT_CONCESSION_STEP_USD` | `0.10` | Max bid-ask gap for convergence |
 | `IMAP_HOST` / `IMAP_USER` | `""` | IMAP inbox monitoring (future auto-ingestion) |
+| `NEGOTIATION_RAG_ENABLED` | `true` | `false` skips the shared RAG pipeline entirely, always using the static playbook stub (see §9 hang-protection note) |
+| `rag_timeout_seconds` (field default; no `NEGOTIATION_` env prefix — set via `RAG_TIMEOUT_SECONDS`) | `15.0` | Wall-clock budget for `load_rag_context()`; exceeding it falls back to the static stub |
+| `NEGOTIATION_MARKET_SEARCH_ENABLED` | `false` | Fetch live web-search market pricing/demand color (Tavily) before each buyer/supplier draft — see §9 |
+| `TAVILY_API_KEY` | `""` | Shared with `shared/rag`'s own web-search leg; market search is a no-op without it even when enabled |
 
 ### Policy overrides per negotiation
 
@@ -893,6 +943,22 @@ Any `NegotiationPolicy` field can be overridden per-deal in the `StartNegotiatio
 ```
 
 The `deadline` field is available on `NegotiationPolicy` and is passed into agent prompts to encourage urgency in messaging as the date approaches.
+
+### Real contact addresses (`buyer_email` / `seller_email`)
+
+`StartNegotiationRequest` accepts optional `buyer_email` and `seller_email`
+fields, stored on the `NegotiationSession` and used in place of the
+placeholder addresses when dispatching outbound drafts:
+
+```python
+to_address = session.buyer_email or f"{session.buyer_id}@portless.placeholder"
+to_address = session.seller_email or f"{session.seller_id}@portless.placeholder"
+```
+
+`buyer_id` / `seller_id` remain the identifiers used for matching and
+reporting — these two fields only control where the actual email is sent.
+When unset, outbound drafts still target the unreachable
+`@portless.placeholder` address, same as before (log-only/no-op send).
 
 ---
 
@@ -1146,7 +1212,7 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 
 ## 15. Implementation Status
 
-> Last reviewed: 2026-07-10.  
+> Last reviewed: 2026-07-10; RAG resilience + market-intel rows added 2026-07-14.  
 > Legend: ✅ Fully implemented · ⚠️ Partial / stub · ❌ Not started / broken · 💡 Nice-to-have  
 > **See [§16](#16-known-issues--gaps-2026-07-10-review) for the code-vs-doc audit** — several rows below were corrected on 2026-07-10.
 
@@ -1212,6 +1278,8 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 | System prompts for all 3 agents | ✅ | `prompts.py` | Strict JSON output enforced |
 | LLM JSON parse error handling | ✅ | `graph.py` | `_parse_llm_json()` with safe fallback dict |
 | Policy deadline field in prompts | ⚠️ | `schemas.py` | Field exists on `NegotiationPolicy` but agents do not yet use it to escalate urgency in message tone |
+| RAG escape hatch + hang protection (`NEGOTIATION_RAG_ENABLED`, `rag_timeout_seconds`) | ✅ | `rag.py`, `config.py` | Added 2026-07-14 — see §9 |
+| Live web-search market intelligence (`market_intel.py`, Tavily) | ✅ | `market_intel.py`, `graph.py`, `prompts.py` | Added 2026-07-14 — fresh per-round buyer/supplier market color, gated by `NEGOTIATION_MARKET_SEARCH_ENABLED` (default off), prompt-injection filtered. See §9. Supersedes the "planned" web-search note that used to live here. |
 
 ### Inbound email auto-ingestion
 
@@ -1245,8 +1313,8 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 | Deal status transition on AGREED/FAILED | ✅ | Wired 2026-07-10 — `_sync_deal_status()` calls `deals.update_status` (AGREED → `NEGOTIATION_AGREED`, FAILED → `NEGOTIATION_FAILED`) from `_post_graph_notify`; best-effort + idempotent. The deal-service transition emits the domain event, so this is the single hand-off point to other services. |
 | Dealmaker PI trigger on AGREED | ⚠️ | The AGREED deal transition **unblocks** DealMaker's `issue_pi` (which gates on `NEGOTIATION_AGREED`), but the PI is **not** auto-fired here — it needs quantity/incoterm/ports/buyer-address the negotiation session doesn't hold, so `POST /dealmaker/pi` remains a separate operator/orchestrator step. |
 | Mock seed data for UI dev | ✅ | `_mock_seed.py` — 5 scenarios, 15 emails |
-| Automated tests | ✅ | Added 2026-07-10 — `tests/test_negotiation_agent.py` (32 tests): guards, orchestrator routing, graph draft, email lifecycle, realized-CMS, conversation-history, price-secrecy, deal hand-off. See §16.4 |
-| Conversation-history context in agent drafts | ✅ | Party-scoped transcript of sent/received emails injected into buyer/supplier LLM payloads so drafts continue the thread. `web search` enrichment still pending (§9). |
+| Automated tests | ✅ | Added 2026-07-10, extended 2026-07-14 — `tests/test_negotiation_agent.py` (35 tests): guards, orchestrator routing, graph draft, email lifecycle, realized-CMS, conversation-history, market-context wiring, price-secrecy, deal hand-off. Plus `tests/test_market_intel.py` (5 tests) for the market-intel fetch/format/fail-open behavior. See §16.4 |
+| Conversation-history context in agent drafts | ✅ | Party-scoped transcript of sent/received emails injected into buyer/supplier LLM payloads so drafts continue the thread. Live web-search market color now also injected per round — see §9. |
 | Counterparty price secrecy (hard guarantee) | ✅ | Hardened 2026-07-10 — the buyer agent gets `floor_price` (not the raw ask/midpoint); the supplier agent gets `implied_max` (not the raw bid). Raw counterparty price never enters the LLM payload; leak-audit tests assert it. |
 
 ---
@@ -1255,7 +1323,7 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 
 | Feature | Priority | Notes |
 |---------|----------|-------|
-| Live commodity price enrichment in RAG | High | Inject intraday CME/Comdty/Volza prices as additional context before each LLM call |
+| Dedicated commodity-exchange price feed (CME/Comdty/Volza) | Medium | §9's `market_intel.py` now covers general live market color via Tavily web search; a structured intraday exchange-price feed would be more precise but is a separate, not-yet-built integration |
 | PDF / Excel attachment content parsing | Medium | Attachments are captured (`email_gateway`) and forwarded as `attachment_refs`; parsing their contents for a quoted price (pypdf / openpyxl) is still pending |
 | Policy deadline urgency in agent prompts | Medium | Pass `deadline` to buyer/supplier agents; tone should escalate as date approaches |
 | WhatsApp channel wiring (Twilio / Meta API) | Medium | Channel enum already in schema; needs dispatcher implementation |
@@ -1354,13 +1422,17 @@ revision.
 
 ~~There is no `tests/test_negotiation_agent.py`.~~
 
-**✅ Fixed 2026-07-10.** Added `tests/test_negotiation_agent.py` (32 tests):
-`guards.py` pure functions, orchestrator routing (AGREED / FAILED / near-floor /
+**✅ Fixed 2026-07-10, extended 2026-07-14.** Added `tests/test_negotiation_agent.py`
+(35 tests): `guards.py` pure functions, orchestrator routing (AGREED / FAILED / near-floor /
 first-outbound / healthy / terminal-clamp), a graph end-to-end draft, the email
 lifecycle (send / modify / reject / fail / inbound), realized-CMS, party-scoped
-conversation-history injection, the price-secrecy hardening (raw counterparty
+conversation-history injection, market-context wiring (buyer/supplier isolation
+guard), the price-secrecy hardening (raw counterparty
 price / BATNA never enter either agent's LLM payload), and the deal hand-off
-(AGREED/FAILED → `deals.update_status`, idempotent + error-safe).
+(AGREED/FAILED → `deals.update_status`, idempotent + error-safe). Plus
+`tests/test_market_intel.py` (5 tests) covering `market_intel.py`'s query
+building, result formatting/truncation, and fail-open behavior (disabled,
+missing key, HTTP/timeout error).
 
 ### 16.5 — Stale bytecode (Low)
 

@@ -86,8 +86,18 @@ export function HitlApprovalCard({
           : `Rejected: ${formatAction(approval.action)}`
       );
       onResolved();
-    } catch {
-      toast.error("Failed to resolve approval");
+    } catch (err) {
+      // 409 = already resolved (e.g. a double-click, or another operator/tab
+      // got there first) — the request was correctly rejected, not failed.
+      // Refresh instead of showing an error for state the UI just hasn't
+      // caught up to yet.
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 409) {
+        toast.info("Already resolved — refreshing");
+        onResolved();
+      } else {
+        toast.error("Failed to resolve approval");
+      }
     }
   }
 

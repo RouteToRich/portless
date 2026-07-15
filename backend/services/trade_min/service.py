@@ -171,7 +171,14 @@ async def _safe_quote(name: str, req: dict) -> dict | None:
         conserve API quota — a cache hit short-circuits the live call.
       - Missing credentials (KeyError in connector __init__)
       - Network timeouts, API errors, unexpected exceptions
+
+    In TRADE_MIN_MOCK_MODE this never touches a live connector at all — see
+    mock_data.mock_quote().
     """
+    if settings.trade_min_mock_mode:
+        from .mock_data import mock_quote
+        return mock_quote(name, req)
+
     ttl = DEFAULT_CONFIG.cache_ttl_seconds.get(name)
     cache_key: str | None = None
     if ttl and settings.trade_cache_enabled:

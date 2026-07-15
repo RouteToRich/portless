@@ -51,6 +51,13 @@ _NON_PORTLESS_ALLOWED = frozenset({
     ("POST", "/auth/logout"),
 })
 
+# Paths where the browser's native EventSource API is the only client (SSE) —
+# it cannot set an Authorization header, so these accept a ?token= query
+# param as a narrow, path-scoped exception rather than weakening auth
+# elsewhere. Suffix-matched since this runs the same behind /api/hitl-approval
+# and directly at /hitl-approval depending on deployment.
+_QUERY_TOKEN_PATH_SUFFIXES = ("/hitl-approval/stream",)
+
 
 def _is_public(path: str) -> bool:
     # Any "<service>/health" endpoint is public too.
@@ -66,14 +73,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")
-        if not auth.lower().startswith("bearer "):
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+        elif any(request.url.path.endswith(s) for s in _QUERY_TOKEN_PATH_SUFFIXES):
+            token = request.query_params.get("token", "")
+        else:
+            token = ""
+
+        if not token:
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Authentication required"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
-
-        token = auth.split(" ", 1)[1].strip()
         try:
             claims = decode_token(token)
         except Exception:  # noqa: BLE001 — any decode/expiry failure → 401

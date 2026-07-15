@@ -127,6 +127,12 @@ class StartNegotiationRequest(BaseModel):
     policy: NegotiationPolicy = Field(default_factory=NegotiationPolicy)
     batna: str | None = None
     """Best Alternative To Negotiated Agreement — operator's fallback strategy."""
+    buyer_email: str | None = None
+    seller_email: str | None = None
+    """Real contact addresses for outbound negotiation emails. When unset,
+    falls back to f"{buyer_id}@portless.placeholder" / same for seller_id —
+    buyer_id/seller_id remain the identifiers used for matching/reporting;
+    these two fields only control where the actual email is sent."""
 
 
 class RoundRequest(BaseModel):
@@ -161,6 +167,8 @@ class NegotiationSession(BaseModel):
     policy: NegotiationPolicy
     cost_envelope: CostEnvelope | None = None
     batna: str | None = None
+    buyer_email: str | None = None
+    seller_email: str | None = None
     rag_context: str = ""
 
     status: NegotiationStatus = "STARTED"

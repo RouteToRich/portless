@@ -19,9 +19,12 @@ uvicorn app:app --reload --port 8081
 
 # Run a single service in isolation (see Makefile for full list)
 uvicorn services.deals.main:app --reload --port 8001
+make gateway        # port 8000
 make deals          # port 8001
 make trade-min      # port 8002
 make match-engine   # port 8003
+make sourcing       # port 8004
+make negotiation-agent  # port 8005
 make dealmaker      # port 8006
 make docugen        # port 8008
 make shield-link        # port 8007
@@ -30,13 +33,16 @@ make hitl-approval      # port 8010
 make exception-resolver # port 8011
 make email-gateway      # port 8012  (IMAP fetch + SMTP send transport)
 make email-processor    # port 8013  (inbound matching + persistence)
+# auth has no standalone Makefile target — it's mounted only in the combined
+# monolith (app.py, port 8081); services/api_gateway/ is the standalone edge
+# service (make gateway) that fronts everything else in microservice mode.
 
 # Docker — one container per service
 make up    # docker compose up --build
 make down
 
 # Tests
-pytest -q                                 # full suite (238 pass)
+pytest -q                                 # full suite (492 pass)
 pytest tests/test_health.py -q            # smoke: every service boots + /health 200
 pytest tests/test_state_machine.py        # deal state machine unit tests
 pytest tests/test_match_engine.py         # CMS formula unit tests
@@ -77,6 +83,8 @@ In the combined monolith (`app.py`) services call each other's `service.py` dire
 | `shared/connectors/payments.py` | Stripe Treasury, Payoneer — graceful stub when API key absent |
 | `shared/llm_gateway/` | Resilient LLM client with Groq fallback chain + MongoDB call tracking |
 | `shared/rag/` | MongoDB Atlas vector store + RAG chunking pipeline |
+| `shared/auth/` | `AuthMiddleware` (JWT bearer enforcement + non-Portless allowlist), `dependencies.py` (`require_org_scope`, `require_portless`), `blacklist.py` (logout/token revocation), `security.py` (hash/verify/`create_access_token`) |
+| `shared/orchestration/auto_flow.py` | Dev/test-only auto-continuation task that drives an opportunity-seeded deal through sourcing → negotiation → PI → escrow using real service calls, gated on HITL approvals for PO/freight/payout. Off by default (`AUTO_FLOW_ENABLED`) |
 
 ### Service structure pattern
 
@@ -149,7 +157,7 @@ If the webhook secret env var is not set, the connector logs a warning and retur
 
 `services/hitl_approval/notification.py` manages two delivery channels:
 
-1. **SSE stream** — `GET /hitl-approval/stream` streams `text/event-stream`. One `asyncio.Queue` per connected client; last 50 events buffered for replay on reconnect.
+1. **SSE stream** — `GET /hitl-approval/stream` streams `text/event-stream`. One `asyncio.Queue` per connected client; last 50 events buffered for replay on reconnect. Since the browser's `EventSource` API can't set an `Authorization` header, `AuthMiddleware` accepts the bearer token as a `?token=` query param for this one path only (`_QUERY_TOKEN_PATH_SUFFIXES`) — every other endpoint still requires the header.
 2. **Webhook POST** — when `HITL_NOTIFY_WEBHOOK_URL` is set, a HMAC-signed JSON POST fires on every approval created/resolved.
 
 HITL service also runs a **background timeout watcher** (`run_timeout_watcher()`) that polls every 30s and auto-resolves expired L1 approvals with `default_on_timeout`.
@@ -213,7 +221,7 @@ Complete realistic JSON fixtures for every service, all deal states, and all err
 
 ### RAG pipeline
 
-`shared/rag/` uses MongoDB Atlas `$vectorSearch`. Embeddings use `text-embedding-3-small` (OpenAI) when `RAG_EMBEDDING_API_KEY` is set; falls back to `LocalHashEmbeddings`. Create the vector index once via `ensure_vector_index()` before running RAG queries.
+`shared/rag/` uses MongoDB Atlas `$vectorSearch`. Embeddings use `text-embedding-3-small` (OpenAI) when `RAG_EMBEDDING_API_KEY` is set; falls back to `LocalHashEmbeddings`. Create the vector index once via `ensure_vector_index()` before running RAG queries. Retrieval is hybrid: vector + keyword (BM25) + optional graph (Neo4j, `RAG_GRAPH_RETRIEVAL_ENABLED`) + optional live web search (Tavily, `RAG_WEB_SEARCH_ENABLED`) — all merged via reciprocal rank fusion before reranking and the prompt-injection safety filter. The Negotiation Agent's `market_intel.py` reuses this same web-search adapter and safety filter for its own per-round market-context fetch (see `agents/negotiation_agent/workflow_negotiation_agent.md` §9).
 
 ---
 
@@ -221,11 +229,13 @@ Complete realistic JSON fixtures for every service, all deal states, and all err
 
 | Module | Status | Notes |
 |---|---|---|
-| `trade_min` | ✅ Full | 5-phase concurrent pipeline; MongoDB + APScheduler |
+| `auth` | ✅ Full | JWT register/login/me/logout; organizations + Portless-staff allowlist; `shared/auth/middleware.py` gates the whole app |
+| `api_gateway` | ✅ Full | Edge proxy — auth, validation, webhook ingest, idempotency, request fan-out to every other module |
+| `trade_min` | ✅ Full | 5-phase concurrent pipeline; MongoDB + APScheduler; `TRADE_MIN_MOCK_MODE` for network-free dev/CI scans |
 | `match_engine` | ✅ Full | Deterministic CMS formula |
-| `deals` | ✅ Full | State machine, MongoDB, orchestration |
+| `deals` | ✅ Full | State machine, MongoDB, orchestration; optional dev/test `AUTO_FLOW_ENABLED` auto-continuation (`shared/orchestration/auto_flow.py`) |
 | `sourcing` | ✅ Full | RFQ dispatch + GSTN/DGFT/MCA/Udyam verification |
-| `negotiation_agent` | ✅ Full | LangGraph 3-node, RAG; drafts + HITL-gates emails, delegates SMTP to `email_gateway` |
+| `negotiation_agent` | ✅ Full | LangGraph 3-node, RAG (with `NEGOTIATION_RAG_ENABLED` escape hatch + timeout); drafts + HITL-gates emails, delegates SMTP to `email_gateway`; optional live web-search market intel (`NEGOTIATION_MARKET_SEARCH_ENABLED`) |
 | `dealmaker` | ✅ Full | PI/PO, Jinja2 HTML, SHA-256, margin guard, idempotency |
 | `docugen` | ✅ Full | CI/PL/CoO/SDF/Shipping Bill templates, ICEGATE stub |
 | `shield_link` | ✅ Full | QC + freight + CHA; HMAC webhooks; graceful stubs |
@@ -309,6 +319,20 @@ HITL_NOTIFY_WEBHOOK_SECRET  # HMAC signing key for webhook
 
 # Exception Resolver (MongoDB)
 EXCEPTION_RESOLVER_MONGO_URI
+
+# Auth (auth service + shared/auth/middleware.py)
+AUTH_PORTLESS_EMAILS        # comma-separated allowlist — who counts as Portless platform staff
+AUTH_MONGO_URI               # optional override; falls back to shared MONGO_URI
+
+# Dev/test-only conveniences (default off; do not enable in production)
+TRADE_MIN_MOCK_MODE          # bypass every live trade-intelligence connector with curated scenario data
+AUTO_FLOW_ENABLED            # auto-continue an opportunity-seeded deal through sourcing/negotiation/PI/escrow (still HITL-gated at PO/freight/payout)
+
+# Negotiation Agent — RAG resilience + live market intelligence
+NEGOTIATION_RAG_ENABLED      # default true; false = always use the static playbook stub, skipping shared RAG entirely
+RAG_TIMEOUT_SECONDS          # default 15.0 — wall-clock budget for the RAG call before falling back to the stub
+NEGOTIATION_MARKET_SEARCH_ENABLED  # default false — fetch live Tavily web-search market color before each drafted email
+TAVILY_API_KEY               # shared by RAG's own web-search leg (RAG_WEB_SEARCH_ENABLED) and negotiation market intel above
 ```
 
 Run `python scripts/check_trade_api_connections.py` to test all third-party API connections.
@@ -318,7 +342,7 @@ Run `python scripts/check_trade_api_connections.py` to test all third-party API 
 ## Key cross-module flows
 
 **Opportunity → Deal creation:**
-`POST /trade-min/scan` → `opportunity.detected` → `POST /deals` (with `opportunity_id`) → Deals service seeds from Trade-Min + scores via Match Engine → deal at `MATCHING`.
+`POST /trade-min/scan` → `opportunity.detected` → `POST /deals` (with `opportunity_id`) → Deals service seeds from Trade-Min + scores via Match Engine → deal at `MATCHING`. If `AUTO_FLOW_ENABLED=true` (dev/test only), this also fires a background task that drives the deal through the rest of the flows below automatically, stopping at each HITL gate for a real operator decision.
 
 **Quote intake → Negotiation start:**
 `POST /sourcing/quotes` → GSTN/DGFT/MCA/Udyam verified in parallel → Match Engine re-scores → if SOURCE: patches deal financials + transitions to `NEGOTIATING`.

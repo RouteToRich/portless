@@ -181,8 +181,11 @@ mocked/
 ## SSE Integration (HITL stream)
 
 ```javascript
-// Connect to SSE stream
-const events = new EventSource('/hitl-approval/stream');
+// Connect to SSE stream. Real (non-mocked) deployments require a bearer
+// token — EventSource can't set an Authorization header, so it travels as
+// a query param instead (shared/auth/middleware.py accepts ?token= for this
+// one path only). Mock servers (json-server/MSW) can ignore this.
+const events = new EventSource(`/hitl-approval/stream?token=${encodeURIComponent(accessToken)}`);
 
 events.onmessage = (e) => {
   const data = JSON.parse(e.data);

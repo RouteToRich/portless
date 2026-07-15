@@ -62,6 +62,15 @@ class TradeMinSettings(BaseSettings):
     scheduler_nightly_cron: str = "0 2 * * *"   # 02:00 UTC daily
     scheduler_reorder_cron: str = "0 */6 * * *"  # every 6 h
 
+    # ── Mock mode (dev/CI) ─────────────────────────────────────────────────
+    # When True every live trade-intelligence connector call is short-circuited
+    # with curated scenario data from mock_data.py (no outbound HTTP at all —
+    # not even a stub-because-key-is-missing skip). Scans for HS codes outside
+    # the curated scenarios still fall back to the existing deterministic
+    # ranking.simulated_* formulas, so both the manual /trade-min/scan calls
+    # and the APScheduler nightly/reorder jobs stay fast and network-free.
+    trade_min_mock_mode: bool = Field(default=False, validation_alias="TRADE_MIN_MOCK_MODE")
+
 
 @dataclass(frozen=True)
 class TradeMinConfig:

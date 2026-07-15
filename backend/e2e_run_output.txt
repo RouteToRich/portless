@@ -1,0 +1,94 @@
+﻿PortLess E2E mock flow � target http://localhost:8081
+  OK Logged in as e2e-test@portless.local
+
+=== Scenario A: Cumin Seeds (strong ACTIVE) -> PAID ===
+  OK Opportunity OPP-DB926DDE02AE status=ACTIVE arb_rank=57.45 confidence=60.0 urgency=3
+  OK Deal DEAL-E8E64756FE17 created -> MATCHING (buyer_target_price_usd=1500.0)
+  -> Quote QUOTE-B55857C9F813 re_scored_decision=DISCARD cms=55.0
+  OK Deal -> NEGOTIATING
+python : Traceback (most recent call last):
+At line:1 char:70
++ ... ndian\portless\backend"; python scripts\e2e_mock_flow.py 2>&1 | Out-F ...
++                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\WBG\Python313\Lib\site-packages\httpx\_transports\default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "C:\WBG\Python313\Lib\site-packages\httpx\_transports\default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "C:\WBG\Python313\Lib\site-packages\httpcore\_sync\connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "C:\WBG\Python313\Lib\site-packages\httpcore\_sync\connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+        pool_request.request
+    )
+  File "C:\WBG\Python313\Lib\site-packages\httpcore\_sync\connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\WBG\Python313\Lib\site-packages\httpcore\_sync\http11.py", line 136, in handle_request
+    raise exc
+  File "C:\WBG\Python313\Lib\site-packages\httpcore\_sync\http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "C:\WBG\Python313\Lib\site-packages\httpcore\_sync\http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "C:\WBG\Python313\Lib\site-packages\httpcore\_sync\http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+        self.READ_NUM_BYTES, timeout=timeout
+    )
+  File "C:\WBG\Python313\Lib\site-packages\httpcore\_backends\sync.py", line 126, in read
+    with map_exceptions(exc_map):
+         ~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\WBG\Python313\Lib\contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "C:\WBG\Python313\Lib\site-packages\httpcore\_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\wb655772\kpaulpandi\workarea\pandian\portless\backend\scripts\e2e_mock_flow.py", line 478, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "C:\Users\wb655772\kpaulpandi\workarea\pandian\portless\backend\scripts\e2e_mock_flow.py", line 462, in main
+    deal = runner(api)
+  File "C:\Users\wb655772\kpaulpandi\workarea\pandian\portless\backend\scripts\e2e_mock_flow.py", line 216, in 
+run_happy_path
+    neg = api.call("POST", "/negotiation-agent/negotiations", {
+        "deal_id": deal_id, "trade_match_id": deal_id,
+    ...<3 lines>...
+        "policy": {"concession_step": 300, "max_rounds": 5},
+    })
+  File "C:\Users\wb655772\kpaulpandi\workarea\pandian\portless\backend\scripts\e2e_mock_flow.py", line 72, in call
+    resp = self.client.request(method, path, json=json)
+  File "C:\WBG\Python313\Lib\site-packages\httpx\_client.py", line 825, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\WBG\Python313\Lib\site-packages\httpx\_client.py", line 914, in send
+    response = self._send_handling_auth(
+        request,
+    ...<2 lines>...
+        history=[],
+    )
+  File "C:\WBG\Python313\Lib\site-packages\httpx\_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+        request,
+        follow_redirects=follow_redirects,
+        history=history,
+    )
+  File "C:\WBG\Python313\Lib\site-packages\httpx\_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "C:\WBG\Python313\Lib\site-packages\httpx\_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "C:\WBG\Python313\Lib\site-packages\httpx\_transports\default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+         ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\WBG\Python313\Lib\contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "C:\WBG\Python313\Lib\site-packages\httpx\_transports\default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: timed out

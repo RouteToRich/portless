@@ -19,6 +19,7 @@ from .config import settings
 from .guards import (
     check_convergence,
     compute_midpoint_price,
+    is_explicit_acceptance,
     is_near_margin_floor,
     verify_payout_and_margin,
 )
@@ -52,6 +53,9 @@ class NegotiationGraphState(TypedDict, total=False):
     operator_override_price: float | None
     buyer_history: str        # party-scoped transcript of prior buyer emails
     supplier_history: str     # party-scoped transcript of prior supplier emails
+    buyer_market_context: str      # live web-search market color for buyer-side drafting (may be empty)
+    supplier_market_context: str   # live web-search market color for supplier-side drafting (may be empty)
+    usd_inr_rate: float            # USD/INR rate for supplier-side INR pricing (live fetch or fallback)
 
     # Mutable per-node outputs
     current_bid: float | None
@@ -113,6 +117,42 @@ async def _chat(system_prompt: str, payload: dict[str, Any], caller: str) -> str
     return response.content
 
 
+_UNPARSEABLE: dict[str, Any] = {"__unparseable__": True}
+
+
+async def _chat_json(
+    system_prompt: str,
+    payload: dict[str, Any],
+    caller: str,
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    """Chat and parse a strict-JSON reply, retrying once if it can't be parsed.
+
+    The Groq fallback models (qwen3-*) are reasoning models that emit a <think>
+    block before the JSON answer and can occasionally overrun the token budget
+    mid-answer, yielding a reply with no closing brace. These calls are
+    stochastic (temperature > 0), so a single retry recovers the large majority
+    of such truncations before we resort to ``fallback`` (a deterministic,
+    template-based draft). On a transport error the fallback's ``reasoning`` is
+    annotated with the error for the round record."""
+    last_error: str | None = None
+    for attempt in range(2):
+        try:
+            raw = await _chat(system_prompt, payload, caller)
+        except Exception as exc:  # noqa: BLE001 — any gateway error → retry then fallback
+            last_error = str(exc)
+            logger.error("%s LLM call failed (attempt %d/2): %s", caller, attempt + 1, exc)
+            continue
+        parsed = _parse_llm_json(raw, _UNPARSEABLE)
+        if parsed is not _UNPARSEABLE:
+            return parsed
+        logger.warning("%s: unparseable LLM JSON (attempt %d/2)", caller, attempt + 1)
+    result = dict(fallback)
+    if last_error:
+        result["reasoning"] = f"LLM gateway error: {last_error}"
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Node: Orchestrator
 # ---------------------------------------------------------------------------
@@ -129,18 +169,41 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
     margin_ok, margin_pct = verify_payout_and_margin(session, bid, ask, logistics)
     near_floor = is_near_margin_floor(session, margin_pct, settings.hitl_margin_warning_pct)
 
-    if converged:
-        agreed = compute_midpoint_price(bid, ask)
+    # A counterpart that outright accepts the last quoted price (rather than
+    # countering) never satisfies check_convergence()'s bid/ask gap test when
+    # the other side's price is fixed (e.g. a pre-sourced supplier quote) —
+    # that gap is the margin, not a spread expected to close. Only checked
+    # when margin is already healthy; an accept at a sub-floor price still
+    # falls through to the normal LLM routing / near-floor HITL gate below.
+    party = state.get("party")
+    explicit_accept = (
+        not converged
+        and margin_ok
+        and party in ("buyer", "supplier")
+        and is_explicit_acceptance(state.get("inbound_message"))
+    )
+
+    if converged or explicit_accept:
+        if converged:
+            agreed = compute_midpoint_price(bid, ask)
+            reasoning = (
+                f"Convergence achieved: bid={bid} ask={ask} "
+                f"gap={abs(ask - bid):.4f} margin={margin_pct:.2f}%"
+            )
+        else:
+            agreed = bid if party == "buyer" else ask
+            reasoning = (
+                f"Explicit acceptance detected from {party} — "
+                f"agreed_price={agreed} margin={margin_pct:.2f}% "
+                f"(>= floor {policy.margin_floor_pct}%)"
+            )
         return {
             **state,
             "routing": "NEGOTIATION_AGREED",
             "agreed_price": agreed,
             "current_margin": margin_pct,
             "hitl_required": True,
-            "reasoning": (
-                f"Convergence achieved: bid={bid} ask={ask} "
-                f"gap={abs(ask - bid):.4f} margin={margin_pct:.2f}%"
-            ),
+            "reasoning": reasoning,
         }
 
     if session.round_no >= policy.max_rounds:
@@ -261,24 +324,18 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
         "rag_context": session.rag_context,
         "inbound_buyer_message": state.get("inbound_message") or "",
         "conversation_history": state.get("buyer_history", ""),
+        "market_context": state.get("buyer_market_context", ""),
     }
 
-    try:
-        raw = await _chat(BUYER_AGENT_SYSTEM_PROMPT, payload, "negotiation_agent.buyer_agent")
-        result = _parse_llm_json(raw, {
+    result = await _chat_json(
+        BUYER_AGENT_SYSTEM_PROMPT, payload, "negotiation_agent.buyer_agent",
+        fallback={
             "counter_price_usd": midpoint,
             "outbound_message": f"Thank you for your offer. We propose USD {midpoint:.2f}/unit CIF.",
             "negotiated_terms": {"unit_price": midpoint, "currency": "USD"},
             "reasoning": "LLM parse fallback",
-        })
-    except Exception as exc:
-        logger.error("BuyerAgent LLM call failed: %s", exc)
-        result = {
-            "counter_price_usd": midpoint,
-            "outbound_message": f"We propose USD {midpoint:.2f}/unit CIF as our revised offer.",
-            "negotiated_terms": {"unit_price": midpoint, "currency": "USD"},
-            "reasoning": f"LLM gateway error: {exc}",
-        }
+        },
+    )
 
     new_bid = float(result.get("counter_price_usd", midpoint))
     return {
@@ -301,11 +358,27 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
     logistics = state.get("logistics_cost", 0.0)
     env_total = session.cost_envelope.total() if session.cost_envelope else 0.0
     implied_max = bid * (1 - session.policy.margin_floor_pct / 100) - logistics - env_total
+    # Computed here, not by the LLM: a bare "communicate in INR" instruction
+    # with no rate supplied previously sent the model into a token-burning
+    # spiral trying to guess a conversion (see market_intel.get_usd_inr_rate).
+    usd_inr_rate = state.get("usd_inr_rate") or settings.fallback_usd_inr_rate
+    # Every price is supplied in BOTH currencies, each explicitly suffixed
+    # _usd / _inr. `ask` (the supplier's quote) is a USD figure — leaving it
+    # unlabeled next to INR fields previously made the model assume it was INR,
+    # see a "huge gap" against the INR ceiling, and burn its whole token budget
+    # trying to reconcile the mismatch. Nothing here is left for the LLM to
+    # convert or infer.
+    implied_max_inr = round(implied_max * usd_inr_rate, 2)
+    ask_inr = round(ask * usd_inr_rate, 2)
+    concession_usd = round(implied_max - ask, 4)
 
     payload = {
         "seller_id": session.seller_id,
-        "current_ask": ask,
+        "current_ask_usd": round(ask, 4),
+        "current_ask_inr": ask_inr,
         "implied_max_supplier_price_usd": round(implied_max, 4),
+        "implied_max_supplier_price_inr": implied_max_inr,
+        "usd_inr_rate": usd_inr_rate,
         "round_no": session.round_no,
         "max_rounds": session.policy.max_rounds,
         "target_margin_pct": session.policy.target_margin_pct,
@@ -313,26 +386,21 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
         "rag_context": session.rag_context,
         "inbound_supplier_message": state.get("inbound_message") or "",
         "conversation_history": state.get("supplier_history", ""),
+        "market_context": state.get("supplier_market_context", ""),
         "product_code": session.product_code,
-        "concession_budget_remaining": round(implied_max - ask, 4),
+        "concession_budget_remaining_usd": concession_usd,
+        "concession_budget_remaining_inr": round(concession_usd * usd_inr_rate, 2),
     }
 
-    try:
-        raw = await _chat(SUPPLIER_AGENT_SYSTEM_PROMPT, payload, "negotiation_agent.supplier_agent")
-        result = _parse_llm_json(raw, {
+    result = await _chat_json(
+        SUPPLIER_AGENT_SYSTEM_PROMPT, payload, "negotiation_agent.supplier_agent",
+        fallback={
             "counter_price_usd": implied_max,
             "outbound_message": f"We can offer USD {implied_max:.2f}/unit Ex-Works.",
             "negotiated_terms": {"unit_price": implied_max, "currency": "USD"},
             "reasoning": "LLM parse fallback",
-        })
-    except Exception as exc:
-        logger.error("SupplierAgent LLM call failed: %s", exc)
-        result = {
-            "counter_price_usd": implied_max,
-            "outbound_message": f"Our revised Ex-Works price: USD {implied_max:.2f}/unit.",
-            "negotiated_terms": {"unit_price": implied_max, "currency": "USD"},
-            "reasoning": f"LLM gateway error: {exc}",
-        }
+        },
+    )
 
     new_ask = float(result.get("counter_price_usd", implied_max))
     return {

@@ -43,6 +43,7 @@ from agents.negotiation_agent.guards import (
     check_convergence,
     compute_midpoint_price,
     compute_net_margin,
+    is_explicit_acceptance,
     is_near_margin_floor,
     verify_payout_and_margin,
 )
@@ -230,6 +231,27 @@ def test_is_near_margin_floor():
     assert is_near_margin_floor(session, 11.0, 2.0) is False  # 11 >= 10
 
 
+def test_is_explicit_acceptance():
+    # Real Gmail reply: new content ("Agreed") above a line-wrapped
+    # "On <date>, <name> <email> wrote:" quote attribution.
+    real_reply = (
+        "Agreed\n\n"
+        "On Wed, 15 Jul 2026, 12:20 am karpoora paulpandi, <\n"
+        "karpoorapaulpandi@gmail.com> wrote:\n\n"
+        "> Hi, yes we. Are ok with this deal\n"
+        ">\n"
+        "> On Wed, 15 Jul 2026, 12:19 am PortLess Trade Agent, <richminds84@gmail.com>\n"
+        "> wrote:\n"
+    )
+    assert is_explicit_acceptance(real_reply) is True
+    assert is_explicit_acceptance("Sounds good, please proceed.") is True
+    assert is_explicit_acceptance("We can only do $1150, let us know.") is False
+    assert is_explicit_acceptance("We don't agree with this price.") is False
+    assert is_explicit_acceptance("No problem, when can you ship?") is False
+    assert is_explicit_acceptance(None) is False
+    assert is_explicit_acceptance("") is False
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator routing
 # ---------------------------------------------------------------------------
@@ -240,6 +262,40 @@ def test_orchestrator_converged_agrees():
     assert result["routing"] == "NEGOTIATION_AGREED"
     assert result["agreed_price"] is not None
     assert result["agreed_price"] == pytest.approx(499.975, abs=0.02)
+
+
+def test_orchestrator_explicit_acceptance_agrees():
+    # bid=500 ask=440 is a healthy 12% margin but the gap (60) is nowhere near
+    # the concession step (0.10) — check_convergence() alone would never fire
+    # here, since the supplier's price is fixed and the "gap" is just margin.
+    # An outright "Agreed" from the buyer should still close the deal.
+    session = _session(round_no=2, current_bid=500.0, current_ask=440.0)
+    state = _state(
+        session,
+        party="buyer",
+        inbound_message="Agreed, please proceed.",
+        current_bid=500.0,
+        current_ask=440.0,
+    )
+    result = run(orchestrator_node(state))
+    assert result["routing"] == "NEGOTIATION_AGREED"
+    assert result["agreed_price"] == 500.0  # the buyer's accepted price, not a bid/ask midpoint
+
+
+def test_orchestrator_explicit_acceptance_below_floor_falls_through():
+    # Margin below floor: an "Agreed" reply must NOT auto-close the deal at a
+    # losing price — falls through to the normal LLM-routed draft instead.
+    session = _session(round_no=2, current_bid=500.0, current_ask=470.0)  # 6% margin, floor is 8%
+    state = _state(
+        session,
+        party="buyer",
+        inbound_message="Agreed, please proceed.",
+        current_bid=500.0,
+        current_ask=470.0,
+    )
+    with patch("agents.negotiation_agent.graph._chat", _orch_chat("CALL_SUPPLIER_AGENT", 6.0)):
+        result = run(orchestrator_node(state))
+    assert result["routing"] != "NEGOTIATION_AGREED"
 
 
 def test_orchestrator_max_rounds_fails():
@@ -437,6 +493,60 @@ def test_supplier_agent_receives_supplier_history_only():
 
 
 # ---------------------------------------------------------------------------
+# market_context wiring — live web-search color reaches the right drafting node
+# ---------------------------------------------------------------------------
+
+def test_buyer_agent_receives_market_context():
+    state = _state(_session(), buyer_market_context="Rice CIF prices trending up 3% this quarter.")
+    captured: dict = {}
+
+    async def _cap(system_prompt, payload, caller):
+        captured["payload"] = payload
+        return json.dumps({"counter_price_usd": 470.0, "outbound_message": "ok",
+                           "negotiated_terms": {}, "reasoning": "r"})
+
+    with patch("agents.negotiation_agent.graph._chat", _cap):
+        run(buyer_agent_node(state))
+
+    assert captured["payload"]["market_context"] == "Rice CIF prices trending up 3% this quarter."
+
+
+def test_supplier_agent_receives_market_context():
+    state = _state(_session(), supplier_market_context="India Ex-Works rice rates steady this month.")
+    captured: dict = {}
+
+    async def _cap(system_prompt, payload, caller):
+        captured["payload"] = payload
+        return json.dumps({"counter_price_usd": 450.0, "outbound_message": "ok",
+                           "negotiated_terms": {}, "reasoning": "r"})
+
+    with patch("agents.negotiation_agent.graph._chat", _cap):
+        run(supplier_agent_node(state))
+
+    assert captured["payload"]["market_context"] == "India Ex-Works rice rates steady this month."
+
+
+def test_buyer_market_context_excludes_supplier_market_context():
+    state = _state(
+        _session(),
+        buyer_market_context="PUBLIC-BUYER-INFO",
+        supplier_market_context="PUBLIC-SUPPLIER-INFO",
+    )
+    captured: dict = {}
+
+    async def _cap(system_prompt, payload, caller):
+        captured["payload"] = payload
+        return json.dumps({"counter_price_usd": 470.0, "outbound_message": "ok",
+                           "negotiated_terms": {}, "reasoning": "r"})
+
+    with patch("agents.negotiation_agent.graph._chat", _cap):
+        run(buyer_agent_node(state))
+
+    # not a secrecy boundary (market data isn't confidential) — a wiring regression guard
+    assert "PUBLIC-SUPPLIER-INFO" not in json.dumps(captured["payload"])
+
+
+# ---------------------------------------------------------------------------
 # Price-secrecy hardening — counterparty price never enters the LLM payload
 # ---------------------------------------------------------------------------
 
@@ -478,7 +588,11 @@ def test_supplier_payload_excludes_buyer_price_and_batna():
     assert "455.99" not in dump            # BATNA
     assert "current_bid" not in payload    # removed
     assert "implied_max_supplier_price_usd" in payload  # non-invertible ceiling kept
-    assert payload["current_ask"] == 440.0  # supplier's own price is fine to keep
+    assert "implied_max_supplier_price_inr" in payload  # INR equivalent provided, not derived by LLM
+    assert payload["current_ask_usd"] == 440.0  # supplier's own price is fine to keep
+    # INR fields are the supplier's own ask / the non-invertible ceiling scaled
+    # by the rate — they must not reconstruct the raw buyer bid either.
+    assert payload["current_ask_inr"] == round(440.0 * payload["usd_inr_rate"], 2)
 
 
 # ---------------------------------------------------------------------------

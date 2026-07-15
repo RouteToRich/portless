@@ -285,6 +285,13 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
     repo = get_repository()
     await repo.save(deal)
 
+    if initial_status == DealStatus.MATCHING:
+        try:
+            from shared.orchestration.auto_flow import start as start_auto_flow
+            start_auto_flow(deal_id)
+        except Exception as exc:
+            logger.warning("Could not start auto-flow for deal %s: %s", deal_id, exc)
+
     await _emit_event(
         EventTopic.DEAL_CREATED,
         deal_id=deal_id,

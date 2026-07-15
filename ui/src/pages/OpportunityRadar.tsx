@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { RefreshCw, Zap, TrendingUp, Globe, BarChart2, ArrowUpRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useOpportunities, useScanOpportunities, useCreateDeal } from "@/api/hooks";
-import type { Opportunity } from "@/api/types";
+import type { Opportunity, SellerCandidate } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -71,6 +71,8 @@ export function OpportunityRadar() {
       const deal = await createDeal.mutateAsync({
         operator_id: "OP-901",
         hs_code: opp.hs_code,
+        market: opp.market,
+        opportunity_id: opp.opportunity_id,
       });
       toast.success("Deal created", { description: `Deal ${deal.deal_id.slice(0, 8)} started` });
     } catch {
@@ -209,7 +211,7 @@ export function OpportunityRadar() {
         <>
           {/* Table view */}
           <div className="rounded-xl border border-border overflow-x-auto">
-            <table className="w-full min-w-[560px]">
+            <table className="w-full min-w-[880px]">
               <thead>
                 <tr className="bg-popover border-b border-border">
                   <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
@@ -224,47 +226,100 @@ export function OpportunityRadar() {
                   <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide w-48">
                     Arbitrage Score
                   </th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    Top Seller
+                  </th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    Buyer Signals
+                  </th>
                   <th className="px-4 py-3" />
                 </tr>
               </thead>
               <tbody>
-                {opportunities.map((opp, idx) => (
-                  <tr
-                    key={opp.opportunity_id}
-                    className={cn(
-                      "border-b border-border hover:bg-card transition-colors",
-                      idx % 2 === 0 ? "bg-transparent" : "bg-secondary/30"
-                    )}
-                  >
-                    <td className="px-4 py-3">
-                      <span className="font-mono font-bold text-sm">{opp.hs_code}</span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5 text-sm">
-                        <Globe className="w-3.5 h-3.5 text-muted-foreground" />
-                        {opp.market}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant="outline" className="text-[10px]">
-                        {opp.source ?? "trade-min"}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <ArbitrageBar rank={opp.arbitrage_rank} />
-                    </td>
-                    <td className="px-4 py-3">
-                      <Button
-                        size="sm"
-                        className="h-7 text-xs gap-1"
-                        onClick={() => handleStartDeal(opp)}
-                        disabled={createDeal.isPending}
-                      >
-                        <ArrowUpRight className="w-3 h-3" /> Start Deal
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
+                {opportunities.map((opp, idx) => {
+                  const sellers = opp.seller_candidates ?? [];
+                  const topSeller = sellers.reduce<SellerCandidate | null>((best, s) => {
+                    if (s.estimated_fob_price_usd == null) return best;
+                    if (best == null || (best.estimated_fob_price_usd ?? Infinity) > s.estimated_fob_price_usd) {
+                      return s;
+                    }
+                    return best;
+                  }, null);
+                  const buyers = opp.buyer_signals ?? [];
+                  const isConverted = opp.status === "CONVERTED";
+
+                  return (
+                    <tr
+                      key={opp.opportunity_id}
+                      className={cn(
+                        "border-b border-border hover:bg-card transition-colors",
+                        idx % 2 === 0 ? "bg-transparent" : "bg-secondary/30"
+                      )}
+                    >
+                      <td className="px-4 py-3">
+                        <span className="font-mono font-bold text-sm">{opp.hs_code}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1.5 text-sm">
+                          <Globe className="w-3.5 h-3.5 text-muted-foreground" />
+                          {opp.market}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge variant="outline" className="text-[10px]">
+                          {opp.source ?? "trade-min"}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        <ArbitrageBar rank={opp.arbitrage_rank} />
+                      </td>
+                      <td className="px-4 py-3">
+                        {topSeller ? (
+                          <div className="text-xs">
+                            <p className="font-medium truncate max-w-[160px]">{topSeller.company_name}</p>
+                            <p className="text-muted-foreground">
+                              {topSeller.estimated_fob_price_usd != null
+                                ? `$${topSeller.estimated_fob_price_usd.toFixed(2)} FOB`
+                                : "—"}
+                              {sellers.length > 1 ? ` · +${sellers.length - 1} more` : ""}
+                            </p>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">No sellers found</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {buyers.length > 0 ? (
+                          <div className="text-xs">
+                            <p className="font-medium">{buyers[0].buyer_name}</p>
+                            <p className="text-muted-foreground">
+                              {buyers[0].buyer_country}
+                              {buyers.length > 1 ? ` · +${buyers.length - 1} more` : ""}
+                            </p>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">No buyer signals</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {isConverted ? (
+                          <Badge variant="outline" className="text-[10px] gap-1">
+                            Deal Started
+                          </Badge>
+                        ) : (
+                          <Button
+                            size="sm"
+                            className="h-7 text-xs gap-1"
+                            onClick={() => handleStartDeal(opp)}
+                            disabled={createDeal.isPending}
+                          >
+                            <ArrowUpRight className="w-3 h-3" /> Start Deal
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

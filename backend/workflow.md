@@ -1437,8 +1437,12 @@ Content-Type: application/json
 **SSE stream (UI integration):**
 
 ```javascript
-// UI connects once — receives all approval events in real time
-const es = new EventSource('/hitl-approval/stream');
+// UI connects once — receives all approval events in real time.
+// EventSource can't set an Authorization header, so the bearer token travels
+// as a query param instead — shared/auth/middleware.py accepts ?token= for
+// this one path only (_QUERY_TOKEN_PATH_SUFFIXES); every other endpoint
+// still requires the header.
+const es = new EventSource(`/hitl-approval/stream?token=${encodeURIComponent(accessToken)}`);
 es.onmessage = (e) => {
   const event = JSON.parse(e.data);
   // event.event_type: "approval_created" | "approval_resolved"

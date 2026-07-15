@@ -50,12 +50,34 @@ export interface Deal {
   updated_at?: string | null;
 }
 
+export interface SellerCandidate {
+  candidate_id: string;
+  company_name: string;
+  location_city?: string | null;
+  location_state?: string | null;
+  estimated_fob_price_usd?: number | null;
+  annual_capacity_mt?: number | null;
+  source?: string | null;
+}
+
+export interface BuyerSignal {
+  buyer_name: string;
+  buyer_country: string;
+  signal_type?: string | null;
+  source?: string | null;
+  unit_price_usd?: number | null;
+  estimated_order_value_usd?: number | null;
+}
+
 export interface Opportunity {
   opportunity_id: string;
   hs_code: string;
   market: string;
   arbitrage_rank: number;
   source?: string | null;
+  status?: "ACTIVE" | "MARGINAL" | "EXPIRED" | "CONVERTED" | null;
+  seller_candidates?: SellerCandidate[];
+  buyer_signals?: BuyerSignal[];
 }
 
 export interface Approval {
@@ -208,8 +230,10 @@ export interface RagQueryResponse {
 export interface CreateDealRequest {
   operator_id: string;
   hs_code: string;
+  market: string;
   autonomy_profile?: AutonomyLevel;
   margin_floor_pct?: number | null;
+  opportunity_id?: string | null;
   parties?: Party[];
 }
 

@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 10.0
     log_level: str = "INFO"
 
+    # --- Auto-flow orchestrator (dev/test) ---
+    # When true, an opportunity-seeded deal auto-continues through sourcing,
+    # negotiation, PI, and escrow funding; PO/freight/payout still stop at a
+    # HITL approval. See shared/orchestration/auto_flow.py.
+    auto_flow_enabled: bool = False
+
     # --- Shared MongoDB (single connection string + single database) ---
     # Set MONGO_URI once and every service/module uses it, writing to the SAME
     # database (MONGO_DB_NAME) via its own collection(s) — one Mongo database for
@@ -75,6 +81,10 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+        # Swagger UI (/docs) is served from the combined app itself, so
+        # "Try it out" requests carry this origin, not the Vite dev origin.
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
     ]
 
 

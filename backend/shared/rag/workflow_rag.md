@@ -4,7 +4,7 @@
 > **Purpose:** production retrieval-augmented generation — MongoDB Atlas vector store + hybrid retrieval + grounded LLM answers.
 > **Engine:** two async LangGraph pipelines (ingestion + query).
 > **Persistence:** MongoDB is the *only* store used anywhere in RAG — vector search, keyword-search documents, parent docs, and uploaded raw files (GridFS) all live in the **single shared app database** (`MONGO_DB_NAME`, default `portless`), in their own collections. No blob store (S3, etc.) or separate vector DB is used.
-> **Last reviewed:** 2026-07-10.
+> **Last reviewed:** 2026-07-10; web-search retrieval leg documented 2026-07-14 (was already implemented, previously undocumented here).
 > Legend: ✅ implemented · ⚠️ partial / optional / needs infra · ❌ not implemented · 💡 nice-to-have
 > See also: `README.md`, `RAG_IMPLEMENTATION_FLOWS.md` (deep dives), `workflow_llm_gateway.md` (generation backend).
 
@@ -38,15 +38,25 @@ POST /rag/upload    ──▶  file_store            ──▶  MongoDB GridFS (
 parse_and_load → chunk (+persist parent docs) → embed_and_insert (Atlas) → graph_insert (Neo4j/noop) → END
 ```
 
-### Query pipeline (`query(question, metadata_filter?, user_id?, team_id?)`) — 13 nodes
+### Query pipeline (`query(question, metadata_filter?, user_id?, team_id?)`) — 14 nodes
 ```
 embed_query
   → semantic_search  ┐
-    keyword_search   ├─ (each ACL-filtered) → hybrid_fusion (RRF) → parent_child_expand
-    graph_search     ┘
+    keyword_search   │
+    graph_search      ├─ (each ACL-filtered, populates its own state key) → hybrid_fusion (RRF) → parent_child_expand
+    web_search        ┘
   → rerank → knee_point_select → safety_filter (prompt-injection)
   → augment → generate (LLM Gateway) → validate_citations → evaluate → END
 ```
+`web_search` is a fourth retrieval leg (Tavily, `src/web_search.py`) — a
+no-op (empty result, not an error) when `RAG_WEB_SEARCH_ENABLED` is false or
+`TAVILY_API_KEY` is unset. Unlike the internal legs, web results are fetched
+fresh per query and never persisted to the vector store, but flow through
+the exact same fusion → rerank → prompt-injection safety filter path as
+everything else before reaching the generation prompt. (The four search
+nodes execute as sequential LangGraph edges, not concurrently — each just
+writes its own `*_results` state key, so `hybrid_fusion` sees the same
+merged inputs regardless of execution order.)
 Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validation`, `evaluation_metrics`, and the intermediate result sets.
 
 ---
@@ -61,6 +71,7 @@ Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validati
 | Retrieval / rerank | `RAG_RETRIEVAL_TOP_K`, `RAG_KEYWORD_SEARCH_FETCH_LIMIT`, `RAG_USE_CROSS_ENCODER_RERANKER` | Cross-encoder off by default. |
 | Generation | `RAG_TEMPERATURE`, `RAG_MAX_TOKENS` | Via LLM Gateway. |
 | **Graph** | `RAG_GRAPH_RETRIEVAL_ENABLED`, `RAG_GRAPH_DB_BACKEND` (neo4j), `RAG_GRAPH_DB_URI/USER/PASSWORD/DATABASE` | Neo4j implemented; arangodb/falkordb → no-op. |
+| **Web search** | `RAG_WEB_SEARCH_ENABLED` (default false), `RAG_WEB_SEARCH_TOP_K` (default 3) | Tavily free tier; provider key (`TAVILY_API_KEY`) lives in the root `.env` like other third-party connector keys, not under the `RAG_` prefix. Fails open (empty result) — never fabricates a hit. Shared by the Negotiation Agent's own market-intel fetch (`NEGOTIATION_MARKET_SEARCH_ENABLED`). |
 | **File store** | `RAG_FILE_STORE_GRIDFS_BUCKET` (default `rag_files`) | **MongoDB GridFS only** — the sole backend. No S3/blob-store config exists anywhere in the app (removed 2026-07-10). |
 
 ---
@@ -86,6 +97,7 @@ Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validati
 | Chunking (recursive/semantic) + parent docs | ✅ | `chunking.py` |
 | Document loading (PDF/text) | ✅ | `loader.py` |
 | FastAPI router + CLI | ✅ | `router.py`, `cli.py` |
+| Web search — 4th retrieval leg (Tavily) | ✅ | `web_search.py`: gated by `RAG_WEB_SEARCH_ENABLED` (default off); fails open on missing key/HTTP error; fetched fresh per query, never persisted; screened by the same prompt-injection filter as internal chunks |
 
 ### Backends (added 2026-07-10)
 
@@ -110,7 +122,7 @@ Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validati
 ## 6. Nice-to-have features (💡)
 
 - **Real NER for graph retrieval** — replace the heuristic `_extract_entities` (spaCy / LLM NER) for much higher graph recall.
-- **Web-search / live-price enrichment** — inject intraday commodity prices as extra context before generation (noted in `RAG_IMPLEMENTATION_FLOWS.md`).
+- **Dedicated intraday commodity-price feed** — the web-search leg (above) already injects live web pricing/demand color; a structured exchange-price API (CME/Comdty/Volza) would be more precise but is separate, not-yet-built work.
 - **ArangoDB / FalkorDB graph backends** — behind the same `GraphStore` interface.
 - **Cross-encoder reranker on by default** — better top-k ordering (`use_cross_encoder_reranker`).
 - **RAGAS / DeepEval** advanced evaluation providers.
@@ -150,6 +162,7 @@ Returns a `QueryState` dict with `answer`, `selected_chunks`, `citation_validati
 | `src/chunking.py` · `src/parent_store.py` · `src/loader.py` | Chunking, parent-doc store, document loading |
 | `src/rerank.py` · `src/citations.py` · `src/evaluation.py` · `src/security.py` · `src/authorization.py` | Rerank, citations, eval, injection filter, ACL |
 | `src/graph_store.py` | **Neo4j** graph store + no-op fallback + entity extraction |
+| `src/web_search.py` | `WebSearchStore` — Tavily-backed 4th retrieval leg, fails open |
 | `src/file_store.py` | MongoDB GridFS — the sole file-storage backend (no S3) |
 | `src/config.py` | `RAGSettings` (env `RAG_`); no hardcoded credentials — resolves `MONGO_URI`/`MONGO_DB_NAME` |
 | `src/router.py` · `src/cli.py` | FastAPI routes + CLI |

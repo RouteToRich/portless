@@ -269,7 +269,7 @@ class ImapPoller:
                 )
                 return
 
-            uids = data[0].split()
+            uids = [u.decode() if isinstance(u, bytes) else u for u in data[0].split()]
             logger.info(
                 "ImapPoller[%s]: found %d unseen message(s) in '%s'",
                 self._label, len(uids), self._folder,
@@ -283,14 +283,21 @@ class ImapPoller:
                             self._label, uid, fetch_status,
                         )
                         continue
-                    raw_bytes = msg_data[1]
-                    if not isinstance(raw_bytes, bytes):
-                        raw_bytes = str(raw_bytes).encode("utf-8", errors="replace")
-                    msg = email.message_from_bytes(raw_bytes)
+                    raw_bytes = next(
+                        (part for part in msg_data if isinstance(part, (bytes, bytearray)) and len(part) > 100),
+                        None,
+                    )
+                    if raw_bytes is None:
+                        logger.warning(
+                            "ImapPoller[%s]: no message body in fetch response for uid=%s",
+                            self._label, uid,
+                        )
+                        continue
+                    msg = email.message_from_bytes(bytes(raw_bytes))
                     raw_email = _mime_to_raw_email(msg)
                     # Mark SEEN immediately — prevents double-processing on the
                     # next poll even if this process crashes mid-batch.
-                    await imap.store(uid, "+FLAGS", "(\\\\Seen)")
+                    await imap.store(uid, "+FLAGS", "(\\Seen)")
                     yield raw_email
                 except Exception as exc:
                     logger.error(

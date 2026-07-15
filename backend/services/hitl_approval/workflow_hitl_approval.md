@@ -56,8 +56,14 @@ POST /hitl-approval/approvals/{id}/resolve {APPROVE|REJECT, modified_body?}
   (already-resolved → 409)
 
 Background: run_timeout_watcher() polls; expired L1 → auto-resolve(default_on_timeout)
-GET /hitl-approval/stream  → text/event-stream (last 50 events replayed on reconnect)
+GET /hitl-approval/stream?token=<jwt>  → text/event-stream (last 50 events replayed on reconnect)
 ```
+
+The UI's `EventSource` client can't set an `Authorization` header, so the
+stream is one of the few endpoints `shared/auth/middleware.py` accepts a
+`?token=` query param for (see `workflow_auth.md`'s SSE query-token
+exception) — the token still goes through the normal decode/revocation
+check, only its transport differs for this one path.
 
 ## 4. API endpoints
 

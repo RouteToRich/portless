@@ -79,10 +79,14 @@ POST /webhooks/{provider} → idempotency + signature verification → forward t
 
 ## 7. Nice-to-have / pending
 
-- AuthN/AuthZ enforcement at the edge (verify the `auth` JWT before proxying).
 - Rate limiting + request/response logging + tracing (correlation IDs).
 - Retry/circuit-breaker around downstream clients.
 - Proxy routes for `email-gateway` / `email-processor` if the UI needs them.
+
+> AuthN/AuthZ is already enforced app-wide by `shared/auth/middleware.py`
+> (JWT bearer check + non-Portless allowlist on every non-public route) — see
+> `services/auth/workflow_auth.md`. It was previously listed here as pending;
+> it isn't specific to this module, but is applied wherever this app runs.
 
 ## 8. Files
 
