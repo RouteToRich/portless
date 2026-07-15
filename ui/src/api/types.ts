@@ -58,6 +58,8 @@ export interface SellerCandidate {
   estimated_fob_price_usd?: number | null;
   annual_capacity_mt?: number | null;
   source?: string | null;
+  listing_url?: string | null;
+  supplier_to_port_km?: number | null;
 }
 
 export interface BuyerSignal {
@@ -67,6 +69,17 @@ export interface BuyerSignal {
   source?: string | null;
   unit_price_usd?: number | null;
   estimated_order_value_usd?: number | null;
+  annual_volume_mt?: number | null;
+  risk_score?: number | null;
+  urgency_tier?: number | null;
+}
+
+export interface TariffData {
+  applied_duty_pct?: number | null;
+  gst_vat_pct?: number | null;
+  total_landed_cost_add_pct?: number | null;
+  ntb_flags?: string[];
+  rules_of_origin?: string | null;
 }
 
 export interface Opportunity {
@@ -78,6 +91,19 @@ export interface Opportunity {
   status?: "ACTIVE" | "MARGINAL" | "EXPIRED" | "CONVERTED" | null;
   seller_candidates?: SellerCandidate[];
   buyer_signals?: BuyerSignal[];
+  // Enrichment fields returned by GET /trade-min/opportunities (EnrichedOpportunity)
+  currency?: string | null;
+  scanned_at?: string | null;
+  demand_index?: number | null;
+  price_gap_pct?: number | null;
+  net_price_gap_pct?: number | null;
+  active_rfq_count?: number | null;
+  active_tender_count?: number | null;
+  urgency_tier?: number | null;
+  tariff_data?: TariffData | null;
+  tariff_viable?: boolean | null;
+  confidence_score?: number | null;
+  expires_at?: string | null;
 }
 
 export interface Approval {

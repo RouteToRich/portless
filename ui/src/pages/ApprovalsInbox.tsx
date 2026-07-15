@@ -167,11 +167,21 @@ export function ApprovalsInbox() {
   // (see negotiation_agent/service.py) — the full drafted subject/body lives
   // in the negotiation's email history, so fetch it separately to display.
   const selectedNegotiationId = selected?.callback_payload?.negotiation_id as string | undefined;
-  const { data: negotiationEmails } = useNegotiationEmails(
-    isEmailAction(selected?.action ?? "") ? selectedNegotiationId : undefined
+  const isSelectedEmailAction = isEmailAction(selected?.action ?? "");
+  const { data: negotiationEmails, isLoading: emailsLoading } = useNegotiationEmails(
+    isSelectedEmailAction ? selectedNegotiationId : undefined
   );
   const selectedEmailId = selected?.callback_payload?.email_id as string | undefined;
-  const draftEmail = negotiationEmails?.find((e) => e.email_id === selectedEmailId);
+  // Prefer the exact drafted email; fall back to the latest email on the thread
+  // so the operator always sees the full body rather than a stalled spinner if
+  // the email_id can't be matched.
+  const draftEmail =
+    negotiationEmails?.find((e) => e.email_id === selectedEmailId) ??
+    (negotiationEmails && negotiationEmails.length > 0
+      ? negotiationEmails[negotiationEmails.length - 1]
+      : undefined);
+  // A modified body (operator edited before/after) wins over the original draft.
+  const fullEmailBody = selected?.modified_body ?? draftEmail?.body ?? null;
 
   return (
     <div className="flex flex-col gap-3 h-[calc(100vh-120px)] min-h-0">
@@ -347,28 +357,56 @@ export function ApprovalsInbox() {
                   }}
                 />
 
-                {/* Email preview for email actions — fetched from negotiation email
-                    history since callback_payload only carries email_id/negotiation_id */}
-                {isEmailAction(selected.action) && selected.callback_payload && (
+                {/* Full email content for email actions — fetched from negotiation
+                    email history since callback_payload only carries
+                    email_id/negotiation_id. Always shows the complete body (no
+                    truncation), unlike the approval's 150-char summary field. */}
+                {isSelectedEmailAction && selected.callback_payload && (
                   <div className="rounded-xl border border-border bg-popover">
                     <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
                       <Mail className="w-4 h-4 text-[#4f8cff]" />
-                      <span className="text-sm font-semibold">Email Preview</span>
+                      <span className="text-sm font-semibold">Full Email Content</span>
                     </div>
                     <div className="p-4 space-y-2">
-                      {!draftEmail ? (
+                      {emailsLoading ? (
                         <p className="text-xs text-muted-foreground">Loading draft…</p>
-                      ) : (
+                      ) : fullEmailBody ? (
                         <>
-                          <div>
-                            <p className="text-[10px] text-muted-foreground">Subject</p>
-                            <p className="text-sm font-medium">{draftEmail.subject}</p>
-                          </div>
+                          {draftEmail && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+                              <div>
+                                <p className="text-[10px] text-muted-foreground">Subject</p>
+                                <p className="text-sm font-medium break-words">{draftEmail.subject}</p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] text-muted-foreground">Recipient</p>
+                                <p className="text-sm font-medium break-words">
+                                  {draftEmail.to_address}
+                                  <span className="ml-1 text-[10px] text-muted-foreground capitalize">
+                                    ({draftEmail.party})
+                                  </span>
+                                </p>
+                              </div>
+                            </div>
+                          )}
                           <Separator />
-                          <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-                            {draftEmail.body}
+                          {/* whitespace-pre-wrap + break-words: render the entire
+                              body verbatim, wrapping long lines instead of clipping. */}
+                          <div className="text-sm text-foreground whitespace-pre-wrap break-words leading-relaxed">
+                            {fullEmailBody}
                           </div>
+                          {selected.modified_body && draftEmail?.body && selected.modified_body !== draftEmail.body && (
+                            <p className="text-[10px] text-muted-foreground italic pt-1">
+                              Showing the operator-modified body.
+                            </p>
+                          )}
                         </>
+                      ) : (
+                        // Loaded but no matching email on the thread — show the
+                        // approval summary rather than a permanent spinner.
+                        <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words leading-relaxed">
+                          {selected.summary ?? "Drafted email content is not available for this approval."}
+                        </p>
                       )}
                     </div>
                   </div>

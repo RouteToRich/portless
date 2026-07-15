@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -12,6 +14,8 @@ import {
   CreditCard,
   FileText,
   Repeat2,
+  Send,
+  Users,
 } from "lucide-react";
 import { cn, fmtUSD, fmtPct, timeAgo, fmtDateTime } from "@/lib/utils";
 import {
@@ -19,6 +23,7 @@ import {
   useNegotiationSessions,
   useNegotiationRounds,
   useNegotiationEmails,
+  useRunNegotiationRound,
   useApprovals,
   useEscrowHolds,
   useQcRecords,
@@ -36,9 +41,132 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import type { QcRecord, FreightRecord } from "@/api/types";
+
+const NEGOTIATION_TERMINAL = new Set(["AGREED", "FAILED", "ESCALATED"]);
+
+// Manual inbound-reply submission — moved here from the (now removed) standalone
+// Negotiation Inbox page so a negotiation can still be advanced by hand from the
+// deal's Negotiation tab when IMAP auto-detection isn't configured.
+function SubmitRoundForm({
+  negotiationId,
+  onSubmit,
+}: {
+  negotiationId: string;
+  onSubmit: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [party, setParty] = useState<"buyer" | "supplier">("buyer");
+  const [price, setPrice] = useState("");
+  const [msg, setMsg] = useState("");
+  const runRound = useRunNegotiationRound(negotiationId);
+
+  async function handleSubmit() {
+    const counterPrice = parseFloat(price);
+    if (!price || isNaN(counterPrice) || counterPrice <= 0) {
+      toast.error("Enter a valid counter-price");
+      return;
+    }
+    try {
+      await runRound.mutateAsync({
+        inbound_price: counterPrice,
+        inbound_message: msg || undefined,
+        party,
+      });
+      toast.success(`Round submitted (${party}, $${counterPrice})`);
+      setPrice("");
+      setMsg("");
+      setOpen(false);
+      onSubmit();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to submit round");
+    }
+  }
+
+  return (
+    <Card>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 px-4 py-3 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <Send className="w-3.5 h-3.5" />
+        Submit Inbound Reply
+        <span className="ml-auto text-[10px] text-muted-foreground">
+          {open ? "▲ collapse" : "▼ expand"}
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-3">
+          <Separator />
+          <p className="text-[10px] text-muted-foreground">
+            Use this to manually submit an inbound counter-offer when IMAP
+            auto-detection is not configured.
+          </p>
+
+          <div className="flex gap-2">
+            {(["buyer", "supplier"] as const).map((p) => (
+              <Button
+                key={p}
+                variant={party === p ? "default" : "outline"}
+                size="sm"
+                className="h-7 text-xs capitalize"
+                onClick={() => setParty(p)}
+              >
+                <Users className="w-3 h-3 mr-1" />
+                {p}
+              </Button>
+            ))}
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-[11px]">Counter Price (USD/unit) *</Label>
+            <Input
+              type="number"
+              min={0}
+              step={0.01}
+              placeholder="e.g. 445.00"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-[11px]">Inbound Message (optional)</Label>
+            <Textarea
+              placeholder="Paste the buyer / supplier reply here…"
+              value={msg}
+              onChange={(e) => setMsg(e.target.value)}
+              className="min-h-[80px] text-xs"
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              className="h-8 text-xs gap-1"
+              onClick={handleSubmit}
+              disabled={runRound.isPending}
+            >
+              <Send className="w-3.5 h-3.5" />
+              {runRound.isPending ? "Submitting…" : "Submit Round"}
+            </Button>
+            <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 // ── Sub-tabs ─────────────────────────────────────────────────────────────────
 
@@ -344,6 +472,18 @@ function NegotiationTab({ dealId }: { dealId: string }) {
             </div>
           </CardContent>
         </Card>
+
+        {/* Manual round submission — only for non-terminal sessions */}
+        {!NEGOTIATION_TERMINAL.has(primarySession.status) && (
+          <SubmitRoundForm
+            negotiationId={primarySession.negotiation_id}
+            onSubmit={() => {
+              qc.invalidateQueries({ queryKey: ["negotiation-sessions", dealId] });
+              qc.invalidateQueries({ queryKey: ["negotiation-rounds", primarySession.negotiation_id] });
+              refetchEmails();
+            }}
+          />
+        )}
 
         {/* Pending HITL approvals */}
         {dealApprovals.length > 0 && (

@@ -7,7 +7,6 @@ import { OrgDeals } from "./pages/OrgDeals";
 import { DealDetail } from "./pages/DealDetail";
 import { ApprovalsInbox } from "./pages/ApprovalsInbox";
 import { MoneyMargin } from "./pages/MoneyMargin";
-import { NegotiationInbox } from "./pages/NegotiationInbox";
 import { Exceptions } from "./pages/Exceptions";
 import { AutonomySettings } from "./pages/AutonomySettings";
 import { SystemHealth } from "./pages/SystemHealth";
@@ -80,14 +79,6 @@ export default function App() {
             element={
               <RequirePortless>
                 <ApprovalsInbox />
-              </RequirePortless>
-            }
-          />
-          <Route
-            path="/negotiations"
-            element={
-              <RequirePortless>
-                <NegotiationInbox />
               </RequirePortless>
             }
           />
