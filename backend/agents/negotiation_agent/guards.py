@@ -67,6 +67,65 @@ def is_near_margin_floor(
 
 
 # ---------------------------------------------------------------------------
+# Inbound price plausibility
+# ---------------------------------------------------------------------------
+# An extracted counter-price wildly outside the negotiation's price band is
+# almost certainly an extraction error (a total instead of a unit price, a
+# number from the quoted reply chain, an order ID). Real incident: an email
+# reply produced an "agreed" price of $102,123.71/unit against a $1,255 buyer
+# target — 81× the band. The guard rejects the price from the bid/ask state
+# (the message still gets a drafted response; the operator sees the flag).
+
+def is_price_plausible(
+    session: NegotiationSession,
+    price: float,
+    band_factor: float = 3.0,
+) -> bool:
+    """True when *price* is within band_factor× of the negotiation's corridor.
+
+    The corridor spans every known reference price on the session (buyer
+    target, supplier quote, current bid/ask). ``band_factor=3`` accepts a
+    price between corridor_min/3 and corridor_max×3 — generous enough for
+    aggressive negotiation, tight enough to reject magnitude errors.
+    """
+    if price <= 0:
+        return False
+    refs = [
+        p for p in (
+            session.buyer_target_price,
+            session.supplier_quote_price,
+            session.current_bid,
+            session.current_ask,
+        ) if p and p > 0
+    ]
+    if not refs:
+        return True  # nothing to compare against — cannot judge
+    return (min(refs) / band_factor) <= price <= (max(refs) * band_factor)
+
+
+# ---------------------------------------------------------------------------
+# Agreement completeness checklist
+# ---------------------------------------------------------------------------
+# Deterministic, session-level only — an agreement is not declared until every
+# piece of information the downstream flow needs (PI issuance, QC booking,
+# freight) is actually in hand. When something is missing, the orchestrator
+# withholds NEGOTIATION_AGREED and drafts an email requesting the items
+# instead. Operator override (operator_override_price) bypasses the checklist.
+
+def missing_agreement_info(session: NegotiationSession) -> list[str]:
+    """Human-readable list of required items not yet received. Empty = complete."""
+    missing: list[str] = []
+    if not session.qc_provider:
+        missing.append(
+            "buyer's choice of QC inspection agency "
+            "(SGS / QIMA / Bureau Veritas / Intertek / TÜV SÜD)"
+        )
+    if not session.quantity_mt:
+        missing.append("confirmed order quantity (MT)")
+    return missing
+
+
+# ---------------------------------------------------------------------------
 # Explicit acceptance detection
 # ---------------------------------------------------------------------------
 # check_convergence() assumes both sides are actively converging their bid/ask

@@ -89,6 +89,35 @@ class NegotiationSettings(BaseSettings):
     call). Results are screened by the same prompt-injection filter the RAG
     pipeline uses before reaching any drafting prompt."""
 
+    # ── Inbound price plausibility band ────────────────────────────────────
+    price_band_factor: float = Field(
+        default=3.0, validation_alias="NEGOTIATION_PRICE_BAND_FACTOR"
+    )
+    """An inbound counter-price outside [corridor_min/factor, corridor_max×factor]
+    is treated as an extraction error: it never becomes the working bid/ask and
+    the round is flagged for HITL. Operator override prices bypass the guard."""
+
+    # ── Agreement completeness checklist ───────────────────────────────────
+    agreement_checklist_enabled: bool = Field(
+        default=True, validation_alias="NEGOTIATION_AGREEMENT_CHECKLIST_ENABLED"
+    )
+    """Before NEGOTIATION_AGREED is declared, verify every required piece of
+    information has been received (guards.missing_agreement_info: buyer's QC
+    inspector choice, confirmed quantity). If anything is missing the agent
+    drafts an email requesting it instead of closing. Operator price override
+    bypasses the checklist. Set false to restore close-on-price-alone."""
+
+    # ── Freight (logistics) cost in pricing ────────────────────────────────
+    freight_cost_enabled: bool = Field(
+        default=True, validation_alias="NEGOTIATION_FREIGHT_COST_ENABLED"
+    )
+    """Quote the lane's ocean freight via Shield-Link at negotiation start and
+    include the per-unit cost in the margin formula (buyer prices are CIF,
+    supplier Ex-Works — freight belongs inside the margin). Set
+    NEGOTIATION_FREIGHT_COST_ENABLED=false to restore the legacy behavior of
+    logistics_cost=0, e.g. for demos whose seeded buyer/supplier price gap
+    can't absorb a realistic freight cost."""
+
     fallback_usd_inr_rate: float = Field(
         default=96.0, validation_alias="NEGOTIATION_FALLBACK_USD_INR_RATE"
     )

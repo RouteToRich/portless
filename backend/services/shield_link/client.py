@@ -18,8 +18,17 @@ class ShieldLinkClient(BaseServiceClient):
     async def health(self) -> Any:
         return await self.get("/shield-link/health")
 
+    async def list_qc_providers(self) -> Any:
+        return await self.get("/shield-link/qc/providers")
+
+    async def quote_qc(self, payload: dict[str, Any]) -> Any:
+        return await self.post("/shield-link/qc/quote", json=payload)
+
     async def book_qc(self, payload: dict[str, Any]) -> Any:
         return await self.post("/shield-link/qc", json=payload)
+
+    async def quote_freight(self, payload: dict[str, Any]) -> Any:
+        return await self.post("/shield-link/freight/quote", json=payload)
 
     async def book_freight(self, payload: dict[str, Any]) -> Any:
         return await self.post("/shield-link/freight", json=payload)

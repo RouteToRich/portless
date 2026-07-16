@@ -54,7 +54,12 @@ class CostEnvelope(BaseModel):
     """Non-negotiable per-unit costs passed from the Match Engine."""
 
     travel_cost: Decimal = Field(default=Decimal("0"), description="Inland transport cost USD/unit")
-    qc_cost: Decimal = Field(default=Decimal("0"), description="SGS / BV inspection cost USD/unit")
+    qc_cost: Decimal = Field(
+        default=Decimal("0"),
+        description="Third-party inspection cost USD/unit for the buyer-opted "
+                    "QC provider (SGS/QIMA/BV/Intertek/TÜV SÜD); quoted via "
+                    "shield_link.quote_qc and re-quoted when the buyer opts",
+    )
     doc_cost: Decimal = Field(default=Decimal("0"), description="Documentation & compliance USD/unit")
 
     def total(self) -> float:
@@ -124,6 +129,20 @@ class StartNegotiationRequest(BaseModel):
     date_of_packaging: str | None = None
     composite_match_score: float | None = None
     cost_envelope: CostEnvelope | None = None
+    qc_provider: str | None = None
+    """Buyer's opted QC inspection provider (sgs/qima/bv/intertek/tuv_sud), if
+    already known. When unset, the default provider's cost is priced in and the
+    buyer is asked to opt during the negotiation."""
+    quantity_mt: float | None = None
+    """Expected shipment quantity — used to convert the QC inspection fee and
+    per-container freight rate into per-unit costs."""
+    logistics_cost_usd: float | None = None
+    """Per-unit ocean-freight cost (USD). When unset it is quoted via
+    Shield-Link at negotiation start (buyer prices are CIF, supplier Ex-Works,
+    so freight belongs inside the margin)."""
+    origin_port: str | None = None
+    destination_port: str | None = None
+    """Lane hints for the freight quote; connector defaults apply when unset."""
     policy: NegotiationPolicy = Field(default_factory=NegotiationPolicy)
     batna: str | None = None
     """Best Alternative To Negotiated Agreement — operator's fallback strategy."""
@@ -166,6 +185,13 @@ class NegotiationSession(BaseModel):
     composite_match_score: float | None = None
     policy: NegotiationPolicy
     cost_envelope: CostEnvelope | None = None
+    qc_provider: str | None = None
+    """Buyer-opted QC provider key; None until the buyer opts (default
+    provider's cost is priced in meanwhile)."""
+    quantity_mt: float | None = None
+    logistics_cost_usd: float | None = None
+    """Per-unit ocean-freight cost included in the margin math (quoted via
+    Shield-Link at start, or caller-supplied). None → 0 in the formula."""
     batna: str | None = None
     buyer_email: str | None = None
     seller_email: str | None = None
@@ -226,6 +252,8 @@ class NegotiationResponse(BaseModel):
     agreed_price: float | None = None
     margin_at_current: float | None = None
     hitl_required: bool = False
+    qc_provider: str | None = None
+    """Buyer-opted QC provider (None while the choice is still pending)."""
     reasoning: str | None = None
     outbound_buyer_message: str | None = None
     outbound_supplier_message: str | None = None

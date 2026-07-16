@@ -12,6 +12,7 @@ from services.shield_link.schemas import (
     ChaFilingRequest,
     FreightBookingRequest,
     FreightMilestonePayload,
+    FreightQuoteRequest,
     QcBookingRequest,
     QcWebhookPayload,
 )
@@ -28,7 +29,42 @@ from services.shield_link.service import (
     handle_freight_milestone,
     handle_qc_result,
     list_deal_orders,
+    quote_freight,
 )
+
+
+# ---------------------------------------------------------------------------
+# Freight quoting (read-only, powers negotiation logistics_cost)
+# ---------------------------------------------------------------------------
+
+class TestFreightQuote:
+    @pytest.mark.asyncio
+    async def test_quote_single_container_per_unit(self):
+        resp = await quote_freight(FreightQuoteRequest(quantity_mt=20.0))
+        assert resp.provider == "cogoport"
+        assert resp.containers == 1
+        assert resp.total_freight_usd == resp.rate_usd_per_container
+        assert resp.logistics_cost_per_unit_usd == round(resp.total_freight_usd / 20.0, 4)
+        assert resp.stub is True
+
+    @pytest.mark.asyncio
+    async def test_quote_multi_container_rounds_up(self):
+        resp = await quote_freight(FreightQuoteRequest(quantity_mt=60.0))
+        assert resp.containers == 3  # ceil(60 / 25 MT-per-40HC)
+        assert resp.total_freight_usd == resp.rate_usd_per_container * 3
+        assert resp.logistics_cost_per_unit_usd == round(resp.total_freight_usd / 60.0, 4)
+
+    @pytest.mark.asyncio
+    async def test_quote_without_quantity_omits_per_unit(self):
+        resp = await quote_freight(FreightQuoteRequest())
+        assert resp.containers == 1
+        assert resp.logistics_cost_per_unit_usd is None
+
+    @pytest.mark.asyncio
+    async def test_quote_alternate_provider(self):
+        resp = await quote_freight(FreightQuoteRequest(provider="freightos", quantity_mt=25.0))
+        assert resp.provider == "freightos"
+        assert resp.rate_usd_per_container > 0
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +158,7 @@ class TestBookQc:
             ),
         ):
             with pytest.raises(ConnectorCallError):
-                await book_qc(QcBookingRequest(deal_id="DEAL-SL-01"))
+                await book_qc(QcBookingRequest(deal_id="DEAL-SL-01", provider="sgs"))
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +196,7 @@ class TestQcWebhook:
             patch("services.shield_link.service._transition_deal", new=AsyncMock()),
             patch("services.shield_link.service._emit", new=AsyncMock()),
         ):
-            tpo = await book_qc(QcBookingRequest(deal_id="DEAL-SL-01"))
+            tpo = await book_qc(QcBookingRequest(deal_id="DEAL-SL-01", provider="sgs"))
 
         payload = QcWebhookPayload(ext_ref=tpo.ext_ref, result="FAIL", notes="Moisture content too high")
         with (
@@ -180,7 +216,7 @@ class TestQcWebhook:
             patch("services.shield_link.service._transition_deal", new=AsyncMock()),
             patch("services.shield_link.service._emit", new=AsyncMock()),
         ):
-            tpo = await book_qc(QcBookingRequest(deal_id="DEAL-SL-01"))
+            tpo = await book_qc(QcBookingRequest(deal_id="DEAL-SL-01", provider="sgs"))
 
         payload = QcWebhookPayload(ext_ref=tpo.ext_ref, result="PASS")
         with patch("shared.connectors.shields.SgsConnector.webhook_verify", new=AsyncMock(return_value=False)):

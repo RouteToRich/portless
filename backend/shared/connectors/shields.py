@@ -1,4 +1,9 @@
-"""Third-party "shield" connectors: QC inspection, freight booking, CHA.
+"""Third-party "shield" connectors: freight booking + CHA (customs).
+
+QC inspection connectors moved to ``shared.connectors.qc_providers`` — the
+QC provider set (SGS, QIMA, Bureau Veritas, Intertek, TÜV SÜD) is a distinct,
+buyer-selectable ecosystem, separated from transportation management. The key
+QC symbols are re-exported here for backward compatibility.
 
 Each connector checks for its API key at call-time:
   • Key present  → attempts real HTTP call; any error becomes a ConnectorError.
@@ -12,7 +17,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import logging
 import os
 from datetime import date, timedelta
@@ -22,110 +26,17 @@ from uuid import uuid4
 import httpx
 
 from .base import Connector
+from .qc_providers import (  # noqa: F401 — re-exported for backward compat
+    ConnectorError,
+    QC_PROVIDER_CATALOG,
+    SgsConnector,
+    get_qc_connector,
+    resolve_qc_provider,
+)
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 15.0
-
-
-class ConnectorError(Exception):
-    """Raised when a provider call fails in a non-retryable way."""
-
-
-# ---------------------------------------------------------------------------
-# SGS / Bureau Veritas / Intertek — QC inspection
-# ---------------------------------------------------------------------------
-
-class SgsConnector(Connector):
-    """Quality-control inspection adapter (SGS/Intertek/BV).
-
-    Real API endpoint is customer-specific; configure via env vars.
-    Without credentials the connector returns a stub booking so the
-    deal pipeline can advance to SUPPLIER_DISPATCH_READY.
-    """
-
-    name = "sgs"
-
-    def __init__(self) -> None:
-        self._api_key = os.getenv("SGS_API_KEY", "")
-        self._base_url = os.getenv("SGS_BASE_URL", "https://api.sgs.com/inspection/v1")
-        self._webhook_secret = os.getenv("SGS_WEBHOOK_SECRET", "")
-
-    def _stub_ref(self) -> str:
-        return f"SGS-STUB-{uuid4().hex[:10].upper()}"
-
-    async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Fetch inspection availability/price for a given date and location."""
-        if not self._api_key:
-            logger.warning("SgsConnector: SGS_API_KEY not set — returning stub quote")
-            return {
-                "provider": "sgs",
-                "available": True,
-                "inspection_date": (date.today() + timedelta(days=3)).isoformat(),
-                "location": request.get("location", "Supplier warehouse"),
-                "fee_usd": 320.0,
-                "currency": "USD",
-                "stub": True,
-            }
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = client.post(
-                f"{self._base_url}/quotes",
-                json=request,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-            )
-            if resp.status_code not in range(200, 300):
-                raise ConnectorError(f"SGS quote failed: HTTP {resp.status_code} — {resp.text[:200]}")
-            return resp.json()
-
-    async def book(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Book an inspection appointment and return the booking reference."""
-        if not self._api_key:
-            ref = self._stub_ref()
-            logger.warning("SgsConnector: SGS_API_KEY not set — returning stub booking %s", ref)
-            return {
-                "ext_ref": ref,
-                "status": "BOOKED",
-                "provider": "sgs",
-                "inspection_date": (date.today() + timedelta(days=3)).isoformat(),
-                "location": request.get("location", "Supplier warehouse"),
-                "inspector_contact": "inspector@sgs-stub.com",
-                "stub": True,
-            }
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(
-                f"{self._base_url}/bookings",
-                json=request,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-            )
-            if resp.status_code not in range(200, 300):
-                raise ConnectorError(f"SGS book failed: HTTP {resp.status_code} — {resp.text[:200]}")
-            return resp.json()
-
-    async def status(self, ext_ref: str) -> dict[str, Any]:
-        """Poll the status of an existing inspection booking."""
-        if not self._api_key:
-            return {"ext_ref": ext_ref, "status": "BOOKED", "stub": True}
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.get(
-                f"{self._base_url}/bookings/{ext_ref}",
-                headers={"Authorization": f"Bearer {self._api_key}"},
-            )
-            if resp.status_code not in range(200, 300):
-                raise ConnectorError(f"SGS status failed: HTTP {resp.status_code}")
-            return resp.json()
-
-    async def webhook_verify(self, headers: dict[str, str], body: bytes) -> bool:
-        """Verify SGS webhook using HMAC-SHA256 signature in X-SGS-Signature."""
-        if not self._webhook_secret:
-            logger.warning("SgsConnector: SGS_WEBHOOK_SECRET not set — accepting all webhooks")
-            return True
-        sig = headers.get("x-sgs-signature", "")
-        expected = hmac.new(
-            self._webhook_secret.encode(),
-            body,
-            hashlib.sha256,
-        ).hexdigest()
-        return hmac.compare_digest(sig, expected)
 
 
 # ---------------------------------------------------------------------------
@@ -361,25 +272,13 @@ class IcegateConnector(Connector):
 
 
 # ---------------------------------------------------------------------------
-# Connector registry
+# Connector registry (freight/transport only — QC lives in qc_providers.py)
 # ---------------------------------------------------------------------------
-
-_QC_CONNECTORS: dict[str, type] = {
-    "sgs": SgsConnector,
-    "intertek": SgsConnector,  # same interface
-    "bv": SgsConnector,
-}
 
 _FREIGHT_CONNECTORS: dict[str, type] = {
     "cogoport": CogoportConnector,
     "freightos": FreightosConnector,
 }
-
-
-def get_qc_connector(provider: str) -> SgsConnector:
-    """Return an instantiated QC connector for the given provider name."""
-    cls = _QC_CONNECTORS.get(provider.lower(), SgsConnector)
-    return cls()
 
 
 def get_freight_connector(provider: str) -> CogoportConnector | FreightosConnector:

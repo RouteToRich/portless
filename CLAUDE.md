@@ -79,7 +79,8 @@ In the combined monolith (`app.py`) services call each other's `service.py` dire
 | `shared/config.py` | `Settings` (pydantic-settings) — service registry URLs + cross-cutting env vars |
 | `shared/bus/publisher.py` | `EventPublisher` protocol + `NoopPublisher` — swap-in point for NATS/Kafka |
 | `shared/connectors/` | External API adapters (all implement `quote/book/status/webhook_verify`) |
-| `shared/connectors/shields.py` | SGS, Cogoport, Freightos, ICEGATE — graceful stub when API key absent |
+| `shared/connectors/qc_providers.py` | Buyer-selectable QC inspectors — SGS, QIMA, Bureau Veritas, Intertek, TÜV SÜD — plus `QC_PROVIDER_CATALOG` metadata and alias resolution; graceful stub when API key absent |
+| `shared/connectors/shields.py` | Freight + customs: Cogoport, Freightos, ICEGATE — graceful stub when API key absent (re-exports the QC symbols for back-compat) |
 | `shared/connectors/payments.py` | Stripe Treasury, Payoneer — graceful stub when API key absent |
 | `shared/llm_gateway/` | Resilient LLM client with Groq fallback chain + MongoDB call tracking |
 | `shared/rag/` | MongoDB Atlas vector store + RAG chunking pipeline |
@@ -299,9 +300,16 @@ ALIBABA_APP_KEY / ALIBABA_APP_SECRET
 MACMAP_API_KEY
 INDIAMART_API_KEY / INDIAMART_MOBILE
 
-# Physical inspection + logistics (shield-link)
-SGS_API_KEY
-SGS_WEBHOOK_SECRET
+# QC inspection providers (shield-link — buyer-selectable top-5; each also
+# accepts <PREFIX>_BASE_URL). Buyer's opted provider is captured during
+# negotiation; its quoted cost feeds cost_envelope.qc_cost in pricing.
+SGS_API_KEY / SGS_WEBHOOK_SECRET
+QIMA_API_KEY / QIMA_WEBHOOK_SECRET
+BUREAU_VERITAS_API_KEY / BUREAU_VERITAS_WEBHOOK_SECRET
+INTERTEK_API_KEY / INTERTEK_WEBHOOK_SECRET
+TUV_SUD_API_KEY / TUV_SUD_WEBHOOK_SECRET
+
+# Freight + customs (shield-link)
 COGOPORT_API_KEY
 COGOPORT_WEBHOOK_SECRET
 FREIGHTOS_API_KEY

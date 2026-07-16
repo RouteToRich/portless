@@ -44,10 +44,15 @@ from typing import Any
 from uuid import uuid4
 
 from shared.bus import get_publisher
+from shared.connectors.qc_providers import (
+    QC_PROVIDER_CATALOG,
+    cheapest_qc_provider,
+    get_qc_connector,
+    resolve_qc_provider,
+)
 from shared.connectors.shields import (
     ConnectorError,
     get_freight_connector,
-    get_qc_connector,
 )
 from shared.domain.events import DomainEvent, EventTopic
 from shared.domain.state_machine import can_transition
@@ -59,7 +64,13 @@ from .schemas import (
     DealOrdersResponse,
     FreightBookingRequest,
     FreightMilestonePayload,
+    FreightQuoteRequest,
+    FreightQuoteResponse,
     QcBookingRequest,
+    QcProviderInfo,
+    QcProvidersResponse,
+    QcQuoteRequest,
+    QcQuoteResponse,
     QcWebhookPayload,
     ThirdPartyOrderRecord,
     ThirdPartyOrderResponse,
@@ -97,6 +108,13 @@ class ConnectorCallError(Exception):
 
 class WebhookVerifyError(Exception):
     """Inbound webhook signature verification failed."""
+
+
+class UnknownQcProviderError(Exception):
+    def __init__(self, provider: str) -> None:
+        supported = ", ".join(sorted(QC_PROVIDER_CATALOG))
+        super().__init__(f"Unknown QC provider {provider!r}; supported: {supported}")
+        self.provider = provider
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +162,68 @@ async def _emit(topic: EventTopic, deal_id: str, payload: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# QC provider catalog + quoting
+# ---------------------------------------------------------------------------
+
+def list_qc_providers() -> QcProvidersResponse:
+    """Supported QC inspection providers — the buyer-facing catalog."""
+    return QcProvidersResponse(
+        default_provider=settings.default_qc_provider,
+        providers=[QcProviderInfo(**meta) for meta in QC_PROVIDER_CATALOG.values()],
+    )
+
+
+async def quote_qc(req: QcQuoteRequest) -> QcQuoteResponse:
+    """Quote the inspection cost for one provider (read-only, no TPO written).
+
+    Called before/at negotiation start so the QC cost of the buyer's opted
+    provider is baked into the CIF price floor.
+    """
+    provider = resolve_qc_provider(req.provider) if req.provider else settings.default_qc_provider
+    if provider is None or provider not in QC_PROVIDER_CATALOG:
+        raise UnknownQcProviderError(str(req.provider))
+
+    connector = get_qc_connector(provider)
+    try:
+        result = await connector.quote({
+            "deal_id": req.deal_id or "",
+            "location": req.location or "",
+            "hs_code": req.hs_code or "",
+            "quantity_mt": req.quantity_mt or 0.0,
+        })
+    except ConnectorError as exc:
+        raise ConnectorCallError(f"QC quote failed for provider {provider}: {exc}") from exc
+
+    meta = QC_PROVIDER_CATALOG[provider]
+    fee = float(result.get("fee_usd") or meta["indicative_fee_usd"])
+    per_unit = result.get("qc_cost_per_unit_usd")
+    if per_unit is None and req.quantity_mt:
+        per_unit = round(fee / req.quantity_mt, 4)
+    return QcQuoteResponse(
+        provider=provider,
+        display_name=meta["display_name"],
+        available=bool(result.get("available", True)),
+        inspection_date=result.get("inspection_date"),
+        fee_usd=fee,
+        qc_cost_per_unit_usd=per_unit,
+        currency=str(result.get("currency", "USD")),
+        evidence=result.get("evidence") or meta["evidence"],
+        stub=bool(result.get("stub", False)),
+    )
+
+
+async def _buyer_opted_qc_provider(deal_id: str) -> str | None:
+    """Buyer's opted QC provider captured during negotiation, if any."""
+    try:
+        from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+        session = await _neg_repo().get_session_by_deal(deal_id)
+        return resolve_qc_provider(getattr(session, "qc_provider", None)) if session else None
+    except Exception as exc:
+        logger.debug("ShieldLink: could not read negotiation qc_provider for %s: %s", deal_id, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # QC booking
 # ---------------------------------------------------------------------------
 
@@ -169,7 +249,22 @@ async def book_qc(req: QcBookingRequest) -> ThirdPartyOrderResponse:
     if not can_transition(DealStatus(deal_status), DealStatus.SUPPLIER_DISPATCH_READY):
         raise InvalidDealState(req.deal_id, deal_status, "PO_ISSUED")
 
-    provider = req.provider or settings.default_qc_provider
+    # Provider resolution: explicit request → buyer-opted (from the deal's
+    # negotiation session) → fallback strategy ("cheapest" catalog provider by
+    # default — a buyer who never opted gets the most economical inspector;
+    # "default" books settings.default_qc_provider instead).
+    if req.provider:
+        provider = resolve_qc_provider(req.provider)
+        if provider is None:
+            raise UnknownQcProviderError(req.provider)
+    else:
+        provider = await _buyer_opted_qc_provider(req.deal_id)
+        if provider is None:
+            provider = (
+                cheapest_qc_provider()
+                if settings.qc_fallback_strategy == "cheapest"
+                else settings.default_qc_provider
+            )
     now = datetime.now(timezone.utc)
     tpo_id = _new_tpo_id("QC")
 
@@ -291,6 +386,59 @@ async def handle_qc_result(
 
     logger.info("ShieldLink: QC result %s processed for deal %s", qc_result, tpo.deal_id)
     return {"status": "ok", "result": qc_result, "deal_id": tpo.deal_id}
+
+
+# ---------------------------------------------------------------------------
+# Freight quoting (read-only — no booking, no TPO)
+# ---------------------------------------------------------------------------
+
+_MT_PER_CONTAINER = 25.0
+"""Working assumption for a 40HC of typical bulk commodity — used only to
+convert a per-container rate into a per-unit cost for pricing. Real container
+plans come from the booked provider at freight time."""
+
+
+async def quote_freight(req: FreightQuoteRequest) -> FreightQuoteResponse:
+    """Quote the lane's freight cost for one provider (read-only).
+
+    Called at negotiation start so the ocean-freight component of a CIF price
+    is priced into the margin floor before the first offer.
+    """
+    import math
+
+    provider = (req.provider or settings.default_freight_provider).lower()
+    connector = get_freight_connector(provider)
+    try:
+        result = await connector.quote({
+            "deal_id": req.deal_id or "",
+            "origin_port": req.origin_port or "",
+            "destination_port": req.destination_port or "",
+            "container_type": req.container_type,
+            "hs_code": req.hs_code or "",
+            "quantity_mt": req.quantity_mt or 0.0,
+            "incoterm": req.incoterm,
+        })
+    except ConnectorError as exc:
+        raise ConnectorCallError(f"Freight quote failed for provider {provider}: {exc}") from exc
+
+    rate = float(result.get("rate_usd") or 0.0)
+    qty = float(req.quantity_mt or 0.0)
+    containers = max(1, math.ceil(qty / _MT_PER_CONTAINER)) if qty > 0 else 1
+    total = round(rate * containers, 2)
+    per_unit = round(total / qty, 4) if qty > 0 else None
+    return FreightQuoteResponse(
+        provider=str(result.get("provider", provider)),
+        origin=result.get("origin") or req.origin_port,
+        destination=result.get("destination") or req.destination_port,
+        container_type=str(result.get("container_type", req.container_type)),
+        rate_usd_per_container=rate,
+        containers=containers,
+        total_freight_usd=total,
+        logistics_cost_per_unit_usd=per_unit,
+        transit_days=result.get("transit_days"),
+        valid_until=result.get("valid_until"),
+        stub=bool(result.get("stub", False)),
+    )
 
 
 # ---------------------------------------------------------------------------

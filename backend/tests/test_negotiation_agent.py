@@ -97,6 +97,11 @@ def _session(**overrides) -> NegotiationSession:
         round_no=0,
         current_bid=500.0,
         current_ask=460.0,
+        # Satisfy the agreement completeness checklist by default — these
+        # tests exercise price/routing logic, not the checklist (which has
+        # its own coverage in tests/test_qc_providers.py).
+        qc_provider="sgs",
+        quantity_mt=25.0,
         created_at=now,
         updated_at=now,
     )

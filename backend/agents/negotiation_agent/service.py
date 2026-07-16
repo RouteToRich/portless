@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from shared.bus.publisher import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
@@ -40,6 +42,7 @@ from .market_intel import fetch_both, get_usd_inr_rate
 from .rag import load_rag_context
 from .repository import NegotiationRepository, get_repository
 from .schemas import (
+    CostEnvelope,
     NegotiationPolicy,
     NegotiationResponse,
     NegotiationRound,
@@ -76,8 +79,144 @@ def _session_to_response(session: NegotiationSession, reasoning: str = "", **ext
         agreed_price=session.agreed_price,
         margin_at_current=session.margin_at_current,
         hitl_required=session.hitl_required,
+        qc_provider=session.qc_provider,
         reasoning=reasoning or None,
         **extra,
+    )
+
+
+# ---------------------------------------------------------------------------
+# QC provider costing — the buyer's opted inspector is a real price component
+# ---------------------------------------------------------------------------
+
+_DEFAULT_QC_QUANTITY_MT = 25.0
+"""Fallback shipment size (~one 40' FCL) for converting a lump-sum inspection
+fee into a per-unit cost when the caller supplied no quantity."""
+
+
+async def _quote_qc_cost_per_unit(
+    provider: str | None,
+    quantity_mt: float | None,
+    deal_id: str = "",
+    hs_code: str = "",
+) -> tuple[str, float] | None:
+    """Quote the per-unit QC inspection cost via Shield-Link.
+
+    Returns ``(resolved_provider, qc_cost_per_unit_usd)``. Never raises —
+    pricing must not block on the QC quote; on any failure it falls back to
+    the static catalog fee, and returns None only if even that is unavailable.
+    """
+    from shared.connectors.qc_providers import (
+        QC_PROVIDER_CATALOG,
+        cheapest_qc_provider,
+        resolve_qc_provider,
+    )
+
+    qty = quantity_mt or _DEFAULT_QC_QUANTITY_MT
+    resolved = resolve_qc_provider(provider) if provider else None
+    # Unopted → price on the cheapest catalog provider: that is who would be
+    # booked if the buyer never picks one (see shield_link's fallback rule),
+    # so the floor and the eventual booking always price the same inspector.
+    key = resolved or cheapest_qc_provider()
+    try:
+        from services.shield_link.schemas import QcQuoteRequest  # type: ignore[import]
+        from services.shield_link.service import quote_qc  # type: ignore[import]
+        quote = await quote_qc(QcQuoteRequest(
+            provider=key, deal_id=deal_id or None,
+            hs_code=hs_code or None, quantity_mt=qty,
+        ))
+        per_unit = quote.qc_cost_per_unit_usd or round(quote.fee_usd / qty, 4)
+        return quote.provider, per_unit
+    except Exception as exc:
+        logger.warning("QC quote via Shield-Link failed (%s) — using catalog fallback", exc)
+    meta = QC_PROVIDER_CATALOG.get(key)
+    if meta is None:
+        return None
+    return key, round(float(meta["indicative_fee_usd"]) / qty, 4)
+
+
+async def _seed_qc_costing(payload: StartNegotiationRequest) -> tuple[str | None, CostEnvelope | None]:
+    """Bake the QC inspection cost into the envelope before the first offer.
+
+    A caller-supplied non-zero qc_cost is kept as-is. Otherwise the (opted or
+    default) provider is quoted and its per-unit cost written into the
+    envelope, so the very first CIF price floor already covers inspection.
+    Returns ``(buyer_opted_provider_or_None, envelope)``.
+    """
+    from shared.connectors.qc_providers import resolve_qc_provider
+
+    opted = resolve_qc_provider(payload.qc_provider)
+    envelope = payload.cost_envelope
+    if envelope is not None and float(envelope.qc_cost) > 0:
+        return opted, envelope
+    quoted = await _quote_qc_cost_per_unit(
+        opted, payload.quantity_mt, payload.deal_id, payload.product_code,
+    )
+    if quoted is None:
+        return opted, envelope
+    _, per_unit = quoted
+    envelope = (envelope or CostEnvelope()).model_copy(
+        update={"qc_cost": Decimal(str(per_unit))}
+    )
+    return opted, envelope
+
+
+async def _seed_logistics_cost(payload: StartNegotiationRequest) -> float | None:
+    """Quote the lane's per-unit ocean-freight cost via Shield-Link.
+
+    Buyer prices are CIF and supplier quotes Ex-Works, so the freight cost is
+    part of PortLess's margin and must be in the floor from round 0. A
+    caller-supplied value wins; the feature can be disabled via
+    NEGOTIATION_FREIGHT_COST_ENABLED=false. Never raises — on any failure the
+    legacy behavior (logistics 0, margin overstated) applies with a loud log.
+    """
+    if payload.logistics_cost_usd is not None:
+        return payload.logistics_cost_usd
+    if not settings.freight_cost_enabled:
+        return None
+    try:
+        from services.shield_link.schemas import FreightQuoteRequest  # type: ignore[import]
+        from services.shield_link.service import quote_freight  # type: ignore[import]
+        quote = await quote_freight(FreightQuoteRequest(
+            deal_id=payload.deal_id,
+            origin_port=payload.origin_port,
+            destination_port=payload.destination_port or payload.buyer_country_code,
+            quantity_mt=payload.quantity_mt or _DEFAULT_QC_QUANTITY_MT,
+            hs_code=payload.product_code,
+        ))
+        per_unit = quote.logistics_cost_per_unit_usd
+        if per_unit is None and quote.rate_usd_per_container:
+            per_unit = round(quote.total_freight_usd / _DEFAULT_QC_QUANTITY_MT, 4)
+        return per_unit
+    except Exception as exc:
+        logger.warning(
+            "Freight quote via Shield-Link failed (%s) — logistics_cost stays 0; "
+            "negotiation margins will be OVERSTATED by the freight cost", exc,
+        )
+        return None
+
+
+async def _apply_buyer_qc_choice(session: NegotiationSession, provider: str) -> None:
+    """Persist the buyer's opted QC provider and re-price the envelope.
+
+    The floor recomputes from the new qc_cost on the next graph pass, so a
+    costlier inspector automatically tightens (raises) the buyer price floor
+    — the existing near-floor HITL guard then flags any squeeze.
+    """
+    quoted = await _quote_qc_cost_per_unit(
+        provider, session.quantity_mt, session.deal_id, session.product_code,
+    )
+    session.qc_provider = provider
+    if quoted is not None:
+        _, per_unit = quoted
+        envelope = session.cost_envelope or CostEnvelope()
+        session.cost_envelope = envelope.model_copy(
+            update={"qc_cost": Decimal(str(per_unit))}
+        )
+    logger.info(
+        "Negotiation %s: buyer opted QC provider %s (qc_cost/unit=%s)",
+        session.negotiation_id, provider,
+        session.cost_envelope.qc_cost if session.cost_envelope else "n/a",
     )
 
 
@@ -157,12 +296,32 @@ async def _build_conversation_history(negotiation_id: str) -> dict[str, str]:
     }
 
 
+_PLACEHOLDER_PATTERN = re.compile(r"\[[A-Za-z][A-Za-z0-9 _/.-]{0,40}\]")
+
+
+def draft_risk_flags(body: str, degraded: bool = False) -> list[str]:
+    """Deterministic draft-quality flags shown on the HITL approval.
+
+    - degraded_llm_fallback: the body is a canned template (LLM unavailable),
+      not a real draft — the operator should treat it as a stub.
+    - unresolved_placeholders: the LLM left bracketed tokens like
+      "[Buyer Name]" in the body; sending it as-is would look broken.
+    """
+    flags = ["email_content_review"]
+    if degraded:
+        flags.append("degraded_llm_fallback")
+    if _PLACEHOLDER_PATTERN.search(body or ""):
+        flags.append("unresolved_placeholders")
+    return flags
+
+
 async def _create_and_gate_email(
     session: NegotiationSession,
     party: str,
     to_address: str,
     subject: str,
     body: str,
+    degraded: bool = False,
 ) -> str:
     """Persist an email draft and create an L0 HITL approval gate.
 
@@ -196,13 +355,19 @@ async def _create_and_gate_email(
         from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
 
         preview = body[:150] + ("..." if len(body) > 150 else "")
+        flags = draft_risk_flags(body, degraded)
+        quality_note = ""
+        if "degraded_llm_fallback" in flags:
+            quality_note = "⚠ DEGRADED TEMPLATE (LLM unavailable) — edit before sending. "
+        elif "unresolved_placeholders" in flags:
+            quality_note = "⚠ Contains unresolved [placeholders] — edit before sending. "
         approval_req = CreateApprovalRequest(
             deal_id=session.deal_id,
             action="SEND_NEGOTIATION_EMAIL",
             summary=(
-                f"Round {session.round_no} draft email to {party} — {preview}"
+                f"{quality_note}Round {session.round_no} draft email to {party} — {preview}"
             ),
-            risk_flags=["email_content_review"],
+            risk_flags=flags,
             autonomy_level="L0",
             callback_payload={
                 "email_id": email_id,
@@ -317,6 +482,7 @@ async def _post_graph_notify(
             session.buyer_email or f"{session.buyer_id}@portless.placeholder",
             buyer_subject,
             buyer_msg,
+            degraded=bool(final_state.get("buyer_draft_degraded")),
         ))
     if supplier_msg:
         tasks.append(_create_and_gate_email(
@@ -325,6 +491,7 @@ async def _post_graph_notify(
             session.seller_email or f"{session.seller_id}@portless.placeholder",
             supplier_subject,
             supplier_msg,
+            degraded=bool(final_state.get("supplier_draft_degraded")),
         ))
 
     if tasks:
@@ -461,10 +628,14 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         return _session_to_response(existing)
 
     negotiation_id = str(uuid.uuid4())
-    rag_context, market_context, usd_inr_rate = await asyncio.gather(
-        load_rag_context(payload.product_code),
-        fetch_both(payload.product_code, payload.buyer_country_code),
-        get_usd_inr_rate(),
+    rag_context, market_context, usd_inr_rate, (qc_provider, cost_envelope), logistics_cost = (
+        await asyncio.gather(
+            load_rag_context(payload.product_code),
+            fetch_both(payload.product_code, payload.buyer_country_code),
+            get_usd_inr_rate(),
+            _seed_qc_costing(payload),
+            _seed_logistics_cost(payload),
+        )
     )
 
     now = datetime.now(timezone.utc)
@@ -480,7 +651,10 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         supplier_quote_price=payload.supplier_quote_price,
         composite_match_score=payload.composite_match_score,
         policy=payload.policy,
-        cost_envelope=payload.cost_envelope,
+        cost_envelope=cost_envelope,
+        qc_provider=qc_provider,
+        quantity_mt=payload.quantity_mt,
+        logistics_cost_usd=logistics_cost,
         batna=payload.batna,
         buyer_email=payload.buyer_email,
         seller_email=payload.seller_email,
@@ -496,7 +670,7 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
 
     initial_state: NegotiationGraphState = {
         "session": session,
-        "logistics_cost": 0.0,
+        "logistics_cost": session.logistics_cost_usd or 0.0,
         "is_first_round": True,
         "party": "init",
         "inbound_message": None,
@@ -518,6 +692,8 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         "routing": "CALL_BUYER_AGENT",
         "hitl_required": False,
         "agreed_price": None,
+        "mentioned_qc_providers": None,
+        "pending_agreement_info": [],
         "reasoning": "",
         "error": None,
     }
@@ -575,6 +751,7 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         agreed_price=session.agreed_price,
         margin_at_current=session.margin_at_current,
         hitl_required=session.hitl_required,
+        qc_provider=session.qc_provider,
         reasoning=final_state.get("reasoning"),
         outbound_buyer_message=final_state.get("buyer_outbound_message") or None,
         outbound_supplier_message=final_state.get("supplier_outbound_message") or None,
@@ -589,11 +766,43 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
     if session.status in ("AGREED", "FAILED", "ESCALATED"):
         raise ValueError(f"Negotiation {negotiation_id} is terminal (status={session.status})")
 
+    # Price plausibility guard: an extracted price wildly outside the
+    # negotiation corridor is an extraction error, not a real counter — it
+    # must never become the working bid/ask (a $102k/unit "agreement" against
+    # a $1,255 target got through before this guard existed). An operator
+    # override is an explicit human decision and bypasses the check.
     effective_price = request.operator_override_price or request.counter_price
-    if request.party == "buyer":
+    price_veto_note = ""
+    from .guards import is_price_plausible
+    if request.operator_override_price is None and not is_price_plausible(
+        session, effective_price, settings.price_band_factor
+    ):
+        price_veto_note = (
+            f"[PRICE GUARD] Inbound price {effective_price} is outside the plausible "
+            f"band (~{settings.price_band_factor}× of the negotiation corridor) — "
+            "treated as an extraction error; bid/ask unchanged, round flagged for review. "
+        )
+        logger.warning(
+            "Negotiation %s: implausible inbound %s price %s vetoed (corridor bid=%s ask=%s)",
+            negotiation_id, request.party, effective_price,
+            session.current_bid, session.current_ask,
+        )
+        effective_price = (
+            session.current_bid if request.party == "buyer" else session.current_ask
+        ) or request.counter_price
+    elif request.party == "buyer":
         session.current_bid = effective_price
     else:
         session.current_ask = effective_price
+
+    # Capture a buyer QC-provider opt-in BEFORE the graph pass so this round's
+    # floor/acceptance math already prices the chosen inspector. Deterministic
+    # single-name scan here; the LLM classifier refines it post-graph.
+    if request.party == "buyer" and request.inbound_message:
+        from shared.connectors.qc_providers import detect_qc_provider_mention
+        mention = detect_qc_provider_mention(request.inbound_message)
+        if mention and mention != session.qc_provider:
+            await _apply_buyer_qc_choice(session, mention)
 
     history, market_context, usd_inr_rate = await asyncio.gather(
         _build_conversation_history(negotiation_id),
@@ -603,7 +812,7 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
 
     state: NegotiationGraphState = {
         "session": session,
-        "logistics_cost": 0.0,
+        "logistics_cost": session.logistics_cost_usd or 0.0,
         "is_first_round": False,
         "party": request.party,
         "inbound_message": request.inbound_message,
@@ -625,6 +834,8 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
         "routing": "CALL_BUYER_AGENT",
         "hitl_required": False,
         "agreed_price": None,
+        "mentioned_qc_providers": None,
+        "pending_agreement_info": [],
         "reasoning": "",
         "error": None,
     }
@@ -635,6 +846,29 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
     except Exception as exc:
         logger.error("Graph execution failed on run_round: %s", exc)
         final_state = {**state, "routing": "HITL_APPROVAL", "error": str(exc), "hitl_required": True}
+
+    # Post-graph: the intent classifier may have caught a QC-provider choice
+    # the deterministic scan missed (e.g. indirect phrasing). Several named
+    # acceptable agencies = the buyer left the pick to PortLess → cheapest.
+    classifier_mentions = final_state.get("mentioned_qc_providers")
+    if request.party == "buyer" and classifier_mentions:
+        if len(classifier_mentions) == 1:
+            chosen = classifier_mentions[0]
+        else:
+            from shared.connectors.qc_providers import cheapest_qc_provider
+            chosen = cheapest_qc_provider(classifier_mentions)
+            logger.info(
+                "Negotiation %s: buyer accepts any of %s — choosing cheapest: %s",
+                negotiation_id, classifier_mentions, chosen,
+            )
+        if chosen != session.qc_provider:
+            await _apply_buyer_qc_choice(session, chosen)
+
+    if price_veto_note:
+        # A vetoed price forces operator review of this round's draft and the
+        # note is prepended to every reasoning surface the operator sees.
+        final_state["hitl_required"] = True
+        final_state["reasoning"] = price_veto_note + (final_state.get("reasoning") or "")
 
     session.status = _graph_state_to_status(
         final_state.get("routing", "HITL_APPROVAL"),
@@ -686,6 +920,7 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
         agreed_price=session.agreed_price,
         margin_at_current=session.margin_at_current,
         hitl_required=session.hitl_required,
+        qc_provider=session.qc_provider,
         reasoning=final_state.get("reasoning"),
         outbound_buyer_message=final_state.get("buyer_outbound_message") or None,
         outbound_supplier_message=final_state.get("supplier_outbound_message") or None,

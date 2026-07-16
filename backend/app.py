@@ -180,6 +180,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("EmailGateway startup failed (service will run degraded): %s", exc)
 
+    # ── Event bus: in-process pub/sub + pipeline continuations ───────────
+    # Makes deal state changes event-driven (NEGOTIATION_AGREED → PI issuance)
+    # instead of depending on the dev auto-flow poller staying alive.
+    try:
+        from shared.bus import InProcessEventBus, set_publisher
+        from shared.orchestration.continuations import register_continuations
+        _bus = InProcessEventBus()
+        register_continuations(_bus)
+        set_publisher(_bus)
+    except Exception as exc:
+        logger.error("EventBus startup failed (events stay no-op): %s", exc)
+
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────

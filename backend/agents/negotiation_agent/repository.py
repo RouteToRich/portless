@@ -104,7 +104,11 @@ class MongoNegotiationRepository:
         )
 
     async def save_session(self, session: NegotiationSession) -> None:
-        doc = session.model_dump()
+        # mode="json": BSON cannot encode Decimal (cost_envelope fields) — JSON
+        # mode serializes them (and datetimes) to strings; pydantic parses them
+        # back on read. Plain model_dump() here aborted every session save once
+        # the QC/freight cost seeding started populating the envelope.
+        doc = session.model_dump(mode="json")
         await self._sessions.replace_one(
             {"negotiation_id": session.negotiation_id}, doc, upsert=True
         )
@@ -127,7 +131,7 @@ class MongoNegotiationRepository:
         return [NegotiationSession(**d) async for d in cursor]
 
     async def save_round(self, round_: NegotiationRound) -> None:
-        doc = round_.model_dump()
+        doc = round_.model_dump(mode="json")  # BSON-safe (see save_session)
         await self._rounds.replace_one({"round_id": round_.round_id}, doc, upsert=True)
 
     async def list_rounds(self, negotiation_id: str) -> list[NegotiationRound]:

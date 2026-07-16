@@ -22,6 +22,7 @@ from .guards import (
     compute_midpoint_price,
     is_explicit_acceptance,
     is_near_margin_floor,
+    missing_agreement_info,
     verify_payout_and_margin,
 )
 from .llm import get_llm_client
@@ -66,11 +67,21 @@ class NegotiationGraphState(TypedDict, total=False):
     orchestrator_decision: OrchestratorDecision | None
     buyer_outbound_message: str
     supplier_outbound_message: str
+    buyer_draft_degraded: bool
+    supplier_draft_degraded: bool
     buyer_terms: dict[str, Any]
     supplier_terms: dict[str, Any]
     routing: AgentRouting
     hitl_required: bool
     agreed_price: float | None
+    mentioned_qc_providers: list[str] | None
+    """QC providers the buyer named as acceptable in this round's inbound
+    reply, per the intent classifier (resolved registry keys; [] = classifier
+    ran and found none; absent/None = classifier did not run). Multiple keys
+    mean the buyer left the pick to PortLess — the cheapest wins."""
+    pending_agreement_info: list[str]
+    """Checklist items still missing when agreement would otherwise have been
+    declared — the buyer agent must request these instead of closing."""
     reasoning: str
     error: str | None
 
@@ -110,7 +121,9 @@ async def _chat(system_prompt: str, payload: dict[str, Any], caller: str) -> str
     response = await client.chat(
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(payload)},
+            # default=str: payloads may carry Decimal (cost envelope) or
+            # datetime values — never let serialization kill an LLM call.
+            {"role": "user", "content": json.dumps(payload, default=str)},
         ],
         caller=caller,
         temperature=settings.negotiation_llm_temperature,
@@ -150,6 +163,8 @@ async def _chat_json(
             return parsed
         logger.warning("%s: unparseable LLM JSON (attempt %d/2)", caller, attempt + 1)
     result = dict(fallback)
+    result["_degraded"] = True  # template fallback, not an LLM draft — surfaced
+    # on the HITL approval so the operator knows this is a canned message.
     if last_error:
         result["reasoning"] = f"LLM gateway error: {last_error}"
     return result
@@ -187,6 +202,7 @@ async def classify_inbound_intent(
     result = await _chat_json(
         INTENT_CLASSIFIER_SYSTEM_PROMPT, payload, "negotiation_agent.intent_classifier",
         fallback={"intent": _INTENT_UNAVAILABLE, "mentioned_price_usd": None,
+                  "mentioned_qc_providers": None,
                   "reasoning": "intent classifier unavailable"},
     )
     intent = str(result.get("intent", "")).strip().upper()
@@ -198,9 +214,21 @@ async def classify_inbound_intent(
         mentioned = float(raw_price) if raw_price is not None else None
     except (TypeError, ValueError):
         mentioned = None
+    from shared.connectors.qc_providers import resolve_qc_provider
+    raw_qc = result.get("mentioned_qc_providers")
+    if raw_qc is None:  # tolerate the older singular field
+        raw_qc = result.get("mentioned_qc_provider")
+    if isinstance(raw_qc, str) or raw_qc is None:
+        raw_qc = [raw_qc] if raw_qc else []
+    qc_providers: list[str] = []
+    for name in raw_qc:
+        key = resolve_qc_provider(name)
+        if key and key not in qc_providers:
+            qc_providers.append(key)
     return {
         "intent": intent,
         "mentioned_price_usd": mentioned,
+        "mentioned_qc_providers": qc_providers,
         "reasoning": str(result.get("reasoning", "")),
     }
 
@@ -209,13 +237,16 @@ async def _detect_explicit_acceptance(
     state: NegotiationGraphState,
     party: str,
     reference_price: float,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, list[str] | None]:
     """Decide whether the inbound reply is an outright acceptance.
 
     Layered: LLM intent classification (primary, language understanding) →
     keyword guard (fallback only when the gateway is down) → deterministic
     price-consistency check (always). Every path is conservative: a false
     negative just continues the round.
+
+    Third element of the return is the list of QC providers the reply named
+    as acceptable ([] = classifier ran and found none, None = unavailable).
     """
     inbound = state.get("inbound_message") or ""
     history_key = "buyer_history" if party == "buyer" else "supplier_history"
@@ -223,16 +254,18 @@ async def _detect_explicit_acceptance(
         party, inbound, reference_price, state.get(history_key, "")
     )
     intent = result["intent"]
+    qc_mention: list[str] | None = result.get("mentioned_qc_providers") or []
     if intent == _INTENT_UNAVAILABLE:
         accepted = is_explicit_acceptance(inbound)
         detail = "keyword-guard fallback (intent classifier unavailable)"
+        qc_mention = None
     else:
         accepted = intent == "ACCEPT"
         detail = f"LLM intent={intent}" + (
             f" ({result['reasoning']})" if result["reasoning"] else ""
         )
     if not accepted:
-        return False, detail
+        return False, detail, qc_mention
 
     # Deterministic cross-checks — an "acceptance" naming any other price is a counter.
     mentioned = result["mentioned_price_usd"]
@@ -241,13 +274,13 @@ async def _detect_explicit_acceptance(
         return False, (
             f"{detail} — vetoed: message price {mentioned} differs from "
             f"reference {reference_price}"
-        )
+        ), qc_mention
     if not acceptance_price_consistent(inbound, reference_price):
         return False, (
             f"{detail} — vetoed: USD price in message differs from "
             f"reference {reference_price}"
-        )
-    return True, detail
+        ), qc_mention
+    return True, detail, qc_mention
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +310,7 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
     party = state.get("party")
     explicit_accept = False
     accept_detail = ""
+    qc_mention: list[str] | None = None
     if (
         not converged
         and margin_ok
@@ -284,11 +318,42 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
         and state.get("inbound_message")
     ):
         reference_price = bid if party == "buyer" else ask
-        explicit_accept, accept_detail = await _detect_explicit_acceptance(
+        explicit_accept, accept_detail, classified_qc = await _detect_explicit_acceptance(
             state, party, reference_price
         )
+        # Only the buyer chooses the QC inspector; supplier mentions are noise.
+        if party == "buyer":
+            qc_mention = classified_qc
 
     if converged or explicit_accept:
+        # Completeness checklist — an agreement is only declared when every
+        # piece of information the downstream flow needs has been received.
+        # Otherwise the buyer agent drafts a request for the missing items
+        # (terms provisionally acceptable, final confirmation withheld).
+        # Operator override bypasses the checklist — a human took the call.
+        if settings.agreement_checklist_enabled and not state.get("operator_override_price"):
+            # A QC choice arriving in THIS reply satisfies the checklist even
+            # though run_round persists it to the session only after the pass.
+            effective = session.model_copy(deep=True)
+            incoming_qc = state.get("mentioned_qc_providers") or qc_mention
+            if not effective.qc_provider and incoming_qc:
+                effective.qc_provider = incoming_qc[0]
+            missing = missing_agreement_info(effective)
+            if missing:
+                return {
+                    **state,
+                    "routing": "CALL_BUYER_AGENT",
+                    "current_margin": margin_pct,
+                    "hitl_required": True,
+                    "mentioned_qc_providers": qc_mention,
+                    "pending_agreement_info": missing,
+                    "reasoning": (
+                        "Agreement withheld — commercial terms are acceptable "
+                        f"(margin {margin_pct:.2f}%) but required information is "
+                        f"missing: {'; '.join(missing)}. Drafting an email to "
+                        "request it before final confirmation."
+                    ),
+                }
         if converged:
             agreed = compute_midpoint_price(bid, ask)
             reasoning = (
@@ -308,6 +373,7 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
             "agreed_price": agreed,
             "current_margin": margin_pct,
             "hitl_required": True,
+            "mentioned_qc_providers": qc_mention,
             "reasoning": reasoning,
         }
 
@@ -317,6 +383,7 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
             "routing": "NEGOTIATION_FAILED",
             "current_margin": margin_pct,
             "hitl_required": True,
+            "mentioned_qc_providers": qc_mention,
             "reasoning": f"Max rounds ({policy.max_rounds}) exhausted without convergence",
         }
 
@@ -347,7 +414,7 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
         "max_rounds": policy.max_rounds,
         "margin_floor_pct": policy.margin_floor_pct,
         "target_margin_pct": policy.target_margin_pct,
-        "cost_envelope": session.cost_envelope.model_dump() if session.cost_envelope else {},
+        "cost_envelope": session.cost_envelope.model_dump(mode="json") if session.cost_envelope else {},
         "logistics_cost_usd": logistics,
         "current_estimated_margin_pct": margin_pct,
         "rag_context": session.rag_context,
@@ -393,6 +460,7 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
         "routing": routing,
         "current_margin": margin_pct,
         "hitl_required": decision.hitl_required or force_hitl,
+        "mentioned_qc_providers": qc_mention,
         "reasoning": hitl_reason + (decision.reasoning or ""),
     }
 
@@ -400,6 +468,23 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
 # ---------------------------------------------------------------------------
 # Node: Buyer-Facing Agent
 # ---------------------------------------------------------------------------
+
+def _qc_provider_options_summary() -> str:
+    """Buyer-facing one-liner per supported QC inspector, for the email draft."""
+    from shared.connectors.qc_providers import QC_PROVIDER_CATALOG
+    parts = []
+    for meta in QC_PROVIDER_CATALOG.values():
+        media = "photo + live-video" if meta["evidence"].get("video") else "photo"
+        parts.append(f"{meta['display_name']} ({meta['acceptance']}; {media}-documented reports)")
+    return " | ".join(parts)
+
+
+def _qc_provider_display(provider: str | None) -> str:
+    from shared.connectors.qc_providers import QC_PROVIDER_CATALOG
+    if provider and provider in QC_PROVIDER_CATALOG:
+        return QC_PROVIDER_CATALOG[provider]["display_name"]
+    return "NOT_YET_SELECTED"
+
 
 async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphState:
     session: NegotiationSession = state["session"]
@@ -419,6 +504,7 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
 
     payload = {
         "buyer_id": session.buyer_id,
+        "product_hs_code": session.product_code,
         "current_bid": bid,
         "floor_price": floor_price,
         "round_no": session.round_no,
@@ -430,6 +516,9 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
         "inbound_buyer_message": state.get("inbound_message") or "",
         "conversation_history": state.get("buyer_history", ""),
         "market_context": state.get("buyer_market_context", ""),
+        "qc_provider_options": _qc_provider_options_summary(),
+        "buyer_selected_qc_provider": _qc_provider_display(session.qc_provider),
+        "pending_agreement_info": state.get("pending_agreement_info") or [],
     }
 
     result = await _chat_json(
@@ -447,6 +536,7 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
         **state,
         "current_bid": new_bid,
         "buyer_outbound_message": result.get("outbound_message", ""),
+        "buyer_draft_degraded": bool(result.get("_degraded")),
         "buyer_terms": result.get("negotiated_terms", {}),
         "reasoning": result.get("reasoning", ""),
     }
@@ -512,6 +602,7 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
         **state,
         "current_ask": new_ask,
         "supplier_outbound_message": result.get("outbound_message", ""),
+        "supplier_draft_degraded": bool(result.get("_degraded")),
         "supplier_terms": result.get("negotiated_terms", {}),
         "reasoning": result.get("reasoning", ""),
     }

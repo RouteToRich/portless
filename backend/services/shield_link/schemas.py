@@ -60,7 +60,10 @@ class ThirdPartyOrderRecord(BaseModel):
 
 class QcBookingRequest(BaseModel):
     deal_id: str
-    provider: str = "sgs"
+    provider: str | None = None
+    """QC provider key (sgs/qima/bv/intertek/tuv_sud). When unset the service
+    resolves it: buyer-opted provider from the deal's negotiation session,
+    else the configured default."""
     pickup_ready_at: str | None = None
     """ISO date string — when the goods will be ready for inspection."""
     location: str | None = None
@@ -68,6 +71,50 @@ class QcBookingRequest(BaseModel):
     hs_code: str | None = None
     quantity_mt: float | None = None
     idempotency_key: str | None = None
+
+
+class QcQuoteRequest(BaseModel):
+    """Quote the QC inspection cost for a provider — used pre-negotiation to
+    price the QC component into the buyer's CIF offer."""
+
+    provider: str | None = None
+    """QC provider key or alias; default provider when unset."""
+    deal_id: str | None = None
+    location: str | None = None
+    hs_code: str | None = None
+    quantity_mt: float | None = None
+
+
+class QcQuoteResponse(BaseModel):
+    provider: str
+    display_name: str
+    available: bool = True
+    inspection_date: str | None = None
+    fee_usd: float
+    qc_cost_per_unit_usd: float | None = None
+    """fee_usd / quantity_mt when a quantity was supplied."""
+    currency: str = "USD"
+    evidence: dict[str, bool] = Field(default_factory=dict)
+    stub: bool = False
+
+
+class QcProviderInfo(BaseModel):
+    """Buyer-facing catalog entry for one supported QC provider."""
+
+    provider: str
+    display_name: str
+    headquarters: str
+    acceptance: str
+    api_integration: str
+    evidence: dict[str, bool]
+    available_in_india: bool
+    indicative_fee_usd: float
+    notes: str = ""
+
+
+class QcProvidersResponse(BaseModel):
+    default_provider: str
+    providers: list[QcProviderInfo]
 
 
 class FreightBookingRequest(BaseModel):
@@ -80,6 +127,37 @@ class FreightBookingRequest(BaseModel):
     quantity_mt: float | None = None
     hs_code: str | None = None
     idempotency_key: str | None = None
+
+
+class FreightQuoteRequest(BaseModel):
+    """Quote the freight cost for a lane — used pre-negotiation so the CIF
+    price floor covers ocean freight (buyer prices are CIF, supplier Ex-Works).
+    Read-only: no booking is created."""
+
+    provider: str | None = None
+    """Freight provider (cogoport/freightos); default provider when unset."""
+    deal_id: str | None = None
+    origin_port: str | None = None
+    destination_port: str | None = None
+    container_type: str = "40HC"
+    quantity_mt: float | None = None
+    hs_code: str | None = None
+    incoterm: str = "FOB"
+
+
+class FreightQuoteResponse(BaseModel):
+    provider: str
+    origin: str | None = None
+    destination: str | None = None
+    container_type: str = "40HC"
+    rate_usd_per_container: float
+    containers: int = 1
+    total_freight_usd: float
+    logistics_cost_per_unit_usd: float | None = None
+    """total_freight_usd / quantity_mt when a quantity was supplied."""
+    transit_days: int | None = None
+    valid_until: str | None = None
+    stub: bool = False
 
 
 class ChaFilingRequest(BaseModel):

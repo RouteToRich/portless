@@ -1,6 +1,8 @@
 """Shield-Link HTTP router.
 
 Routes:
+  GET  /shield-link/qc/providers    Supported QC provider catalog (buyer-facing)
+  POST /shield-link/qc/quote        Quote QC inspection cost for a provider
   POST /shield-link/qc              Book QC inspection (PO_ISSUED → SUPPLIER_DISPATCH_READY)
   POST /shield-link/qc/webhook      QC provider result webhook
   POST /shield-link/freight         Book freight (QC_PASSED → IN_TRANSIT)
@@ -22,7 +24,12 @@ from .schemas import (
     DealOrdersResponse,
     FreightBookingRequest,
     FreightMilestonePayload,
+    FreightQuoteRequest,
+    FreightQuoteResponse,
     QcBookingRequest,
+    QcProvidersResponse,
+    QcQuoteRequest,
+    QcQuoteResponse,
     QcWebhookPayload,
     ThirdPartyOrderResponse,
 )
@@ -31,6 +38,7 @@ from .service import (
     DealNotFoundError,
     InvalidDealState,
     TpoNotFoundError,
+    UnknownQcProviderError,
     WebhookVerifyError,
     book_freight,
     book_qc,
@@ -39,6 +47,9 @@ from .service import (
     handle_freight_milestone,
     handle_qc_result,
     list_deal_orders,
+    list_qc_providers,
+    quote_freight,
+    quote_qc,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +61,24 @@ router = APIRouter(prefix="/shield-link", tags=["shield-link"])
 # QC
 # ---------------------------------------------------------------------------
 
+@router.get("/qc/providers", response_model=QcProvidersResponse)
+async def api_qc_providers() -> QcProvidersResponse:
+    """Supported QC inspection providers — buyer-facing catalog with
+    acceptance, evidence (photos/video), India availability, indicative fee."""
+    return list_qc_providers()
+
+
+@router.post("/qc/quote", response_model=QcQuoteResponse)
+async def api_quote_qc(req: QcQuoteRequest) -> QcQuoteResponse:
+    """Quote the QC inspection cost for a provider (no order is created)."""
+    try:
+        return await quote_qc(req)
+    except UnknownQcProviderError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    except ConnectorCallError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+
 @router.post("/qc", response_model=ThirdPartyOrderResponse, status_code=status.HTTP_201_CREATED)
 async def api_book_qc(req: QcBookingRequest) -> ThirdPartyOrderResponse:
     """Book a QC inspection for a deal in PO_ISSUED state."""
@@ -57,6 +86,8 @@ async def api_book_qc(req: QcBookingRequest) -> ThirdPartyOrderResponse:
         return await book_qc(req)
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except UnknownQcProviderError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     except InvalidDealState as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     except ConnectorCallError as exc:
@@ -65,9 +96,10 @@ async def api_book_qc(req: QcBookingRequest) -> ThirdPartyOrderResponse:
 
 @router.post("/qc/webhook")
 async def api_qc_webhook(request: Request) -> dict[str, Any]:
-    """Receive QC result from provider webhook (SGS/Intertek).
+    """Receive QC result from provider webhook.
 
-    Validates HMAC signature on x-sgs-signature header.
+    Validates the HMAC signature of the TPO's booked provider (x-sgs-signature,
+    x-qima-signature, x-bv-signature, x-intertek-signature, x-tuvsud-signature).
     PASS → QC_PASSED; FAIL → QC_FAILED.
     """
     raw_body = await request.body()
@@ -94,6 +126,16 @@ async def api_qc_webhook(request: Request) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Freight
 # ---------------------------------------------------------------------------
+
+@router.post("/freight/quote", response_model=FreightQuoteResponse)
+async def api_quote_freight(req: FreightQuoteRequest) -> FreightQuoteResponse:
+    """Quote the freight cost for a lane (no booking created). Used at
+    negotiation start to price ocean freight into the CIF floor."""
+    try:
+        return await quote_freight(req)
+    except ConnectorCallError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
 
 @router.post("/freight", response_model=ThirdPartyOrderResponse, status_code=status.HTTP_201_CREATED)
 async def api_book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:

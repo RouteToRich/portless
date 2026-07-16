@@ -312,6 +312,11 @@ async def _run_negotiation(deal, winner, buyer_price: float, supplier_price: flo
             buyer_target_price=buyer_price, supplier_quote_price=supplier_price,
             buyer_email=_MOCK_BUYER_EMAIL, seller_email=_MOCK_SELLER_EMAIL,
             policy=policy,
+            # Quantity is known to the auto-flow; the QC inspector is
+            # deliberately NOT pre-selected — the first buyer email must list
+            # all supported agencies and ask the buyer to opt (their reply
+            # satisfies the agreement checklist; until then the agent asks).
+            quantity_mt=_QUANTITY_MT,
         ))
     except Exception:
         logger.exception("AutoFlow: deal %s negotiation could not start", deal.deal_id)

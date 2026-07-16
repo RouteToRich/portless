@@ -423,6 +423,88 @@ The LLM's primary value in orchestration is **reasoning** — it explains *why* 
 
 If the LLM call fails (timeout, all models exhausted), the orchestrator falls back to `CALL_BUYER_AGENT` with a logged error. The negotiation never halts due to an LLM outage.
 
+### QC provider costing — the buyer's inspector is priced in (2026-07-16)
+
+The QC inspection is a real cost component of every deal, so it is priced in
+**before** the first offer and re-priced when the buyer chooses an inspector:
+
+1. **At `start_negotiation`** — if the caller didn't supply a non-zero
+   `cost_envelope.qc_cost`, the service quotes Shield-Link
+   (`POST /shield-link/qc/quote`, in-process in the monolith) for the opted
+   provider (or the default, SGS) and writes the per-unit cost into the
+   envelope. The margin formula above therefore includes the QC cost from
+   round 0. On any quote failure it falls back to the static
+   `QC_PROVIDER_CATALOG` fee — pricing never blocks on the quote.
+2. **In the buyer email** — the buyer agent receives `qc_provider_options`
+   (the top-5 supported inspectors: SGS, QIMA, Bureau Veritas, Intertek,
+   TÜV SÜD — all available in India, photo/video-documented reports) and
+   `buyer_selected_qc_provider`. The first outreach lists the options and asks
+   the buyer to opt; later rounds remind once or confirm the choice. The
+   inspection cost is included in the CIF price — never quoted separately.
+3. **Capturing the buyer's choice** — two layers per inbound buyer reply:
+   a deterministic single-name scan (`detect_qc_provider_mention`) runs
+   *before* the graph pass so this round's floor already reflects the choice;
+   the LLM intent classifier additionally returns `mentioned_qc_providers`
+   (an array — positive preferences only, "not SGS" is excluded) applied after
+   the pass. **One named agency → that agency. Several named acceptable
+   agencies → the cheapest among them** (`cheapest_qc_provider`). The resolved
+   key is stored on `NegotiationSession.qc_provider` and
+   `cost_envelope.qc_cost` is re-quoted for that provider.
+4. **Downstream** — at `POST /shield-link/qc` time, a request without an
+   explicit provider books the buyer-opted one from the negotiation session.
+   If the buyer never opted, the fallback is the **cheapest catalog provider**
+   (`SHIELD_LINK_QC_FALLBACK_STRATEGY=cheapest`, the default; `default` books
+   `default_qc_provider` instead). Pricing seeds with the same cheapest
+   provider when unopted, so the floor and the eventual booking always price
+   the same inspector.
+
+### Agreement completeness checklist (2026-07-17)
+
+Price convergence alone does not close a deal. When the orchestrator would
+declare `NEGOTIATION_AGREED` (convergence or explicit acceptance at healthy
+margin), a **deterministic checklist** (`guards.missing_agreement_info`) first
+verifies every piece of information the downstream flow needs has actually
+been received:
+
+- the buyer's **QC inspection agency choice** (a choice arriving in the same
+  accepting reply counts), and
+- the **confirmed order quantity (MT)**.
+
+If anything is missing, agreement is **withheld**: the buyer agent drafts an
+email (guideline 1c) stating the commercial terms are provisionally acceptable
+and explicitly requesting each missing item, with final confirmation to follow
+— it never declares the deal closed. The draft is L0 HITL-gated like every
+outbound message. An operator price override
+(`RoundRequest.operator_override_price`) bypasses the checklist (a human took
+the call), and `NEGOTIATION_AGREEMENT_CHECKLIST_ENABLED=false` disables it
+entirely. Dev auto-flow pre-seeds `quantity_mt` + `qc_provider` so the
+automated pipeline still reaches the agreement HITL gate.
+
+### Freight (logistics) costing — CIF vs Ex-Works gap is priced in (2026-07-16)
+
+Buyer prices are **CIF destination**, supplier quotes **Ex-Works/FOB** — so
+ocean freight is PortLess's cost and belongs inside the margin formula's
+`logistics` term. Historically `logistics_cost` was hard-coded `0.0`
+(margins overstated by the entire freight cost). Now:
+
+1. **At `start_negotiation`** — `_seed_logistics_cost()` quotes Shield-Link
+   (`POST /shield-link/freight/quote`, read-only, no booking) for the lane,
+   converts the per-container rate to per-unit (25 MT/40HC assumption,
+   `ceil` for multi-container lots) and stores it on
+   `NegotiationSession.logistics_cost_usd`. Both `start_negotiation` and
+   `run_round` feed it into the graph's `logistics_cost` state, so every
+   floor, convergence, and acceptance check includes freight from round 0.
+2. **Caller override** — `StartNegotiationRequest.logistics_cost_usd` wins
+   when supplied (e.g. Match Engine already computed the lane cost);
+   `origin_port` / `destination_port` are optional lane hints for the quote.
+3. **Escape hatch** — `NEGOTIATION_FREIGHT_COST_ENABLED=false` restores the
+   legacy `logistics_cost=0` behavior (dev/demo whose seeded price gaps can't
+   absorb a realistic freight cost). Quote failures also fall back to 0 with
+   a loud log — pricing never blocks on the quote.
+4. **Quotes vs commitments** — only the *quote* happens early; the freight
+   *booking* stays gated on `QC_PASSED` + the `BOOK_FREIGHT` HITL approval
+   (parallel quotes, sequential commitments).
+
 ---
 
 ## 5. Data Persistence — What Is Stored and When

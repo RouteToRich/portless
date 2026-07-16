@@ -29,6 +29,14 @@ class ShieldLinkSettings(BaseSettings):
     default_qc_provider: str = "sgs"
     default_freight_provider: str = "cogoport"
 
+    qc_fallback_strategy: str = Field(
+        default="cheapest", validation_alias="SHIELD_LINK_QC_FALLBACK_STRATEGY"
+    )
+    """Which QC provider to book when neither the request nor the buyer opted
+    one: "cheapest" (lowest indicative fee in the catalog — a buyer who never
+    chose gets the most economical inspector) or "default"
+    (default_qc_provider)."""
+
     # ── Webhook secrets (read from env directly by connectors) ────────────
     # SGS_WEBHOOK_SECRET, COGOPORT_WEBHOOK_SECRET, FREIGHTOS_WEBHOOK_SECRET
 
