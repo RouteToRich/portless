@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -120,13 +121,29 @@ async def _fetch_deal(deal_id: str) -> Any:
 
 def _storage_dir() -> Path:
     p = Path(settings.docugen_storage_dir)
-    p.mkdir(parents=True, exist_ok=True)
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # e.g. PermissionError creating a drive-root path on Windows — never
+        # let local-fallback storage kill document issuance.
+        fallback = Path(tempfile.gettempdir()) / "portless-docs" / "docugen"
+        logger.warning(
+            "DocuGen: cannot create storage dir %s (%s) — falling back to %s",
+            p, exc, fallback,
+        )
+        fallback.mkdir(parents=True, exist_ok=True)
+        p = fallback
     return p
 
 
 async def _write_document(deal_id: str, filename: str, content: str) -> str:
-    """Store rendered HTML under Google Drive (Portless/<deal_id>/<filename>)
-    when configured, else write to local disk. Returns the storage URI."""
+    """Store rendered HTML in Google Drive (Portless/<deal_id>/<filename>).
+
+    Drive is the primary document store; local disk is an emergency fallback
+    only (Drive unconfigured, or an upload failed) so issuance never blocks.
+    Every local write is logged loudly — a document landing on disk in
+    production means the Drive setup needs attention. Returns the storage URI.
+    """
     drive = get_drive_connector()
     if drive.is_configured():
         try:
@@ -137,6 +154,14 @@ async def _write_document(deal_id: str, filename: str, content: str) -> str:
                 "DocuGen: Drive upload failed for %s (deal %s), falling back to local disk: %s",
                 filename, deal_id, exc,
             )
+    else:
+        logger.warning(
+            "DocuGen: Google Drive not configured (GOOGLE_DRIVE_CLIENT_ID/"
+            "CLIENT_SECRET/REFRESH_TOKEN) — %s (deal %s) written to local disk. "
+            "Drive is the intended primary document store; run "
+            "scripts/google_drive_authorize.py to enable it.",
+            filename, deal_id,
+        )
 
     dest = _storage_dir() / filename
     dest.write_text(content, encoding="utf-8")
@@ -473,6 +498,52 @@ async def list_deal_documents(deal_id: str) -> DealDocumentsListResponse:
         deal_id=deal_id,
         documents=[DocumentResponse.from_record(d) for d in docs],
     )
+
+
+async def load_stored_document(storage_uri: str | None) -> tuple[bytes, str]:
+    """Resolve a stored document URI to (raw bytes, MIME type).
+
+    Handles both storage backends: Google Drive links (streamed through the
+    backend's own OAuth credentials — the files are private to the connected
+    account, so their webViewLinks aren't openable by operators logged into
+    other Google accounts) and the local-disk file:// fallback.
+    Raises FileNotFoundError when the URI is absent/unresolvable and
+    GoogleDriveError when the Drive fetch itself fails."""
+    from shared.connectors.google_drive import extract_drive_file_id
+
+    if not storage_uri:
+        raise FileNotFoundError("Document has no stored file (not rendered yet)")
+    file_id = extract_drive_file_id(storage_uri)
+    if file_id:
+        drive = get_drive_connector()
+        if not drive.is_configured():
+            raise FileNotFoundError(
+                "Document is stored in Google Drive but Drive credentials are not configured"
+            )
+        return await asyncio.to_thread(drive.download_file, file_id)
+    if storage_uri.startswith("file://"):
+        from urllib.parse import urlparse
+        from urllib.request import url2pathname
+
+        path = Path(url2pathname(urlparse(storage_uri).path))
+        if not path.is_file():
+            raise FileNotFoundError(f"Stored document file missing on disk: {path}")
+        return path.read_bytes(), "text/html"
+    raise FileNotFoundError(f"Unrecognized document storage URI: {storage_uri[:80]}")
+
+
+async def get_document_file(doc_id: str) -> tuple[bytes, str, str]:
+    """Return (content, mime_type, filename) for a rendered document.
+
+    Backs the UI's View/Download buttons — streams the file regardless of
+    where it lives (Drive or local disk)."""
+    repo = get_repository()
+    doc = await repo.get(doc_id)
+    if doc is None:
+        raise DocumentNotFoundError(doc_id)
+    content, mime = await load_stored_document(doc.storage_uri)
+    filename = f"{doc.deal_id}-{doc.doc_type.value}.html"
+    return content, mime, filename
 
 
 async def file_customs(req: CustomsFilingRequest) -> CustomsFilingResponse:

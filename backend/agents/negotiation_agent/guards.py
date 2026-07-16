@@ -76,14 +76,21 @@ def is_near_margin_floor(
 # outright accepts the last quoted price (rather than countering) can never
 # close the negotiation: check_convergence() stays false forever, and the
 # orchestrator LLM's own terminal verdicts are discarded by graph.py's safety
-# clamp. This guard is deliberately conservative (word-boundary keyword match,
-# no LLM) since it gates a terminal, hard-to-reverse status transition — a
-# false negative just falls back to the existing round-continuation behavior,
-# but a false positive would prematurely close a live negotiation.
+# clamp.
+#
+# The PRIMARY acceptance signal is the LLM intent classifier
+# (graph.classify_inbound_intent); this keyword matcher is the fallback used
+# only when the LLM gateway is unavailable. It is deliberately conservative —
+# a false negative just falls back to round continuation, but a false positive
+# routes a "confirm agreement?" request to a human (the 2026-07-15 incident,
+# where the bare keyword "confirm" in "kindly let me know and confirm" closed
+# a live negotiation, is why "confirm" now only counts as a first-person
+# statement and why conditional/request phrasing vetoes a match).
 
 _ACCEPT_PATTERN = re.compile(
-    r"\b(agreed|agree|accept(?:ed|s)?|confirm(?:ed|s)?|sounds good|"
-    r"ok(?:ay)?\s+(?:with|to)\s+(?:this|that|the)|go(?:ing)?\s+ahead|proceed)\b",
+    r"\b(agreed|agree|accept(?:ed|s)?|confirmed|(?:we|i)\s+(?:hereby\s+)?confirm|"
+    r"sounds good|ok(?:ay)?\s+(?:with|to)\s+(?:this|that|the)|"
+    r"go(?:ing)?\s+ahead|proceed)\b",
     re.IGNORECASE,
 )
 
@@ -93,24 +100,89 @@ _NEGATION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Conditional or request-to-confirm phrasing: the sender is proposing terms or
+# asking US to commit, not committing themselves ("...if the unit price would
+# be 1900$. Kindly let me know and confirm"). Any hit vetoes acceptance.
+_NON_COMMITTAL_PATTERN = re.compile(
+    r"\b(if|unless|provided(?:\s+that)?|subject to|in case|"
+    r"please confirm|kindly confirm|let (?:me|us) know|"
+    r"would (?:you|be)|could you|can you)\b",
+    re.IGNORECASE,
+)
+
 _QUOTE_BOUNDARY_PATTERN = re.compile(r"(\bOn\b.{0,120}?\bwrote:)|(>\s)", re.IGNORECASE)
 
 
-def is_explicit_acceptance(inbound_message: str | None) -> bool:
-    """True when the counterpart's *new* reply text — excluding any quoted
-    reply-chain history — reads as an outright acceptance of the last quoted
-    price/terms, with no negation present.
+def _new_reply_text(inbound_message: str) -> str:
+    """Return the *new* text of a reply, excluding quoted reply-chain history.
 
     Whitespace is collapsed before matching so a quoted-reply attribution line
     line-wrapped by the mail client (e.g. "On <date>, <name>\\n<email> wrote:")
     is still detected as a boundary; only the text before that boundary (or
     the first '>' blockquote line) is considered "new".
     """
-    if not inbound_message:
-        return False
     collapsed = re.sub(r"\s+", " ", inbound_message).strip()
     boundary = _QUOTE_BOUNDARY_PATTERN.search(collapsed)
-    new_text = (collapsed[: boundary.start()] if boundary else collapsed).strip()
+    return (collapsed[: boundary.start()] if boundary else collapsed).strip()
+
+
+def is_explicit_acceptance(inbound_message: str | None) -> bool:
+    """True when the counterpart's *new* reply text — excluding any quoted
+    reply-chain history — reads as an outright, unconditional acceptance of
+    the last quoted price/terms, with no negation and no conditional /
+    request-to-confirm phrasing present.
+    """
+    if not inbound_message:
+        return False
+    new_text = _new_reply_text(inbound_message)
     if not new_text or _NEGATION_PATTERN.search(new_text):
         return False
+    if _NON_COMMITTAL_PATTERN.search(new_text):
+        return False
     return bool(_ACCEPT_PATTERN.search(new_text))
+
+
+# ---------------------------------------------------------------------------
+# Acceptance price consistency
+# ---------------------------------------------------------------------------
+# Second, independent check on any detected acceptance (LLM or regex): a true
+# acceptance quotes either no price at all or the price already on the table.
+# A different USD figure in the new text means the sender is countering, no
+# matter how agreeable the wording reads.
+
+_USD_PRICE_PATTERN = re.compile(
+    r"(?:\$|\busd\b|\bus\$)\s*([\d,]+(?:\.\d+)?)"
+    r"|([\d,]+(?:\.\d+)?)\s*(?:\$|\busd\b|\bdollars\b)",
+    re.IGNORECASE,
+)
+
+
+def extract_usd_prices(text: str | None) -> list[float]:
+    """Extract USD-denominated amounts (e.g. "$1,900", "1900$", "USD 1900")."""
+    if not text:
+        return []
+    prices: list[float] = []
+    for match in _USD_PRICE_PATTERN.finditer(text):
+        raw = match.group(1) or match.group(2)
+        try:
+            prices.append(float(raw.replace(",", "")))
+        except (TypeError, ValueError):
+            continue
+    return prices
+
+
+def acceptance_price_consistent(
+    inbound_message: str | None,
+    reference_price: float,
+    rel_tolerance: float = 0.01,
+) -> bool:
+    """True when the reply's new text quotes no USD price, or every quoted
+    price matches *reference_price* (the price that would be locked in by
+    accepting) within *rel_tolerance*."""
+    if not inbound_message:
+        return True
+    prices = extract_usd_prices(_new_reply_text(inbound_message))
+    if not prices:
+        return True
+    tolerance = max(abs(reference_price) * rel_tolerance, 0.01)
+    return all(abs(p - reference_price) <= tolerance for p in prices)

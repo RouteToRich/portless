@@ -60,6 +60,14 @@ def _mock_deal(
     return d
 
 
+class _UnconfiguredDrive:
+    """Force the local-disk path: without this, a developer .env with real
+    GOOGLE_DRIVE_* credentials makes tests upload to their actual Drive."""
+
+    def is_configured(self) -> bool:
+        return False
+
+
 @pytest.fixture(autouse=True)
 def _repo(tmp_path, monkeypatch) -> InMemoryDealMakerRepository:
     """Inject a fresh in-memory repo and redirect document storage to tmp_path."""
@@ -70,6 +78,9 @@ def _repo(tmp_path, monkeypatch) -> InMemoryDealMakerRepository:
     monkeypatch.setattr(
         "services.dealmaker.service.settings.dealmaker_storage_dir",
         str(tmp_path),
+    )
+    monkeypatch.setattr(
+        "services.dealmaker.service.get_drive_connector", lambda: _UnconfiguredDrive()
     )
     return repo
 
@@ -195,6 +206,22 @@ class TestIssuePi:
         html_path = resp.storage_uri.replace("file:///", "/").replace("file://", "")
         from pathlib import Path
         assert Path(html_path).exists() or Path(resp.storage_uri.lstrip("file://")).exists()
+
+    def test_pi_file_streams_stored_content(self, deal_negotiation_agreed):
+        # View/Download endpoint: resolves the stored URI to raw bytes + MIME.
+        with (
+            patch("services.dealmaker.service._fetch_deal", AsyncMock(return_value=deal_negotiation_agreed)),
+            patch("services.dealmaker.service._transition_deal", AsyncMock()),
+            patch("services.dealmaker.service._emit", AsyncMock()),
+        ):
+            resp = run(issue_pi(_pi_request()))
+
+        from services.dealmaker.service import get_pi_file
+
+        content, mime, filename = run(get_pi_file(resp.pi_id))
+        assert b"<" in content  # rendered HTML markup
+        assert mime == "text/html"
+        assert filename == f"DEAL-TEST-{resp.pi_id}.html"
 
 
 # ---------------------------------------------------------------------------

@@ -40,9 +40,11 @@ from agents.negotiation_agent.graph import (
     supplier_agent_node,
 )
 from agents.negotiation_agent.guards import (
+    acceptance_price_consistent,
     check_convergence,
     compute_midpoint_price,
     compute_net_margin,
+    extract_usd_prices,
     is_explicit_acceptance,
     is_near_margin_floor,
     verify_payout_and_margin,
@@ -52,10 +54,13 @@ from agents.negotiation_agent.schemas import NegotiationPolicy, NegotiationSessi
 from agents.negotiation_agent.service import (
     _build_conversation_history,
     _compute_realized_cms,
+    _graph_state_to_status,
     _post_graph_notify,
     _sync_deal_status,
+    finalize_agreement,
     list_email_history,
     record_inbound_email,
+    reject_agreement,
     reject_email,
     send_approved_email,
 )
@@ -124,6 +129,43 @@ def _state(session: NegotiationSession, **overrides) -> dict:
     }
     s.update(overrides)
     return s
+
+
+# The verbatim buyer email from the 2026-07-15 incident: a conditional
+# counter-offer ("if ... 1900$") ending in a request for OUR confirmation —
+# the bare keyword "confirm" wrongly closed the negotiation as AGREED.
+_BUYER_CONDITIONAL_COUNTER = (
+    "Thanks,\n"
+    "I would be interested, if the person unit price would be 1900$.\n"
+    "Kindly let me know and confirm"
+)
+
+
+def _intent_chat(
+    intent: str,
+    mentioned_price: float | None = None,
+    routing: str = "CALL_SUPPLIER_AGENT",
+    margin: float = 12.0,
+):
+    """LLM stub answering both the intent classifier and the orchestrator router."""
+    async def _chat(system_prompt: str, payload: dict, caller: str) -> str:
+        if "intent_classifier" in caller:
+            return json.dumps({
+                "intent": intent,
+                "mentioned_price_usd": mentioned_price,
+                "reasoning": "test classification",
+            })
+        return json.dumps({
+            "trade_match_id": "TM-1",
+            "current_estimated_margin_pct": margin,
+            "action_routing": routing,
+            "margin_at_current": margin,
+            "hitl_required": False,
+            "reasoning": "routing decision",
+            "buyer_round": 0,
+            "supplier_round": 0,
+        })
+    return _chat
 
 
 def _orch_chat(routing: str = "CALL_BUYER_AGENT", margin: float = 8.0) -> AsyncMock:
@@ -252,6 +294,35 @@ def test_is_explicit_acceptance():
     assert is_explicit_acceptance("") is False
 
 
+def test_is_explicit_acceptance_conditional_counter_regression():
+    # 2026-07-15 incident: bare "confirm" in a request-for-confirmation
+    # matched the accept pattern and closed a live negotiation.
+    assert is_explicit_acceptance(_BUYER_CONDITIONAL_COUNTER) is False
+    assert is_explicit_acceptance("Please confirm the unit price.") is False
+    assert is_explicit_acceptance("Kindly confirm availability and proceed date.") is False
+    assert is_explicit_acceptance("Would you agree to $1900?") is False
+    # First-person confirmation statements still count as acceptance.
+    assert is_explicit_acceptance("Confirmed, go ahead.") is True
+    assert is_explicit_acceptance("We confirm the order at the quoted price.") is True
+
+
+def test_extract_usd_prices():
+    assert extract_usd_prices("if the person unit price would be 1900$") == [1900.0]
+    assert extract_usd_prices("$1,900.50 and later USD 1800") == [1900.5, 1800.0]
+    assert extract_usd_prices("we can ship 500 units in 30 days") == []
+    assert extract_usd_prices(None) == []
+
+
+def test_acceptance_price_consistent():
+    assert acceptance_price_consistent("We accept, please proceed.", 500.0) is True
+    assert acceptance_price_consistent("We accept your offer of $500.", 500.0) is True
+    assert acceptance_price_consistent("We accept, but at $490.", 500.0) is False
+    # Prices inside the quoted reply-chain history are ignored.
+    quoted = "Agreed\n\nOn Wed, 15 Jul 2026, PortLess Trade Agent wrote:\n> our offer is $450\n"
+    assert acceptance_price_consistent(quoted, 500.0) is True
+    assert acceptance_price_consistent(None, 500.0) is True
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator routing
 # ---------------------------------------------------------------------------
@@ -268,7 +339,8 @@ def test_orchestrator_explicit_acceptance_agrees():
     # bid=500 ask=440 is a healthy 12% margin but the gap (60) is nowhere near
     # the concession step (0.10) — check_convergence() alone would never fire
     # here, since the supplier's price is fixed and the "gap" is just margin.
-    # An outright "Agreed" from the buyer should still close the deal.
+    # An outright "Agreed" from the buyer (LLM intent = ACCEPT) should still
+    # close the pass as NEGOTIATION_AGREED (pending operator confirmation).
     session = _session(round_no=2, current_bid=500.0, current_ask=440.0)
     state = _state(
         session,
@@ -277,9 +349,100 @@ def test_orchestrator_explicit_acceptance_agrees():
         current_bid=500.0,
         current_ask=440.0,
     )
-    result = run(orchestrator_node(state))
+    with patch("agents.negotiation_agent.graph._chat", _intent_chat("ACCEPT")):
+        result = run(orchestrator_node(state))
     assert result["routing"] == "NEGOTIATION_AGREED"
     assert result["agreed_price"] == 500.0  # the buyer's accepted price, not a bid/ask midpoint
+    assert result["hitl_required"] is True  # agreement still needs operator confirmation
+
+
+def test_orchestrator_conditional_counter_is_not_agreed():
+    # 2026-07-15 regression: the buyer's conditional counter ("...if the unit
+    # price would be 1900$. Kindly let me know and confirm") must NOT close the
+    # negotiation — the LLM classifier reads it as a counter-offer.
+    session = _session(round_no=2, current_bid=1900.0, current_ask=1500.0)
+    state = _state(
+        session,
+        party="buyer",
+        inbound_message=_BUYER_CONDITIONAL_COUNTER,
+        current_bid=1900.0,
+        current_ask=1500.0,
+    )
+    with patch("agents.negotiation_agent.graph._chat", _intent_chat("COUNTER_OFFER", 1900.0)):
+        result = run(orchestrator_node(state))
+    assert result["routing"] != "NEGOTIATION_AGREED"
+    assert result["agreed_price"] is None
+
+
+def test_orchestrator_accept_with_mismatched_llm_price_is_not_agreed():
+    # Defense in depth: even if the LLM says ACCEPT, a mentioned price that
+    # differs from the would-be agreed price vetoes the acceptance.
+    session = _session(round_no=2, current_bid=500.0, current_ask=440.0)
+    state = _state(
+        session,
+        party="buyer",
+        inbound_message="We accept — final price 490 dollars.",
+        current_bid=500.0,
+        current_ask=440.0,
+    )
+    with patch("agents.negotiation_agent.graph._chat", _intent_chat("ACCEPT", 490.0)):
+        result = run(orchestrator_node(state))
+    assert result["routing"] != "NEGOTIATION_AGREED"
+
+
+def test_orchestrator_accept_with_mismatched_regex_price_is_not_agreed():
+    # Same veto via the deterministic USD-price extraction when the LLM
+    # returns ACCEPT but omits the price it saw.
+    session = _session(round_no=2, current_bid=500.0, current_ask=440.0)
+    state = _state(
+        session,
+        party="buyer",
+        inbound_message="We accept at $490.",
+        current_bid=500.0,
+        current_ask=440.0,
+    )
+    with patch("agents.negotiation_agent.graph._chat", _intent_chat("ACCEPT", None)):
+        result = run(orchestrator_node(state))
+    assert result["routing"] != "NEGOTIATION_AGREED"
+
+
+def test_orchestrator_intent_llm_down_keyword_fallback_rejects_conditional():
+    # Gateway completely down → keyword-guard fallback. The tightened guard
+    # must not read the conditional counter as an acceptance.
+    async def _raise(system_prompt, payload, caller):
+        raise RuntimeError("gateway down")
+
+    session = _session(round_no=2, current_bid=1900.0, current_ask=1500.0)
+    state = _state(
+        session,
+        party="buyer",
+        inbound_message=_BUYER_CONDITIONAL_COUNTER,
+        current_bid=1900.0,
+        current_ask=1500.0,
+    )
+    with patch("agents.negotiation_agent.graph._chat", _raise):
+        result = run(orchestrator_node(state))
+    assert result["routing"] != "NEGOTIATION_AGREED"
+
+
+def test_orchestrator_intent_llm_down_keyword_fallback_accepts_outright():
+    # Gateway down but the reply is an unambiguous acceptance → the keyword
+    # fallback still closes the pass (deal closure isn't hostage to the LLM).
+    async def _raise(system_prompt, payload, caller):
+        raise RuntimeError("gateway down")
+
+    session = _session(round_no=2, current_bid=500.0, current_ask=440.0)
+    state = _state(
+        session,
+        party="buyer",
+        inbound_message="Agreed, please proceed.",
+        current_bid=500.0,
+        current_ask=440.0,
+    )
+    with patch("agents.negotiation_agent.graph._chat", _raise):
+        result = run(orchestrator_node(state))
+    assert result["routing"] == "NEGOTIATION_AGREED"
+    assert result["agreed_price"] == 500.0
 
 
 def test_orchestrator_explicit_acceptance_below_floor_falls_through():
@@ -658,14 +821,144 @@ def test_sync_deal_status_noop_for_nonterminal():
     get.assert_not_called()
 
 
-def test_post_graph_notify_syncs_deal_on_agreed():
-    session = _session(status="AGREED", agreed_price=480.0)
+# ---------------------------------------------------------------------------
+# Agreement HITL gate — AGREED only ever happens via operator confirmation
+# ---------------------------------------------------------------------------
+
+def test_graph_state_to_status_gates_agreement():
+    # NEGOTIATION_AGREED from the graph is provisional → HITL_PENDING, never AGREED.
+    assert _graph_state_to_status("NEGOTIATION_AGREED") == "HITL_PENDING"
+    assert _graph_state_to_status("NEGOTIATION_FAILED") == "FAILED"
+    assert _graph_state_to_status("HITL_APPROVAL") == "HITL_PENDING"
+
+
+def test_post_graph_notify_gates_agreement_behind_hitl():
+    # A detected agreement must create a CONFIRM_NEGOTIATION_AGREEMENT approval
+    # and must NOT advance the deal or compute CMS — that happens only in
+    # finalize_agreement() after the operator approves.
+    session = _session(status="HITL_PENDING", agreed_price=480.0,
+                       margin_at_current=12.0, round_no=3)
     final_state = {"buyer_outbound_message": "", "supplier_outbound_message": "",
-                   "routing": "NEGOTIATION_AGREED"}
+                   "routing": "NEGOTIATION_AGREED", "reasoning": "acceptance detected"}
+
+    class _Approval:
+        approval_id = "APR-1"
+
+    create = AsyncMock(return_value=_Approval())
     sync = AsyncMock()
+    cms = AsyncMock()
     with (
+        patch("services.hitl_approval.service.create_approval", create),
         patch("agents.negotiation_agent.service._sync_deal_status", sync),
-        patch("agents.negotiation_agent.service._compute_realized_cms", AsyncMock()),
+        patch("agents.negotiation_agent.service._compute_realized_cms", cms),
     ):
         run(_post_graph_notify(session, final_state, InMemoryNegotiationRepository()))
+
+    create.assert_awaited_once()
+    req = create.call_args.args[0]
+    assert req.action == "CONFIRM_NEGOTIATION_AGREEMENT"
+    assert req.autonomy_level == "L0"
+    assert req.callback_payload == {"negotiation_id": "neg-1", "agreed_price": 480.0}
+    sync.assert_not_awaited()
+    cms.assert_not_awaited()
+
+
+def test_post_graph_notify_still_syncs_deal_on_failed():
+    session = _session(status="FAILED")
+    final_state = {"buyer_outbound_message": "", "supplier_outbound_message": "",
+                   "routing": "NEGOTIATION_FAILED"}
+    sync = AsyncMock()
+    with patch("agents.negotiation_agent.service._sync_deal_status", sync):
+        run(_post_graph_notify(session, final_state, InMemoryNegotiationRepository()))
     sync.assert_awaited_once()
+
+
+def test_finalize_agreement_sets_agreed_and_syncs_deal():
+    repo = InMemoryNegotiationRepository()
+    session = _session(status="HITL_PENDING", agreed_price=480.0, hitl_required=True)
+    run(repo.save_session(session))
+    sync = AsyncMock()
+    cms = AsyncMock()
+    orgs = AsyncMock()
+    with (
+        patch("agents.negotiation_agent.service.get_repository", lambda: repo),
+        patch("agents.negotiation_agent.service._sync_deal_status", sync),
+        patch("agents.negotiation_agent.service._compute_realized_cms", cms),
+        patch("agents.negotiation_agent.service._provision_counterparty_orgs", orgs),
+    ):
+        run(finalize_agreement("neg-1"))
+    saved = run(repo.get_session("neg-1"))
+    assert saved.status == "AGREED"
+    assert saved.agreed_price == 480.0
+    assert saved.hitl_required is False
+    sync.assert_awaited_once()
+    cms.assert_awaited_once()
+    orgs.assert_awaited_once()   # buyer/seller organizations provisioned
+
+
+def test_finalize_agreement_is_idempotent():
+    repo = InMemoryNegotiationRepository()
+    run(repo.save_session(_session(status="AGREED", agreed_price=480.0)))
+    sync = AsyncMock()
+    with (
+        patch("agents.negotiation_agent.service.get_repository", lambda: repo),
+        patch("agents.negotiation_agent.service._sync_deal_status", sync),
+        patch("agents.negotiation_agent.service._provision_counterparty_orgs", AsyncMock()),
+    ):
+        run(finalize_agreement("neg-1"))
+    sync.assert_not_awaited()   # already finalized → no-op
+
+
+def test_provision_counterparty_orgs_links_both_sides():
+    # Agreement reached → find-or-create an org per side (registering the
+    # negotiation contact emails) and link both org ids onto the deal so
+    # buyer/seller users see it in their portal.
+    from agents.negotiation_agent.service import _provision_counterparty_orgs
+
+    session = _session(
+        buyer_email="purchasing@acme.example",
+        seller_email="sales@agrico.example",
+    )
+
+    class _Org:
+        def __init__(self, org_id: str, name: str) -> None:
+            self.org_id = org_id
+            self.name = name
+
+    find = AsyncMock(side_effect=[_Org("ORG-B", "Acme"), _Org("ORG-S", "AgriCo")])
+    setter = AsyncMock()
+    with (
+        patch("services.auth.service.find_or_create_organization_for_deal", find),
+        patch("services.deals.service.set_counterparty_orgs", setter),
+        patch("services.deals.service.get_deal", AsyncMock(side_effect=RuntimeError("deals down"))),
+    ):
+        run(_provision_counterparty_orgs(session))
+
+    assert find.await_count == 2
+    find.assert_any_await("BYR-1", "purchasing@acme.example")   # falls back to ids
+    find.assert_any_await("SUP-1", "sales@agrico.example")      # when deal fetch fails
+    setter.assert_awaited_once_with(
+        "DEAL-1", buyer_org_id="ORG-B", seller_org_id="ORG-S"
+    )
+
+
+def test_provision_counterparty_orgs_never_raises():
+    from agents.negotiation_agent.service import _provision_counterparty_orgs
+
+    with patch(
+        "services.auth.service.find_or_create_organization_for_deal",
+        AsyncMock(side_effect=RuntimeError("auth repo not initialised")),
+    ):
+        run(_provision_counterparty_orgs(_session()))   # must not raise
+
+
+def test_reject_agreement_reopens_negotiation():
+    repo = InMemoryNegotiationRepository()
+    session = _session(status="HITL_PENDING", agreed_price=480.0, hitl_required=True)
+    run(repo.save_session(session))
+    with patch("agents.negotiation_agent.service.get_repository", lambda: repo):
+        run(reject_agreement("neg-1"))
+    saved = run(repo.get_session("neg-1"))
+    assert saved.status == "ROUND"          # negotiation continues
+    assert saved.agreed_price is None       # provisional price cleared
+    assert saved.hitl_required is False

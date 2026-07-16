@@ -39,6 +39,14 @@ def _mock_deal(deal_id: str = "DEAL-DOC") -> object:
     return d
 
 
+class _UnconfiguredDrive:
+    """Force the local-disk path: without this, a developer .env with real
+    GOOGLE_DRIVE_* credentials makes tests upload to their actual Drive."""
+
+    def is_configured(self) -> bool:
+        return False
+
+
 @pytest.fixture(autouse=True)
 def _repo(tmp_path, monkeypatch) -> InMemoryDocuGenRepository:
     repo = InMemoryDocuGenRepository()
@@ -46,6 +54,9 @@ def _repo(tmp_path, monkeypatch) -> InMemoryDocuGenRepository:
     monkeypatch.setattr(
         "services.docugen.service.settings.docugen_storage_dir",
         str(tmp_path),
+    )
+    monkeypatch.setattr(
+        "services.docugen.service.get_drive_connector", lambda: _UnconfiguredDrive()
     )
     return repo
 
@@ -95,6 +106,42 @@ def test_generate_document_renders_and_stores(doc_type):
     assert resp.content_hash is not None
     assert resp.storage_uri is not None
     assert resp.deal_id == "DEAL-DOC"
+
+
+def test_get_document_file_streams_stored_content():
+    # View/Download endpoint: resolves the stored URI (local fallback here;
+    # Drive links go through connector.download_file) to raw bytes + MIME.
+    with (
+        patch("services.docugen.service._fetch_deal", AsyncMock(return_value=_mock_deal())),
+        patch("services.docugen.service._emit", AsyncMock()),
+    ):
+        resp = run(generate_document(_gen_req(DocumentType.COMMERCIAL_INVOICE)))
+
+    from services.docugen.service import get_document_file
+
+    content, mime, filename = run(get_document_file(resp.doc_id))
+    assert b"<" in content  # rendered HTML markup
+    assert mime == "text/html"
+    assert filename == "DEAL-DOC-CI.html"
+
+
+def test_get_document_file_unknown_id_raises():
+    from services.docugen.service import DocumentNotFoundError, get_document_file
+
+    with pytest.raises(DocumentNotFoundError):
+        run(get_document_file("DOC-NOPE"))
+
+
+def test_extract_drive_file_id():
+    from shared.connectors.google_drive import extract_drive_file_id
+
+    assert extract_drive_file_id(
+        "https://drive.google.com/file/d/1AbC_d-9xYz/view?usp=drivesdk"
+    ) == "1AbC_d-9xYz"
+    assert extract_drive_file_id("https://drive.google.com/open?id=1AbC") == "1AbC"
+    assert extract_drive_file_id("gdrive://1AbC") == "1AbC"
+    assert extract_drive_file_id("file:///C:/tmp/doc.html") is None
+    assert extract_drive_file_id(None) is None
 
 
 def test_generate_ci_has_correct_doc_id():

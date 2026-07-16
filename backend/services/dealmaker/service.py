@@ -34,6 +34,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -196,13 +197,29 @@ async def _register_buyer_organization(buyer_name: str, buyer_email: str | None)
 
 def _storage_dir() -> Path:
     p = Path(settings.dealmaker_storage_dir)
-    p.mkdir(parents=True, exist_ok=True)
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # e.g. PermissionError creating a drive-root path on Windows — never
+        # let local-fallback storage kill document issuance.
+        fallback = Path(tempfile.gettempdir()) / "portless-docs" / "dealmaker"
+        logger.warning(
+            "DealMaker: cannot create storage dir %s (%s) — falling back to %s",
+            p, exc, fallback,
+        )
+        fallback.mkdir(parents=True, exist_ok=True)
+        p = fallback
     return p
 
 
 async def _write_document(deal_id: str, filename: str, content: str) -> str:
-    """Store rendered HTML under Google Drive (Portless/<deal_id>/<filename>)
-    when configured, else write to local disk. Returns the storage URI."""
+    """Store rendered HTML in Google Drive (Portless/<deal_id>/<filename>).
+
+    Drive is the primary document store; local disk is an emergency fallback
+    only (Drive unconfigured, or an upload failed) so issuance never blocks.
+    Every local write is logged loudly — a document landing on disk in
+    production means the Drive setup needs attention. Returns the storage URI.
+    """
     drive = get_drive_connector()
     if drive.is_configured():
         try:
@@ -213,6 +230,14 @@ async def _write_document(deal_id: str, filename: str, content: str) -> str:
                 "DealMaker: Drive upload failed for %s (deal %s), falling back to local disk: %s",
                 filename, deal_id, exc,
             )
+    else:
+        logger.warning(
+            "DealMaker: Google Drive not configured (GOOGLE_DRIVE_CLIENT_ID/"
+            "CLIENT_SECRET/REFRESH_TOKEN) — %s (deal %s) written to local disk. "
+            "Drive is the intended primary document store; run "
+            "scripts/google_drive_authorize.py to enable it.",
+            filename, deal_id,
+        )
 
     dest = _storage_dir() / filename
     dest.write_text(content, encoding="utf-8")
@@ -582,7 +607,30 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
         req.currency,
         net_margin_pct if net_margin_pct is not None else 0.0,
     )
+
+    await _patch_deal_est_margin(req.deal_id, po_record)
     return PoResponse.from_record(po_record)
+
+
+async def _patch_deal_est_margin(deal_id: str, po: PoRecord) -> None:
+    """Write est_margin_usd onto the deal once both contract values are known.
+
+    Estimated margin = PI total (buyer revenue) − PO total (supplier cost) —
+    fills the Deal Board's "Est. Margin" metric card, which otherwise stays
+    empty for the whole deal lifecycle. Best-effort: a failure here must never
+    block PO issuance."""
+    try:
+        pi = await get_repository().get_pi_by_deal(deal_id)
+        if pi is None:
+            return
+        est = round(pi.total_value - po.total_value, 2)
+        from services.deals.schemas import UpdateFinancialsRequest  # type: ignore[import]
+        from services.deals.service import update_financials  # type: ignore[import]
+
+        await update_financials(deal_id, UpdateFinancialsRequest(est_margin_usd=est))
+        logger.info("DealMaker: est_margin_usd=%.2f patched onto deal %s", est, deal_id)
+    except Exception as exc:
+        logger.warning("DealMaker: could not patch est margin for deal %s: %s", deal_id, exc)
 
 
 async def get_po(po_id: str) -> PoResponse:
@@ -604,6 +652,34 @@ async def get_deal_documents(deal_id: str) -> DealDocumentsResponse:
         pi=PiResponse.from_record(pi_rec) if pi_rec else None,
         po=PoResponse.from_record(po_rec) if po_rec else None,
     )
+
+
+async def get_pi_file(pi_id: str) -> tuple[bytes, str, str]:
+    """Return (content, mime_type, filename) for a PI's rendered document.
+
+    Streams from wherever the file lives (Google Drive via the backend's own
+    credentials, or the local-disk fallback) — backs the UI's View/Download
+    buttons. Raises FileNotFoundError / GoogleDriveError on retrieval failure."""
+    from services.docugen.service import load_stored_document  # type: ignore[import]
+
+    repo = get_repository()
+    pi = await repo.get_pi(pi_id)
+    if pi is None:
+        raise PiNotFoundError(pi_id)
+    content, mime = await load_stored_document(pi.storage_uri)
+    return content, mime, f"{pi.deal_id}-{pi.pi_id}.html"
+
+
+async def get_po_file(po_id: str) -> tuple[bytes, str, str]:
+    """Return (content, mime_type, filename) for a PO's rendered document."""
+    from services.docugen.service import load_stored_document  # type: ignore[import]
+
+    repo = get_repository()
+    po = await repo.get_po(po_id)
+    if po is None:
+        raise PoNotFoundError(po_id)
+    content, mime = await load_stored_document(po.storage_uri)
+    return content, mime, f"{po.deal_id}-{po.po_id}.html"
 
 
 # ---------------------------------------------------------------------------

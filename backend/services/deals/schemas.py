@@ -83,6 +83,16 @@ class DealRecord(BaseModel):
     # ── Trade-Min linkage ─────────────────────────────────────────────────
     opportunity_id: str | None = None
 
+    # ── Counterparty organizations ────────────────────────────────────────
+    buyer_org_id: str | None = None
+    seller_org_id: str | None = None
+    """Auto-provisioned when the negotiation is agreed (see
+    agents/negotiation_agent/service.py::finalize_agreement →
+    services/auth/service.py::find_or_create_organization_for_deal).
+    A user assigned to either organization sees this deal in their portal —
+    list/get scoping matches the caller's org against org_id (owner),
+    buyer_org_id, and seller_org_id."""
+
     # ── Match Engine results ──────────────────────────────────────────────
     match_results: list[MatchResult] = Field(default_factory=list)
     winning_supplier_id: str | None = None

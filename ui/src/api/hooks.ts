@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { TOKEN_KEY } from "./client";
 import {
   ApprovalsApi,
+  DealmakerApi,
   DealsApi,
   DocugenApi,
   EscrowApi,
@@ -85,6 +86,19 @@ export function useUpdateDealStatus() {
 
 export function useOpportunities() {
   return useQuery({ queryKey: ["opportunities"], queryFn: OpportunitiesApi.list });
+}
+
+/** Fetch the originating opportunity of a deal (record persists as CONVERTED).
+ *  retry disabled: a 404 (e.g. in-memory store cleared by a server restart)
+ *  should immediately fall back to the deal's own snapshot, not spin. */
+export function useOpportunity(opportunityId: string | null | undefined) {
+  return useQuery({
+    queryKey: ["opportunity", opportunityId],
+    queryFn: () => OpportunitiesApi.get(opportunityId as string),
+    enabled: Boolean(opportunityId),
+    retry: false,
+    staleTime: 5 * 60 * 1000, // converted opportunities are immutable
+  });
 }
 
 export function useScanOpportunities() {
@@ -290,6 +304,16 @@ export function useDocuments(dealId: string | undefined) {
   return useQuery({
     queryKey: ["documents", dealId],
     queryFn: () => DocugenApi.getDocuments(dealId as string),
+    enabled: Boolean(dealId),
+  });
+}
+
+// ── DealMaker (PI / PO contracts) ──────────────────────────────────────────────
+
+export function useDealmakerDocuments(dealId: string | undefined) {
+  return useQuery({
+    queryKey: ["dealmaker-documents", dealId],
+    queryFn: () => DealmakerApi.getDealDocuments(dealId as string),
     enabled: Boolean(dealId),
   });
 }

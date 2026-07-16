@@ -1,6 +1,7 @@
 """DealMaker service configuration."""
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from pydantic import AliasChoices, Field
@@ -27,9 +28,15 @@ class DealMakerSettings(BaseSettings):
     dealmaker_po_collection: str = "purchase_orders"
 
     # ── Document storage ───────────────────────────────────────────────────
-    # Local filesystem path where rendered HTML documents are written.
-    # In production, swap for an S3/GCS bucket URI and update _write_document().
-    dealmaker_storage_dir: str = "/tmp/portless-docs/dealmaker"
+    # Local fallback used only when Google Drive isn't configured (or an upload
+    # fails). Defaults under the OS temp dir — a hardcoded "/tmp/..." resolves
+    # to C:\tmp on Windows, whose creation at the drive root needs admin rights
+    # (PermissionError). Override with DEALMAKER_STORAGE_DIR.
+    dealmaker_storage_dir: str = Field(
+        default_factory=lambda: str(
+            Path(tempfile.gettempdir()) / "portless-docs" / "dealmaker"
+        )
+    )
 
     # ── Business rules ─────────────────────────────────────────────────────
     # Default PI validity period when the caller does not specify one.

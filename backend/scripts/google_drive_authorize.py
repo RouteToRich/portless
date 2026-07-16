@@ -23,6 +23,16 @@ creates, not your whole Drive). On success the script prints
 GOOGLE_DRIVE_REFRESH_TOKEN=... — paste that into backend/.env alongside the
 client id/secret and document uploads will start using Drive automatically.
 
+Troubleshooting — "Error 400: redirect_uri_mismatch":
+  Your OAuth client is a **Web application** client, which only accepts
+  registered redirect URIs. Either
+    (a) in console.cloud.google.com → APIs & Services → Credentials → your
+        OAuth client → "Authorized redirect URIs" → add
+        http://localhost:8765/  (the fixed port this script listens on), or
+    (b) create a new client of type "Desktop app" (accepts any localhost
+        port, no registration needed) and update the .env client id/secret.
+  A different port can be forced with GOOGLE_DRIVE_OAUTH_PORT.
+
 Requires: google-auth-oauthlib, google-auth, google-api-python-client
 (all in requirements.txt), python-dotenv.
 """
@@ -68,7 +78,12 @@ def main() -> int:
         }
     }
     flow = InstalledAppFlow.from_client_config(client_config, scopes=_SCOPES)
-    creds = flow.run_local_server(port=0)
+    # Fixed port (not port=0): Web-application OAuth clients only accept
+    # redirect URIs registered in the console, so the URI must be predictable —
+    # http://localhost:8765/. Desktop-app clients accept any localhost port
+    # either way, so the fixed port is safe for both client types.
+    port = int(os.getenv("GOOGLE_DRIVE_OAUTH_PORT", "8765"))
+    creds = flow.run_local_server(port=port)
 
     if not creds.refresh_token:
         print(

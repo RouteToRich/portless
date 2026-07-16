@@ -95,11 +95,11 @@ ImapPoller[buyer]: fetch error (attempt 8, retrying in 480s): command SELECT ill
 ImapPoller[supplier]: fetch error (attempt 8, retrying in 480s): command SELECT illegal in state NONAUTH
 ImapPoller[supplier]: fetch error (attempt 9, retrying in 540s): command SELECT illegal in state NONAUTH
 ImapPoller[buyer]: fetch error (attempt 9, retrying in 540s): command SELECT illegal in state NONAUTH
-)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097014011&keywords=glycerol+alcohol&pageIndex=1&pageSize=20&countryCode=GB&sign=8C8190125288EA2882ABEB3A80E3FE3E570C8F85F3D4527E3635C26A9B342EB9'
+ImapPoller[supplier]: fetch error (attempt 10, retrying in 600s): command SELECT illegal in state NONAUTH
+ImapPoller[buyer]: fetch error (attempt 10, retrying in 600s): command SELECT illegal in state NONAUTH
+ImapPoller[buyer]: fetch error (attempt 11, retrying in 600s): command SELECT illegal in state NONAUTH
+ImapPoller[supplier]: fetch error (attempt 11, retrying in 600s): command SELECT illegal in state NONAUTH
+estamp=1784097014011&keywords=glycerol+alcohol&pageIndex=1&pageSize=20&countryCode=GB&sign=8C8190125288EA2882ABEB3A80E3FE3E570C8F85F3D4527E3635C26A9B342EB9'
 For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
 Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097017425&keywords=glycerol+alcohol&pageIndex=1&pageSize=20&countryCode=AE&sign=F999A51F0B1EC432970E626733FF4CC95ED19EE721FBDFD1C099144D20FF980E'
 For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400

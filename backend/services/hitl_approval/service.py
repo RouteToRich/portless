@@ -61,7 +61,12 @@ _VALID_ACTIONS = {a.value for a in ApprovalAction}
 
 # Actions where a REJECT is a deliberate operator decision, not a deal
 # blocker — no DEAL_EXCEPTION event should be emitted for these.
-_SOFT_REJECT_ACTIONS = {ApprovalAction.SEND_NEGOTIATION_EMAIL.value}
+# CONFIRM_NEGOTIATION_AGREEMENT is soft: rejecting it means "keep negotiating"
+# (the session reopens via its reject callback), not a blocked deal.
+_SOFT_REJECT_ACTIONS = {
+    ApprovalAction.SEND_NEGOTIATION_EMAIL.value,
+    ApprovalAction.CONFIRM_NEGOTIATION_AGREEMENT.value,
+}
 
 
 # ---------------------------------------------------------------------------

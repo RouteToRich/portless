@@ -7,6 +7,37 @@
 
 ---
 
+> ### ⚠️ 2026-07-16 update — agreement detection & closure changed
+>
+> After a live incident (a buyer's conditional counter — *"...if the unit price
+> would be 1900$. Kindly let me know and confirm"* — was regex-matched on the
+> bare keyword "confirm" and auto-closed the negotiation), the acceptance flow
+> was rebuilt. Where the sections below say a `NEGOTIATION_AGREED` routing
+> immediately sets `status=AGREED` and advances the deal, the current behavior
+> is:
+>
+> 1. **Intent classification is LLM-first** — `classify_inbound_intent()`
+>    (graph.py, via the shared LLM Gateway) classifies every inbound reply as
+>    ACCEPT / COUNTER_OFFER / REJECT / QUESTION / OTHER. The keyword guard
+>    `is_explicit_acceptance()` (tightened: conditional / request-to-confirm
+>    phrasing vetoes a match) is only the fallback when the gateway is down.
+> 2. **Deterministic price-consistency veto** — an "acceptance" whose new text
+>    quotes a USD price differing from the would-be agreed price is treated as
+>    a counter (`acceptance_price_consistent()`, plus a cross-check against the
+>    classifier's `mentioned_price_usd`).
+> 3. **AGREED is HITL-gated** — a `NEGOTIATION_AGREED` graph verdict parks the
+>    session at `HITL_PENDING` and creates a `CONFIRM_NEGOTIATION_AGREEMENT`
+>    (L0) approval. Only the operator's APPROVE (→ `finalize_agreement()`)
+>    moves the session to `AGREED`, computes realized CMS, and advances the
+>    deal to `NEGOTIATION_AGREED`. REJECT is a soft reject
+>    (→ `reject_agreement()`): the session reopens at `ROUND` and the
+>    negotiation continues.
+>
+> Division of labor: **the LLM reads language, deterministic code checks the
+> money, a human confirms the irreversible close.**
+
+---
+
 ## Table of Contents
 
 1. [Big Picture](#1-big-picture)

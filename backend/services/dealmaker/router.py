@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
+
+from shared.connectors.google_drive import GoogleDriveError
 
 from . import service
 from .schemas import (
@@ -100,3 +103,44 @@ async def get_po(po_id: str) -> PoResponse:
 async def get_deal_documents(deal_id: str) -> DealDocumentsResponse:
     """Return all DealMaker documents (PI + PO) for a given deal."""
     return await service.get_deal_documents(deal_id)
+
+
+def _file_response(content: bytes, mime: str, filename: str, download: bool) -> Response:
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
+
+
+@router.get("/pi/{pi_id}/file")
+async def get_pi_file(pi_id: str, download: bool = False) -> Response:
+    """Stream the rendered PI document (from Google Drive or local disk).
+
+    Served through the backend's own Drive credentials so the UI's View/
+    Download buttons work for any authenticated operator. ``?download=true``
+    switches Content-Disposition from inline to attachment."""
+    try:
+        content, mime, filename = await service.get_pi_file(pi_id)
+    except PiNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GoogleDriveError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _file_response(content, mime, filename, download)
+
+
+@router.get("/po/{po_id}/file")
+async def get_po_file(po_id: str, download: bool = False) -> Response:
+    """Stream the rendered PO document (from Google Drive or local disk)."""
+    try:
+        content, mime, filename = await service.get_po_file(po_id)
+    except PoNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GoogleDriveError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _file_response(content, mime, filename, download)

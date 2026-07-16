@@ -20,14 +20,17 @@ router = APIRouter(prefix="/deals", tags=["deals"])
 
 
 async def _org_deal(deal_id: str, user: AuthUser) -> DealRecord:
-    """Fetch a deal and enforce that it belongs to the caller's organization
-    (else 404). Portless platform staff (org_filter is None) bypass this."""
+    """Fetch a deal and enforce that the caller's organization is a party to
+    it — owner org, buyer org, or seller org (else 404). Portless platform
+    staff (org_filter is None) bypass this."""
     org_filter = require_org_scope(user)
     try:
         deal = await service.get_deal(deal_id)
     except DealNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    if org_filter is not None and deal.org_id != org_filter:
+    if org_filter is not None and org_filter not in (
+        deal.org_id, deal.buyer_org_id, deal.seller_org_id
+    ):
         # Hide existence of other organizations' deals.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Deal {deal_id!r} not found")
     return deal

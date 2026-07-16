@@ -86,6 +86,21 @@ async def _cb_send_negotiation_email(deal_id: str, payload: dict[str, Any]) -> d
     return {"email_id": email_id, "status": status}
 
 
+async def _cb_confirm_negotiation_agreement(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Continue: operator confirmed a detected agreement — finalize it.
+
+    Moves the negotiation session to AGREED and advances the parent deal to
+    NEGOTIATION_AGREED (unblocking PI issuance). Until this fires, a detected
+    acceptance parks the session at HITL_PENDING — no deal transition happens
+    on the LLM/guard verdict alone.
+    """
+    from agents.negotiation_agent.service import finalize_agreement  # type: ignore[import]
+
+    negotiation_id: str = payload["negotiation_id"]
+    await finalize_agreement(negotiation_id, payload.get("agreed_price"))
+    return {"negotiation_id": negotiation_id, "status": "agreed"}
+
+
 # ---------------------------------------------------------------------------
 # Reject handlers (soft-reject actions only)
 # ---------------------------------------------------------------------------
@@ -99,6 +114,15 @@ async def _rcb_send_negotiation_email(deal_id: str, payload: dict[str, Any]) -> 
     return {"email_id": email_id, "status": "rejected"}
 
 
+async def _rcb_confirm_negotiation_agreement(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Operator declined the detected agreement — reopen the negotiation."""
+    from agents.negotiation_agent.service import reject_agreement  # type: ignore[import]
+
+    negotiation_id: str = payload["negotiation_id"]
+    await reject_agreement(negotiation_id)
+    return {"negotiation_id": negotiation_id, "status": "reopened"}
+
+
 # ---------------------------------------------------------------------------
 # Approve dispatcher
 # ---------------------------------------------------------------------------
@@ -110,6 +134,7 @@ _CALLBACK_MAP = {
     "FILE_CUSTOMS": _cb_file_customs,
     "RESOLVE_EXCEPTION": _cb_resolve_exception,
     "SEND_NEGOTIATION_EMAIL": _cb_send_negotiation_email,
+    "CONFIRM_NEGOTIATION_AGREEMENT": _cb_confirm_negotiation_agreement,
 }
 
 
@@ -169,6 +194,7 @@ async def execute_callback(
 
 _REJECT_CALLBACK_MAP = {
     "SEND_NEGOTIATION_EMAIL": _rcb_send_negotiation_email,
+    "CONFIRM_NEGOTIATION_AGREEMENT": _rcb_confirm_negotiation_agreement,
 }
 
 

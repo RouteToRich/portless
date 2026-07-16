@@ -17,6 +17,7 @@ from typing import Any, TypedDict
 
 from .config import settings
 from .guards import (
+    acceptance_price_consistent,
     check_convergence,
     compute_midpoint_price,
     is_explicit_acceptance,
@@ -26,6 +27,7 @@ from .guards import (
 from .llm import get_llm_client
 from .prompts import (
     BUYER_AGENT_SYSTEM_PROMPT,
+    INTENT_CLASSIFIER_SYSTEM_PROMPT,
     ORCHESTRATOR_SYSTEM_PROMPT,
     SUPPLIER_AGENT_SYSTEM_PROMPT,
 )
@@ -154,6 +156,101 @@ async def _chat_json(
 
 
 # ---------------------------------------------------------------------------
+# Inbound intent classification
+# ---------------------------------------------------------------------------
+
+_INTENT_UNAVAILABLE = "UNAVAILABLE"
+_VALID_INTENTS = {"ACCEPT", "COUNTER_OFFER", "REJECT", "QUESTION", "OTHER"}
+
+
+async def classify_inbound_intent(
+    party: str,
+    inbound_message: str,
+    reference_price: float,
+    conversation_history: str = "",
+) -> dict[str, Any]:
+    """Classify the counterpart's reply via the LLM Gateway.
+
+    Returns ``{"intent": ..., "mentioned_price_usd": float | None, "reasoning": ...}``.
+    ``intent`` is one of _VALID_INTENTS, or ``_INTENT_UNAVAILABLE`` when the
+    gateway itself failed (transport error / unparseable after retry) — the
+    caller then falls back to the deterministic keyword guard. A reply the LLM
+    *did* classify but with an unknown label is coerced to "OTHER" (not an
+    acceptance), never to the fallback path.
+    """
+    payload = {
+        "party": party,
+        "inbound_message": inbound_message,
+        "reference_price_usd": reference_price,
+        "conversation_history": conversation_history,
+    }
+    result = await _chat_json(
+        INTENT_CLASSIFIER_SYSTEM_PROMPT, payload, "negotiation_agent.intent_classifier",
+        fallback={"intent": _INTENT_UNAVAILABLE, "mentioned_price_usd": None,
+                  "reasoning": "intent classifier unavailable"},
+    )
+    intent = str(result.get("intent", "")).strip().upper()
+    if intent != _INTENT_UNAVAILABLE and intent not in _VALID_INTENTS:
+        intent = "OTHER"
+    mentioned: float | None
+    try:
+        raw_price = result.get("mentioned_price_usd")
+        mentioned = float(raw_price) if raw_price is not None else None
+    except (TypeError, ValueError):
+        mentioned = None
+    return {
+        "intent": intent,
+        "mentioned_price_usd": mentioned,
+        "reasoning": str(result.get("reasoning", "")),
+    }
+
+
+async def _detect_explicit_acceptance(
+    state: NegotiationGraphState,
+    party: str,
+    reference_price: float,
+) -> tuple[bool, str]:
+    """Decide whether the inbound reply is an outright acceptance.
+
+    Layered: LLM intent classification (primary, language understanding) →
+    keyword guard (fallback only when the gateway is down) → deterministic
+    price-consistency check (always). Every path is conservative: a false
+    negative just continues the round.
+    """
+    inbound = state.get("inbound_message") or ""
+    history_key = "buyer_history" if party == "buyer" else "supplier_history"
+    result = await classify_inbound_intent(
+        party, inbound, reference_price, state.get(history_key, "")
+    )
+    intent = result["intent"]
+    if intent == _INTENT_UNAVAILABLE:
+        accepted = is_explicit_acceptance(inbound)
+        detail = "keyword-guard fallback (intent classifier unavailable)"
+    else:
+        accepted = intent == "ACCEPT"
+        detail = f"LLM intent={intent}" + (
+            f" ({result['reasoning']})" if result["reasoning"] else ""
+        )
+    if not accepted:
+        return False, detail
+
+    # Deterministic cross-checks — an "acceptance" naming any other price is a counter.
+    mentioned = result["mentioned_price_usd"]
+    tolerance = max(abs(reference_price) * 0.01, 0.01)
+    if mentioned is not None and abs(mentioned - reference_price) > tolerance:
+        return False, (
+            f"{detail} — vetoed: message price {mentioned} differs from "
+            f"reference {reference_price}"
+        )
+    if not acceptance_price_consistent(inbound, reference_price):
+        return False, (
+            f"{detail} — vetoed: USD price in message differs from "
+            f"reference {reference_price}"
+        )
+    return True, detail
+
+
+# ---------------------------------------------------------------------------
 # Node: Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -172,16 +269,24 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
     # A counterpart that outright accepts the last quoted price (rather than
     # countering) never satisfies check_convergence()'s bid/ask gap test when
     # the other side's price is fixed (e.g. a pre-sourced supplier quote) —
-    # that gap is the margin, not a spread expected to close. Only checked
+    # that gap is the margin, not a spread expected to close. Acceptance is
+    # detected by the LLM intent classifier (keyword guard only as gateway-down
+    # fallback) plus a deterministic price-consistency check. Only evaluated
     # when margin is already healthy; an accept at a sub-floor price still
     # falls through to the normal LLM routing / near-floor HITL gate below.
     party = state.get("party")
-    explicit_accept = (
+    explicit_accept = False
+    accept_detail = ""
+    if (
         not converged
         and margin_ok
         and party in ("buyer", "supplier")
-        and is_explicit_acceptance(state.get("inbound_message"))
-    )
+        and state.get("inbound_message")
+    ):
+        reference_price = bid if party == "buyer" else ask
+        explicit_accept, accept_detail = await _detect_explicit_acceptance(
+            state, party, reference_price
+        )
 
     if converged or explicit_accept:
         if converged:
@@ -193,9 +298,9 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
         else:
             agreed = bid if party == "buyer" else ask
             reasoning = (
-                f"Explicit acceptance detected from {party} — "
+                f"Explicit acceptance detected from {party} ({accept_detail}) — "
                 f"agreed_price={agreed} margin={margin_pct:.2f}% "
-                f"(>= floor {policy.margin_floor_pct}%)"
+                f"(>= floor {policy.margin_floor_pct}%) — pending operator confirmation"
             )
         return {
             **state,

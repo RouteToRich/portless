@@ -36,16 +36,40 @@ export interface Party {
   risk_score?: number | null;
 }
 
+/** One seller candidate's Composite Match Score breakdown (Match Engine),
+ *  captured on the deal at creation so matching info survives the originating
+ *  opportunity being removed from the Opportunity Radar. */
+export interface MatchResult {
+  match_id: string;
+  supplier_id: string;
+  company_name?: string;
+  composite_score: number;
+  gatekeeper_passed: boolean;
+  arbitrage_score: number;
+  proximity_score: number;
+  reliability_score: number;
+  decision: "SOURCE" | "DISCARD";
+  fob_price_usd?: number | null;
+  supplier_to_port_km?: number | null;
+}
+
 export interface Deal {
   deal_id: string;
   operator_id: string;
   hs_code: string;
+  market?: string | null;
   status: DealStatus;
   autonomy_profile: AutonomyLevel;
   margin_floor_pct?: number | null;
   est_margin_usd?: number | null;
   realized_margin_usd?: number | null;
   parties: Party[];
+  // Trade-Min / Match Engine linkage (seeded at deal creation)
+  opportunity_id?: string | null;
+  match_results?: MatchResult[];
+  winning_supplier_id?: string | null;
+  winning_cms?: number | null;
+  buyer_target_price_usd?: number | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -379,13 +403,29 @@ export interface DocumentRecord {
   created_at: string;
 }
 
-// Match score
+// Match score — mirrors shared/domain/models.py MatchScore (the CMS formula's
+// actual components: arbitrage / proximity / reliability, not price/margin/risk).
 export interface MatchScore {
   composite_score: number;
-  price_score: number;
-  margin_score: number;
-  risk_score: number;
-  logistics_score: number;
+  arbitrage_score: number;
+  proximity_score: number;
+  reliability_score: number;
+  gatekeeper_passed?: boolean;
+}
+
+// DealMaker contracts (PI/PO) for a deal — GET /dealmaker/deals/{id}/documents.
+// storage_uri is a Google Drive webViewLink when Drive is configured.
+export interface DealmakerContract {
+  status: string;
+  storage_uri?: string | null;
+  total_value?: number | null;
+  agreed_price?: number | null;
+  issued_at?: string | null;
+}
+export interface DealmakerDealDocuments {
+  deal_id: string;
+  pi: (DealmakerContract & { pi_id: string }) | null;
+  po: (DealmakerContract & { po_id: string }) | null;
 }
 
 // SSE event

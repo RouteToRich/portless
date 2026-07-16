@@ -490,6 +490,7 @@ async def handle_payout_webhook(
             "amount": payout.amount,
             "currency": payout.currency,
         })
+        await _patch_deal_realized_margin(payout.deal_id)
     elif payload.status == "FAILED":
         updated = payout.model_copy(update={
             "status": "FAILED",
@@ -992,6 +993,34 @@ def _ledger_issues(hold: EscrowHoldRecord) -> tuple[float, list[str]]:
     if abs(tranche_sum - hold.released_total) > _FUNDING_TOLERANCE:
         issues.append(f"released tranche sum {tranche_sum} != released_total {hold.released_total}")
     return outstanding, issues
+
+
+async def _patch_deal_realized_margin(deal_id: str) -> None:
+    """Write realized_margin_usd onto the deal when a supplier payout completes.
+
+    Realized margin = what the buyer funded into escrow − everything paid out
+    to the supplier. Fills the Deal Board's "Realized Margin" metric card,
+    which otherwise stays empty even on PAID deals. Best-effort: a failure
+    here must never affect the payout webhook's own processing."""
+    try:
+        repo = get_repository()
+        hold = await repo.get_hold_by_deal(deal_id)
+        if hold is None:
+            return
+        payouts = await repo.list_payouts_by_deal(deal_id)
+        payouts_total = round(sum(p.amount for p in payouts if p.status == "COMPLETED"), 2)
+        funded = hold.funded_amount if hold.funded_amount is not None else hold.amount
+        realized = round(funded - payouts_total, 2)
+
+        from services.deals.schemas import UpdateFinancialsRequest  # type: ignore[import]
+        from services.deals.service import update_financials  # type: ignore[import]
+
+        await update_financials(deal_id, UpdateFinancialsRequest(realized_margin_usd=realized))
+        logger.info("EscrowGuard: realized_margin_usd=%.2f patched onto deal %s", realized, deal_id)
+    except Exception as exc:
+        logger.warning(
+            "EscrowGuard: could not patch realized margin for deal %s: %s", deal_id, exc
+        )
 
 
 async def get_deal_ledger(deal_id: str) -> DealLedger:

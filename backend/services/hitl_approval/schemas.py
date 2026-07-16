@@ -29,7 +29,7 @@ class ApprovalRecord(BaseModel):
     approval_id: str
     deal_id: str
     action: str
-    """ApprovalAction value: RELEASE_SUPPLIER_PAYOUT | BOOK_FREIGHT | ISSUE_PO | FILE_CUSTOMS | RESOLVE_EXCEPTION | SEND_NEGOTIATION_EMAIL"""
+    """ApprovalAction value: RELEASE_SUPPLIER_PAYOUT | BOOK_FREIGHT | ISSUE_PO | FILE_CUSTOMS | RESOLVE_EXCEPTION | SEND_NEGOTIATION_EMAIL | CONFIRM_NEGOTIATION_AGREEMENT"""
     summary: str | None = None
     financial_impact_usd: float | None = None
     risk_flags: list[str] = Field(default_factory=list)
@@ -96,12 +96,19 @@ class ApprovalResponse(BaseModel):
     expires_at: datetime | None = None
     default_on_timeout: str
     deep_link: str | None = None
+    callback_payload: dict[str, Any] = Field(default_factory=dict)
+    """Exposed to the operator UI: for SEND_NEGOTIATION_EMAIL it carries
+    email_id/negotiation_id/party, which the Approvals Inbox uses to fetch and
+    display the FULL drafted email (the ``summary`` field is a 150-char
+    preview only). Omitting this previously left the UI stuck on the
+    truncated summary."""
     decision: str | None = None
     resolved_by: str | None = None
     resolved_at: datetime | None = None
     resolution_note: str | None = None
     modified_body: str | None = None
     created_at: datetime
+    updated_at: datetime | None = None
 
     @classmethod
     def from_record(cls, r: ApprovalRecord) -> "ApprovalResponse":
@@ -117,12 +124,14 @@ class ApprovalResponse(BaseModel):
             expires_at=r.expires_at,
             default_on_timeout=r.default_on_timeout,
             deep_link=r.deep_link,
+            callback_payload=r.callback_payload,
             decision=r.decision,
             resolved_by=r.resolved_by,
             resolved_at=r.resolved_at,
             resolution_note=r.resolution_note,
             modified_body=r.modified_body,
             created_at=r.created_at,
+            updated_at=r.updated_at,
         )
 
 

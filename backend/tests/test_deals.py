@@ -52,6 +52,13 @@ from services.deals.service import (
 def _repo(monkeypatch) -> InMemoryFallbackRepository:
     repo = InMemoryFallbackRepository()
     monkeypatch.setattr("services.deals.service.get_repository", lambda: repo)
+    # Party seeding fetches the full opportunity from trade_min in-process.
+    # Stub it out: with a real MONGO_URI in .env it would otherwise lazily
+    # create trade_min's Motor client on THIS test's event loop, breaking
+    # later trade_min tests with "Future attached to a different loop".
+    monkeypatch.setattr(
+        "services.deals.service._fetch_opportunity", AsyncMock(return_value=None)
+    )
     return repo
 
 
@@ -272,6 +279,50 @@ def test_update_status_invalid_transition_raises(_repo):
 def test_update_status_unknown_deal_raises():
     with pytest.raises(DealNotFoundError):
         run(update_status("DEAL-GHOST", UpdateStatusRequest(target_status=DealStatus.MATCHING)))
+
+
+# ---------------------------------------------------------------------------
+# Counterparty organization visibility
+# ---------------------------------------------------------------------------
+
+def test_counterparty_orgs_see_the_deal(_repo):
+    # Once the negotiation is agreed, buyer/seller orgs are linked to the deal
+    # and their users see it in list/get scoping — not only the creator's org.
+    from services.deals.service import set_counterparty_orgs
+
+    with patch("services.deals.service._emit_event", AsyncMock()):
+        deal = run(_create(_create_request(), org_id="ORG-OWNER"))
+    run(set_counterparty_orgs(
+        deal.deal_id, buyer_org_id="ORG-BUYER", seller_org_id="ORG-SELLER"
+    ))
+
+    assert [d.deal_id for d in run(list_deals(org_id="ORG-OWNER"))] == [deal.deal_id]
+    assert [d.deal_id for d in run(list_deals(org_id="ORG-BUYER"))] == [deal.deal_id]
+    assert [d.deal_id for d in run(list_deals(org_id="ORG-SELLER"))] == [deal.deal_id]
+    assert run(list_deals(org_id="ORG-STRANGER")) == []
+
+
+def test_set_counterparty_orgs_partial_update(_repo):
+    from services.deals.service import set_counterparty_orgs
+
+    with patch("services.deals.service._emit_event", AsyncMock()):
+        deal = run(_create(_create_request()))
+    run(set_counterparty_orgs(deal.deal_id, buyer_org_id="ORG-B"))
+    updated = run(get_deal(deal.deal_id))
+    assert updated.buyer_org_id == "ORG-B"
+    assert updated.seller_org_id is None   # untouched
+
+    run(set_counterparty_orgs(deal.deal_id, seller_org_id="ORG-S"))
+    updated = run(get_deal(deal.deal_id))
+    assert updated.buyer_org_id == "ORG-B"  # untouched
+    assert updated.seller_org_id == "ORG-S"
+
+
+def test_set_counterparty_orgs_unknown_deal_raises(_repo):
+    from services.deals.service import set_counterparty_orgs
+
+    with pytest.raises(DealNotFoundError):
+        run(set_counterparty_orgs("DEAL-NOPE", buyer_org_id="ORG-B"))
 
 
 # ---------------------------------------------------------------------------

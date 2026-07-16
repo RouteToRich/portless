@@ -9,6 +9,9 @@ Orchestrates:
   6. send_approved_email() — called by HITL callback when operator approves;
                              delegates SMTP transport to the Email Sender service
   7. reject_email()        — called by HITL callback when operator rejects
+  8. finalize_agreement()  — called by the CONFIRM_NEGOTIATION_AGREEMENT HITL
+                             callback on APPROVE; the ONLY path to status AGREED
+  9. reject_agreement()    — same callback on REJECT; reopens the negotiation
 
 Email transport (IMAP fetch + SMTP send) lives in services/email_gateway/;
 inbound processing lives in services/email_processor/. This flow calls the
@@ -80,7 +83,11 @@ def _session_to_response(session: NegotiationSession, reasoning: str = "", **ext
 
 def _graph_state_to_status(routing: str, hitl_required: bool = False) -> NegotiationStatus:
     if routing == "NEGOTIATION_AGREED":
-        return "AGREED"
+        # A detected agreement is provisional: the session parks at HITL_PENDING
+        # behind a CONFIRM_NEGOTIATION_AGREEMENT approval, and only the operator's
+        # APPROVE (via finalize_agreement) moves it to AGREED. Neither the LLM nor
+        # the deterministic guards ever close a deal on their own.
+        return "HITL_PENDING"
     if routing == "NEGOTIATION_FAILED":
         return "FAILED"
     if routing == "HITL_APPROVAL":
@@ -223,6 +230,55 @@ async def _create_and_gate_email(
     return email_id
 
 
+async def _create_agreement_gate(
+    session: NegotiationSession,
+    final_state: NegotiationGraphState,
+) -> None:
+    """Create the L0 HITL approval that gates a detected agreement.
+
+    The graph's NEGOTIATION_AGREED verdict (convergence or detected acceptance)
+    is NOT final — the session sits at HITL_PENDING until an operator resolves
+    this approval. APPROVE → finalize_agreement(); REJECT → reject_agreement()
+    (soft reject: the negotiation reopens, no deal exception).
+
+    Idempotent per round via the idempotency key, so a re-run of the same
+    round never creates a duplicate gate. Best-effort like the email gate —
+    a failure here leaves the session at HITL_PENDING for manual follow-up.
+    """
+    try:
+        from services.hitl_approval.service import create_approval  # type: ignore[import]
+        from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
+
+        margin = session.margin_at_current
+        margin_txt = f"{margin:.2f}%" if margin is not None else "n/a"
+        approval_req = CreateApprovalRequest(
+            deal_id=session.deal_id,
+            action="CONFIRM_NEGOTIATION_AGREEMENT",
+            summary=(
+                f"Negotiation {session.negotiation_id} reads as agreed at "
+                f"USD {session.agreed_price:.2f} (margin {margin_txt}). "
+                f"{final_state.get('reasoning', '')[:200]}"
+            ),
+            risk_flags=["deal_closing_confirmation"],
+            autonomy_level="L0",
+            callback_payload={
+                "negotiation_id": session.negotiation_id,
+                "agreed_price": session.agreed_price,
+            },
+            idempotency_key=f"{session.negotiation_id}:agreement:{session.round_no}",
+        )
+        approval = await create_approval(approval_req)
+        logger.info(
+            "Agreement for negotiation %s gated via HITL approval %s (price=%s)",
+            session.negotiation_id, approval.approval_id, session.agreed_price,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to create agreement-confirmation approval for negotiation %s: %s",
+            session.negotiation_id, exc,
+        )
+
+
 async def _post_graph_notify(
     session: NegotiationSession,
     final_state: NegotiationGraphState,
@@ -237,13 +293,29 @@ async def _post_graph_notify(
     buyer_msg = final_state.get("buyer_outbound_message", "")
     supplier_msg = final_state.get("supplier_outbound_message", "")
 
+    # First outbound is an introduction, not a negotiation update — "Round 1"
+    # in a cold email reads as if the recipient missed prior messages. Reply
+    # threading is unaffected: inbound mapping uses headers + the [NEG:{uuid}]
+    # token the Email Gateway appends, never the human-readable subject.
+    first_contact = session.round_no <= 1
+    buyer_subject = (
+        f"Trade Proposal — HS {session.product_code} Supply Partnership"
+        if first_contact
+        else f"PortLess Trade Update — Round {session.round_no}"
+    )
+    supplier_subject = (
+        f"Sourcing Inquiry — HS {session.product_code}"
+        if first_contact
+        else f"PortLess Trade Quote — Round {session.round_no}"
+    )
+
     tasks = []
     if buyer_msg:
         tasks.append(_create_and_gate_email(
             session,
             "buyer",
             session.buyer_email or f"{session.buyer_id}@portless.placeholder",
-            f"PortLess Trade Update — Round {session.round_no}",
+            buyer_subject,
             buyer_msg,
         ))
     if supplier_msg:
@@ -251,7 +323,7 @@ async def _post_graph_notify(
             session,
             "supplier",
             session.seller_email or f"{session.seller_id}@portless.placeholder",
-            f"PortLess Trade Quote — Round {session.round_no}",
+            supplier_subject,
             supplier_msg,
         ))
 
@@ -261,11 +333,14 @@ async def _post_graph_notify(
             if isinstance(r, Exception):
                 logger.warning("Email gating error: %s", r)
 
-    if session.status == "AGREED" and session.agreed_price:
-        await _compute_realized_cms(session, repo)
+    # A detected agreement is gated behind operator confirmation — the CMS
+    # computation and deal hand-off happen in finalize_agreement() (the
+    # CONFIRM_NEGOTIATION_AGREEMENT approve callback), never here.
+    if final_state.get("routing") == "NEGOTIATION_AGREED" and session.agreed_price:
+        await _create_agreement_gate(session, final_state)
 
-    # Hand off to the deal pipeline on a terminal outcome (AGREED / FAILED).
-    if session.status in ("AGREED", "FAILED"):
+    # Hand off to the deal pipeline on a terminal failure.
+    if session.status == "FAILED":
         await _sync_deal_status(session)
 
     await get_publisher().publish(DomainEvent(
@@ -699,6 +774,128 @@ async def reject_email(email_id: str) -> None:
         "updated_at": datetime.now(timezone.utc),
     }))
     logger.info("Email %s rejected by operator", email_id)
+
+
+async def finalize_agreement(
+    negotiation_id: str, agreed_price: float | None = None
+) -> None:
+    """Operator confirmed a detected agreement — close the negotiation for real.
+
+    Called by the HITL CONFIRM_NEGOTIATION_AGREEMENT callback on APPROVE. This
+    is the single place a negotiation transitions to AGREED: it computes the
+    realized CMS and advances the parent deal to NEGOTIATION_AGREED. Idempotent.
+    """
+    repo = get_repository()
+    session = await repo.get_session(negotiation_id)
+    if session is None:
+        logger.error("finalize_agreement: negotiation %s not found", negotiation_id)
+        return
+    if session.status == "AGREED":
+        return  # already finalized — idempotent no-op
+
+    session.status = "AGREED"
+    if agreed_price is not None:
+        session.agreed_price = agreed_price
+    session.hitl_required = False
+    session.updated_at = datetime.now(timezone.utc)
+    await repo.save_session(session)
+
+    if session.agreed_price:
+        await _compute_realized_cms(session, repo)
+    await _sync_deal_status(session)
+    await _provision_counterparty_orgs(session)
+
+    await get_publisher().publish(DomainEvent(
+        topic=EventTopic.NEGOTIATION_AGREED,
+        deal_id=session.deal_id,
+        payload={
+            "negotiation_id": session.negotiation_id,
+            "agreed_price": session.agreed_price,
+            "round_no": session.round_no,
+            "realized_cms": session.realized_cms,
+        },
+    ))
+    logger.info(
+        "Negotiation %s finalized as AGREED at %s (operator-confirmed)",
+        negotiation_id, session.agreed_price,
+    )
+
+
+async def _provision_counterparty_orgs(session: NegotiationSession) -> None:
+    """Auto-provision buyer + seller organizations once the deal is agreed.
+
+    Finds-or-creates an Organization for each side (named after the deal's
+    party legal names, falling back to the session's buyer/seller ids),
+    registers the negotiation contact email on it, and links both org ids
+    onto the deal — from then on, users assigned to those organizations see
+    this deal in their own portal (deals list/get scope matches owner org OR
+    buyer org OR seller org). Best-effort: a failure here never rolls back
+    the agreement."""
+    try:
+        from services.auth.service import find_or_create_organization_for_deal  # type: ignore[import]
+        from services.deals.service import get_deal, set_counterparty_orgs  # type: ignore[import]
+
+        buyer_name = session.buyer_id
+        seller_name = session.seller_id
+        try:
+            deal = await get_deal(session.deal_id)
+            for p in getattr(deal, "parties", None) or []:
+                raw_role = getattr(p, "role", "")
+                role = (raw_role.value if hasattr(raw_role, "value") else str(raw_role)).lower()
+                if role == "buyer" and p.legal_name:
+                    buyer_name = p.legal_name
+                elif role == "supplier" and p.legal_name:
+                    seller_name = p.legal_name
+        except Exception:  # noqa: BLE001 — party names are a nice-to-have
+            pass
+
+        buyer_org = await find_or_create_organization_for_deal(
+            buyer_name, session.buyer_email
+        )
+        seller_org = await find_or_create_organization_for_deal(
+            seller_name, session.seller_email
+        )
+        await set_counterparty_orgs(
+            session.deal_id,
+            buyer_org_id=buyer_org.org_id,
+            seller_org_id=seller_org.org_id,
+        )
+        logger.info(
+            "Negotiation %s: counterparty orgs provisioned (buyer=%s %r, seller=%s %r)",
+            session.negotiation_id, buyer_org.org_id, buyer_org.name,
+            seller_org.org_id, seller_org.name,
+        )
+    except Exception as exc:
+        logger.error(
+            "Negotiation %s: counterparty org provisioning failed (deal %s): %s",
+            session.negotiation_id, session.deal_id, exc,
+        )
+
+
+async def reject_agreement(negotiation_id: str) -> None:
+    """Operator declined a detected agreement — reopen the negotiation.
+
+    Called by the HITL CONFIRM_NEGOTIATION_AGREEMENT callback on REJECT (soft
+    reject). The session returns to ROUND with the provisional agreed_price
+    cleared, so the negotiation simply continues on the next inbound reply.
+    """
+    repo = get_repository()
+    session = await repo.get_session(negotiation_id)
+    if session is None:
+        logger.error("reject_agreement: negotiation %s not found", negotiation_id)
+        return
+    if session.status == "AGREED":
+        logger.warning(
+            "reject_agreement: negotiation %s already finalized — ignoring", negotiation_id
+        )
+        return
+
+    session.status = "ROUND"
+    session.agreed_price = None
+    session.hitl_required = False
+    session.updated_at = datetime.now(timezone.utc)
+    await repo.save_session(session)
+    logger.info("Negotiation %s agreement declined by operator — reopened", negotiation_id)
 
 
 async def list_email_history(negotiation_id: str) -> list[EmailHistoryRecord]:

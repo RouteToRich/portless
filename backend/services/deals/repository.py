@@ -87,7 +87,12 @@ class InMemoryFallbackRepository:
         if operator_id is not None:
             deals = [d for d in deals if d.operator_id == operator_id]
         if org_id is not None:
-            deals = [d for d in deals if d.org_id == org_id]
+            # Owner org OR counterparty org — buyer/seller organization users
+            # see the deals they are party to, not just deals they created.
+            deals = [
+                d for d in deals
+                if org_id in (d.org_id, d.buyer_org_id, d.seller_org_id)
+            ]
         return sorted(deals, key=lambda d: d.created_at, reverse=True)[:limit]
 
     async def mark_status(
@@ -146,7 +151,13 @@ class MongoDealRepository:
         if operator_id is not None:
             filt["operator_id"] = operator_id
         if org_id is not None:
-            filt["org_id"] = org_id
+            # Owner org OR counterparty org — buyer/seller organization users
+            # see the deals they are party to, not just deals they created.
+            filt["$or"] = [
+                {"org_id": org_id},
+                {"buyer_org_id": org_id},
+                {"seller_org_id": org_id},
+            ]
         cursor = self._col.find(filt).sort("created_at", -1).limit(limit)
         docs = await cursor.to_list(length=limit)
         result = []

@@ -39,6 +39,8 @@ from shared.bus import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 from shared.domain.state_machine import can_transition
 
+from shared.domain.models import Party
+
 from .repository import get_repository, init_repository
 from .schemas import (
     CreateDealRequest,
@@ -51,6 +53,11 @@ from .schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Applied when the caller doesn't specify one — matches NegotiationPolicy.
+# margin_floor_pct and the DealMaker PO margin guard, so the Deal Board's
+# "Margin Floor" card reflects the floor actually enforced downstream.
+_DEFAULT_MARGIN_FLOOR_PCT = 8.0
 
 # ---------------------------------------------------------------------------
 # Status → event topic mapping (only statuses that produce domain events)
@@ -204,6 +211,57 @@ def _new_deal_id() -> str:
 # Public service API
 # ---------------------------------------------------------------------------
 
+def _seed_parties_from_opportunity(
+    opportunity: Any,
+    winning_supplier_id: str | None,
+    market: str,
+) -> list[Party]:
+    """Build initial buyer/supplier Party entries from the opportunity data.
+
+    Deals created from an opportunity previously had an empty ``parties``
+    list for their whole lifecycle, leaving the Overview tab blank. The top
+    buyer signal and the winning (or cheapest) seller candidate are the best
+    identities known at creation time; Sourcing verification can enrich them
+    later."""
+    parties: list[Party] = []
+    try:
+        signals = getattr(opportunity, "buyer_signals", None) or []
+        if signals:
+            top = signals[0]
+            parties.append(Party(
+                party_id=getattr(top, "company_id", None),
+                role="buyer",
+                legal_name=top.buyer_name,
+                country=top.buyer_country or market,
+                risk_score=getattr(top, "risk_score", None),
+            ))
+        candidates = getattr(opportunity, "seller_candidates", None) or []
+        winner = next(
+            (c for c in candidates if c.candidate_id == winning_supplier_id),
+            candidates[0] if candidates else None,
+        )
+        if winner is not None:
+            parties.append(Party(
+                party_id=winner.candidate_id,
+                role="supplier",
+                legal_name=winner.company_name,
+                country="IN",
+            ))
+    except Exception as exc:  # noqa: BLE001 — party seeding must never block creation
+        logger.warning("Could not seed parties from opportunity: %s", exc)
+    return parties
+
+
+async def _fetch_opportunity(opportunity_id: str) -> Any | None:
+    """Best-effort fetch of the full EnrichedOpportunity (for party seeding)."""
+    try:
+        from services.trade_min.service import get_opportunity  # type: ignore[import]
+        return await get_opportunity(opportunity_id)
+    except Exception as exc:
+        logger.warning("Could not fetch opportunity %s: %s", opportunity_id, exc)
+        return None
+
+
 async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
     """Create a new deal, optionally orchestrating Match Engine scoring.
 
@@ -256,6 +314,16 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
                 winning_supplier_id = best.supplier_id
                 winning_cms = best.composite_score
 
+    # Seed parties from the opportunity when the caller didn't supply any —
+    # otherwise the deal's Overview tab has no buyer/supplier for its lifetime.
+    parties = payload.parties
+    if not parties and payload.opportunity_id:
+        opportunity = await _fetch_opportunity(payload.opportunity_id)
+        if opportunity is not None:
+            parties = _seed_parties_from_opportunity(
+                opportunity, winning_supplier_id, payload.market
+            )
+
     deal = DealRecord(
         deal_id=deal_id,
         operator_id=payload.operator_id,
@@ -269,8 +337,12 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
         winning_supplier_id=winning_supplier_id,
         winning_cms=winning_cms,
         buyer_target_price_usd=buyer_target_price,
-        margin_floor_pct=payload.margin_floor_pct,
-        parties=payload.parties,
+        margin_floor_pct=(
+            payload.margin_floor_pct
+            if payload.margin_floor_pct is not None
+            else _DEFAULT_MARGIN_FLOOR_PCT
+        ),
+        parties=parties,
         status_history=[
             StatusHistoryEntry(
                 status=initial_status,
@@ -412,4 +484,35 @@ async def update_financials(deal_id: str, payload: UpdateFinancialsRequest) -> D
 
     updated_deal = deal.model_copy(update=updates)
     await repo.save(updated_deal)
+    return updated_deal
+
+
+async def set_counterparty_orgs(
+    deal_id: str,
+    buyer_org_id: str | None = None,
+    seller_org_id: str | None = None,
+) -> DealRecord:
+    """Link the auto-provisioned buyer/seller organizations to the deal.
+
+    Called by the Negotiation Agent's finalize_agreement() once the deal is
+    agreed — from then on, users assigned to either organization see this
+    deal in their portal (list/get scoping matches org_id OR buyer_org_id OR
+    seller_org_id). Only provided (non-None) sides are updated."""
+    repo = get_repository()
+    deal = await repo.get(deal_id)
+    if deal is None:
+        raise DealNotFoundError(deal_id)
+
+    updates: dict = {"updated_at": datetime.now(timezone.utc)}
+    if buyer_org_id is not None:
+        updates["buyer_org_id"] = buyer_org_id
+    if seller_org_id is not None:
+        updates["seller_org_id"] = seller_org_id
+
+    updated_deal = deal.model_copy(update=updates)
+    await repo.save(updated_deal)
+    logger.info(
+        "Deal %s linked to counterparty orgs (buyer=%s seller=%s)",
+        deal_id, buyer_org_id, seller_org_id,
+    )
     return updated_deal

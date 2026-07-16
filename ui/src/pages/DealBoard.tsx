@@ -65,9 +65,31 @@ interface DealCardProps {
   onClick: () => void;
 }
 
+function cmsColor(score: number): string {
+  if (score >= 70) return "#2ec28a";
+  if (score >= 40) return "#f5a623";
+  return "#ff5d6c";
+}
+
+/** Composite Match Score chip — matching info stays visible on the deal after
+ *  the originating opportunity leaves the Opportunity Radar. */
+function CmsChip({ score }: { score: number }) {
+  const color = cmsColor(score);
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border font-semibold"
+      style={{ color, borderColor: `${color}66`, background: `${color}1a` }}
+      title="Composite Match Score of the winning supplier (Match Engine)"
+    >
+      CMS {score.toFixed(1)}
+    </span>
+  );
+}
+
 function DealCard({ deal, onClick }: DealCardProps) {
   const buyer = deal.parties.find((p) => p.role === "buyer");
   const supplier = deal.parties.find((p) => p.role === "supplier");
+  const sourcedCount = (deal.match_results ?? []).filter((m) => m.decision === "SOURCE").length;
 
   return (
     <div
@@ -108,6 +130,21 @@ function DealCard({ deal, onClick }: DealCardProps) {
         </div>
         <span className="text-[10px] text-muted-foreground">{timeAgo(deal.created_at)}</span>
       </div>
+
+      {/* Matching info — survives the opportunity's removal from the radar */}
+      {(deal.winning_cms != null || sourcedCount > 0) && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {deal.winning_cms != null && <CmsChip score={deal.winning_cms} />}
+          {sourcedCount > 0 && (
+            <span
+              className="text-[10px] text-muted-foreground"
+              title="Seller candidates the Match Engine scored as SOURCE"
+            >
+              {sourcedCount} matched supplier{sourcedCount > 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Buyer/Supplier names */}
       {(buyer || supplier) && (
@@ -291,6 +328,9 @@ export function DealBoard() {
                   Pipeline
                 </th>
                 <th className="text-right px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Match (CMS)
+                </th>
+                <th className="text-right px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                   Est. Margin
                 </th>
                 <th className="text-right px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
@@ -301,7 +341,7 @@ export function DealBoard() {
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="text-center py-12 text-sm text-muted-foreground">
+                  <td colSpan={7} className="text-center py-12 text-sm text-muted-foreground">
                     No deals match your search
                   </td>
                 </tr>
@@ -339,6 +379,13 @@ export function DealBoard() {
                       </td>
                       <td className="px-4 py-3 w-36">
                         <DealPipeline status={deal.status} compact />
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {deal.winning_cms != null ? (
+                          <CmsChip score={deal.winning_cms} />
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right text-sm font-medium">
                         {fmtUSD(deal.est_margin_usd)}

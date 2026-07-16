@@ -1,6 +1,7 @@
 """DocuGen service configuration."""
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from pydantic import AliasChoices, Field
@@ -26,7 +27,15 @@ class DocuGenSettings(BaseSettings):
     docugen_docs_collection: str = "documents"
 
     # ── Document storage ───────────────────────────────────────────────────
-    docugen_storage_dir: str = "/tmp/portless-docs/docugen"
+    # Local fallback used only when Google Drive isn't configured (or an upload
+    # fails). Defaults under the OS temp dir — a hardcoded "/tmp/..." resolves
+    # to C:\tmp on Windows, whose creation at the drive root needs admin rights
+    # (PermissionError). Override with DOCUGEN_STORAGE_DIR.
+    docugen_storage_dir: str = Field(
+        default_factory=lambda: str(
+            Path(tempfile.gettempdir()) / "portless-docs" / "docugen"
+        )
+    )
 
     # ── Seller entity details ──────────────────────────────────────────────
     portless_entity_name: str = "PortLess Trade Solutions Pvt Ltd"

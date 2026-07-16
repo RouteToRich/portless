@@ -433,6 +433,14 @@ const routes: Record<string, Handler> = {
   // Opportunities
   "GET /opportunities": () =>
     ((scanResult as { opportunities?: RawObj[] }).opportunities ?? []).map(toOpportunity),
+  "GET /opportunities/:id": ({ id }) => {
+    const all = (scanResult as { opportunities?: RawObj[] }).opportunities ?? [];
+    const found = all.find((o) => o.opportunity_id === id);
+    if (!found) throw new MockError(404, `Opportunity ${id} not found`);
+    // Raw fixture fields (seller_candidates, buyer_signals, tariff_data, …)
+    // plus the normalized list-shape fields the UI type expects.
+    return { ...found, ...toOpportunity(found) };
+  },
   "POST /opportunities/scan": () =>
     ((scanResult as { opportunities?: RawObj[] }).opportunities ?? []).map(toOpportunity),
 
@@ -470,12 +478,66 @@ const routes: Record<string, Handler> = {
   "GET /rag/files": () => ({ backend: "mongodb", count: ragFiles.length, files: ragFiles }),
   "POST /rag/query": ({ body }) => ragQueryAnswer(body),
 
-  // Deal-detail sub-resources
-  "GET /match-engine/matches": () => normalizeMatchScore(matchScoreFixture as RawObj),
-  "GET /escrow-guard/holds": () => [normalizeHold(holdCreated as RawObj)],
-  "GET /shield-link/qc": () => [normalizeQc(qcBooking as RawObj)],
-  "GET /shield-link/freight": () => [normalizeFreight(freightBooking as RawObj)],
-  "GET /docugen/documents": () => documents,
+  // Deal-detail sub-resources — emulate the REAL backend response shapes;
+  // endpoints.ts owns the backend→UI mapping for both mock and live modes.
+  "GET /match-engine/scores/:id": () => {
+    const ui = normalizeMatchScore(matchScoreFixture as RawObj);
+    return {
+      composite_score: ui.composite_score,
+      arbitrage_score: ui.price_score,
+      proximity_score: ui.logistics_score,
+      reliability_score: ui.risk_score,
+      gatekeeper_passed: true,
+    };
+  },
+  "GET /escrow-guard/deals/:id/hold": ({ id }) => {
+    const h = normalizeHold(holdCreated as RawObj);
+    return {
+      escrow_id: h.hold_id,
+      deal_id: id,
+      provider: "stripe",
+      amount: h.amount_usd,
+      currency: "USD",
+      status: h.status,
+      ext_ref: h.stripe_payment_intent_id,
+      funded_at: h.funded_at,
+      created_at: new Date().toISOString(),
+    };
+  },
+  "GET /shield-link/deals/:id/orders": ({ id }) => {
+    const q = normalizeQc(qcBooking as RawObj);
+    const f = normalizeFreight(freightBooking as RawObj);
+    return {
+      deal_id: id,
+      orders: [
+        {
+          tpo_id: q.qc_id, deal_id: id, order_type: "QC", provider: q.provider,
+          status: q.status, ext_ref: null, eta: null, qc_result: null,
+          created_at: q.booked_at ?? new Date().toISOString(),
+        },
+        {
+          tpo_id: f.tpo_id, deal_id: id, order_type: "FREIGHT", provider: f.provider,
+          status: f.status, ext_ref: f.bl_number, eta: f.eta, qc_result: null,
+          created_at: new Date().toISOString(),
+        },
+      ],
+    };
+  },
+  "GET /docugen/deals/:id/documents": ({ id }) => ({
+    deal_id: id,
+    documents: documents.map((d) => ({
+      doc_id: d.document_id, deal_id: id, doc_type: d.document_type,
+      status: d.status, storage_uri: d.file_url, created_at: d.created_at,
+    })),
+  }),
+  "GET /dealmaker/deals/:id/documents": ({ id }) => ({ deal_id: id, pi: null, po: null }),
+  // File streaming — mock serves a small HTML body (endpoints.ts wraps it in a Blob)
+  "GET /docugen/documents/:id/file": ({ id }) =>
+    `<html><body><h1>Mock document ${id}</h1><p>Rendered document preview.</p></body></html>`,
+  "GET /dealmaker/pi/:id/file": ({ id }) =>
+    `<html><body><h1>Mock Proforma Invoice ${id}</h1></body></html>`,
+  "GET /dealmaker/po/:id/file": ({ id }) =>
+    `<html><body><h1>Mock Purchase Order ${id}</h1></body></html>`,
 };
 
 // Match a concrete "METHOD /path" against the route table, capturing :params.

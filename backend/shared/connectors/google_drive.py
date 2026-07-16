@@ -1,4 +1,4 @@
-"""Google Drive connector for storing generated deal documents (PI/PO, DocuGen docs).
+"""Google Drive connector for storing/retrieving generated deal documents (PI/PO, DocuGen docs).
 
 Drive's API has no username/password auth — this uses an OAuth2 refresh token
 minted once via ``scripts/google_drive_authorize.py`` against the operator's
@@ -16,12 +16,32 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 _SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+
+# webViewLink shape: https://drive.google.com/file/d/<FILE_ID>/view?usp=drivesdk
+_DRIVE_LINK_ID_PATTERN = re.compile(
+    r"drive\.google\.com/(?:file/d/|open\?id=)([A-Za-z0-9_-]+)"
+)
+
+
+def extract_drive_file_id(uri: str | None) -> str | None:
+    """Return the Drive file id embedded in a stored document URI, if any.
+
+    Accepts the webViewLink / open?id= forms and the connector's own
+    ``gdrive://<file_id>`` fallback URI. Returns None for local file:// paths
+    and anything else."""
+    if not uri:
+        return None
+    if uri.startswith("gdrive://"):
+        return uri.removeprefix("gdrive://") or None
+    m = _DRIVE_LINK_ID_PATTERN.search(uri)
+    return m.group(1) if m else None
 
 
 class GoogleDriveError(Exception):
@@ -135,6 +155,31 @@ class GoogleDriveConnector:
             raise GoogleDriveError(f"Drive upload failed for {filename!r}: {exc}") from exc
 
         return {"file_id": file["id"], "web_view_link": file.get("webViewLink", "")}
+
+    # -- Download --------------------------------------------------------------
+
+    def download_file(self, file_id: str) -> tuple[bytes, str]:
+        """Fetch a stored document's raw bytes + MIME type by Drive file id.
+
+        Used by the docugen/dealmaker file endpoints to stream documents to the
+        operator UI through the backend's own credentials — the files are
+        private to the connected Google account, so their webViewLinks aren't
+        directly viewable by operators logged into other accounts. Blocking
+        network I/O — callers on an event loop should use ``asyncio.to_thread``.
+        """
+        from googleapiclient.http import MediaIoBaseDownload  # type: ignore[import]
+
+        service = self._get_service()
+        try:
+            meta = service.files().get(fileId=file_id, fields="mimeType").execute()
+            buffer = io.BytesIO()
+            downloader = MediaIoBaseDownload(buffer, service.files().get_media(fileId=file_id))
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+        except Exception as exc:
+            raise GoogleDriveError(f"Drive download failed for file {file_id!r}: {exc}") from exc
+        return buffer.getvalue(), meta.get("mimeType") or "application/octet-stream"
 
 
 _connector: GoogleDriveConnector | None = None

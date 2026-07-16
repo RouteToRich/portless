@@ -182,6 +182,7 @@ When an approval resolves APPROVE, the `execute_callback()` dispatcher calls int
 | `RELEASE_SUPPLIER_PAYOUT` | `escrow_guard.service.request_payout()` |
 | `FILE_CUSTOMS` | `shield_link.service.file_cha()` |
 | `RESOLVE_EXCEPTION` | Logs + emits `deal.exception` (exception_resolver stub) |
+| `CONFIRM_NEGOTIATION_AGREEMENT` | `negotiation_agent.service.finalize_agreement()` — the ONLY path to negotiation `AGREED`; soft REJECT → `reject_agreement()` reopens the session at `ROUND` |
 
 On callback failure → `deal.exception` emitted with `action_required: manual_retry_or_intervention`.
 
@@ -235,7 +236,7 @@ Complete realistic JSON fixtures for every service, all deal states, and all err
 | `match_engine` | ✅ Full | Deterministic CMS formula |
 | `deals` | ✅ Full | State machine, MongoDB, orchestration; optional dev/test `AUTO_FLOW_ENABLED` auto-continuation (`shared/orchestration/auto_flow.py`) |
 | `sourcing` | ✅ Full | RFQ dispatch + GSTN/DGFT/MCA/Udyam verification |
-| `negotiation_agent` | ✅ Full | LangGraph 3-node, RAG (with `NEGOTIATION_RAG_ENABLED` escape hatch + timeout); drafts + HITL-gates emails, delegates SMTP to `email_gateway`; optional live web-search market intel (`NEGOTIATION_MARKET_SEARCH_ENABLED`) |
+| `negotiation_agent` | ✅ Full | LangGraph 3-node, RAG (with `NEGOTIATION_RAG_ENABLED` escape hatch + timeout); drafts + HITL-gates emails, delegates SMTP to `email_gateway`; optional live web-search market intel (`NEGOTIATION_MARKET_SEARCH_ENABLED`); inbound-reply intent via LLM classifier + price-consistency guard; `AGREED` reachable only via the `CONFIRM_NEGOTIATION_AGREEMENT` HITL gate |
 | `dealmaker` | ✅ Full | PI/PO, Jinja2 HTML, SHA-256, margin guard, idempotency |
 | `docugen` | ✅ Full | CI/PL/CoO/SDF/Shipping Bill templates, ICEGATE stub |
 | `shield_link` | ✅ Full | QC + freight + CHA; HMAC webhooks; graceful stubs |
@@ -255,6 +256,7 @@ Complete realistic JSON fixtures for every service, all deal states, and all err
 | ICEGATE | `shields.py` | ✅ Wired — stub when `ICEGATE_API_KEY` absent |
 | Stripe Treasury | `payments.py` | ✅ Wired — stub when `STRIPE_SECRET_KEY` absent |
 | Payoneer | `payments.py` | ✅ Wired — stub when `PAYONEER_CLIENT_ID` absent |
+| Google Drive | `google_drive.py` | ✅ Wired — PRIMARY store for generated PI/PO/DocuGen documents; local-disk fallback (loudly logged) when `GOOGLE_DRIVE_REFRESH_TOKEN` absent or an upload fails |
 
 All other connectors (`trade_intel.py`, `demand_signals.py`, `regulatory.py`) make real HTTP calls; missing credentials return empty/error results gracefully.
 
@@ -313,6 +315,15 @@ PAYONEER_CLIENT_ID
 PAYONEER_CLIENT_SECRET
 PAYONEER_WEBHOOK_SECRET
 
+# Documents (dealmaker + docugen) — Google Drive is the PRIMARY document store
+GOOGLE_DRIVE_CLIENT_ID       # OAuth "Desktop app" client from console.cloud.google.com
+GOOGLE_DRIVE_CLIENT_SECRET
+GOOGLE_DRIVE_REFRESH_TOKEN   # mint once via: python scripts/google_drive_authorize.py
+GOOGLE_DRIVE_ROOT_FOLDER     # default "Portless" — docs land in <root>/<deal_id>/<filename>
+# Local disk (DEALMAKER_STORAGE_DIR / DOCUGEN_STORAGE_DIR, default
+# <OS temp>/portless-docs/<service>) is an emergency fallback only — every
+# local write logs a loud warning that Drive needs attention.
+
 # HITL UI integration
 HITL_NOTIFY_WEBHOOK_URL     # optional — POST notifications to UI backend
 HITL_NOTIFY_WEBHOOK_SECRET  # HMAC signing key for webhook
@@ -348,7 +359,7 @@ Run `python scripts/check_trade_api_connections.py` to test all third-party API 
 `POST /sourcing/quotes` → GSTN/DGFT/MCA/Udyam verified in parallel → Match Engine re-scores → if SOURCE: patches deal financials + transitions to `NEGOTIATING`.
 
 **Negotiation → PI issuance:**
-`POST /negotiation-agent/negotiations/{id}/round` × N rounds until `AGREED` → `POST /dealmaker/pi` → deal `PI_SENT`.
+`POST /negotiation-agent/negotiations/{id}/round` × N rounds. Acceptance is detected by an LLM intent classifier (keyword guard only as gateway-down fallback) + a deterministic price-consistency check, then gated behind a `CONFIRM_NEGOTIATION_AGREEMENT` (L0) HITL approval — session parks at `HITL_PENDING`; operator APPROVE → `finalize_agreement()` → `AGREED` → `POST /dealmaker/pi` → deal `PI_SENT`. REJECT reopens the negotiation (soft reject, no deal exception).
 
 **PI accepted → Escrow:**
 `POST /dealmaker/pi/{id}/accept` → deal `PI_ACCEPTED` → `POST /escrow-guard/holds` → Stripe PaymentIntent created → buyer pays → `POST /escrow-guard/webhooks/escrow-funded` → deal `ESCROW_FUNDED`.

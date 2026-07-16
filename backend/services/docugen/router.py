@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
+
+from shared.connectors.google_drive import GoogleDriveError
 
 from . import service
 from .schemas import (
@@ -51,6 +54,31 @@ async def get_document(doc_id: str) -> DocumentResponse:
         return await service.get_document(doc_id)
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/documents/{doc_id}/file")
+async def get_document_file(doc_id: str, download: bool = False) -> Response:
+    """Stream the rendered document file (from Google Drive or local disk).
+
+    The Drive files are private to the platform's connected Google account, so
+    this endpoint serves them through the backend's own credentials — the UI's
+    View/Download buttons work for any authenticated operator. ``?download=true``
+    switches Content-Disposition from inline to attachment.
+    """
+    try:
+        content, mime, filename = await service.get_document_file(doc_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GoogleDriveError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
 
 
 @router.get("/deals/{deal_id}/documents", response_model=DealDocumentsListResponse)
