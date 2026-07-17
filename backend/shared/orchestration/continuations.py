@@ -10,6 +10,9 @@ task (the dev auto-flow) that can die and leave the deal parked.
   PO_ISSUED          → book QC (buyer-opted agency) → SUPPLIER_DISPATCH_READY
   QC_PASSED          → create BOOK_FREIGHT HITL gate
   CUSTOMS_CLEARED    → create RELEASE_SUPPLIER_PAYOUT HITL gate
+  DEAL_EXCEPTION     → route to the Exception Resolver agent (loop-safe:
+                       resolver lifecycle echoes carry an exception_id and
+                       are skipped)
 
 Money-moving and commitment steps stay HITL-gated: the continuation creates
 the approval automatically, it never approves it. Buyer actions (accepting
@@ -335,12 +338,63 @@ async def on_customs_cleared(event: DomainEvent) -> None:
         await _emit_exception(deal_id, "CLEARED→PAYOUT_GATE", exc)
 
 
+async def on_deal_exception(event: DomainEvent) -> None:
+    """DEAL_EXCEPTION → route to the Exception Resolver agent.
+
+    Completes the documented flow (\"On REJECT / callback failure →
+    deal.exception emitted; Exception Resolver handles next step\") — until
+    this subscriber existed, those events were emitted and never consumed.
+
+    Loop safety: ``raise_exception()`` itself emits DEAL_EXCEPTION lifecycle
+    events (OPEN, then the final status) whose payload carries the
+    ``exception_id`` of the record it just persisted. Those echoes are
+    notifications, not new failures — skip them, or every exception would
+    re-trigger the resolver forever.
+
+    Failure safety: this handler must NEVER call ``_emit_exception`` — a
+    failure while handling deal.exception must not publish more
+    deal.exception events. Log and stop; the OPEN record (when reached) is
+    the crash-safe audit trace.
+    """
+    if not _enabled():
+        return
+    payload = event.payload or {}
+    if payload.get("exception_id"):
+        return  # resolver lifecycle echo — already being handled
+    if not event.deal_id:
+        logger.error("Continuation[DEAL_EXCEPTION]: event without deal_id — skipped")
+        return
+    try:
+        from services.exception_resolver.schemas import RaiseExceptionRequest  # type: ignore[import]
+        from services.exception_resolver.service import raise_exception  # type: ignore[import]
+
+        result = await raise_exception(RaiseExceptionRequest(
+            deal_id=event.deal_id,
+            source_event=str(payload.get("stage") or payload.get("failed_topic") or event.topic.value),
+            source_service=str(payload.get("source") or payload.get("source_service") or "event_bus"),
+            detail=str(payload.get("error") or payload.get("detail") or ""),
+            context=payload,
+        ))
+        logger.info(
+            "Continuation: exception %s (%s) raised for deal %s (event %s)",
+            result.exception_id, result.status.value, event.deal_id, event.event_id,
+        )
+    except Exception:
+        logger.exception(
+            "Continuation[DEAL_EXCEPTION]: resolver failed for deal %s (event %s) "
+            "— manual intervention required",
+            event.deal_id, event.event_id,
+        )
+
+
 def register_continuations(bus) -> None:
-    """Subscribe every pipeline continuation on the given InProcessEventBus."""
+    """Subscribe every pipeline continuation on the given bus
+    (InProcessEventBus or NatsJetStreamBus — same subscribe surface)."""
     bus.subscribe(EventTopic.NEGOTIATION_AGREED, on_negotiation_agreed)
     bus.subscribe(EventTopic.PI_ACCEPTED, on_pi_accepted)
     bus.subscribe(EventTopic.ESCROW_FUNDED, on_escrow_funded)
     bus.subscribe(EventTopic.PO_ISSUED, on_po_issued)
     bus.subscribe(EventTopic.QC_PASSED, on_qc_passed)
     bus.subscribe(EventTopic.CUSTOMS_CLEARED, on_customs_cleared)
+    bus.subscribe(EventTopic.DEAL_EXCEPTION, on_deal_exception)
     logger.info("Pipeline continuations registered (EVENT_CONTINUATION_ENABLED=%s)", _enabled())

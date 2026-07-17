@@ -46,7 +46,12 @@ async def on_shutdown() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await on_startup()
+    # Publish-only event bus (NATS when creds present; never raises).
+    # Continuation consumers run only in the combined monolith (app.py).
+    from shared.bus import close_event_bus, init_event_bus
+    await init_event_bus(consume=False)
     yield
+    await close_event_bus()
     await on_shutdown()
 
 

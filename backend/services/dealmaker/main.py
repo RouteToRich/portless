@@ -20,9 +20,13 @@ from .router import router
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_repository()
+    # Publish-only event bus (NATS when creds present; never raises).
+    from shared.bus import close_event_bus, init_event_bus
+    await init_event_bus(consume=False)
     try:
         yield
     finally:
+        await close_event_bus()
         await close_repository()
 
 

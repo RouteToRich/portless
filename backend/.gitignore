@@ -12,6 +12,9 @@ env/
 # .env files at any depth are ignored; .env.example files are tracked.
 .env
 **/.env
+# NATS / Synadia Cloud credentials files (JWT + seed) — never commit.
+*.creds
+**/*.creds
 # Never commit real secrets — use .env.example as the documented template.
 
 .mypy_cache/

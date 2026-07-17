@@ -14,11 +14,15 @@ from .service import run_inspection_watcher
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_repository()
+    # Publish-only event bus (NATS when creds present; never raises).
+    from shared.bus import close_event_bus, init_event_bus
+    await init_event_bus(consume=False)
     watcher = asyncio.create_task(run_inspection_watcher())
     try:
         yield
     finally:
         watcher.cancel()
+        await close_event_bus()
         await close_repository()
 
 

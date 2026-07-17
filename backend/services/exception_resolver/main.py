@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     await init_repository()
     logger.info("ExceptionResolver: repository initialised")
+    # Publish-only event bus (NATS when creds present; never raises).
+    from shared.bus import close_event_bus, init_event_bus
+    await init_event_bus(consume=False)
     yield
+    await close_event_bus()
     await close_repository()
 
 

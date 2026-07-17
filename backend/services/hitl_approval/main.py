@@ -20,6 +20,9 @@ _watcher_task: asyncio.Task | None = None
 async def lifespan(app: FastAPI):
     global _watcher_task
     await init_repository()
+    # Publish-only event bus (NATS when creds present; never raises).
+    from shared.bus import close_event_bus, init_event_bus
+    await init_event_bus(consume=False)
     _watcher_task = asyncio.create_task(run_timeout_watcher())
     logger.info("HitlApproval: timeout watcher started")
     yield
@@ -29,6 +32,7 @@ async def lifespan(app: FastAPI):
             await _watcher_task
         except asyncio.CancelledError:
             pass
+    await close_event_bus()
     await close_repository()
 
 

@@ -77,7 +77,7 @@ In the combined monolith (`app.py`) services call each other's `service.py` dire
 | `shared/domain/events.py` | `EventTopic` enum + `DomainEvent` envelope |
 | `shared/clients/base.py` | `BaseServiceClient` — async httpx wrapper; all service clients extend this |
 | `shared/config.py` | `Settings` (pydantic-settings) — service registry URLs + cross-cutting env vars |
-| `shared/bus/publisher.py` | `EventPublisher` protocol + `NoopPublisher` — swap-in point for NATS/Kafka |
+| `shared/bus/` | `EventPublisher` protocol + three backends: `NoopPublisher`, `InProcessEventBus`, `NatsJetStreamBus` (durable, Synadia Cloud). `factory.init_event_bus()` selects via `EVENT_BUS_BACKEND` (auto → NATS when a `*.creds` file is present) |
 | `shared/connectors/` | External API adapters (all implement `quote/book/status/webhook_verify`) |
 | `shared/connectors/qc_providers.py` | Buyer-selectable QC inspectors — SGS, QIMA, Bureau Veritas, Intertek, TÜV SÜD — plus `QC_PROVIDER_CATALOG` metadata and alias resolution; graceful stub when API key absent |
 | `shared/connectors/shields.py` | Freight + customs: Cogoport, Freightos, ICEGATE — graceful stub when API key absent (re-exports the QC symbols for back-compat) |
@@ -215,7 +215,12 @@ Complete realistic JSON fixtures for every service, all deal states, and all err
 
 ### Event publishing
 
-`shared/bus/publisher.py` holds a process-global `NoopPublisher`. Services call `get_publisher().publish(DomainEvent(...))` after committing state. Replace with NATS/Kafka publisher to go event-driven without touching service code.
+Services call `get_publisher().publish(DomainEvent(...))` after committing state. The backing bus is selected at startup by `shared/bus/factory.init_event_bus()` (`EVENT_BUS_BACKEND`: `auto`/`nats`/`inprocess`/`noop`):
+
+- **NATS JetStream** (`shared/bus/nats_bus.py`) — used when a Synadia `*.creds` file is present (auto-discovered in `backend/`, or `NATS_CREDS_FILE`). One stream (`PORTLESS_EVENTS`, subjects `portless.<topic>`), one durable pull consumer per subscribed topic, so events survive restarts and replay. At-least-once delivery: handler failure → NAK with backoff; after `NATS_MAX_DELIVER` attempts → TERM + dead-letter `deal.exception`. Poison (unparseable) messages are TERMed. `publish()` never raises — broker outage degrades to in-process delivery with a loud log.
+- **InProcessEventBus** — fallback when no creds; fire-and-forget async fan-out inside one process.
+
+Pipeline continuations (`shared/orchestration/continuations.py`) subscribe in the **monolith only** (`init_event_bus(consume=True)` in `app.py`) — they call peer services via in-process imports. Standalone service mode inits publish-only (`consume=False`); published events persist in JetStream until the monolith's durable consumers replay them. `DEAL_EXCEPTION` routes to the Exception Resolver via `on_deal_exception` (resolver's own lifecycle echoes carry `exception_id` and are skipped to prevent loops).
 
 ### LLM gateway
 
@@ -342,6 +347,12 @@ EXCEPTION_RESOLVER_MONGO_URI
 # Auth (auth service + shared/auth/middleware.py)
 AUTH_PORTLESS_EMAILS        # comma-separated allowlist — who counts as Portless platform staff
 AUTH_MONGO_URI               # optional override; falls back to shared MONGO_URI
+
+# Event bus — NATS JetStream (Synadia Cloud); falls back to in-process bus
+EVENT_BUS_BACKEND            # auto (default) | nats | inprocess | noop
+NATS_CREDS_FILE              # Synadia .creds file; auto-discovers backend/*.creds if unset
+NATS_URL                     # default tls://connect.ngs.global:4222
+NATS_STREAM_NAME / NATS_SUBJECT_PREFIX / NATS_ACK_WAIT_SECONDS / NATS_MAX_DELIVER
 
 # Dev/test-only conveniences (default off; do not enable in production)
 TRADE_MIN_MOCK_MODE          # bypass every live trade-intelligence connector with curated scenario data

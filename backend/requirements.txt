@@ -10,6 +10,10 @@ asyncpg>=0.29
 PyJWT>=2.8
 motor>=3.3
 apscheduler>=3.10
+# Event bus — NATS JetStream client (Synadia Cloud). The bus degrades to the
+# in-process publisher when no *.creds file / NATS_CREDS_FILE is present.
+# The [nkeys] extra is required for .creds (JWT + seed) authentication.
+nats-py[nkeys]>=2.9
 jinja2>=3.1
 # Pinned below 1.0: LangChain's 1.x line (released independently of this repo)
 # restructures langchain_core.language_models (BaseChatModel import breaks) and

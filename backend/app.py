@@ -180,21 +180,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("EmailGateway startup failed (service will run degraded): %s", exc)
 
-    # ── Event bus: in-process pub/sub + pipeline continuations ───────────
+    # ── Event bus: pipeline continuations over NATS JetStream or in-process ──
     # Makes deal state changes event-driven (NEGOTIATION_AGREED → PI issuance)
     # instead of depending on the dev auto-flow poller staying alive.
+    # Backend selected by EVENT_BUS_BACKEND (auto → NATS when a *.creds file /
+    # NATS_CREDS_FILE is present, else in-process). init_event_bus never
+    # raises — any NATS failure degrades loudly to the in-process bus.
     try:
-        from shared.bus import InProcessEventBus, set_publisher
-        from shared.orchestration.continuations import register_continuations
-        _bus = InProcessEventBus()
-        register_continuations(_bus)
-        set_publisher(_bus)
+        from shared.bus import init_event_bus
+        await init_event_bus(consume=True)
     except Exception as exc:
         logger.error("EventBus startup failed (events stay no-op): %s", exc)
 
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
+    try:
+        from shared.bus import close_event_bus
+        await close_event_bus()
+    except Exception as exc:
+        logger.warning("EventBus shutdown error: %s", exc)
+
     try:
         await eg_shutdown()
     except Exception as exc:
