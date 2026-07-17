@@ -628,6 +628,25 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         return _session_to_response(existing)
 
     negotiation_id = str(uuid.uuid4())
+
+    # Race guard: two callers can both pass the get_session_by_deal check above
+    # before either persists (e.g. the dev auto-flow and the NEGOTIATION_STARTED
+    # continuation firing on the same transition ~1s apart). Atomically claim the
+    # deal; if we lose the claim, the winner already created the session — reuse
+    # it instead of creating a duplicate with a different buyer email + a second
+    # round-1 HITL approval.
+    won = await repo.claim_deal(payload.deal_id, negotiation_id)
+    if not won:
+        winner = await repo.get_session_by_deal(payload.deal_id)
+        if winner is not None:
+            logger.info(
+                "Negotiation start for deal_id=%s lost the claim race — reusing "
+                "session_id=%s", payload.deal_id, winner.negotiation_id,
+            )
+            return _session_to_response(winner)
+        # Claimed by someone who hasn't persisted the session yet — extremely
+        # narrow window; fall through and let this call proceed (save_session is
+        # keyed on negotiation_id, and the claim is advisory, not a hard lock).
     rag_context, market_context, usd_inr_rate, (qc_provider, cost_envelope), logistics_cost = (
         await asyncio.gather(
             load_rag_context(payload.product_code),
@@ -1264,6 +1283,195 @@ async def _renotify_stuck_round0(session: NegotiationSession) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Gateway-failure auto-retry — sessions dead-ended by an LLM Gateway error
+# ---------------------------------------------------------------------------
+
+_RETRY_BACKOFF_SECONDS = 300.0
+"""Minimum gap between retry attempts on the same session — one per 5-min
+sweep tick, so a persistently-exhausted gateway is retried steadily rather
+than hammered, and each attempt gets its own sweep-cycle log line."""
+
+_MAX_GATEWAY_RETRIES = 12
+"""Give up auto-retrying after this many attempts (~1 hour at the 5-min sweep
+cadence) and fall through to the normal 30-day stale-fail path instead of
+retrying forever — a human should look at a session that's failed this many
+times in a row, it likely isn't a transient quota issue."""
+
+
+async def _is_gateway_failure_deadend(session: NegotiationSession) -> bool:
+    """True when *session* is HITL_PENDING with nothing a human can act on.
+
+    A normal HITL_PENDING session always has a live SEND_NEGOTIATION_EMAIL or
+    CONFIRM_NEGOTIATION_AGREEMENT approval waiting (or, for round 0, is caught
+    by _renotify_stuck_round0 above). The LLM Gateway failure path in
+    start_negotiation/run_round catches the graph exception, sets
+    routing=HITL_APPROVAL, but never reaches _post_graph_notify's email-gating
+    step (buyer_outbound_message/supplier_outbound_message are both empty) — so
+    NO approval is ever created. That combination (HITL_PENDING + zero pending
+    approvals + the last round drafted nothing) is unique to this failure mode
+    and is the only reliable signal to retry on.
+    """
+    if session.round_no == 0:
+        return False  # covered by _renotify_stuck_round0's own dead-draft case
+    try:
+        from services.hitl_approval.service import list_approvals  # type: ignore[import]
+        approvals = await list_approvals(status="PENDING", deal_id=session.deal_id)
+        if approvals:
+            return False  # a human has something real to act on — not our case
+    except Exception as exc:
+        logger.warning(
+            "StaleWatcher: could not check approvals for %s: %s",
+            session.negotiation_id, exc,
+        )
+        return False
+
+    rounds = await get_repository().list_rounds(session.negotiation_id)
+    if not rounds:
+        return False
+    last = max(rounds, key=lambda r: r.round_no)
+    return last.round_no == session.round_no and not last.outbound_message
+
+
+async def _retry_gateway_failed_round(session: NegotiationSession) -> bool:
+    """Replay the last round's inputs through run_round() / start_negotiation's
+    round-0 path to recover a session dead-ended by an LLM Gateway failure.
+
+    Idempotent and safe to call repeatedly: run_round re-derives everything
+    from the session + the replayed request, and a session that recovers (gets
+    a real draft this time) simply won't match _is_gateway_failure_deadend on
+    the next sweep, so retries stop naturally. A retry that fails again just
+    re-increments round_no and leaves the same dead-end signature for the next
+    sweep tick — bounded by _MAX_GATEWAY_RETRIES.
+    """
+    rounds = await get_repository().list_rounds(session.negotiation_id)
+    last = max(rounds, key=lambda r: r.round_no) if rounds else None
+    if last is None:
+        return False
+
+    retry_count = sum(1 for r in rounds if r.round_no >= 1 and not r.outbound_message)
+    if retry_count > _MAX_GATEWAY_RETRIES:
+        logger.error(
+            "StaleWatcher: negotiation %s exceeded %d gateway-failure retries — "
+            "giving up auto-retry, awaiting manual intervention or the 30-day stale-fail",
+            session.negotiation_id, _MAX_GATEWAY_RETRIES,
+        )
+        return False
+
+    logger.info(
+        "StaleWatcher: retrying negotiation %s round %d after apparent LLM Gateway "
+        "failure (attempt %d) — replaying party=%s",
+        session.negotiation_id, session.round_no, retry_count, last.party,
+    )
+    try:
+        if last.party == "init":
+            # Round-0 draft never completed. Re-run the same graph pass
+            # start_negotiation would have, in place, without minting a second
+            # session (get_session_by_deal's dedup in start_negotiation would
+            # just hand back this same session anyway — going straight to the
+            # graph avoids the redundant RAG/market/QC/freight re-seeding).
+            await _retry_round_zero(session)
+        else:
+            await run_round(
+                session.negotiation_id,
+                RoundRequest(
+                    counter_price=last.inbound_price or session.current_bid or session.current_ask or 0.0,
+                    party=last.party,  # type: ignore[arg-type]
+                    channel=last.channel,
+                    inbound_message=last.inbound_message,
+                ),
+            )
+        return True
+    except Exception as exc:
+        logger.error(
+            "StaleWatcher: retry failed for negotiation %s: %s", session.negotiation_id, exc,
+        )
+        return False
+
+
+async def _retry_round_zero(session: NegotiationSession) -> None:
+    """Re-run the round-0 graph pass for a session whose first attempt never
+    produced a draft (LLM Gateway failure). Mirrors start_negotiation's own
+    graph invocation but reuses the existing session/repo instead of creating
+    a new one."""
+    repo = get_repository()
+    market_context, usd_inr_rate = await asyncio.gather(
+        fetch_both(session.product_code, session.buyer_country_code),
+        get_usd_inr_rate(),
+    )
+    initial_state: NegotiationGraphState = {
+        "session": session,
+        "logistics_cost": session.logistics_cost_usd or 0.0,
+        "is_first_round": True,
+        "party": "init",
+        "inbound_message": None,
+        "inbound_price": None,
+        "operator_override_price": None,
+        "buyer_history": "",
+        "supplier_history": "",
+        "buyer_market_context": market_context["buyer"],
+        "supplier_market_context": market_context["supplier"],
+        "usd_inr_rate": usd_inr_rate,
+        "current_bid": session.buyer_target_price,
+        "current_ask": session.supplier_quote_price,
+        "current_margin": 0.0,
+        "orchestrator_decision": None,
+        "buyer_outbound_message": "",
+        "supplier_outbound_message": "",
+        "buyer_terms": {},
+        "supplier_terms": {},
+        "routing": "CALL_BUYER_AGENT",
+        "hitl_required": False,
+        "agreed_price": None,
+        "mentioned_qc_providers": None,
+        "pending_agreement_info": [],
+        "reasoning": "",
+        "error": None,
+    }
+
+    graph = build_negotiation_graph()
+    try:
+        final_state: NegotiationGraphState = await graph.ainvoke(initial_state)
+    except Exception as exc:
+        logger.error("StaleWatcher: round-0 retry graph execution failed again: %s", exc)
+        final_state = {**initial_state, "routing": "HITL_APPROVAL", "error": str(exc), "hitl_required": True}
+
+    session.status = _graph_state_to_status(
+        final_state.get("routing", "HITL_APPROVAL"),
+        final_state.get("hitl_required", False),
+    )
+    session.round_no = session.round_no + 1
+    session.current_bid = final_state.get("current_bid", session.current_bid)
+    session.current_ask = final_state.get("current_ask", session.current_ask)
+    session.agreed_price = final_state.get("agreed_price")
+    session.margin_at_current = final_state.get("current_margin")
+    session.hitl_required = final_state.get("hitl_required", False)
+    session.updated_at = datetime.now(timezone.utc)
+    await repo.save_session(session)
+
+    round_rec = NegotiationRound(
+        round_id=str(uuid.uuid4()),
+        negotiation_id=session.negotiation_id,
+        deal_id=session.deal_id,
+        round_no=session.round_no,
+        party="init",
+        channel="portal",
+        inbound_price=None,
+        inbound_message=None,
+        outbound_message=final_state.get("buyer_outbound_message", ""),
+        negotiated_terms=final_state.get("buyer_terms", {}),
+        orchestrator_routing=final_state.get("routing"),
+        orchestrator_reasoning=final_state.get("reasoning", ""),
+        margin_at_round=final_state.get("current_margin"),
+        hitl_required=session.hitl_required,
+        escalation_flag=False,
+        llm_reasoning=final_state.get("reasoning", ""),
+        created_at=datetime.now(timezone.utc),
+    )
+    await repo.save_round(round_rec)
+    await _post_graph_notify(session, final_state, repo)
+
+
 async def _fail_stale_negotiation(session: NegotiationSession) -> None:
     """Mark a long-idle post-round-0 session FAILED and advance the deal.
 
@@ -1284,42 +1492,227 @@ async def _fail_stale_negotiation(session: NegotiationSession) -> None:
     await _sync_deal_status(session)
 
 
-async def sweep_stale_negotiations() -> dict[str, int]:
-    """One sweep: re-notify stuck round-0 approvals, fail long-idle later rounds.
+# ---------------------------------------------------------------------------
+# No-reply follow-ups — drafted (L0-gated) when a party goes quiet
+# ---------------------------------------------------------------------------
 
-    Returns a small counts dict ({"renotified": n, "failed": n, "scanned": n})
-    — handy for tests and for logging what a sweep did.
+_ACTUALLY_SENT = (EmailStatus.SENT, EmailStatus.MODIFIED_SENT)
+_OUTSTANDING = (EmailStatus.DRAFT, EmailStatus.PENDING_APPROVAL)
+
+
+def _record_ts(record: EmailHistoryRecord) -> datetime:
+    """Best timestamp for ordering a record; naive values are treated as UTC."""
+    ts = record.sent_at or record.updated_at or record.created_at
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+async def _draft_followup_body(
+    session: NegotiationSession,
+    party: str,
+    history_text: str,
+    last_subject: str,
+    days_waiting: float,
+) -> tuple[str, bool]:
+    """LLM-draft the follow-up body; deterministic template on any failure.
+
+    Returns (body, degraded) — degraded=True means the canned template was used
+    and the HITL approval will carry the degraded_llm_fallback risk flag.
+    """
+    from .graph import _chat_json
+    from .prompts import FOLLOWUP_AGENT_SYSTEM_PROMPT
+
+    template = (
+        "Dear Sir or Madam,\n\n"
+        f"We wanted to follow up on our earlier message regarding the HS "
+        f"{session.product_code} product, as we have not yet heard back from you. "
+        "Our previous note and the terms it outlined still stand, and we would "
+        "be glad to continue the discussion whenever convenient.\n\n"
+        "Best regards,\nPortLess Trade Team"
+    )
+    payload = {
+        "party": party,
+        "product_hs_code": session.product_code,
+        "days_since_last_message": round(days_waiting, 1),
+        "last_message_subject": last_subject,
+        "conversation_history": history_text,
+    }
+    result = await _chat_json(
+        FOLLOWUP_AGENT_SYSTEM_PROMPT, payload, "negotiation_agent.followup_agent",
+        fallback={"outbound_message": template, "reasoning": "template fallback"},
+    )
+    body = str(result.get("outbound_message") or "").strip() or template
+    return body, bool(result.get("_degraded"))
+
+
+async def _maybe_followup_party(
+    session: NegotiationSession,
+    records: list[EmailHistoryRecord],
+    party: str,
+    now: datetime,
+) -> bool:
+    """Draft one L0-gated follow-up for *party* if their reply is overdue.
+
+    Eligibility (all must hold):
+      • our last outbound to them was actually SENT ≥ followup_after_seconds ago
+      • no inbound from them since that outbound (waiting on THEM, not on us)
+      • no outbound draft already outstanding for them (operator queue is clear)
+      • the unanswered chain (original + follow-ups) is under the per-party cap
+      • no REJECTED/FAILED outbound newer than the last sent one — an operator
+        reject (or a failed send needing manual attention) suppresses re-nagging
+        the same unanswered message; the chain resets when the party replies
+      • the address is real, not a @portless.placeholder stand-in
+    Returns True when a follow-up draft was created.
+    """
+    party_recs = [r for r in records if r.party == party]
+    if any(
+        r.direction == EmailDirection.OUTBOUND and r.status in _OUTSTANDING
+        for r in party_recs
+    ):
+        return False
+
+    last_in: datetime | None = max(
+        (
+            _record_ts(r) for r in party_recs
+            if r.direction == EmailDirection.INBOUND and r.status == EmailStatus.RECEIVED
+        ),
+        default=None,
+    )
+    unanswered = sorted(
+        (
+            r for r in party_recs
+            if r.direction == EmailDirection.OUTBOUND
+            and r.status in _ACTUALLY_SENT
+            and (last_in is None or _record_ts(r) > last_in)
+        ),
+        key=_record_ts,
+    )
+    if not unanswered:
+        return False  # nothing sent since their last reply — ball is in OUR court
+    if len(unanswered) >= 1 + settings.followup_max_per_party:
+        return False  # cap reached — go quiet; the 30-day stale fail takes over
+
+    last_out = unanswered[-1]
+    if any(
+        r.direction == EmailDirection.OUTBOUND
+        and r.status in (EmailStatus.REJECTED, EmailStatus.FAILED)
+        and _record_ts(r) > _record_ts(last_out)
+        for r in party_recs
+    ):
+        return False
+    if last_out.to_address.endswith("@portless.placeholder"):
+        return False
+
+    idle = (now - _record_ts(last_out)).total_seconds()
+    if idle < settings.followup_after_seconds:
+        return False
+
+    history_text = _format_history(records, party)
+    body, degraded = await _draft_followup_body(
+        session, party, history_text, last_out.subject, idle / 86400.0
+    )
+    subject = (
+        last_out.subject
+        if last_out.subject.lower().startswith("re:")
+        else f"Re: {last_out.subject}"
+    )
+    await _create_and_gate_email(
+        session, party, last_out.to_address, subject, body, degraded
+    )
+    logger.info(
+        "FollowUp: drafted no-reply follow-up to %s for negotiation %s "
+        "(unanswered for %.1f days, chain length %d)",
+        party, session.negotiation_id, idle / 86400.0, len(unanswered),
+    )
+    return True
+
+
+async def _sweep_followups_for_session(session: NegotiationSession, now: datetime) -> int:
+    """Check both parties of one session; returns how many follow-ups drafted."""
+    try:
+        records = await get_email_repository().list_by_negotiation(session.negotiation_id)
+    except Exception as exc:
+        logger.warning(
+            "FollowUp: could not load email history for %s: %s",
+            session.negotiation_id, exc,
+        )
+        return 0
+    created = 0
+    for party in ("buyer", "supplier"):
+        try:
+            if await _maybe_followup_party(session, records, party, now):
+                created += 1
+        except Exception:
+            logger.exception(
+                "FollowUp: error checking %s for negotiation %s",
+                party, session.negotiation_id,
+            )
+    return created
+
+
+async def sweep_stale_negotiations() -> dict[str, int]:
+    """One sweep: auto-retry gateway-failure dead-ends, re-notify stuck round-0
+    approvals, draft no-reply follow-ups, fail long-idle later rounds.
+
+    Returns a small counts dict ({"renotified": n, "failed": n, "followups": n,
+    "retried": n, "scanned": n}) — handy for tests and for logging what a sweep
+    did.
     """
     now = datetime.now(timezone.utc)
     repo = get_repository()
     sessions = await repo.list_sessions_by_status(_NON_TERMINAL_STATUSES)
 
-    renotified = failed = 0
+    renotified = failed = followups = retried = 0
     for session in sessions:
         idle = _session_idle_seconds(session, now)
         try:
+            # Case 0: parked HITL_PENDING with NOTHING for a human to act on —
+            # the LLM Gateway threw during drafting (e.g. every fallback model's
+            # quota exhausted) and the caught-exception path never reached the
+            # email-gating step, so no approval was ever created. This is a
+            # dead end a human wouldn't even find in the Approvals Inbox — waiting
+            # on it is NOT "expected" the way a real pending draft or a
+            # counterparty's silence is, so it's retried on every sweep tick
+            # (bounded by _MAX_GATEWAY_RETRIES) rather than gated on idle time.
+            if idle >= _RETRY_BACKOFF_SECONDS and await _is_gateway_failure_deadend(session):
+                if await _retry_gateway_failed_round(session):
+                    retried += 1
+                continue
+
             if session.round_no == 0:
                 # Case 1: first email never went out. Re-notify (never auto-send).
                 if idle >= settings.stale_round0_after_seconds:
                     if await _renotify_stuck_round0(session):
                         renotified += 1
-            else:
+            elif idle >= settings.stale_post_round0_after_seconds:
                 # Case 2: past round 0, gone quiet → fail after the cooling period.
-                if idle >= settings.stale_post_round0_after_seconds:
-                    await _fail_stale_negotiation(session)
-                    failed += 1
+                await _fail_stale_negotiation(session)
+                failed += 1
+            elif settings.followup_enabled:
+                # Case 3: alive but a party's reply is overdue → draft an
+                # L0-gated follow-up nudge (waiting on a reply is EXPECTED and
+                # never fails the session — this only nudges the quiet party).
+                followups += await _sweep_followups_for_session(session, now)
         except Exception:
             logger.exception(
                 "StaleWatcher: error handling stale negotiation %s (deal %s)",
                 session.negotiation_id, session.deal_id,
             )
 
-    if renotified or failed:
+    if renotified or failed or followups or retried:
         logger.info(
-            "StaleWatcher: sweep done — scanned=%d re-notified=%d failed=%d",
-            len(sessions), renotified, failed,
+            "StaleWatcher: sweep done — scanned=%d re-notified=%d failed=%d "
+            "followups=%d gateway-retried=%d",
+            len(sessions), renotified, failed, followups, retried,
         )
-    return {"scanned": len(sessions), "renotified": renotified, "failed": failed}
+    return {
+        "scanned": len(sessions),
+        "renotified": renotified,
+        "failed": failed,
+        "followups": followups,
+        "retried": retried,
+    }
 
 
 async def run_stale_watcher() -> None:

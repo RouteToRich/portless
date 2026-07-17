@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 @runtime_checkable
 class NegotiationRepository(Protocol):
     async def save_session(self, session: NegotiationSession) -> None: ...
+    async def claim_deal(self, deal_id: str, negotiation_id: str) -> bool: ...
     async def get_session(self, negotiation_id: str) -> NegotiationSession | None: ...
     async def get_session_by_deal(self, deal_id: str) -> NegotiationSession | None: ...
     async def list_sessions(self, deal_id: str | None = None) -> list[NegotiationSession]: ...
@@ -36,9 +37,23 @@ class InMemoryNegotiationRepository:
     def __init__(self) -> None:
         self._sessions: dict[str, dict[str, Any]] = {}
         self._rounds: dict[str, list[dict[str, Any]]] = {}
+        self._deal_claims: dict[str, str] = {}  # deal_id -> negotiation_id
 
     async def save_session(self, session: NegotiationSession) -> None:
         self._sessions[session.negotiation_id] = session.model_dump()
+
+    async def claim_deal(self, deal_id: str, negotiation_id: str) -> bool:
+        """Atomically reserve deal_id for negotiation_id. False if already claimed.
+
+        No ``await`` between the read and the write, so under asyncio's
+        single-threaded scheduler this check-and-set cannot interleave with a
+        concurrent caller — the second caller sees the first's claim.
+        """
+        existing = self._deal_claims.get(deal_id)
+        if existing is not None and existing != negotiation_id:
+            return False
+        self._deal_claims[deal_id] = negotiation_id
+        return True
 
     async def get_session(self, negotiation_id: str) -> NegotiationSession | None:
         doc = self._sessions.get(negotiation_id)
@@ -86,6 +101,10 @@ class MongoNegotiationRepository:
         db = client[db_name]
         self._sessions = db[sessions_col]
         self._rounds = db[rounds_col]
+        # One-document-per-deal reservation collection: _id == deal_id, so a
+        # concurrent second start_negotiation hits a DuplicateKeyError instead
+        # of racing past the get_session_by_deal check and creating a 2nd session.
+        self._claims = db[f"{sessions_col}_deal_claims"]
 
     async def _ensure_indexes(self) -> None:
         from pymongo import ASCENDING, DESCENDING  # type: ignore[import]
@@ -121,6 +140,21 @@ class MongoNegotiationRepository:
         await self._sessions.replace_one(
             {"negotiation_id": session.negotiation_id}, doc, upsert=True
         )
+
+    async def claim_deal(self, deal_id: str, negotiation_id: str) -> bool:
+        """Atomically reserve deal_id via a unique _id insert.
+
+        Returns True if this call won the claim (or already owns it), False if a
+        different negotiation already claimed the deal. The unique _id makes the
+        insert the atomic compare-and-set — two concurrent starts can't both win.
+        """
+        from pymongo.errors import DuplicateKeyError  # type: ignore[import]
+        try:
+            await self._claims.insert_one({"_id": deal_id, "negotiation_id": negotiation_id})
+            return True
+        except DuplicateKeyError:
+            existing = await self._claims.find_one({"_id": deal_id}, {"negotiation_id": 1})
+            return bool(existing and existing.get("negotiation_id") == negotiation_id)
 
     async def get_session(self, negotiation_id: str) -> NegotiationSession | None:
         doc = await self._sessions.find_one(

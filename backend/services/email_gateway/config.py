@@ -43,6 +43,12 @@ class EmailGatewaySettings(BaseSettings):
     # Optional dedicated Gmail labels to segregate buyer vs supplier replies.
     imap_buyer_folder: str = "INBOX"
     imap_supplier_folder: str = "INBOX"
+    # How many days back the poller scans on each cycle. The fetch is
+    # SEEN-flag-agnostic (a Gmail filter's "mark as read" or a human reading the
+    # thread must never hide a reply from the pipeline) — dedup is by
+    # Message-ID, so a wide window is safe, just slower. 3 days also covers
+    # weekend downtime/restarts.
+    imap_lookback_days: int = 3
 
     # ── SMTP (outbound transport, Gmail via aiosmtplib STARTTLS) ───────────
     #

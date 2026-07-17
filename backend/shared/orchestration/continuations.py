@@ -4,6 +4,7 @@ Subscribes handlers to the in-process event bus so a deal state change itself
 triggers the next pipeline step — instead of depending on a long-lived poller
 task (the dev auto-flow) that can die and leave the deal parked.
 
+  NEGOTIATION_STARTED → start the negotiation session (round 0 draft, L0-gated)
   NEGOTIATION_AGREED → issue PI                     → deal PI_SENT
   PI_ACCEPTED        → open neutral escrow          → deal ESCROW_PENDING
   ESCROW_FUNDED      → create ISSUE_PO HITL gate    (operator approves → PO)
@@ -121,6 +122,181 @@ async def _emit_exception(deal_id: str | None, stage: str, exc: Exception) -> No
         ))
     except Exception:
         logger.exception("Continuation[%s]: could not emit deal.exception for %s", stage, deal_id)
+
+
+# Buyer CIF prices typically sit ~25% above the supplier's FOB ask; when the
+# deal carries a supplier ask but no buyer target (thin/mocked seeds never
+# populate buyer_target_price_usd), derive one so the negotiation has a corridor
+# to work in. Mirrors auto_flow._ensure_match_results' 1.25× heuristic.
+_BUYER_MARKUP_OVER_FOB = 1.25
+
+
+def _winning_match(deal):
+    """The deal's winning MatchResult (by winning_supplier_id, else best score)."""
+    results = getattr(deal, "match_results", None) or []
+    if not results:
+        return None
+    win_id = getattr(deal, "winning_supplier_id", None)
+    if win_id:
+        for mr in results:
+            if getattr(mr, "supplier_id", None) == win_id:
+                return mr
+    sourced = [m for m in results if getattr(m, "decision", None) == "SOURCE"]
+    pool = sourced or results
+    return max(pool, key=lambda m: getattr(m, "composite_score", 0) or 0)
+
+
+def _party_email(deal, role: str) -> str | None:
+    """Best-effort contact email for a deal party (buyer/supplier).
+
+    Party carries no dedicated email field in the shared model; some deployments
+    stuff a contact address into an ``email``/``contact_email`` attribute. Returns
+    None when absent — the negotiation then falls back to a placeholder address and
+    the L0-gated first draft simply waits for an operator to set the recipient.
+    """
+    for p in getattr(deal, "parties", None) or []:
+        raw_role = getattr(p, "role", "")
+        p_role = (raw_role.value if hasattr(raw_role, "value") else str(raw_role)).lower()
+        if p_role == role:
+            return getattr(p, "email", None) or getattr(p, "contact_email", None)
+    return None
+
+
+def _negotiation_seed(deal) -> tuple[float, float, str, str] | None:
+    """Derive (buyer_target, supplier_ask, buyer_country, supplier_id) for a deal.
+
+    Returns None when there isn't enough to open a negotiation corridor (no
+    supplier price anywhere) — the caller logs and leaves the deal in NEGOTIATING
+    for an operator to complete sourcing.
+    """
+    win = _winning_match(deal)
+    supplier_ask = getattr(win, "fob_price_usd", None) if win is not None else None
+    buyer_target = getattr(deal, "buyer_target_price_usd", None)
+
+    if supplier_ask is None and buyer_target is None:
+        return None
+    if supplier_ask is None:
+        # Only a buyer target — assume the supplier opens at parity; the agent
+        # negotiates the real ask in from the supplier's first reply.
+        supplier_ask = buyer_target
+    if buyer_target is None:
+        buyer_target = round(float(supplier_ask) * _BUYER_MARKUP_OVER_FOB, 2)
+
+    supplier_id = (
+        getattr(deal, "winning_supplier_id", None)
+        or (getattr(win, "supplier_id", None) if win is not None else None)
+        or "UNKNOWN"
+    )
+    return float(buyer_target), float(supplier_ask), getattr(deal, "market", "") or "", supplier_id
+
+
+async def on_negotiation_started(event: DomainEvent) -> None:
+    """NEGOTIATION_STARTED → open the negotiation session (round-0 draft).
+
+    Fills the structural gap where a deal reaches NEGOTIATING (via a Sourcing
+    SOURCE decision, a manual/UI status change, or a restart that lost the dev
+    auto-flow task) but nothing ever calls ``start_negotiation`` — leaving the
+    deal parked with no session behind it.
+
+    Ownership boundary: the dev auto-flow (``AUTO_FLOW_ENABLED``) already starts
+    the negotiation for OPPORTUNITY-SEEDED deals, and it does so with the real
+    buyer/seller contact addresses. This handler therefore DEFERS to auto-flow
+    for those deals and only drives deals auto-flow doesn't own (no
+    opportunity_id, or auto-flow disabled). Without this deferral both paths race
+    on the same NEGOTIATING transition and create two sessions ~1s apart — each
+    drafting its own round-1 email to a different buyer address (real vs. the
+    placeholder), producing two pending approvals for one deal.
+
+    Idempotent: ``start_negotiation`` itself claims the deal atomically and
+    reuses an existing non-terminal session, so a duplicate NEGOTIATION_STARTED
+    (the topic can arrive from the status-transition emitter more than once) is a
+    no-op. The round-0 email is L0-gated as always — this creates the draft +
+    approval, it never sends anything.
+    """
+    if not _enabled():
+        logger.info(
+            "Continuation disabled — skipping negotiation start for deal %s", event.deal_id
+        )
+        return
+    deal_id = event.deal_id
+    deal = await _get_deal_in_status(deal_id, "NEGOTIATING", "NEGOTIATING→NEGOTIATE")
+    if deal is None:
+        return
+
+    # Defer to the dev auto-flow for the deals it owns — it starts the
+    # negotiation itself (with real buyer/seller emails), so starting one here
+    # too would double-create. Only opportunity-seeded deals are auto-flow's;
+    # everything else (operator-created, manual transition) is ours to drive.
+    if getattr(deal, "opportunity_id", None):
+        try:
+            from shared.orchestration import auto_flow  # type: ignore[import]
+            if auto_flow.enabled():
+                logger.info(
+                    "Continuation[NEGOTIATING]: deal %s is opportunity-seeded and auto-flow "
+                    "is enabled — deferring negotiation start to auto-flow", deal_id,
+                )
+                return
+        except Exception as exc:
+            logger.warning(
+                "Continuation[NEGOTIATING]: could not check auto-flow ownership for %s: %s",
+                deal_id, exc,
+            )
+
+    # Skip if a negotiation session already exists in a non-terminal state
+    # (the dev auto-flow, or a prior firing of this handler, already opened one).
+    try:
+        from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+        existing = await _neg_repo().get_session_by_deal(deal_id)
+        if existing is not None and existing.status not in ("FAILED", "ESCALATED"):
+            logger.info(
+                "Continuation[NEGOTIATING]: deal %s already has session %s (%s) — skipped",
+                deal_id, existing.negotiation_id, existing.status,
+            )
+            return
+    except Exception as exc:
+        logger.warning(
+            "Continuation[NEGOTIATING]: could not check existing session for %s: %s",
+            deal_id, exc,
+        )
+
+    seed = _negotiation_seed(deal)
+    if seed is None:
+        logger.warning(
+            "Continuation[NEGOTIATING]: deal %s has no supplier/buyer price yet — "
+            "leaving in NEGOTIATING for an operator to complete sourcing", deal_id,
+        )
+        return
+    buyer_target, supplier_ask, market, supplier_id = seed
+
+    try:
+        from agents.negotiation_agent.schemas import (  # type: ignore[import]
+            NegotiationPolicy,
+            StartNegotiationRequest,
+        )
+        from agents.negotiation_agent.service import start_negotiation  # type: ignore[import]
+
+        gap = abs(buyer_target - supplier_ask)
+        policy = NegotiationPolicy(concession_step=max(round(gap * 0.08, 2), 1.0))
+        session = await start_negotiation(StartNegotiationRequest(
+            deal_id=deal_id,
+            trade_match_id=(getattr(_winning_match(deal), "match_id", None) or f"MATCH-{deal_id}"),
+            buyer_id=f"BUYER-{market or 'NA'}",
+            seller_id=supplier_id,
+            product_code=getattr(deal, "hs_code", "") or "",
+            buyer_country_code=market,
+            buyer_target_price=buyer_target,
+            supplier_quote_price=supplier_ask,
+            buyer_email=_party_email(deal, "buyer"),
+            seller_email=_party_email(deal, "supplier"),
+            policy=policy,
+        ))
+        logger.info(
+            "Continuation: negotiation %s opened for deal %s (status=%s, buyer=%s ask=%s, event %s)",
+            session.negotiation_id, deal_id, session.status,
+            buyer_target, supplier_ask, event.event_id,
+        )
+    except Exception as exc:
+        await _emit_exception(deal_id, "NEGOTIATING→NEGOTIATION_STARTED", exc)
 
 
 async def on_negotiation_agreed(event: DomainEvent) -> None:
@@ -387,9 +563,53 @@ async def on_deal_exception(event: DomainEvent) -> None:
         )
 
 
+async def resume_parked_negotiations() -> None:
+    """Startup catch-up: open a session for any deal already stuck in NEGOTIATING.
+
+    The NEGOTIATION_STARTED event that would trigger ``on_negotiation_started``
+    only helps deals that transition AFTER the subscriber is live. A deal that
+    was already sitting in NEGOTIATING before this handler existed (or whose
+    event fired while nothing was subscribed, or during a restart) never gets a
+    session. This one-shot sweep — called once from the app lifespan, mirroring
+    ``auto_flow.resume_in_flight`` — replays ``on_negotiation_started`` for every
+    such deal. It is fully idempotent: the handler skips any deal that already
+    has a non-terminal session, so re-running never double-opens.
+
+    Covers ALL deals, including operator-created ones with no opportunity_id
+    (which auto_flow.resume_in_flight deliberately skips).
+    """
+    if not _enabled():
+        return
+    try:
+        from services.deals.repository import get_repository  # type: ignore[import]
+        from services.deals.schemas import DealStatus  # type: ignore[import]
+        deals = await get_repository().list_active(limit=500, status=DealStatus.NEGOTIATING)
+    except Exception:
+        logger.exception("Continuation: resume scan for parked NEGOTIATING deals failed")
+        return
+
+    resumed = 0
+    for deal in deals:
+        try:
+            # Reuse the handler so the existing-session guard + seed logic apply.
+            await on_negotiation_started(DomainEvent(
+                topic=EventTopic.NEGOTIATION_STARTED,
+                deal_id=deal.deal_id,
+                payload={"resumed": True},
+            ))
+            resumed += 1
+        except Exception:
+            logger.exception(
+                "Continuation: could not resume parked negotiation for deal %s", deal.deal_id
+            )
+    if resumed:
+        logger.info("Continuation: swept %d deal(s) parked in NEGOTIATING at startup", resumed)
+
+
 def register_continuations(bus) -> None:
     """Subscribe every pipeline continuation on the given bus
     (InProcessEventBus or NatsJetStreamBus — same subscribe surface)."""
+    bus.subscribe(EventTopic.NEGOTIATION_STARTED, on_negotiation_started)
     bus.subscribe(EventTopic.NEGOTIATION_AGREED, on_negotiation_agreed)
     bus.subscribe(EventTopic.PI_ACCEPTED, on_pi_accepted)
     bus.subscribe(EventTopic.ESCROW_FUNDED, on_escrow_funded)

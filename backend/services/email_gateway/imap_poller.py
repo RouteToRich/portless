@@ -1,12 +1,19 @@
 """IMAP inbox poller — async Gmail polling via aioimaplib (inbound transport).
 
-Two ``ImapPoller`` instances run as background asyncio tasks at startup — one
-for the buyer reply folder and one for the supplier reply folder. Each poll
-cycle fetches all UNSEEN messages, marks them SEEN immediately, parses them into
-``InboundRawEmail`` (bodies + attachments), and forwards each to a callback —
-the Email Processor's ``process_inbound`` (in-process) or its receiving API over
-HTTP. The gateway does not persist or interpret the email; that is the
-Processor's job.
+``ImapPoller`` instances run as background asyncio tasks at startup — one per
+distinct reply folder (a single shared poller when the buyer and supplier
+folders are the same). Each poll cycle scans the last ``IMAP_LOOKBACK_DAYS``
+of the folder REGARDLESS of the ``\\Seen`` flag — a Gmail filter's "mark as
+read" or a human reading the thread in Gmail must never hide a reply from the
+pipeline (UNSEEN-only polling silently skipped exactly those replies). New
+messages are identified by Message-ID: an in-memory per-poller cache skips
+already-forwarded ids cheaply, and the Email Processor's durable message_id
+deduplication is the authoritative guard (covers restarts). The account's own
+outbound copies (Gmail labels sent mail into the same folder) are filtered out
+by From address. Each new message is parsed into ``InboundRawEmail`` (bodies +
+attachments) and forwarded to a callback — the Email Processor's
+``process_inbound`` (in-process) or its receiving API over HTTP. The gateway
+does not persist or interpret the email; that is the Processor's job.
 
 Poll interval is configurable via ``IMAP_POLL_INTERVAL_SECONDS`` (default 900s =
 15 min). If ``IMAP_USER`` is not set, polling is silently disabled and the
@@ -18,7 +25,8 @@ import asyncio
 import base64
 import email
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from typing import AsyncIterator
 
@@ -163,6 +171,12 @@ class ImapPoller:
         self._label = label
         self._running = False
         self._task: asyncio.Task | None = None
+        self._forwarded: dict[str, None] = {}
+        """Message-IDs already forwarded by THIS poller instance (insertion-
+        ordered, pruned at _FORWARDED_CACHE_MAX). Cheap first-line dedup so the
+        date-window scan doesn't re-download bodies every cycle; the Email
+        Processor's durable message_id dedup is the authoritative guard and
+        covers process restarts."""
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -211,7 +225,7 @@ class ImapPoller:
         consecutive_errors = 0
         while self._running:
             try:
-                async for raw_email in self._fetch_unseen():
+                async for raw_email in self._fetch_new():
                     try:
                         if self._party_hint:
                             await self._callback(raw_email, party_override=self._party_hint)
@@ -234,13 +248,64 @@ class ImapPoller:
 
             await asyncio.sleep(settings.imap_poll_interval_seconds)
 
-    async def _fetch_unseen(self) -> AsyncIterator[InboundRawEmail]:
-        """Connect to IMAP, fetch UNSEEN messages, mark them SEEN, and yield each.
+    _FORWARDED_CACHE_MAX = 2000
 
-        Uses aioimaplib for async SSL IMAP4 access (Gmail imap.gmail.com:993).
-        Marks each fetched message as \\Seen immediately so the next poll cycle
-        does not re-process it. The Processor handles message-id deduplication as
-        a second safety net.
+    # IMAP SINCE dates use fixed English month abbreviations — never strftime %b,
+    # which is locale-dependent.
+    _IMAP_MONTHS = (
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    )
+
+    @classmethod
+    def _imap_since_date(cls, lookback_days: int) -> str:
+        d = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        return f"{d.day:02d}-{cls._IMAP_MONTHS[d.month - 1]}-{d.year}"
+
+    def _own_addresses(self) -> set[str]:
+        """The account's own sending identities — their folder copies are our
+        outbound mail, never inbound to process."""
+        return {
+            a.strip().lower()
+            for a in (settings.imap_user, settings.gmail_sender_address)
+            if a and a.strip()
+        }
+
+    def _remember_forwarded(self, message_id: str) -> None:
+        self._forwarded[message_id] = None
+        if len(self._forwarded) > self._FORWARDED_CACHE_MAX:
+            for key in list(self._forwarded)[: self._FORWARDED_CACHE_MAX // 2]:
+                del self._forwarded[key]
+
+    @staticmethod
+    def _parse_envelope(blob: str) -> tuple[str, str, bool]:
+        """(message_id, from_address, seen) from a FLAGS+headers fetch blob."""
+        from email.utils import parseaddr
+
+        msg_id = from_addr = ""
+        for line in blob.splitlines():
+            low = line.lower()
+            if low.startswith("message-id:"):
+                msg_id = line.split(":", 1)[1].strip()
+            elif low.startswith("from:"):
+                _, from_addr = parseaddr(line.split(":", 1)[1].strip())
+        flags_match = re.search(r"FLAGS \(([^)]*)\)", blob)
+        seen = bool(flags_match and "\\Seen" in flags_match.group(1))
+        return msg_id, from_addr.lower(), seen
+
+    async def _fetch_new(self) -> AsyncIterator[InboundRawEmail]:
+        """Scan the recent window and yield messages not yet forwarded.
+
+        Deliberately SEEN-flag-agnostic: replies routed through a Gmail label
+        whose filter marks them read (or read by a human in Gmail) arrive
+        already \\Seen, so an UNSEEN-only search skips them forever — exactly
+        the failure observed in production. Instead, SEARCH SINCE the lookback
+        window and identify new mail by Message-ID (in-memory cache here, the
+        Processor's durable message_id dedup as the authoritative guard). A
+        cheap headers-first pass skips our own outbound copies and known ids
+        without downloading bodies. Messages WITHOUT a Message-ID cannot be
+        deduplicated, so only those fall back to the old rule (skip if already
+        \\Seen). Forwarded messages are still marked \\Seen for mailbox tidiness.
         """
         try:
             import aioimaplib  # type: ignore[import]
@@ -261,21 +326,38 @@ class ImapPoller:
             await imap.login(settings.imap_user, settings.imap_password)
             await imap.select(self._folder)
 
-            status, data = await imap.search("UNSEEN")
+            since = self._imap_since_date(settings.imap_lookback_days)
+            status, data = await imap.search("SINCE", since)
             if status != "OK" or not data[0].strip():
                 logger.debug(
-                    "ImapPoller[%s]: no unseen messages in folder '%s'",
-                    self._label, self._folder,
+                    "ImapPoller[%s]: no messages since %s in folder '%s'",
+                    self._label, since, self._folder,
                 )
                 return
 
             uids = [u.decode() if isinstance(u, bytes) else u for u in data[0].split()]
-            logger.info(
-                "ImapPoller[%s]: found %d unseen message(s) in '%s'",
-                self._label, len(uids), self._folder,
-            )
+            own = self._own_addresses()
+            new_count = 0
             for uid in uids:
                 try:
+                    # Headers-first: identify the message before paying for the body.
+                    head_status, head_data = await imap.fetch(
+                        uid, "(FLAGS BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM)])"
+                    )
+                    if head_status != "OK":
+                        continue
+                    blob = b"".join(
+                        p for p in head_data if isinstance(p, (bytes, bytearray))
+                    ).decode("utf-8", errors="replace")
+                    msg_id, from_addr, seen = self._parse_envelope(blob)
+
+                    if from_addr in own:
+                        continue  # our own outbound copy labeled into this folder
+                    if msg_id and msg_id in self._forwarded:
+                        continue  # already forwarded this session
+                    if not msg_id and seen:
+                        continue  # no id to dedup on — old UNSEEN rule applies
+
                     fetch_status, msg_data = await imap.fetch(uid, "(RFC822)")
                     if fetch_status != "OK" or len(msg_data) < 2:
                         logger.warning(
@@ -295,15 +377,22 @@ class ImapPoller:
                         continue
                     msg = email.message_from_bytes(bytes(raw_bytes))
                     raw_email = _mime_to_raw_email(msg)
-                    # Mark SEEN immediately — prevents double-processing on the
-                    # next poll even if this process crashes mid-batch.
+                    if msg_id:
+                        self._remember_forwarded(msg_id)
+                    # Tidiness only — no longer load-bearing for dedup.
                     await imap.store(uid, "+FLAGS", "(\\Seen)")
+                    new_count += 1
                     yield raw_email
                 except Exception as exc:
                     logger.error(
                         "ImapPoller[%s]: error processing uid=%s: %s",
                         self._label, uid, exc,
                     )
+            if new_count:
+                logger.info(
+                    "ImapPoller[%s]: forwarded %d new message(s) from '%s' (window since %s)",
+                    self._label, new_count, self._folder, since,
+                )
         finally:
             try:
                 await imap.logout()

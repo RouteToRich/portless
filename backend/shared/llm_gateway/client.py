@@ -384,12 +384,26 @@ class LLMClient:
                     )
                     break  # advance to next model immediately
 
+                if error_class == "rate_limit":
+                    delay = get_retry_delay_seconds(exc, base_delay, attempt)
+                    ceiling = self._settings.rate_limit_retry_ceiling_seconds
+                    if delay > ceiling:
+                        # A per-DAY quota (TPD) can report a wait of an hour+ —
+                        # sleeping that long inside a live request just freezes
+                        # the caller instead of using the fallback chain that
+                        # already exists for exactly this situation. Skip the
+                        # in-place retry and advance to the next model now.
+                        logger.warning(
+                            "Rate-limit error on %s — reported wait %.0fs exceeds the "
+                            "%.0fs ceiling; skipping retries, advancing to next model. "
+                            "%s: %s",
+                            endpoint.model, delay, ceiling, type(exc).__name__, exc,
+                        )
+                        break
+                else:
+                    delay = base_delay * (2 ** attempt)
+
                 if attempt < max_retries:
-                    delay = (
-                        get_retry_delay_seconds(exc, base_delay, attempt)
-                        if error_class == "rate_limit"
-                        else base_delay * (2 ** attempt)
-                    )
                     logger.warning(
                         "%s error on %s (attempt %d/%d) — retrying in %.1fs. %s: %s",
                         "Rate-limit" if error_class == "rate_limit" else "Transient",

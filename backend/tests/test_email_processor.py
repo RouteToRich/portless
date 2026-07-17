@@ -66,8 +66,34 @@ def _raw(
         ("no numbers here", None),
     ],
 )
-def test_extract_price(body, expected):
-    assert _extract_price(body) == expected
+async def test_extract_price(body, expected):
+    assert await _extract_price(body) == expected
+
+
+async def test_extract_price_inr_converted_to_usd(monkeypatch):
+    """A rupee-quoted amount (₹/INR/Rs) is converted to USD, not read as USD.
+
+    Regression: the supplier agent quotes in INR by design, so its reply echoes
+    a rupee figure (e.g. ₹90,901.91 ≈ $946 at 96). Before this it was read as
+    $90,901.91 and the negotiation price-plausibility guard vetoed every reply.
+    """
+    import services.email_processor.service as svc
+    # Pin the rate so the assertion is deterministic.
+    async def _fixed_rate() -> float:
+        return 96.0
+    monkeypatch.setattr(svc, "_usd_inr_rate", _fixed_rate)
+
+    for body in (
+        "the Ex-Works price of ₹90,901.91, we would",
+        "Our quote is 90901.91 INR per MT",
+        "We can offer Rs. 90,901.91",
+    ):
+        usd = await svc._extract_price(body)
+        assert usd is not None
+        assert abs(usd - (90901.91 / 96.0)) < 0.01, f"{body!r} -> {usd}"
+
+    # A plain USD figure is unaffected by the INR path.
+    assert await svc._extract_price("Our offer is $1,004.00 / MT") == 1004.0
 
 
 # ---------------------------------------------------------------------------

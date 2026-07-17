@@ -90,17 +90,71 @@ class NegotiationGraphState(TypedDict, total=False):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _escape_control_chars_in_strings(candidate: str) -> str:
+    """Escape raw control characters that appear *inside* JSON string literals.
+
+    The drafting models routinely put an email ``body`` in the JSON with literal
+    newlines/tabs inside the quoted value:
+
+        {"body": "Dear Buyer,
+        We are pleased..."}
+
+    Strict JSON forbids unescaped control characters in a string, so ``json.loads``
+    rejects it with "Invalid control character at ...". Rather than lose a genuine
+    draft to the canned fallback, walk the text and escape only the control
+    characters that fall between quotes (respecting backslash escaping), leaving
+    structural whitespace and already-valid escapes untouched.
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    _CTRL_MAP = {"\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f"}
+    for ch in candidate:
+        if in_string:
+            if escaped:
+                out.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escaped = True
+                continue
+            if ch == '"':
+                out.append(ch)
+                in_string = False
+                continue
+            if ch in _CTRL_MAP:
+                out.append(_CTRL_MAP[ch])
+                continue
+            if ord(ch) < 0x20:
+                out.append(f"\\u{ord(ch):04x}")
+                continue
+            out.append(ch)
+        else:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+    return "".join(out)
+
+
 def _parse_llm_json(raw: str, fallback: dict[str, Any]) -> dict[str, Any]:
     start = raw.find("{")
     end = raw.rfind("}") + 1
     if start == -1 or end == 0:
         logger.warning("LLM response contained no JSON — using fallback")
         return fallback
+    candidate = raw[start:end]
     try:
-        return json.loads(raw[start:end])
+        return json.loads(candidate)
     except json.JSONDecodeError as exc:
-        logger.warning("JSON parse error in LLM response (%s) — using fallback", exc)
-        return fallback
+        # Most common failure: the model emitted literal newlines/tabs inside a
+        # string value (e.g. a multi-line email body). Escape those and retry
+        # before giving up on a real draft.
+        try:
+            return json.loads(_escape_control_chars_in_strings(candidate))
+        except json.JSONDecodeError:
+            logger.warning("JSON parse error in LLM response (%s) — using fallback", exc)
+            return fallback
 
 
 def _current_bid(state: NegotiationGraphState) -> float:
@@ -502,6 +556,19 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
     floor_price = round((ask + logistics + env_total) / denom, 2)
     midpoint = compute_midpoint_price(bid, ask)  # local only — fallback, not sent
 
+    # The inbound message belongs to whoever just replied (state["party"]). Only
+    # feed it as the BUYER's inbound when the buyer is actually the one who
+    # replied — otherwise (e.g. drafting to the buyer after a SUPPLIER reply, or
+    # the very first outreach) the buyer has said nothing and this must be empty.
+    # Passing a supplier/other message here made the agent believe a buyer thread
+    # existed and write a follow-up on what was really a first-contact email.
+    buyer_history = state.get("buyer_history", "")
+    inbound_from_buyer = (state.get("inbound_message") or "") if state.get("party") == "buyer" else ""
+    # First outreach = nothing has ever actually been exchanged with THIS buyer:
+    # no real party-scoped history and no inbound from them this pass. Driven off
+    # real SENT/RECEIVED history, never off is_first_round or a cross-party msg.
+    is_first_contact = not buyer_history and not inbound_from_buyer
+
     payload = {
         "buyer_id": session.buyer_id,
         "product_hs_code": session.product_code,
@@ -513,8 +580,9 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
         "margin_floor_pct": floor_pct,
         "concession_budget_remaining": round(bid - floor_price, 4),
         "rag_context": session.rag_context,
-        "inbound_buyer_message": state.get("inbound_message") or "",
-        "conversation_history": state.get("buyer_history", ""),
+        "inbound_buyer_message": inbound_from_buyer,
+        "conversation_history": buyer_history,
+        "is_first_contact": is_first_contact,
         "market_context": state.get("buyer_market_context", ""),
         "qc_provider_options": _qc_provider_options_summary(),
         "buyer_selected_qc_provider": _qc_provider_display(session.qc_provider),
@@ -567,6 +635,16 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
     ask_inr = round(ask * usd_inr_rate, 2)
     concession_usd = round(implied_max - ask, 4)
 
+    # The inbound belongs to whoever just replied (state["party"]). Feed it as the
+    # SUPPLIER's inbound ONLY when the supplier actually replied. Drafting to the
+    # supplier after a BUYER reply (the common round-2 case) or on init means the
+    # supplier has said nothing yet — its inbound MUST be empty, or the agent
+    # writes a follow-up ("we already emailed you, awaiting your reply") on what
+    # is truly the FIRST email ever sent to this supplier.
+    supplier_history = state.get("supplier_history", "")
+    inbound_from_supplier = (state.get("inbound_message") or "") if state.get("party") == "supplier" else ""
+    is_first_contact = not supplier_history and not inbound_from_supplier
+
     payload = {
         "seller_id": session.seller_id,
         "current_ask_usd": round(ask, 4),
@@ -579,8 +657,9 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
         "target_margin_pct": session.policy.target_margin_pct,
         "margin_floor_pct": session.policy.margin_floor_pct,
         "rag_context": session.rag_context,
-        "inbound_supplier_message": state.get("inbound_message") or "",
-        "conversation_history": state.get("supplier_history", ""),
+        "inbound_supplier_message": inbound_from_supplier,
+        "conversation_history": supplier_history,
+        "is_first_contact": is_first_contact,
         "market_context": state.get("supplier_market_context", ""),
         "product_code": session.product_code,
         "concession_budget_remaining_usd": concession_usd,

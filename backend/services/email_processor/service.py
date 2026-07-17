@@ -35,26 +35,74 @@ logger = logging.getLogger(__name__)
 # Price extraction
 # ---------------------------------------------------------------------------
 # Patterns ordered from most specific (explicit currency) to most general.
+# Each captures the numeric amount in group 1.
 _PRICE_PATTERNS = [
-    re.compile(r"\$\s*([\d,]+(?:\.\d{1,2})?)\s*(?:/\s*(?:MT|kg|unit|pc|pcs|piece|ton|lb))?", re.IGNORECASE),
-    re.compile(r"([\d,]+(?:\.\d{1,2})?)\s*(?:USD|usd)\b"),
-    re.compile(r"(?:price|offer|quote|bid|ask|propose|counter)[^\d$]{0,20}([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE),
+    re.compile(r"[₹$]\s*([\d,]+(?:\.\d{1,2})?)\s*(?:/\s*(?:MT|kg|unit|pc|pcs|piece|ton|lb))?", re.IGNORECASE),
+    re.compile(r"([\d,]+(?:\.\d{1,2})?)\s*(?:USD|usd|INR|inr|Rs\.?|rupees?)\b"),
+    re.compile(r"(?:price|offer|quote|bid|ask|propose|counter)[^\d$₹]{0,20}([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE),
     re.compile(r"([\d,]+(?:\.\d{1,2})?)\s*(?:per\s+(?:MT|kg|unit|piece|pc|pcs|ton))", re.IGNORECASE),
     # Internal marker injected by the manual submission endpoint
     re.compile(r"\[PRICE:([\d.]+)\s*(?:USD)?\]"),
 ]
 
+# A price token is INR-denominated when a rupee marker sits immediately next to
+# the number on either side — "₹90,901.91", "90901.91 INR", "Rs. 90,901".
+# The supplier-facing negotiation agent quotes in INR by design (it converts the
+# USD ask at the live USD/INR rate), so its replies echo a rupee figure. Without
+# this the rupee amount is read as USD (~96× too high) and the negotiation's
+# price-plausibility guard vetoes every supplier reply.
+_INR_CONTEXT = re.compile(r"[₹]|\b(?:INR|inr|Rs\.?|rupees?)\b")
 
-def _extract_price(body: str) -> float | None:
+
+def _looks_like_inr(body: str, match: re.Match[str]) -> bool:
+    """True if a rupee marker sits within a few chars of the matched number."""
+    start, end = match.span(1)
+    left = body[max(0, start - 6):start]
+    right = body[end:end + 8]
+    return bool(_INR_CONTEXT.search(left) or _INR_CONTEXT.search(right))
+
+
+async def _usd_inr_rate() -> float:
+    """Live USD/INR rate via the negotiation agent's shared helper; falls back to
+    its configured static rate. Never raises — a rate is always returned."""
+    try:
+        from agents.negotiation_agent.market_intel import get_usd_inr_rate  # type: ignore[import]
+        rate = await get_usd_inr_rate()
+        if rate and rate > 0:
+            return float(rate)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("USD/INR rate lookup failed (%s) — using static fallback", exc)
+    try:
+        from agents.negotiation_agent.config import settings as neg_settings  # type: ignore[import]
+        return float(neg_settings.fallback_usd_inr_rate)
+    except Exception:  # noqa: BLE001
+        return 96.0
+
+
+async def _extract_price(body: str) -> float | None:
+    """Extract the counter price from an email body, normalised to USD.
+
+    Amounts denominated in INR (₹/INR/Rs near the number) are converted to USD
+    at the current rate before the USD plausibility bounds are applied, so a
+    rupee-quoted supplier reply doesn't read as a ~96× USD figure.
+    """
     for pattern in _PRICE_PATTERNS:
         m = pattern.search(body)
-        if m:
-            try:
-                value = float(m.group(1).replace(",", ""))
-                if settings.price_extraction_min <= value <= settings.price_extraction_max:
-                    return value
-            except ValueError:
-                continue
+        if not m:
+            continue
+        try:
+            value = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if _looks_like_inr(body, m):
+            rate = await _usd_inr_rate()
+            usd = round(value / rate, 4)
+            logger.info(
+                "Extracted INR price ₹%s → $%.4f USD (rate %.2f)", value, usd, rate
+            )
+            value = usd
+        if settings.price_extraction_min <= value <= settings.price_extraction_max:
+            return value
     return None
 
 
@@ -171,7 +219,7 @@ async def process_inbound(
         logger.debug("record_inbound_email (non-fatal): %s", exc)
 
     # ── Extract counter-price ──────────────────────────────────────────────
-    price = counter_price_override or _extract_price(raw.body_text)
+    price = counter_price_override or await _extract_price(raw.body_text)
 
     if price is None:
         record = record.model_copy(update={

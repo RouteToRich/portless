@@ -42,10 +42,24 @@ def _forward_callback():
 async def on_startup() -> None:
     global _buyer_poller, _supplier_poller
     callback = _forward_callback()
-    _buyer_poller = create_buyer_poller(callback)
-    _supplier_poller = create_supplier_poller(callback)
-    await _buyer_poller.start()
-    await _supplier_poller.start()
+    if settings.imap_buyer_folder == settings.imap_supplier_folder:
+        # One folder for both parties (the common single-account setup): run a
+        # single poller with NO party hint — the Processor's mapper resolves the
+        # party from the sender address via the negotiation's own outbound
+        # records. Two pollers on one folder would fetch everything twice and
+        # attach conflicting buyer/supplier hints to the same message.
+        _buyer_poller = ImapPoller(
+            on_email_received=callback,
+            folder=settings.imap_buyer_folder,
+            party_hint=None,
+            label="shared",
+        )
+        await _buyer_poller.start()
+    else:
+        _buyer_poller = create_buyer_poller(callback)
+        _supplier_poller = create_supplier_poller(callback)
+        await _buyer_poller.start()
+        await _supplier_poller.start()
     logger.info("EmailGateway startup complete (IMAP pollers active + SMTP send ready)")
 
 

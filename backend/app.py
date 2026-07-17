@@ -200,6 +200,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("EventBus startup failed (events stay no-op): %s", exc)
 
+    # ── Continuations catch-up: start a session for any deal already parked ──
+    # in NEGOTIATING with no negotiation session behind it. The NEGOTIATION_STARTED
+    # subscriber (registered by init_event_bus above) only fires for deals that
+    # transition after startup — this one-shot idempotent sweep covers deals that
+    # were already stuck, including operator-created ones with no opportunity_id.
+    try:
+        from shared.orchestration.continuations import resume_parked_negotiations
+        await resume_parked_negotiations()
+    except Exception as exc:
+        logger.error("Continuation resume failed (parked NEGOTIATING deals may stay idle): %s", exc)
+
     # ── Auto-flow: re-arm the in-memory poller for deals already in-flight ──
     # (dev/test only; no-op when AUTO_FLOW_ENABLED=false). auto_flow's task is
     # a bare asyncio task that dies with the process — without this, a deal

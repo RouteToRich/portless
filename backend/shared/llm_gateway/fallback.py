@@ -211,16 +211,42 @@ def classify_error(exc: Exception) -> str:
             return "request_too_large"
         if status_code == 429:
             return "rate_limit"
-        if status_code in (500, 502, 503, 504):
+        if 500 <= status_code <= 599:
             return "transient"
-        if status_code in (400, 401, 403):
+        # Any other 4xx (400/401/403 auth/bad-request, but also 404 model-not-
+        # found, 405, 409, 422, …) is a permanent condition for THIS endpoint —
+        # retrying the identical request never changes the outcome, so skip
+        # retries and advance to the next model immediately.
+        if 400 <= status_code <= 499:
             return "fatal"
 
-    # Unknown errors: treat as transient — give the model one more chance
+    # Unknown errors with no status code: treat as transient — give the model
+    # one more chance (a bare timeout/connection hiccup with no HTTP response).
     return "transient"
 
 
 _RETRY_AFTER_RE = re.compile(r"retry.{0,5}after\D{0,10}([\d.]+)", re.IGNORECASE)
+
+# Groq's actual wording is "try again in <duration>", not "retry after <n>", and
+# the duration itself is a composite "1h1m44.832s" / "20.5s" / "3m2s" format, not
+# a bare number — the pattern above never matches it, silently discarding the
+# server's real wait time (a TPD quota's multi-hour figure is exactly the case
+# that most needs to be read correctly, since it drives the fallback-ceiling
+# decision). Each unit group is optional and independently captured.
+_TRY_AGAIN_RE = re.compile(
+    r"try\s+again\s+in\s+"
+    r"(?:(\d+)\s*h)?\s*(?:(\d+)\s*m(?!s))?\s*(?:([\d.]+)\s*s)?",
+    re.IGNORECASE,
+)
+
+
+def _parse_try_again_duration(text: str) -> float | None:
+    m = _TRY_AGAIN_RE.search(text)
+    if not m or not any(m.groups()):
+        return None
+    hours, minutes, seconds = (float(g) if g else 0.0 for g in m.groups())
+    total = hours * 3600 + minutes * 60 + seconds
+    return total if total > 0 else None
 
 
 def get_retry_delay_seconds(exc: Exception, base_delay: float, attempt: int) -> float:
@@ -253,12 +279,17 @@ def _extract_retry_after_seconds(exc: Exception) -> float | None:
                 except (TypeError, ValueError):
                     pass
 
-    # Fall back to parsing the error message text, e.g. Groq's
-    # "...try again in 20.5s..." style wording (format varies by error type).
-    match = _RETRY_AFTER_RE.search(str(exc))
+    # Fall back to parsing the error message text. Two Groq wordings observed:
+    #   "retry after 20.5s"          (older / other-provider style)
+    #   "try again in 1h1m44.832s"   (Groq's actual TPD/TPM quota wording)
+    text = str(exc)
+    match = _RETRY_AFTER_RE.search(text)
     if match:
         try:
             return float(match.group(1))
         except ValueError:
             pass
+    duration = _parse_try_again_duration(text)
+    if duration is not None:
+        return duration
     return None

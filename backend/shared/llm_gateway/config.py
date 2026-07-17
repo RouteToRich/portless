@@ -101,6 +101,16 @@ class LLMGatewaySettings(BaseSettings):
     # retrying after 1-2s just fails again. Overridden by a server-provided
     # Retry-After value when Groq's error response includes one.
     rate_limit_retry_floor_seconds: float = 20.0
+    # Ceiling on how long a single call will actually block sleeping before a
+    # SAME-model rate-limit retry. A per-minute TPM/RPM burst reports a wait of
+    # a few/tens of seconds — worth sitting through. A per-DAY (TPD) quota can
+    # report a wait of 30-60+ minutes (the window doesn't roll over faster than
+    # that), and sleeping that long inside a live request just freezes the
+    # caller for an hour instead of using the fallback chain it already has.
+    # When the computed/server-reported delay exceeds this ceiling, skip the
+    # in-place retry and advance to the next model immediately — same as a
+    # fatal/request_too_large error.
+    rate_limit_retry_ceiling_seconds: float = 90.0
 
     # -------------------------------------------------- generation defaults
     llm_temperature: float = 0.7

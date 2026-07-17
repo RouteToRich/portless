@@ -81,6 +81,27 @@ class NegotiationSettings(BaseSettings):
     """A session past round 0 that has gone quiet this long (default 30 days —
     the cooling period) is marked FAILED so the deal leaves NEGOTIATING."""
 
+    # ── No-reply follow-ups ───────────────────────────────────────────────
+    # Runs inside the same stale-watcher sweep. When PortLess's last outbound
+    # to a party was actually SENT and that party has not replied within the
+    # window, a courteous follow-up is DRAFTED and routed through the normal
+    # SEND_NEGOTIATION_EMAIL L0 approval — never auto-sent. An operator REJECT
+    # of a follow-up suppresses further follow-ups for that same unanswered
+    # message (the chain resets when the party finally replies).
+    followup_enabled: bool = Field(
+        default=True, validation_alias="NEGOTIATION_FOLLOWUP_ENABLED"
+    )
+    followup_after_seconds: float = Field(
+        default=2 * 24 * 3600.0, validation_alias="NEGOTIATION_FOLLOWUP_AFTER_SECONDS"
+    )
+    """How long an outbound may sit unanswered before a follow-up is drafted
+    (default 2 days)."""
+    followup_max_per_party: int = Field(
+        default=2, validation_alias="NEGOTIATION_FOLLOWUP_MAX_PER_PARTY"
+    )
+    """Maximum consecutive follow-ups per unanswered message before going
+    quiet and letting the 30-day stale fail take over."""
+
     # ── Business defaults ─────────────────────────────────────────────────
     default_max_rounds: int = 5
     default_margin_floor_pct: float = 8.0
