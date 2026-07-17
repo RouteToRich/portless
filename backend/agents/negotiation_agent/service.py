@@ -1208,3 +1208,138 @@ async def record_inbound_email(
     await get_email_repository().save(record)
     logger.info("Inbound email %s recorded (party=%s round=%d)", email_id, party, round_no)
     return record
+
+
+# ---------------------------------------------------------------------------
+# Stale-negotiation watcher
+# ---------------------------------------------------------------------------
+
+# Non-terminal statuses — a session in any of these can get stuck (waiting on a
+# never-actioned approval or an inbound reply that never comes). Terminal states
+# (AGREED / FAILED / ESCALATED) are excluded: they've already handed off.
+_NON_TERMINAL_STATUSES = ["STARTED", "ROUND", "HITL_PENDING"]
+
+
+def _session_idle_seconds(session: NegotiationSession, now: datetime) -> float:
+    """Seconds since the session last changed. Treats a naive updated_at as UTC
+    (Mongo round-trips it as an ISO string that pydantic may parse tz-naive)."""
+    updated = session.updated_at
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return (now - updated).total_seconds()
+
+
+async def _renotify_stuck_round0(session: NegotiationSession) -> bool:
+    """Re-surface the pending first-outbound approval for a round-0 session.
+
+    The round-0 email is L0-gated (SEND_NEGOTIATION_EMAIL) and never auto-sent.
+    If nobody actioned it, the deal is stuck before the first email even left.
+    We re-broadcast the still-PENDING approval so it reappears in the Approvals
+    Inbox — we deliberately do NOT auto-send (a human must clear the first
+    outbound). Returns True if an approval was re-notified.
+    """
+    try:
+        from services.hitl_approval.service import list_approvals  # type: ignore[import]
+        from services.hitl_approval.notification import notify  # type: ignore[import]
+    except Exception as exc:  # pragma: no cover - import guard
+        logger.warning("StaleWatcher: HITL modules unavailable: %s", exc)
+        return False
+
+    approvals = await list_approvals(status="PENDING", deal_id=session.deal_id)
+    pending_email = next(
+        (a for a in approvals if getattr(a, "action", None) == "SEND_NEGOTIATION_EMAIL"),
+        None,
+    )
+    if pending_email is None:
+        # No pending first-outbound approval — nothing to re-notify. (The draft
+        # may have failed to gate; that's logged at creation time, not here.)
+        return False
+
+    payload = pending_email.model_dump(mode="json") if hasattr(pending_email, "model_dump") else dict(pending_email)
+    await notify("approval_renotified", payload)
+    logger.info(
+        "StaleWatcher: re-notified stuck round-0 approval %s for deal %s (negotiation %s)",
+        pending_email.approval_id, session.deal_id, session.negotiation_id,
+    )
+    return True
+
+
+async def _fail_stale_negotiation(session: NegotiationSession) -> None:
+    """Mark a long-idle post-round-0 session FAILED and advance the deal.
+
+    Setting status=FAILED and calling _sync_deal_status transitions the parent
+    deal to NEGOTIATION_FAILED (emitting the domain event that routes it to the
+    Exception Resolver / re-match), so it leaves NEGOTIATING instead of sitting
+    stale forever.
+    """
+    repo = get_repository()
+    session.status = "FAILED"
+    session.updated_at = datetime.now(timezone.utc)
+    await repo.save_session(session)
+    logger.warning(
+        "StaleWatcher: negotiation %s (deal %s) marked FAILED after cooling period "
+        "(round_no=%d, idle past threshold)",
+        session.negotiation_id, session.deal_id, session.round_no,
+    )
+    await _sync_deal_status(session)
+
+
+async def sweep_stale_negotiations() -> dict[str, int]:
+    """One sweep: re-notify stuck round-0 approvals, fail long-idle later rounds.
+
+    Returns a small counts dict ({"renotified": n, "failed": n, "scanned": n})
+    — handy for tests and for logging what a sweep did.
+    """
+    now = datetime.now(timezone.utc)
+    repo = get_repository()
+    sessions = await repo.list_sessions_by_status(_NON_TERMINAL_STATUSES)
+
+    renotified = failed = 0
+    for session in sessions:
+        idle = _session_idle_seconds(session, now)
+        try:
+            if session.round_no == 0:
+                # Case 1: first email never went out. Re-notify (never auto-send).
+                if idle >= settings.stale_round0_after_seconds:
+                    if await _renotify_stuck_round0(session):
+                        renotified += 1
+            else:
+                # Case 2: past round 0, gone quiet → fail after the cooling period.
+                if idle >= settings.stale_post_round0_after_seconds:
+                    await _fail_stale_negotiation(session)
+                    failed += 1
+        except Exception:
+            logger.exception(
+                "StaleWatcher: error handling stale negotiation %s (deal %s)",
+                session.negotiation_id, session.deal_id,
+            )
+
+    if renotified or failed:
+        logger.info(
+            "StaleWatcher: sweep done — scanned=%d re-notified=%d failed=%d",
+            len(sessions), renotified, failed,
+        )
+    return {"scanned": len(sessions), "renotified": renotified, "failed": failed}
+
+
+async def run_stale_watcher() -> None:
+    """Background loop that periodically sweeps stale negotiations.
+
+    Started from the app lifespan (mirrors hitl_approval.run_timeout_watcher).
+    No-op loop exit when the watcher is disabled. Never lets a single failing
+    sweep kill the loop.
+    """
+    if not settings.stale_watcher_enabled:
+        logger.info("StaleWatcher: disabled (NEGOTIATION_STALE_WATCHER_ENABLED=false)")
+        return
+    interval = settings.stale_watcher_interval_seconds
+    logger.info("StaleWatcher: started (interval=%.0fs)", interval)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await sweep_stale_negotiations()
+        except asyncio.CancelledError:
+            logger.info("StaleWatcher: stopped")
+            return
+        except Exception as exc:
+            logger.error("StaleWatcher: sweep error: %s", exc)

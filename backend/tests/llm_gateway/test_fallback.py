@@ -5,7 +5,12 @@ import httpx
 import pytest
 
 from shared.llm_gateway.config import LLMGatewaySettings
-from shared.llm_gateway.fallback import FallbackChain, ModelEndpoint, classify_error
+from shared.llm_gateway.fallback import (
+    FallbackChain,
+    ModelEndpoint,
+    classify_error,
+    get_retry_delay_seconds,
+)
 
 from .conftest import (
     make_groq_connection_error,
@@ -31,9 +36,10 @@ def test_default_chain_all_groq_connector():
 
 
 def test_default_chain_model_names():
+    # Reflects the live .env chain (see test_config.test_three_fallback_models_configured).
     chain = FallbackChain.from_settings()
     models = [ep.model for ep in chain.get_ordered_endpoints()]
-    assert "qwen/qwen3-32b" in models
+    assert "llama-3.3-70b-versatile" in models
     assert "qwen/qwen3.6-27b" in models
     assert "openai/gpt-oss-safeguard-20b" in models
 
@@ -142,10 +148,29 @@ def test_len():
 # ─────────────────────────────────── classify_error — groq
 
 
-def test_groq_rate_limit_is_transient():
+def test_groq_rate_limit_is_rate_limit():
     import groq
     exc = make_groq_status_error(groq.RateLimitError, 429)
-    assert classify_error(exc) == "transient"
+    assert classify_error(exc) == "rate_limit"
+
+
+def test_groq_bad_request_413_is_request_too_large():
+    # Groq reports its "request too large ... tokens per minute" TPM quota
+    # error as a 413 BadRequestError, not a 429 RateLimitError. Distinct from
+    # "rate_limit" (429): waiting never helps a 413 since the oversized
+    # request doesn't shrink between retries.
+    import groq
+    exc = make_groq_status_error(groq.BadRequestError, 413)
+    assert classify_error(exc) == "request_too_large"
+
+
+def test_groq_rate_limit_413_is_request_too_large():
+    # Some Groq error paths raise RateLimitError (429 by default in the SDK)
+    # even for a 413 response — classify_error must trust the actual
+    # status_code on the exception, not the exception class alone.
+    import groq
+    exc = make_groq_status_error(groq.RateLimitError, 413)
+    assert classify_error(exc) == "request_too_large"
 
 
 def test_groq_internal_server_error_is_transient():
@@ -193,8 +218,12 @@ def test_httpx_connect_error_is_transient():
     assert classify_error(httpx.ConnectError("refused")) == "transient"
 
 
-def test_httpx_429_is_transient():
-    assert classify_error(make_httpx_status_error(429)) == "transient"
+def test_httpx_429_is_rate_limit():
+    assert classify_error(make_httpx_status_error(429)) == "rate_limit"
+
+
+def test_httpx_413_is_request_too_large():
+    assert classify_error(make_httpx_status_error(413)) == "request_too_large"
 
 
 def test_httpx_500_is_transient():
@@ -224,10 +253,16 @@ def test_httpx_403_is_fatal():
 # ─────────────────────────────────── classify_error — generic
 
 
-def test_generic_exception_with_429_status_code_is_transient():
+def test_generic_exception_with_429_status_code_is_rate_limit():
     class ApiError(Exception):
         status_code = 429
-    assert classify_error(ApiError()) == "transient"
+    assert classify_error(ApiError()) == "rate_limit"
+
+
+def test_generic_exception_with_413_status_code_is_request_too_large():
+    class ApiError(Exception):
+        status_code = 413
+    assert classify_error(ApiError()) == "request_too_large"
 
 
 def test_generic_exception_with_401_status_code_is_fatal():
@@ -252,3 +287,32 @@ def test_unknown_exception_defaults_to_transient():
 
 def test_runtime_error_defaults_to_transient():
     assert classify_error(RuntimeError("boom")) == "transient"
+
+
+# ─────────────────────────────────── get_retry_delay_seconds
+
+
+def test_rate_limit_delay_uses_floor_when_no_retry_after():
+    exc = RuntimeError("Request too large ... tokens per minute (TPM): Limit 6000")
+    delay = get_retry_delay_seconds(exc, base_delay=1.0, attempt=0)
+    assert delay >= 20.0  # default rate_limit_retry_floor_seconds
+
+
+def test_rate_limit_delay_parses_retry_after_from_message():
+    exc = RuntimeError("rate limited, please retry after 5.5 seconds")
+    delay = get_retry_delay_seconds(exc, base_delay=1.0, attempt=0)
+    assert delay == 5.5
+
+
+def test_rate_limit_delay_prefers_response_header():
+    class FakeHeaders(dict):
+        pass
+
+    class FakeResponse:
+        headers = FakeHeaders({"retry-after": "12"})
+
+    class ApiError(Exception):
+        response = FakeResponse()
+
+    delay = get_retry_delay_seconds(ApiError(), base_delay=1.0, attempt=0)
+    assert delay == 12.0

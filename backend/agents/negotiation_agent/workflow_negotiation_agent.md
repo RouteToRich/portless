@@ -56,6 +56,7 @@
 14. [Layman's Guide — Plain English with Real-World Scenarios](#14-laymans-guide--plain-english-with-real-world-scenarios)
 15. [Implementation Status](#15-implementation-status)
 16. [Known Issues & Gaps (2026-07-10 review)](#16-known-issues--gaps-2026-07-10-review)
+17. [Planned — Global Export Origin + Local-Currency Support](#17-planned--global-export-origin--local-currency-support)
 
 ---
 
@@ -1017,6 +1018,62 @@ negotiation_agent.service.reject_email(email_id)
 | `NEGOTIATION_AGREED` | Stop graph, set `agreed_price` |
 | `NEGOTIATION_FAILED` | Stop graph, mark session FAILED |
 
+### `DealStatus` — the full deal lifecycle (19 states)
+
+The negotiation session (`NegotiationSession.status`, above) is a **sub-state
+machine** that lives entirely inside the deal's `NEGOTIATING` state. When the
+session reaches a terminal outcome, `service._sync_deal_status()` advances the
+**parent deal** to `NEGOTIATION_AGREED` or `NEGOTIATION_FAILED`, which is where
+the negotiation hands off to the rest of the pipeline. This table is the
+authoritative list of every deal state and **how the system processes each one**
+— i.e. what moves the deal out of it. Source of truth:
+`shared/domain/enums.py::DealStatus` and
+`shared/domain/state_machine.py::DEAL_TRANSITIONS` (transitions are enforced in
+code by `can_transition()`, never by an LLM).
+
+Most forward transitions after `NEGOTIATION_AGREED` are **event-driven**: the
+service that completes a step emits a domain event, and a handler in
+`shared/orchestration/continuations.py` (subscribed on the event bus in the
+monolith `app.py` only) fires the next step. Money-moving / commitment steps
+(`ISSUE_PO`, `BOOK_FREIGHT`, `RELEASE_SUPPLIER_PAYOUT`) are gated behind a HITL
+approval that the continuation **creates** but never auto-approves.
+
+| # | Status | Terminal? | How the system processes it (what advances it) | Next state(s) |
+|---|--------|-----------|-------------------------------------------------|---------------|
+| 1 | `DRAFT` | No | A bare deal exists (no opportunity seeding yet). Operator/opportunity seeding transitions it to `MATCHING`. | `MATCHING` |
+| 2 | `MATCHING` | No | Match Engine scores supplier candidates (CMS). On a SOURCE winner (or auto-flow's operator-equivalent nudge) it moves to `NEGOTIATING`. | `NEGOTIATING` |
+| 3 | `NEGOTIATING` | No | **Negotiation Agent runs here.** The whole session sub-machine (`STARTED`→`ROUND`↔`HITL_PENDING`) executes inside this state, round after round, driven by inbound emails (`email_processor`→`run_round`) or operator "Run Round". A detected agreement parks at `HITL_PENDING` behind a `CONFIRM_NEGOTIATION_AGREEMENT` gate. **Stale handling:** the negotiation stale-watcher (`service.run_stale_watcher`, started in the monolith lifespan; thresholds in `config.py` / `NEGOTIATION_STALE_*` env vars) re-notifies a stuck round-0 email approval, and after the 30-day cooling period marks a quiet post-round-0 session `FAILED` so the deal leaves `NEGOTIATING`. | `NEGOTIATING` (counter-round), `NEGOTIATION_AGREED`, `NEGOTIATION_FAILED` |
+| 4 | `NEGOTIATION_AGREED` | No | Reached **only** via the `CONFIRM_NEGOTIATION_AGREEMENT` HITL approve → `finalize_agreement()`, which publishes `NEGOTIATION_AGREED`. Continuation `on_negotiation_agreed` auto-issues the Proforma Invoice → `PI_SENT`. | `PI_SENT` |
+| 5 | `NEGOTIATION_FAILED` | No | Set by `_sync_deal_status` when the session is `FAILED` (max rounds, or the stale-watcher's cooling-period timeout). Routes to the Exception Resolver / re-match: operator can send it back to `MATCHING` or `CANCELLED`. | `MATCHING`, `CANCELLED` |
+| 6 | `PI_SENT` | No | DealMaker has issued the PI. Buyer acceptance (`POST /dealmaker/pi/{id}/accept`) → `PI_ACCEPTED`. Acceptance is a **buyer action** — no handler auto-accepts. | `PI_ACCEPTED` |
+| 7 | `PI_ACCEPTED` | No | Continuation `on_pi_accepted` opens the neutral escrow (sized from the accepted PI) → `ESCROW_PENDING`. | `ESCROW_PENDING` |
+| 8 | `ESCROW_PENDING` | No | Escrow is open; **buyer funds it**. Stripe/escrow-funded webhook → `ESCROW_FUNDED`. Funding is a buyer action; no handler fakes it. | `ESCROW_FUNDED` |
+| 9 | `ESCROW_FUNDED` | No | Continuation `on_escrow_funded` creates the **`ISSUE_PO` HITL gate**. Operator approve → `dealmaker.issue_po()` (margin guard ≥8%) → `PO_ISSUED`. | `PO_ISSUED` |
+| 10 | `PO_ISSUED` | No | Continuation `on_po_issued` books QC with the buyer-opted provider → deal `SUPPLIER_DISPATCH_READY`. | `SUPPLIER_DISPATCH_READY` |
+| 11 | `SUPPLIER_DISPATCH_READY` | No | Awaiting the QC inspection result webhook (SGS/QIMA/etc.). PASS → `QC_PASSED`; FAIL → `QC_FAILED`. | `QC_PASSED`, `QC_FAILED` |
+| 12 | `QC_PASSED` | No | Continuation `on_qc_passed` creates the **`BOOK_FREIGHT` HITL gate**. Operator approve → `shield_link.book_freight()` → `IN_TRANSIT`. | `IN_TRANSIT` |
+| 13 | `QC_FAILED` | No | Quality failure → `DISPUTE` for resolution (rework, partial refund, cancel). | `DISPUTE` |
+| 14 | `IN_TRANSIT` | No | Freight booked and moving. Freight milestone webhook `ARRIVED`/`CLEARED` → `CLEARED`. | `CLEARED` |
+| 15 | `CLEARED` | No | Cargo cleared customs. Continuation `on_customs_cleared` creates the **`RELEASE_SUPPLIER_PAYOUT` HITL gate**. Operator approve → payout; payout-completed webhook → `PAID`. | `PAID` |
+| 16 | `DISPUTE` | No | Exception/dispute handling (from `QC_FAILED`). Resolves to `CANCELLED` (abort) or `REFUNDED` (buyer refunded). | `CANCELLED`, `REFUNDED` |
+| 17 | `PAID` | **Yes** | **Happy-path terminal.** Supplier paid, deal complete. No further transitions. | — |
+| 18 | `CANCELLED` | **Yes** | Terminal — deal aborted (from `NEGOTIATION_FAILED` or `DISPUTE`). | — |
+| 19 | `REFUNDED` | **Yes** | Terminal — buyer refunded (from `DISPUTE`). | — |
+
+> Count: **19 `DealStatus` values** (one per row above; verified against
+> `shared/domain/enums.py::DealStatus`). Three are truly terminal — `PAID`
+> (happy path), `CANCELLED`, `REFUNDED` — with no outgoing transitions.
+> `NEGOTIATION_FAILED` is a *hand-off* state, not terminal: it always routes on
+> to `MATCHING` (re-match) or `CANCELLED` via the Exception Resolver, so a deal
+> never sits in it forever.
+
+**Where the negotiation agent touches the deal machine:** only two edges.
+It runs the entire round loop *within* `NEGOTIATING`, then calls
+`_sync_deal_status()` exactly once at a terminal session outcome to emit either
+`NEGOTIATION_AGREED` (→ PI issuance downstream) or `NEGOTIATION_FAILED` (→
+Exception Resolver). Everything after `NEGOTIATION_AGREED` is out of the agent's
+hands and driven by the event-bus continuations above.
+
 ---
 
 ## 13. Configuration Reference
@@ -1436,6 +1493,7 @@ Every message — sent, received, pending, rejected, edited — is stored foreve
 
 | Feature | Priority | Notes |
 |---------|----------|-------|
+| **Global export origin + local-currency support** (multi-country supplier side) | **High** | See the dedicated spec in §17 below. Today the **supplier/origin side is hard-locked to India + INR** while only the buyer/destination side is country-aware — so sourcing from Vietnam (VND), China (CNY), Bangladesh (BDT), etc. still drafts supplier emails in INR and searches India export pricing. This item generalizes origin + currency across the negotiation so PortLess can trade worldwide. |
 | Dedicated commodity-exchange price feed (CME/Comdty/Volza) | Medium | §9's `market_intel.py` now covers general live market color via Tavily web search; a structured intraday exchange-price feed would be more precise but is a separate, not-yet-built integration |
 | PDF / Excel attachment content parsing | Medium | Attachments are captured (`email_gateway`) and forwarded as `attachment_refs`; parsing their contents for a quoted price (pypdf / openpyxl) is still pending |
 | Policy deadline urgency in agent prompts | Medium | Pass `deadline` to buyer/supplier agents; tone should escalate as date approaches |
@@ -1551,3 +1609,87 @@ missing key, HTTP/timeout error).
 
 `__pycache__/email_dispatcher.cpython-313.pyc` had no corresponding source — the
 module was renamed to `email_history.py`. **✅ Removed 2026-07-10.**
+
+---
+
+## 17. Planned — Global Export Origin + Local-Currency Support
+
+> **Status: NOT STARTED** (nice-to-have, High priority — see §15). This section is
+> a design spec for the backlog item, not shipped behavior. It exists so whoever
+> picks it up has the full picture without re-deriving it.
+
+### 17.1 — Why (the gap today)
+
+PortLess negotiation is **buyer-side multi-country but supplier-side India-only**.
+The buyer/destination is genuinely parameterized (`buyer_country_code`, buyer-CIF
+import market intel), but the supplier/origin side is hard-coded to India + INR:
+
+| Hard-coded assumption | Location | Effect on a non-India source (e.g. Vietnam) |
+|-----------------------|----------|----------------------------------------------|
+| `_SUPPLIER_ORIGIN_COUNTRY = "India"` | `market_intel.py:36` | Supplier market-intel search always queries **India** export pricing, never Vietnam |
+| No `seller_country_code` on the session | `schemas.py::NegotiationSession` | Nothing records where the supplier actually is |
+| INR is the only supplier quote currency | `prompts.py` (supplier prompt) | Supplier email is drafted in **INR**, not VND |
+| USD↔INR is the only FX path | `market_intel.py` (`get_usd_inr_rate`, `_parse_usd_inr_rate`, `_USD_INR_PLAUSIBLE_RANGE`, `fallback_usd_inr_rate`) | No VND/CNY/BDT/etc. conversion exists — a wrong or missing rate |
+
+Net: sourcing from Vietnam still emails the supplier an **INR** price computed from
+**India** market color — wrong currency, wrong market. This blocks true global
+trading; the goal is any export origin quoting in its own local currency.
+
+### 17.2 — What to change (scope)
+
+1. **Schema** (`schemas.py`) — add to `NegotiationSession` **and**
+   `StartNegotiationRequest`:
+   - `seller_country_code: str` (ISO-3166 alpha-2, e.g. `"VN"`, `"CN"`, `"BD"`).
+   - `seller_currency: str` (ISO-4217, e.g. `"VND"`, `"CNY"`, `"BDT"`); default
+     derivable from `seller_country_code` via a small country→currency map, or
+     explicit override.
+   - Keep **USD as the source-of-truth unit** everywhere internally (margin math,
+     `agreed_price`, escrow, PI) — only the *supplier-facing quote* is localized.
+     This preserves every downstream contract (DealMaker/Escrow all speak USD).
+
+2. **Generalize FX** (`market_intel.py`) — replace the USD/INR-specific trio with a
+   parameterized `get_usd_to_local_rate(currency_code)`:
+   - Same Tavily web-search + strict-parse + plausible-band pattern, but the query,
+     regex anchors, and band are keyed on the target currency (a per-currency
+     plausible band table replaces `_USD_INR_PLAUSIBLE_RANGE`).
+   - Per-currency static fallback replacing the single `fallback_usd_inr_rate`
+     (e.g. a `NEGOTIATION_FALLBACK_FX_RATES` map / JSON env var).
+   - `INR` stays as one entry — this is a generalization, not a rewrite; India
+     keeps working unchanged.
+
+3. **Origin-aware market intel** (`market_intel.py`) — `fetch_both` /
+   `fetch_market_intel` take the real `seller_country_code` instead of the
+   `"India"` constant, so the supplier-side search reflects the true origin's
+   export/Ex-Works conditions.
+
+4. **Supplier prompt** (`prompts.py`) — parameterize the "quote in INR" instruction
+   to "quote in `{seller_currency}`", passing the pre-computed
+   `implied_max_supplier_price_{local}` figures (same deterministic-conversion
+   discipline already used for INR — the agent must **never** compute FX itself;
+   §"USD/INR exchange rate" note in `market_intel.py` explains why).
+
+5. **Auto-flow / seeding** (`shared/orchestration/auto_flow.py`, deal→negotiation
+   seeding) — thread `seller_country_code` through from the match/opportunity data
+   so it's populated automatically, with a safe default of `"IN"`/`"INR"` for
+   back-compat when the source doesn't supply it.
+
+### 17.3 — Guardrails / non-goals
+
+- **Do not** change the internal accounting currency — USD stays the pivot; a
+  bug here would ripple into escrow/PI/margin. Only the outbound supplier quote is
+  localized.
+- **Never let the LLM compute FX** — keep the "rate fetched + converted in code,
+  passed as ready figures" contract; it's the documented fix for the token-burn
+  spiral (`market_intel.py` §"USD/INR exchange rate").
+- Fail-open exactly as today: no rate / disabled search → per-currency static
+  fallback, never a guessed or zero rate.
+- Buyer side is already country-aware — **no change** there.
+
+### 17.4 — Test additions
+
+- Per-currency FX parse/fallback (mirror `tests/test_market_intel.py`'s USD/INR
+  cases for at least VND + one more).
+- Origin-aware supplier market-intel query building (Vietnam query ≠ India query).
+- Supplier draft quotes in the session's `seller_currency`, and a leak-style
+  assertion that internal USD figures still drive margin math unchanged.
+- Back-compat: a session with no `seller_country_code` still behaves as India/INR.

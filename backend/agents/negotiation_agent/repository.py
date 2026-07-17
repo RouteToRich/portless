@@ -23,6 +23,7 @@ class NegotiationRepository(Protocol):
     async def get_session(self, negotiation_id: str) -> NegotiationSession | None: ...
     async def get_session_by_deal(self, deal_id: str) -> NegotiationSession | None: ...
     async def list_sessions(self, deal_id: str | None = None) -> list[NegotiationSession]: ...
+    async def list_sessions_by_status(self, statuses: list[str]) -> list[NegotiationSession]: ...
     async def save_round(self, round_: NegotiationRound) -> None: ...
     async def list_rounds(self, negotiation_id: str) -> list[NegotiationRound]: ...
 
@@ -54,6 +55,14 @@ class InMemoryNegotiationRepository:
         if deal_id:
             docs = [d for d in docs if d.get("deal_id") == deal_id]
         return [NegotiationSession(**d) for d in docs]
+
+    async def list_sessions_by_status(self, statuses: list[str]) -> list[NegotiationSession]:
+        wanted = set(statuses)
+        return [
+            NegotiationSession(**d)
+            for d in self._sessions.values()
+            if d.get("status") in wanted
+        ]
 
     async def save_round(self, round_: NegotiationRound) -> None:
         bucket = self._rounds.setdefault(round_.negotiation_id, [])
@@ -128,6 +137,12 @@ class MongoNegotiationRepository:
         if deal_id:
             query["deal_id"] = deal_id
         cursor = self._sessions.find(query, {"_id": 0}).sort("created_at", -1)
+        return [NegotiationSession(**d) async for d in cursor]
+
+    async def list_sessions_by_status(self, statuses: list[str]) -> list[NegotiationSession]:
+        cursor = self._sessions.find(
+            {"status": {"$in": statuses}}, {"_id": 0}
+        ).sort("updated_at", 1)  # oldest-idle first — uses the status index
         return [NegotiationSession(**d) async for d in cursor]
 
     async def save_round(self, round_: NegotiationRound) -> None:

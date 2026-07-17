@@ -50,6 +50,37 @@ class NegotiationSettings(BaseSettings):
     # Uses an in-memory dict (single-instance dev). For multi-replica
     # deployments use the shared MongoDB cache (shared.cache) as the lock store.
 
+    # ── Stale-negotiation watcher ─────────────────────────────────────────
+    # Background sweep (started from the app lifespan) that finds negotiation
+    # sessions stuck in a non-terminal status (STARTED / ROUND / HITL_PENDING)
+    # and unblocks or terminates them, so a stalled deal never sits invisibly
+    # in NEGOTIATING forever. Two cases, two thresholds:
+    #   • round 0 never sent (round_no == 0): the first-outbound SEND_NEGOTIATION_EMAIL
+    #     L0 approval was never actioned → re-notify it so it resurfaces in the
+    #     Approvals Inbox (we never auto-send the first email without a human).
+    #   • post-round-0 gone quiet (round_no >= 1): after the cooling period with
+    #     no activity (updated_at age) → mark the session FAILED, which advances
+    #     the deal to NEGOTIATION_FAILED and hands off to the Exception Resolver.
+    stale_watcher_enabled: bool = Field(
+        default=True, validation_alias="NEGOTIATION_STALE_WATCHER_ENABLED"
+    )
+    stale_watcher_interval_seconds: float = Field(
+        default=300.0, validation_alias="NEGOTIATION_STALE_WATCHER_INTERVAL_SECONDS"
+    )
+    """How often the sweep runs (default 5 min)."""
+    stale_round0_after_seconds: float = Field(
+        default=900.0, validation_alias="NEGOTIATION_STALE_ROUND0_AFTER_SECONDS"
+    )
+    """A round-0 session (first email never sent) is re-notified once its
+    updated_at is older than this (default 15 min) — long enough that a human
+    genuinely had a chance to action the approval, short enough that a truly
+    forgotten one resurfaces the same day."""
+    stale_post_round0_after_seconds: float = Field(
+        default=30 * 24 * 3600.0, validation_alias="NEGOTIATION_STALE_POST_ROUND0_AFTER_SECONDS"
+    )
+    """A session past round 0 that has gone quiet this long (default 30 days —
+    the cooling period) is marked FAILED so the deal leaves NEGOTIATING."""
+
     # ── Business defaults ─────────────────────────────────────────────────
     default_max_rounds: int = 5
     default_margin_floor_pct: float = 8.0

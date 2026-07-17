@@ -77,6 +77,8 @@ _SERVICE_ROUTERS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    import asyncio as _asyncio  # shared by the background watchers below
+
     # ── Trade-Min: MongoDB + APScheduler ─────────────────────────────────
     from services.trade_min.main import on_startup as tm_startup, on_shutdown as tm_shutdown
     try:
@@ -100,8 +102,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── Negotiation Agent: MongoDB repository + inbox monitor ─────────────
     from agents.negotiation_agent.main import on_startup as neg_startup, on_shutdown as neg_shutdown
+    from agents.negotiation_agent.service import run_stale_watcher
+    _neg_stale_watcher: _asyncio.Task | None = None
     try:
         await neg_startup()
+        # Sweep negotiations stuck in a non-terminal status: re-notify a
+        # never-actioned round-0 email approval, and fail long-idle later rounds
+        # so the deal leaves NEGOTIATING instead of going stale on the board.
+        _neg_stale_watcher = _asyncio.create_task(run_stale_watcher())
     except Exception as exc:
         logger.error("NegotiationAgent startup failed (service will run degraded): %s", exc)
 
@@ -192,6 +200,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("EventBus startup failed (events stay no-op): %s", exc)
 
+    # ── Auto-flow: re-arm the in-memory poller for deals already in-flight ──
+    # (dev/test only; no-op when AUTO_FLOW_ENABLED=false). auto_flow's task is
+    # a bare asyncio task that dies with the process — without this, a deal
+    # sitting in MATCHING/NEGOTIATING at restart never gets its PI/escrow
+    # hand-off after the negotiation converges, even though the negotiation
+    # itself keeps working fine via Mongo + the event bus.
+    try:
+        from shared.orchestration.auto_flow import resume_in_flight
+        await resume_in_flight()
+    except Exception as exc:
+        logger.error("AutoFlow resume failed (in-flight deals may stay orphaned): %s", exc)
+
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
@@ -252,6 +272,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.warning("DealMaker shutdown error: %s", exc)
 
+    if _neg_stale_watcher and not _neg_stale_watcher.done():
+        _neg_stale_watcher.cancel()
+        try:
+            await _neg_stale_watcher
+        except _asyncio.CancelledError:
+            pass
     try:
         await neg_shutdown()
     except Exception as exc:

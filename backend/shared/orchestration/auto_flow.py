@@ -90,6 +90,47 @@ def start(deal_id: str) -> None:
     asyncio.create_task(_run_safely(deal_id))
 
 
+async def resume_in_flight() -> None:
+    """Re-arm the auto-flow task for every opportunity-seeded deal still
+    sitting in MATCHING or NEGOTIATING at process startup.
+
+    This module's task is a bare asyncio task (see module docstring) — it
+    dies with the process. Without this, a restart mid-negotiation silently
+    orphans the deal: the auto-flow poller that was going to notice the
+    negotiation reach AGREED and hand off to PI issuance never comes back,
+    even though the negotiation itself keeps working fine via Mongo + the
+    event bus. Called once from app.py's lifespan, after the deals and
+    negotiation-agent repositories are initialised.
+
+    Safe to call repeatedly / on deals _run() has already handled: each step
+    re-derives its own precondition from current Mongo state (e.g.
+    _ensure_match_results returns the existing MatchResult instead of
+    re-scoring, _run_negotiation short-circuits on an already-terminal
+    session), so restarting from the top is an idempotent no-op for any leg
+    that already completed.
+    """
+    if not enabled():
+        return
+    from services.deals.repository import get_repository
+    from services.deals.schemas import DealStatus
+
+    repo = get_repository()
+    resumed = 0
+    for status in (DealStatus.MATCHING, DealStatus.NEGOTIATING):
+        try:
+            deals = await repo.list_active(limit=500, status=status)
+        except Exception:
+            logger.exception("AutoFlow: resume scan failed for status=%s", status.value)
+            continue
+        for deal in deals:
+            if not deal.opportunity_id:
+                continue  # not an auto-flow deal — matches _run()'s own precondition
+            start(deal.deal_id)
+            resumed += 1
+    if resumed:
+        logger.info("AutoFlow: resumed %d in-flight deal(s) after restart", resumed)
+
+
 async def _run_safely(deal_id: str) -> None:
     try:
         await _run(deal_id)

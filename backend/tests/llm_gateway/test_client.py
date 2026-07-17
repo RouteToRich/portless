@@ -253,6 +253,30 @@ async def test_fatal_error_skips_retries(two_chain, mem_tracker):
     assert call_count == 1  # exactly one attempt, no retries
 
 
+async def test_request_too_large_skips_retries_and_advances(two_chain, mem_tracker):
+    """A 413 (request exceeds the model's TPM ceiling) must not be retried —
+    the same oversized request fails identically on every attempt, so it
+    should advance to the next model immediately, like a fatal error."""
+    import groq
+    client = _client(two_chain, mem_tracker, max_retries=2)
+    call_count = 0
+
+    async def _dispatch(endpoint, messages, temperature, max_tokens, **kwargs):
+        nonlocal call_count
+        if endpoint.model == "model-a":
+            call_count += 1
+            raise make_groq_status_error(groq.BadRequestError, 413)
+        return ok_response(model="model-b")
+
+    with patch("shared.llm_gateway.client.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+        with patch.object(client, "_dispatch", new=_dispatch):
+            response = await client.chat(MESSAGES)
+
+    assert call_count == 1  # exactly one attempt, no retries
+    assert response.model == "model-b"  # advanced to the next model
+    mock_sleep.assert_not_called()  # no wasted wait on an unrecoverable 413
+
+
 async def test_retry_count_tracked_in_record(single_chain, mem_tracker):
     """record.retry_count reflects actual attempts made on that model."""
     client = _client(single_chain, mem_tracker, max_retries=2)

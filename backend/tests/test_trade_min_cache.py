@@ -14,8 +14,16 @@ from shared import cache as shared_cache
 
 
 @pytest.fixture(autouse=True)
-def _fresh_cache():
-    """Force a clean in-memory shared backend around each test."""
+def _fresh_cache(monkeypatch):
+    """Force a clean in-memory shared backend around each test.
+
+    Also forces TRADE_MIN_MOCK_MODE off: these tests exercise _safe_quote's
+    live-connector caching path directly, which mock mode short-circuits
+    before the cache is ever consulted (see service.py:_safe_quote). Without
+    this, every test here fails whenever TRADE_MIN_MOCK_MODE=true is set in
+    backend/.env (the recommended default for network-free local dev).
+    """
+    monkeypatch.setattr(service.settings, "trade_min_mock_mode", False)
     shared_cache.reset_for_tests()
     yield
     shared_cache.reset_for_tests()

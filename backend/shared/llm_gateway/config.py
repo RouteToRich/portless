@@ -96,6 +96,11 @@ class LLMGatewaySettings(BaseSettings):
     request_timeout_seconds: float = 60.0
     max_retries_per_model: int = 2          # attempts per model before advancing chain
     retry_base_delay_seconds: float = 1.0   # doubles each retry (exponential backoff)
+    # Rate-limit (429/413 TPM|RPM quota) retries use this floor instead of the
+    # normal exponential backoff above — Groq's quota window is per-minute, so
+    # retrying after 1-2s just fails again. Overridden by a server-provided
+    # Retry-After value when Groq's error response includes one.
+    rate_limit_retry_floor_seconds: float = 20.0
 
     # -------------------------------------------------- generation defaults
     llm_temperature: float = 0.7

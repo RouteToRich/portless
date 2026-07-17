@@ -677,6 +677,15 @@ commercial step before it turns real. Indicative costs from the 2026 research in
 - [ ] CRM-style buyer/supplier profiles and relationship history.
 - [ ] Revenue + cash-flow forecast by active deal stage (tranche timing means
   profitable deals can still be cash-negative mid-flight).
+- [ ] **Global export origin + local-currency support** — the negotiation
+  supplier/origin side is currently hard-locked to **India + INR**
+  (`_SUPPLIER_ORIGIN_COUNTRY="India"`, INR-only FX + supplier prompt), so
+  sourcing from Vietnam (VND), China (CNY), Bangladesh (BDT), etc. still drafts
+  supplier emails in INR against India market data. Generalize the origin +
+  local currency across the negotiation so PortLess can trade worldwide, keeping
+  **USD as the internal source-of-truth unit** (only the outbound supplier quote
+  is localized — escrow/PI/margin contracts stay USD). Full design spec:
+  `backend/agents/negotiation_agent/workflow_negotiation_agent.md` §17.
 
 ---
 

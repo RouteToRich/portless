@@ -14,7 +14,12 @@ def test_groq_api_key_has_correct_prefix():
 
 
 def test_three_fallback_models_configured():
-    assert llm_gateway_settings.fallback_1_model == "qwen/qwen3-32b"
+    # These reflect the live shared/llm_gateway/.env, not the class defaults.
+    # fallback_1 was moved off qwen/qwen3-32b to llama-3.3-70b-versatile to dodge
+    # qwen3-32b's low free-tier TPM ceiling (the 413 "request too large" errors);
+    # update here whenever the .env chain is deliberately re-tuned. All three
+    # must be real text-generation chat models (never a *-guard classifier).
+    assert llm_gateway_settings.fallback_1_model == "llama-3.3-70b-versatile"
     assert llm_gateway_settings.fallback_2_model == "qwen/qwen3.6-27b"
     assert llm_gateway_settings.fallback_3_model == "openai/gpt-oss-safeguard-20b"
 
@@ -35,7 +40,10 @@ def test_primary_api_key_empty_by_default():
 
 
 def test_retry_defaults():
-    assert llm_gateway_settings.max_retries_per_model == 2
+    # shared/llm_gateway/.env deliberately overrides this to 1 (down from the
+    # class default of 2) — Groq's API is unreachable on this dev network, so
+    # a shorter retry budget bounds a blocked call to ~6s instead of ~12s.
+    assert llm_gateway_settings.max_retries_per_model == 1
     assert llm_gateway_settings.retry_base_delay_seconds == 1.0
 
 

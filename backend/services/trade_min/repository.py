@@ -288,10 +288,19 @@ async def close_repository() -> None:
 class RepositoryProxy:
     """A synchronous proxy for the repository, primarily used in tests to clear state."""
     def clear(self) -> None:
-        global _repository
-        if _repository is None:
+        global _repository, _motor_client
+        # Force the in-memory backend regardless of what init_repository() built
+        # earlier. A MongoOpportunityRepository binds its Motor client to
+        # whichever event loop was running at construction time; pytest-asyncio
+        # gives most test functions their own loop, so a Mongo-backed singleton
+        # built by an earlier test module raises "Future attached to a
+        # different loop" the next time this suite touches it. Unit tests
+        # should always exercise the deterministic in-memory path — reset to
+        # it here rather than only clearing an already-in-memory store.
+        if not isinstance(_repository, InMemoryFallbackRepository):
+            _motor_client = None
             _repository = InMemoryFallbackRepository()
-        if isinstance(_repository, InMemoryFallbackRepository):
+        else:
             _repository._store.clear()
 
 

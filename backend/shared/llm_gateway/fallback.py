@@ -7,12 +7,19 @@ Chain assembly (from_settings):
   slot 3  — openai/gpt-oss-safeguard-20b via Groq
 
 Error classification (classify_error):
-  "transient"  — rate-limit, timeout, connection drop, 5xx → retry then advance chain
-  "fatal"      — bad request, auth error, 4xx ≠ 429 → skip retries, advance chain
+  "rate_limit"        — 429 request/token-per-minute burst → retry after a long,
+                        quota-aware delay (see get_retry_delay_seconds) then advance chain
+  "request_too_large" — 413 single request exceeds the model's TPM ceiling on its
+                        own (e.g. "Requested 6140, Limit 6000") → waiting never
+                        helps, since the request doesn't shrink between attempts;
+                        skip retries and advance to the next model immediately
+  "transient"         — timeout, connection drop, 5xx → retry with normal exponential backoff
+  "fatal"             — bad request, auth error, other 4xx → skip retries, advance chain
 """
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -126,9 +133,19 @@ class FallbackChain:
 
 
 def classify_error(exc: Exception) -> str:
-    """Classify an exception as "transient" (retry) or "fatal" (skip to next model).
+    """Classify an exception as "rate_limit", "request_too_large", "transient"
+    (all retry in some form), or "fatal" (skip straight to next model).
 
-    Transient: rate-limits, timeouts, network drops, 5xx — worth retrying.
+    Rate-limit (429): a burst against the per-minute request/token quota —
+                worth a long, quota-aware wait (see get_retry_delay_seconds)
+                since the window rolls forward and frees up capacity.
+    Request-too-large (413): Groq reports "request too large ... tokens per
+                minute (TPM): Limit 6000, Requested 6140" as a 413, not a 429.
+                Unlike a 429 burst, retrying changes nothing — the same
+                request is still over the ceiling every time — so this must
+                skip retries and advance to the next model immediately,
+                exactly like a fatal error.
+    Transient: timeouts, network drops, 5xx — worth retrying almost immediately.
     Fatal: bad request, wrong auth, model-level refusal — retrying the same
            model won't help; advance to the next one immediately.
     """
@@ -136,10 +153,13 @@ def classify_error(exc: Exception) -> str:
     try:
         import groq
 
+        if isinstance(exc, groq.RateLimitError):
+            status_code = getattr(exc, "status_code", None)
+            return "request_too_large" if status_code == 413 else "rate_limit"
+
         if isinstance(
             exc,
             (
-                groq.RateLimitError,
                 groq.APIConnectionError,
                 groq.InternalServerError,
                 groq.APITimeoutError,
@@ -155,6 +175,15 @@ def classify_error(exc: Exception) -> str:
                 groq.PermissionDeniedError,
             ),
         ):
+            # groq.BadRequestError covers HTTP 400 AND 413 — Groq's "request too
+            # large for ... tokens per minute" quota error is reported as 413,
+            # so it lands here even though it's a rate-limit condition, not a
+            # malformed request.
+            status_code = getattr(exc, "status_code", None)
+            if status_code == 413:
+                return "request_too_large"
+            if status_code == 429:
+                return "rate_limit"
             return "fatal"
     except ImportError:
         pass
@@ -164,19 +193,72 @@ def classify_error(exc: Exception) -> str:
         return "transient"
 
     if isinstance(exc, httpx.HTTPStatusError):
-        return "transient" if exc.response.status_code in (429, 500, 502, 503, 504) else "fatal"
+        status_code = exc.response.status_code
+        if status_code == 413:
+            return "request_too_large"
+        if status_code == 429:
+            return "rate_limit"
+        return "transient" if status_code in (500, 502, 503, 504) else "fatal"
 
     # ---- Generic fallback: inspect status_code attribute if present ----
-    status_code: int | None = getattr(exc, "status_code", None)
+    status_code = getattr(exc, "status_code", None)
     if status_code is None:
         resp = getattr(exc, "response", None)
         status_code = getattr(resp, "status_code", None)
 
     if status_code is not None:
-        if status_code in (429, 500, 502, 503, 504):
+        if status_code == 413:
+            return "request_too_large"
+        if status_code == 429:
+            return "rate_limit"
+        if status_code in (500, 502, 503, 504):
             return "transient"
         if status_code in (400, 401, 403):
             return "fatal"
 
     # Unknown errors: treat as transient — give the model one more chance
     return "transient"
+
+
+_RETRY_AFTER_RE = re.compile(r"retry.{0,5}after\D{0,10}([\d.]+)", re.IGNORECASE)
+
+
+def get_retry_delay_seconds(exc: Exception, base_delay: float, attempt: int) -> float:
+    """Compute the retry delay for a "rate_limit"-classified error.
+
+    Prefers a server-provided wait time (Groq's ``Retry-After`` header, or the
+    same figure echoed in the error message body) over a fixed guess — Groq's
+    TPM/RPM windows reset on a rolling per-minute basis, so a fixed exponential
+    backoff (e.g. 1s, 2s) almost always retries before the quota has room
+    again. Falls back to ``rate_limit_retry_floor_seconds`` (default 20s) when
+    no explicit wait time is available.
+    """
+    retry_after = _extract_retry_after_seconds(exc)
+    if retry_after is not None:
+        return max(retry_after, 1.0)
+    floor = llm_gateway_settings.rate_limit_retry_floor_seconds
+    return max(floor, base_delay * (2 ** attempt))
+
+
+def _extract_retry_after_seconds(exc: Exception) -> float | None:
+    # groq/openai SDK exceptions expose the raw httpx.Response on .response
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None)
+    if headers:
+        for key in ("retry-after", "Retry-After", "x-ratelimit-reset-tokens"):
+            value = headers.get(key) if hasattr(headers, "get") else None
+            if value:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    pass
+
+    # Fall back to parsing the error message text, e.g. Groq's
+    # "...try again in 20.5s..." style wording (format varies by error type).
+    match = _RETRY_AFTER_RE.search(str(exc))
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
+    return None

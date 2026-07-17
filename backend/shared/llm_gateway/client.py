@@ -38,7 +38,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 
 from .config import LLM_MAX_TOKENS, LLM_TEMPERATURE, LLMGatewaySettings, llm_gateway_settings
-from .fallback import FallbackChain, ModelEndpoint, classify_error
+from .fallback import FallbackChain, ModelEndpoint, classify_error, get_retry_delay_seconds
 from .tracker import RequestRecord, RequestTracker
 
 # Placeholder imports — None until each feature is implemented.
@@ -370,9 +370,14 @@ class LLMClient:
                 last_exc = exc
                 error_class = classify_error(exc)
 
-                if error_class == "fatal":
+                if error_class in ("fatal", "request_too_large"):
+                    # request_too_large (413): the same oversized request will
+                    # exceed this model's TPM ceiling on every attempt — unlike
+                    # a 429 burst, waiting doesn't free up room, so retrying is
+                    # pure wasted latency. Skip straight to the next model.
                     logger.warning(
-                        "Fatal error on %s — skipping retries. %s: %s",
+                        "%s error on %s — skipping retries. %s: %s",
+                        "Request-too-large" if error_class == "request_too_large" else "Fatal",
                         endpoint.model,
                         type(exc).__name__,
                         exc,
@@ -380,9 +385,14 @@ class LLMClient:
                     break  # advance to next model immediately
 
                 if attempt < max_retries:
-                    delay = base_delay * (2 ** attempt)
+                    delay = (
+                        get_retry_delay_seconds(exc, base_delay, attempt)
+                        if error_class == "rate_limit"
+                        else base_delay * (2 ** attempt)
+                    )
                     logger.warning(
-                        "Transient error on %s (attempt %d/%d) — retrying in %.1fs. %s: %s",
+                        "%s error on %s (attempt %d/%d) — retrying in %.1fs. %s: %s",
+                        "Rate-limit" if error_class == "rate_limit" else "Transient",
                         endpoint.model,
                         attempt + 1,
                         max_retries + 1,
