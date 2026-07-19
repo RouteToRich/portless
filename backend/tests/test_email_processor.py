@@ -116,6 +116,93 @@ async def test_process_inbound_unmatched_persists_record_and_attachments():
 
 
 # ---------------------------------------------------------------------------
+# process_inbound — self-echo (shared send+poll mailbox / auto-forward loop)
+# ---------------------------------------------------------------------------
+
+async def test_self_echo_is_discarded_before_mapping_or_run_round(monkeypatch):
+    """A shared send+poll Gmail account (or a folder rule) can hand PortLess's
+    own sent email back to process_inbound as if it were a genuine reply.
+    from_address matching the configured outbound sender must short-circuit
+    before mapping, price extraction, or run_round — otherwise it's a
+    self-feeding draft -> send -> echo -> draft loop with no real reply ever
+    involved (see the negotiation history that surfaced this: each "inbound"
+    body was verbatim the previous round's own outbound text)."""
+    import services.email_processor.service as svc
+    monkeypatch.setattr(
+        "services.email_gateway.config.settings.gmail_sender_address",
+        "richminds84@gmail.com",
+    )
+    run_round_mock = AsyncMock()
+    monkeypatch.setattr("agents.negotiation_agent.service.run_round", run_round_mock)
+    map_email_mock = AsyncMock()
+    monkeypatch.setattr(svc, "map_email", map_email_mock)
+
+    raw = InboundRawEmail(
+        from_address="richminds84@gmail.com",
+        to_address=settings.portless_trade_address,
+        subject="Trade Proposal — HS 290543 Supply Partnership",
+        body_text="Dear Sir or Madam, Thank you for considering PortLess...",
+        source=InboundEmailSource.IMAP,
+        received_at=datetime.now(timezone.utc),
+    )
+    result = await process_inbound(raw)
+
+    assert result.status == InboundEmailStatus.SELF_ECHO
+    map_email_mock.assert_not_awaited()
+    run_round_mock.assert_not_awaited()
+
+    import services.email_processor.repository as repo_mod
+    stored = await repo_mod._repository.get(result.inbound_id)
+    assert stored is not None
+    assert stored.status == InboundEmailStatus.SELF_ECHO
+
+
+async def test_self_echo_check_is_case_insensitive(monkeypatch):
+    monkeypatch.setattr(
+        "services.email_gateway.config.settings.gmail_sender_address",
+        "richminds84@gmail.com",
+    )
+    result = await process_inbound(_raw())  # from_address defaults elsewhere
+    assert result.status != InboundEmailStatus.SELF_ECHO  # sanity: unrelated address
+
+    raw = InboundRawEmail(
+        from_address="RichMinds84@Gmail.com",
+        to_address=settings.portless_trade_address,
+        subject="x", body_text="x",
+        source=InboundEmailSource.IMAP, received_at=datetime.now(timezone.utc),
+    )
+    result2 = await process_inbound(raw)
+    assert result2.status == InboundEmailStatus.SELF_ECHO
+
+
+async def test_real_reply_from_different_address_is_not_self_echo(monkeypatch):
+    """Guard rails don't misfire — a genuine counterparty reply must still
+    reach mapping/run_round unaffected."""
+    monkeypatch.setattr(
+        "services.email_gateway.config.settings.gmail_sender_address",
+        "richminds84@gmail.com",
+    )
+    result = await process_inbound(_raw(subject="Unrelated"))
+    assert result.status != InboundEmailStatus.SELF_ECHO
+
+
+async def test_self_echo_check_noop_when_sender_not_configured(monkeypatch):
+    """An empty configured sender (dev/CI, no real mailbox wired) must never
+    make every inbound email match — that would silently discard everything."""
+    monkeypatch.setattr(
+        "services.email_gateway.config.settings.gmail_sender_address", ""
+    )
+    raw = InboundRawEmail(
+        from_address="",
+        to_address=settings.portless_trade_address,
+        subject="x", body_text="x",
+        source=InboundEmailSource.IMAP, received_at=datetime.now(timezone.utc),
+    )
+    result = await process_inbound(raw)
+    assert result.status != InboundEmailStatus.SELF_ECHO
+
+
+# ---------------------------------------------------------------------------
 # process_inbound — mapped + priced → orchestration triggered
 # ---------------------------------------------------------------------------
 

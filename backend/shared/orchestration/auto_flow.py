@@ -90,37 +90,46 @@ def start(deal_id: str) -> None:
     asyncio.create_task(_run_safely(deal_id))
 
 
+_RESUMABLE_STATUSES = (
+    "MATCHING", "NEGOTIATING", "NEGOTIATION_AGREED", "PI_SENT", "PI_ACCEPTED",
+    "ESCROW_PENDING", "ESCROW_FUNDED", "PO_ISSUED", "SUPPLIER_DISPATCH_READY",
+    "QC_PASSED", "IN_TRANSIT", "CLEARED",
+)
+"""Every non-terminal status _run() can leave a deal parked at if its bare
+asyncio task dies mid-flight (server restart). PAID/CANCELLED/REFUNDED/
+NEGOTIATION_FAILED/QC_FAILED are excluded — those are either terminal or
+already routed to the Exception Resolver, not "in flight"."""
+
+
 async def resume_in_flight() -> None:
     """Re-arm the auto-flow task for every opportunity-seeded deal still
-    sitting in MATCHING or NEGOTIATING at process startup.
+    sitting mid-pipeline at process startup.
 
     This module's task is a bare asyncio task (see module docstring) — it
-    dies with the process. Without this, a restart mid-negotiation silently
-    orphans the deal: the auto-flow poller that was going to notice the
-    negotiation reach AGREED and hand off to PI issuance never comes back,
-    even though the negotiation itself keeps working fine via Mongo + the
-    event bus. Called once from app.py's lifespan, after the deals and
-    negotiation-agent repositories are initialised.
+    dies with the process. Without this, a restart mid-flow silently orphans
+    the deal at whatever status it last reached, even though every other
+    service keeps working fine via Mongo + the event bus. Called once from
+    app.py's lifespan, after the deals and negotiation-agent repositories are
+    initialised.
 
-    Safe to call repeatedly / on deals _run() has already handled: each step
-    re-derives its own precondition from current Mongo state (e.g.
-    _ensure_match_results returns the existing MatchResult instead of
-    re-scoring, _run_negotiation short-circuits on an already-terminal
-    session), so restarting from the top is an idempotent no-op for any leg
-    that already completed.
+    Covers every non-terminal status _run() passes through (see
+    _RESUMABLE_STATUSES), not just MATCHING/NEGOTIATING — _run() itself
+    resumes from the deal's current status (see its own docstring) rather
+    than always replaying from the top, so re-arming a deal already past
+    negotiation is safe.
     """
     if not enabled():
         return
     from services.deals.repository import get_repository
-    from services.deals.schemas import DealStatus
 
     repo = get_repository()
     resumed = 0
-    for status in (DealStatus.MATCHING, DealStatus.NEGOTIATING):
+    for status_str in _RESUMABLE_STATUSES:
         try:
-            deals = await repo.list_active(limit=500, status=status)
+            from shared.domain.enums import DealStatus
+            deals = await repo.list_active(limit=500, status=DealStatus(status_str))
         except Exception:
-            logger.exception("AutoFlow: resume scan failed for status=%s", status.value)
+            logger.exception("AutoFlow: resume scan failed for status=%s", status_str)
             continue
         for deal in deals:
             if not deal.opportunity_id:
@@ -138,88 +147,171 @@ async def _run_safely(deal_id: str) -> None:
         logger.exception("AutoFlow: deal %s pipeline aborted with an unhandled error", deal_id)
 
 
+_STAGE_ORDER = (
+    "MATCHING", "NEGOTIATING", "NEGOTIATION_AGREED", "PI_SENT", "PI_ACCEPTED",
+    "ESCROW_PENDING", "ESCROW_FUNDED", "PO_ISSUED", "SUPPLIER_DISPATCH_READY",
+    "QC_PASSED", "IN_TRANSIT", "CLEARED", "PAID",
+)
+"""Linear pipeline order _run() drives a deal through. Used only to compare
+"has this deal already reached status X" when resuming — not a replacement
+for shared.domain.state_machine, which remains the authority on which
+transitions are actually legal."""
+
+
+def _stage_index(status_value: str) -> int:
+    """Position of *status_value* in _STAGE_ORDER, or -1 if it precedes
+    MATCHING (e.g. DRAFT) — nothing to resume from there."""
+    try:
+        return _STAGE_ORDER.index(status_value)
+    except ValueError:
+        return -1
+
+
+async def _resolve_agreed_price(deal_id: str) -> float | None:
+    """The agreed unit price for a deal already past NEGOTIATION_AGREED,
+    read back from the PI record rather than re-running negotiation."""
+    from services.dealmaker.repository import get_repository as pi_repo
+    pi = await pi_repo().get_pi_by_deal(deal_id)
+    return pi.agreed_price if pi is not None else None
+
+
 async def _run(deal_id: str) -> None:
+    """Drive deal_id through the pipeline, resuming from wherever it currently
+    sits rather than always replaying from the top.
+
+    Needed because this is a bare asyncio task (see module docstring): a
+    server restart kills it mid-flight, and resume_in_flight() re-arms it for
+    every non-terminal status the deal could be parked at — not just
+    MATCHING/NEGOTIATING. Blindly replaying _submit_quote (mints a fresh RFQ)
+    or _create_gate (creates a HITL approval) on a deal already past those
+    steps would create real duplicate side effects, so each block below only
+    runs when the deal's current stage is at or before the step it performs —
+    _stage_index comparisons, not a second state machine.
+    """
     from services.deals.service import get_deal
+    from shared.domain.enums import DealStatus
 
     deal = await get_deal(deal_id)
     if not deal.opportunity_id:
         return
-
-    winner, buyer_price, supplier_price = await _ensure_match_results(deal)
-    if winner is None:
-        logger.info("AutoFlow: deal %s has no viable SOURCE candidate — stopping", deal_id)
+    stage = _stage_index(deal.status.value)
+    if stage < 0:
+        logger.info(
+            "AutoFlow: deal %s at %s is not a resumable status — stopping",
+            deal_id, deal.status.value,
+        )
         return
 
-    quote = await _submit_quote(deal_id, deal.hs_code, winner, supplier_price)
-    if quote is None:
-        return
-    await _nudge_to_negotiating(deal_id)
+    def at_or_before(target: str) -> bool:
+        return stage <= _STAGE_ORDER.index(target)
 
-    agreed_price = await _run_negotiation(deal, winner, buyer_price, supplier_price)
-    if agreed_price is None:
-        logger.info("AutoFlow: deal %s negotiation did not converge — stopping", deal_id)
-        return
+    if at_or_before("NEGOTIATING"):
+        winner, buyer_price, supplier_price = await _ensure_match_results(deal)
+        if winner is None:
+            logger.info("AutoFlow: deal %s has no viable SOURCE candidate — stopping", deal_id)
+            return
+        if at_or_before("MATCHING"):
+            quote = await _submit_quote(deal_id, deal.hs_code, winner, supplier_price)
+            if quote is None:
+                return
+            await _nudge_to_negotiating(deal_id)
 
-    pi = await _issue_and_accept_pi(deal_id, deal.market, agreed_price)
-    if pi is None:
-        return
+        agreed_price = await _run_negotiation(deal, winner, buyer_price, supplier_price)
+        if agreed_price is None:
+            logger.info("AutoFlow: deal %s negotiation did not converge — stopping", deal_id)
+            return
+    else:
+        # Resuming past negotiation — re-derive winner/agreed_price from
+        # durable state instead of re-running sourcing/negotiation, both of
+        # which would create fresh RFQs/quotes/sessions on every restart.
+        winner, _, supplier_price = await _ensure_match_results(deal)
+        if winner is None:
+            logger.error(
+                "AutoFlow: deal %s is past negotiation but has no stored match "
+                "result — cannot resume", deal_id,
+            )
+            return
+        agreed_price = await _resolve_agreed_price(deal_id)
+        if agreed_price is None:
+            logger.error(
+                "AutoFlow: deal %s is at %s but has no PI on record — cannot resume",
+                deal_id, deal.status.value,
+            )
+            return
 
-    hold = await _fund_escrow(deal_id, agreed_price)
-    if hold is None:
-        return
+    if at_or_before("NEGOTIATION_AGREED"):
+        pi = await _issue_and_accept_pi(deal_id, deal.market, agreed_price)
+        if pi is None:
+            return
 
-    from shared.domain.enums import DealStatus
+    if at_or_before("PI_ACCEPTED"):
+        hold = await _fund_escrow(deal_id, agreed_price)
+        if hold is None:
+            return
 
-    await _create_gate(
-        deal_id, "ISSUE_PO",
-        summary=f"Auto-flow: issue PO for {deal.hs_code} at ${supplier_price}/unit",
-        financial_impact_usd=round(supplier_price * _QUANTITY_MT, 2),
-        autonomy_level=_autonomy(deal),
-        callback_payload={
-            "deal_id": deal_id, "agreed_price": supplier_price, "quantity_mt": _QUANTITY_MT,
-            "incoterm": "FOB", "port_of_loading": "Chennai, IN",
-            "delivery_deadline": (date.today() + timedelta(days=21)).isoformat(),
-            "payment_terms": "30% advance + 70% on BL",
-        },
-    )
-    if not await _wait_for_status(deal_id, DealStatus.PO_ISSUED):
-        return
+    if at_or_before("ESCROW_FUNDED"):
+        await _create_gate(
+            deal_id, "ISSUE_PO",
+            summary=f"Auto-flow: issue PO for {deal.hs_code} at ${supplier_price}/unit",
+            financial_impact_usd=round(supplier_price * _QUANTITY_MT, 2),
+            autonomy_level=_autonomy(deal),
+            callback_payload={
+                "deal_id": deal_id, "agreed_price": supplier_price, "quantity_mt": _QUANTITY_MT,
+                "incoterm": "FOB", "port_of_loading": "Chennai, IN",
+                "delivery_deadline": (date.today() + timedelta(days=21)).isoformat(),
+                "payment_terms": "30% advance + 70% on BL",
+            },
+            idempotency_key=f"auto-po-gate-{deal_id}",
+        )
+        if not await _wait_for_status(deal_id, DealStatus.PO_ISSUED):
+            return
 
-    if await _book_and_simulate_qc(deal_id) is None:
-        return
-    await _generate_documents(deal_id)
+    if at_or_before("SUPPLIER_DISPATCH_READY"):
+        # Includes SUPPLIER_DISPATCH_READY itself, not just PO_ISSUED:
+        # book_qc() advances the deal to SUPPLIER_DISPATCH_READY synchronously,
+        # before the simulated PASS webhook fires — a restart during that gap
+        # leaves the deal parked there with qc_result still unset. Both
+        # _book_and_simulate_qc (result-aware) and _generate_documents
+        # (idempotency_key-aware) are safe to re-enter from either status.
+        if await _book_and_simulate_qc(deal_id) is None:
+            return
+        await _generate_documents(deal_id)
 
-    await _create_gate(
-        deal_id, "BOOK_FREIGHT",
-        summary=f"Auto-flow: book freight for deal {deal_id}",
-        financial_impact_usd=None,
-        autonomy_level=_autonomy(deal),
-        callback_payload={"deal_id": deal_id, "provider": "cogoport", "incoterm": "FOB"},
-    )
-    if not await _wait_for_status(deal_id, DealStatus.IN_TRANSIT):
-        return
+        await _create_gate(
+            deal_id, "BOOK_FREIGHT",
+            summary=f"Auto-flow: book freight for deal {deal_id}",
+            financial_impact_usd=None,
+            autonomy_level=_autonomy(deal),
+            callback_payload={"deal_id": deal_id, "provider": "cogoport", "incoterm": "FOB"},
+            idempotency_key=f"auto-freight-gate-{deal_id}",
+        )
+        if not await _wait_for_status(deal_id, DealStatus.IN_TRANSIT):
+            return
 
-    await _file_customs(deal_id)
-    if not await _simulate_freight_cleared(deal_id):
-        return
-    if not await _wait_for_status(deal_id, DealStatus.CLEARED):
-        return
+    if at_or_before("IN_TRANSIT"):
+        await _file_customs(deal_id)
+        if not await _simulate_freight_cleared(deal_id):
+            return
+        if not await _wait_for_status(deal_id, DealStatus.CLEARED):
+            return
 
-    await _create_gate(
-        deal_id, "RELEASE_SUPPLIER_PAYOUT",
-        summary=f"Auto-flow: release supplier payout for deal {deal_id}",
-        financial_impact_usd=round(supplier_price * _QUANTITY_MT, 2),
-        autonomy_level=_autonomy(deal),
-        callback_payload={
-            "deal_id": deal_id, "payee_id": f"SUPPLIER-{winner.supplier_id}",
-            "amount": round(supplier_price * _QUANTITY_MT, 2),
-            "idempotency_key": str(uuid.uuid4()),
-        },
-    )
-    if not await _simulate_payout_completed(deal_id):
-        return
-    if await _wait_for_status(deal_id, DealStatus.PAID):
-        logger.info("AutoFlow: deal %s reached PAID", deal_id)
+    if at_or_before("CLEARED"):
+        await _create_gate(
+            deal_id, "RELEASE_SUPPLIER_PAYOUT",
+            summary=f"Auto-flow: release supplier payout for deal {deal_id}",
+            financial_impact_usd=round(supplier_price * _QUANTITY_MT, 2),
+            autonomy_level=_autonomy(deal),
+            callback_payload={
+                "deal_id": deal_id, "payee_id": f"SUPPLIER-{winner.supplier_id}",
+                "amount": round(supplier_price * _QUANTITY_MT, 2),
+                "idempotency_key": f"auto-payout-{deal_id}",
+            },
+            idempotency_key=f"auto-payout-gate-{deal_id}",
+        )
+        if not await _simulate_payout_completed(deal_id):
+            return
+        if await _wait_for_status(deal_id, DealStatus.PAID):
+            logger.info("AutoFlow: deal %s reached PAID", deal_id)
 
 
 def _autonomy(deal) -> str:
@@ -416,25 +508,36 @@ async def _issue_and_accept_pi(deal_id: str, market: str, agreed_price: float):
 
 async def _fund_escrow(deal_id: str, agreed_price: float):
     from services.deals.schemas import UpdateStatusRequest
-    from services.deals.service import update_status
+    from services.deals.service import get_deal, update_status
     from services.escrow_guard.schemas import EscrowFundedWebhookPayload, EscrowHoldRequest
-    from services.escrow_guard.service import create_hold, handle_escrow_funded_webhook
+    from services.escrow_guard.service import create_hold, get_deal_summary, handle_escrow_funded_webhook
     from shared.domain.enums import DealStatus
     try:
-        # Gap #2 (see module docstring) — nothing drives this transition.
-        await update_status(deal_id, UpdateStatusRequest(
-            target_status=DealStatus.ESCROW_PENDING,
-            reason="AutoFlow: buyer-equivalent escrow initiation",
-        ))
-        hold = await create_hold(EscrowHoldRequest(
-            deal_id=deal_id, amount=round(agreed_price * _QUANTITY_MT, 2),
-            idempotency_key=str(uuid.uuid4()),
-        ))
-        await asyncio.sleep(_WEBHOOK_SIM_DELAY_SECONDS)
-        await handle_escrow_funded_webhook(
-            EscrowFundedWebhookPayload(ext_ref=hold.ext_ref, status="FUNDED"),
-            raw_headers={}, raw_body=b"{}",
-        )
+        # Resuming after a restart: a hold from the prior run may already
+        # exist (and may already be FUNDED) — reuse it instead of creating a
+        # second one. idempotency_key is deal-scoped and deterministic (not
+        # uuid4()) for the same reason: create_hold's own idempotency check
+        # can only dedupe a retry if the key repeats across resumes.
+        summary = await get_deal_summary(deal_id)
+        hold = summary.hold
+        if hold is None:
+            deal = await get_deal(deal_id)
+            if deal.status not in (DealStatus.ESCROW_PENDING, DealStatus.ESCROW_FUNDED):
+                # Gap #2 (see module docstring) — nothing drives this transition.
+                await update_status(deal_id, UpdateStatusRequest(
+                    target_status=DealStatus.ESCROW_PENDING,
+                    reason="AutoFlow: buyer-equivalent escrow initiation",
+                ))
+            hold = await create_hold(EscrowHoldRequest(
+                deal_id=deal_id, amount=round(agreed_price * _QUANTITY_MT, 2),
+                idempotency_key=f"auto-escrow-{deal_id}",
+            ))
+        if hold.status != "FUNDED":
+            await asyncio.sleep(_WEBHOOK_SIM_DELAY_SECONDS)
+            await handle_escrow_funded_webhook(
+                EscrowFundedWebhookPayload(ext_ref=hold.ext_ref, status="FUNDED"),
+                raw_headers={}, raw_body=b"{}",
+            )
         return hold
     except Exception:
         logger.exception("AutoFlow: deal %s escrow funding failed", deal_id)
@@ -442,15 +545,37 @@ async def _fund_escrow(deal_id: str, agreed_price: float):
 
 
 async def _book_and_simulate_qc(deal_id: str):
+    """Book (or find) the QC inspection and ensure the simulated PASS webhook
+    has actually fired.
+
+    Resuming after a restart can land here two different ways: no QC order
+    yet (book fresh), or an order that was already booked but whose simulated
+    webhook never fired because the process died during the
+    _WEBHOOK_SIM_DELAY_SECONDS sleep — book_qc() itself already advances the
+    deal to SUPPLIER_DISPATCH_READY synchronously, before the webhook, so
+    that half-completed state is real and must be finished here rather than
+    left to stall forever. qc_result is None exactly in that gap; re-calling
+    handle_qc_result on an order that already has a result is a harmless
+    idempotent no-op (see handle_qc_result's own transition-failure handling).
+    """
     from services.shield_link.schemas import QcBookingRequest, QcWebhookPayload
-    from services.shield_link.service import book_qc, handle_qc_result
+    from services.shield_link.service import book_qc, handle_qc_result, list_deal_orders
     try:
-        tpo = await book_qc(QcBookingRequest(deal_id=deal_id))
-        await asyncio.sleep(_WEBHOOK_SIM_DELAY_SECONDS)
-        await handle_qc_result(
-            tpo.ext_ref, QcWebhookPayload(ext_ref=tpo.ext_ref, result="PASS"),
-            raw_headers={}, raw_body=b"{}",
+        # book_qc has no idempotency_key, so re-calling it unconditionally on
+        # resume would book (and bill) a second inspection — only book if no
+        # QC order exists for this deal yet.
+        existing = await list_deal_orders(deal_id)
+        tpo = next(
+            (o for o in existing.orders if o.order_type.upper() == "QC" and o.ext_ref), None
         )
+        if tpo is None:
+            tpo = await book_qc(QcBookingRequest(deal_id=deal_id))
+        if tpo.qc_result is None:
+            await asyncio.sleep(_WEBHOOK_SIM_DELAY_SECONDS)
+            await handle_qc_result(
+                tpo.ext_ref, QcWebhookPayload(ext_ref=tpo.ext_ref, result="PASS"),
+                raw_headers={}, raw_body=b"{}",
+            )
         return tpo
     except Exception:
         logger.exception("AutoFlow: deal %s QC booking failed", deal_id)
@@ -467,7 +592,14 @@ async def _generate_documents(deal_id: str) -> None:
         DocumentType.CERTIFICATE_OF_ORIGIN, DocumentType.SDF, DocumentType.SHIPPING_BILL,
     ):
         try:
-            await generate_document(GenerateDocumentRequest(deal_id=deal_id, doc_type=dt))
+            # Deterministic per (deal, doc_type) key: resuming after a restart
+            # must return the already-generated document instead of rendering
+            # (and re-uploading to Drive) a duplicate — see generate_document's
+            # own idempotency_key check.
+            await generate_document(GenerateDocumentRequest(
+                deal_id=deal_id, doc_type=dt,
+                idempotency_key=f"auto-doc-{deal_id}-{dt.value}",
+            ))
         except Exception:
             logger.warning("AutoFlow: deal %s document %s generation failed", deal_id, dt.value)
 
@@ -541,8 +673,16 @@ async def _simulate_payout_completed(deal_id: str) -> bool:
 
 async def _create_gate(
     deal_id: str, action: str, summary: str, financial_impact_usd: float | None,
-    autonomy_level: str, callback_payload: dict,
+    autonomy_level: str, callback_payload: dict, idempotency_key: str | None = None,
 ) -> None:
+    """Create a HITL approval gate.
+
+    idempotency_key should be a deterministic, deal+action-scoped string (not
+    uuid4()) when the caller might be resuming after a restart — create_approval
+    dedupes on it, so a re-triggered gate for a deal already past this step
+    returns the existing approval instead of creating a visible duplicate in
+    the Approvals Inbox.
+    """
     from services.hitl_approval.schemas import CreateApprovalRequest
     from services.hitl_approval.service import create_approval
     try:
@@ -550,6 +690,7 @@ async def _create_gate(
             deal_id=deal_id, action=action, summary=summary,
             financial_impact_usd=financial_impact_usd,
             autonomy_level=autonomy_level, callback_payload=callback_payload,
+            idempotency_key=idempotency_key,
         ))
     except Exception:
         logger.exception("AutoFlow: deal %s could not create %s approval", deal_id, action)

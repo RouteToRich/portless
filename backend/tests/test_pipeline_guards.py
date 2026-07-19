@@ -27,6 +27,17 @@ from shared.orchestration.continuations import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _continuations_enabled(monkeypatch):
+    """This file exercises shared.orchestration.continuations directly, so it
+    must not inherit whatever EVENT_CONTINUATION_ENABLED happens to be set to
+    in the environment (e.g. backend/.env sets it to "false" to avoid racing
+    auto_flow.py in dev — see auto_flow.py's own docstring). Individual tests
+    that specifically verify the disabled path still set it to "false"
+    themselves, which simply overrides this default."""
+    monkeypatch.setenv("EVENT_CONTINUATION_ENABLED", "true")
+
+
 def _session(**overrides) -> NegotiationSession:
     now = datetime.now(timezone.utc)
     defaults = dict(

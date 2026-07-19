@@ -99,8 +99,6 @@ __all__ = [
     "StreamChunk",
     "stream_chat",
     "SSEAdapter",
-    # db_tracker
-    "DatabaseTracker",
     # health
     "HealthMonitor",
     "EndpointUnhealthyError",

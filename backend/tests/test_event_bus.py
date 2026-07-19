@@ -276,6 +276,15 @@ class TestFactory:
 # ---------------------------------------------------------------------------
 
 class TestDealExceptionContinuation:
+    @pytest.fixture(autouse=True)
+    def _continuations_enabled(self, monkeypatch):
+        """Exercises on_deal_exception directly — must not inherit whatever
+        EVENT_CONTINUATION_ENABLED happens to be set to in the environment
+        (e.g. backend/.env sets it to "false" to avoid racing auto_flow.py in
+        dev). The one test below that verifies the disabled path sets it to
+        "false" itself, overriding this default."""
+        monkeypatch.setenv("EVENT_CONTINUATION_ENABLED", "true")
+
     @pytest.mark.asyncio
     async def test_routes_to_resolver_with_mapped_fields(self):
         result = SimpleNamespace(

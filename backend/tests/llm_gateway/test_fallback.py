@@ -23,15 +23,19 @@ from .conftest import (
 # ─────────────────────────────────── FallbackChain.from_settings
 
 
-def test_default_chain_has_three_groq_endpoints():
+def test_default_chain_has_four_endpoints():
+    # 1 OpenAI primary (gpt-4o-mini) + 3 Groq fallbacks — see
+    # test_config.test_primary_configured_as_openai_gpt4o_mini.
     chain = FallbackChain.from_settings()
     endpoints = list(chain.get_ordered_endpoints())
-    assert len(endpoints) == 3
+    assert len(endpoints) == 4
 
 
-def test_default_chain_all_groq_connector():
+def test_default_chain_fallbacks_are_groq():
+    # Endpoint 0 is the OpenAI primary; the three Groq fallbacks follow it.
     chain = FallbackChain.from_settings()
-    for ep in chain.get_ordered_endpoints():
+    endpoints = list(chain.get_ordered_endpoints())
+    for ep in endpoints[1:]:
         assert ep.connector == "groq"
 
 
@@ -39,15 +43,26 @@ def test_default_chain_model_names():
     # Reflects the live .env chain (see test_config.test_three_fallback_models_configured).
     chain = FallbackChain.from_settings()
     models = [ep.model for ep in chain.get_ordered_endpoints()]
-    assert "llama-3.3-70b-versatile" in models
+    assert "openai/gpt-oss-120b" in models
     assert "qwen/qwen3.6-27b" in models
-    assert "openai/gpt-oss-safeguard-20b" in models
+    assert "openai/gpt-oss-20b" in models
 
 
-def test_default_chain_all_use_groq_api_key():
+def test_primary_from_live_env_is_openai():
+    # 2026-07-18: shared/llm_gateway/.env now has a real OpenAI primary
+    # (gpt-4o-mini) — tried before the three Groq fallbacks.
+    chain = FallbackChain.from_settings()
+    primary = chain.get_primary()
+    assert primary is not None
+    assert primary.model == "gpt-4o-mini"
+    assert primary.connector == "openai"
+
+
+def test_default_chain_fallbacks_use_groq_api_key():
     from shared.llm_gateway.config import llm_gateway_settings
     chain = FallbackChain.from_settings()
-    for ep in chain.get_ordered_endpoints():
+    endpoints = list(chain.get_ordered_endpoints())
+    for ep in endpoints[1:]:  # skip the OpenAI primary at index 0
         assert ep.api_key == llm_gateway_settings.groq_api_key
 
 

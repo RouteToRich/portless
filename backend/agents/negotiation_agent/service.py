@@ -1303,17 +1303,29 @@ async def _is_gateway_failure_deadend(session: NegotiationSession) -> bool:
     """True when *session* is HITL_PENDING with nothing a human can act on.
 
     A normal HITL_PENDING session always has a live SEND_NEGOTIATION_EMAIL or
-    CONFIRM_NEGOTIATION_AGREEMENT approval waiting (or, for round 0, is caught
-    by _renotify_stuck_round0 above). The LLM Gateway failure path in
-    start_negotiation/run_round catches the graph exception, sets
+    CONFIRM_NEGOTIATION_AGREEMENT approval waiting. The LLM Gateway failure
+    path in start_negotiation/run_round catches the graph exception, sets
     routing=HITL_APPROVAL, but never reaches _post_graph_notify's email-gating
     step (buyer_outbound_message/supplier_outbound_message are both empty) — so
     NO approval is ever created. That combination (HITL_PENDING + zero pending
     approvals + the last round drafted nothing) is unique to this failure mode
     and is the only reliable signal to retry on.
+
+    This includes a failed start_negotiation itself: round_no is unconditionally
+    bumped 0 → 1 before save_session runs (see start_negotiation), so a graph
+    exception on the very first round still lands the session at round_no=1,
+    not 0 — there is no real round_no==0 case to special-case here, and
+    _renotify_stuck_round0 only helps once an approval actually exists.
+
+    A rarer, harder crash also lands here: the process dies (deploy, OOM,
+    system restart) mid-way through start_negotiation itself — anywhere after
+    the initial save_session(status=STARTED, round_no=0) but before
+    graph.ainvoke() returns and the round record is written. Nothing ever runs
+    the except block or writes a round, so the session is left at STARTED /
+    round_no=0 with ZERO round records — no draft, no approval, no exception
+    for continuations.py's own try/except to catch and route to the Exception
+    Resolver. This is otherwise invisible to every other safety net.
     """
-    if session.round_no == 0:
-        return False  # covered by _renotify_stuck_round0's own dead-draft case
     try:
         from services.hitl_approval.service import list_approvals  # type: ignore[import]
         approvals = await list_approvals(status="PENDING", deal_id=session.deal_id)
@@ -1328,7 +1340,10 @@ async def _is_gateway_failure_deadend(session: NegotiationSession) -> bool:
 
     rounds = await get_repository().list_rounds(session.negotiation_id)
     if not rounds:
-        return False
+        # Crashed before even the first round record was written. Only a
+        # freshly-STARTED, still-round-0 session can be in this shape —
+        # anything further along would have at least one round row.
+        return session.status == "STARTED" and session.round_no == 0
     last = max(rounds, key=lambda r: r.round_no)
     return last.round_no == session.round_no and not last.outbound_message
 
@@ -1346,10 +1361,17 @@ async def _retry_gateway_failed_round(session: NegotiationSession) -> bool:
     """
     rounds = await get_repository().list_rounds(session.negotiation_id)
     last = max(rounds, key=lambda r: r.round_no) if rounds else None
-    if last is None:
-        return False
 
-    retry_count = sum(1 for r in rounds if r.round_no >= 1 and not r.outbound_message)
+    if last is None:
+        # Zero round records at all — start_negotiation crashed before writing
+        # even the first one (see _is_gateway_failure_deadend). Nothing to
+        # count retries against, so fall back to the session's own round_no —
+        # it's still 0 here (see the STARTED/round_no==0 guard above), so this
+        # simply behaves like attempt 0.
+        retry_count = 0
+    else:
+        retry_count = sum(1 for r in rounds if r.round_no >= 1 and not r.outbound_message)
+
     if retry_count > _MAX_GATEWAY_RETRIES:
         logger.error(
             "StaleWatcher: negotiation %s exceeded %d gateway-failure retries — "
@@ -1361,15 +1383,17 @@ async def _retry_gateway_failed_round(session: NegotiationSession) -> bool:
     logger.info(
         "StaleWatcher: retrying negotiation %s round %d after apparent LLM Gateway "
         "failure (attempt %d) — replaying party=%s",
-        session.negotiation_id, session.round_no, retry_count, last.party,
+        session.negotiation_id, session.round_no, retry_count,
+        last.party if last is not None else "init",
     )
     try:
-        if last.party == "init":
-            # Round-0 draft never completed. Re-run the same graph pass
-            # start_negotiation would have, in place, without minting a second
-            # session (get_session_by_deal's dedup in start_negotiation would
-            # just hand back this same session anyway — going straight to the
-            # graph avoids the redundant RAG/market/QC/freight re-seeding).
+        if last is None or last.party == "init":
+            # Round-0 draft never completed (or never even started). Re-run
+            # the same graph pass start_negotiation would have, in place,
+            # without minting a second session (get_session_by_deal's dedup
+            # in start_negotiation would just hand back this same session
+            # anyway — going straight to the graph avoids the redundant
+            # RAG/market/QC/freight re-seeding).
             await _retry_round_zero(session)
         else:
             await run_round(

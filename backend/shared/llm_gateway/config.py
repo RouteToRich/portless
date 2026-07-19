@@ -7,9 +7,9 @@ Env file load order (later file wins):
   2. backend/shared/llm_gateway/.env        — gateway-specific overrides
 
 Fallback chain (always active when groq_api_key is set):
-  1. qwen/qwen3-32b        via Groq
+  1. openai/gpt-oss-120b   via Groq
   2. qwen/qwen3.6-27b      via Groq
-  3. openai/gpt-oss-safeguard-20b  via Groq
+  3. openai/gpt-oss-20b    via Groq
 
 Optional primary (tried first if LLM_PRIMARY_API_KEY is set):
   Set LLM_PRIMARY_MODEL, LLM_PRIMARY_API_KEY, LLM_PRIMARY_CONNECTOR.
@@ -69,7 +69,7 @@ class LLMGatewaySettings(BaseSettings):
     # LLMConfigurationError. Never hardcode a key here.
     groq_api_key: str = ""
 
-    fallback_1_model: str = "qwen/qwen3-32b"
+    fallback_1_model: str = "openai/gpt-oss-120b"
     fallback_1_connector: str = "groq"
     fallback_1_api_key: str = ""  # uses groq_api_key when empty
 
@@ -77,7 +77,7 @@ class LLMGatewaySettings(BaseSettings):
     fallback_2_connector: str = "groq"
     fallback_2_api_key: str = ""
 
-    fallback_3_model: str = "openai/gpt-oss-safeguard-20b"
+    fallback_3_model: str = "openai/gpt-oss-20b"
     fallback_3_connector: str = "groq"
     fallback_3_api_key: str = ""
 

@@ -1,14 +1,28 @@
 """Auto-retry for negotiation sessions dead-ended by an LLM Gateway failure.
 
-When start_negotiation/run_round's graph invocation raises (e.g. every model in
-the LLM Gateway's fallback chain is rate-limited/exhausted), the exception is
-caught and the session is parked at HITL_PENDING — but because the graph never
-produced an outbound draft, _post_graph_notify's email-gating step never runs,
-so NO HITL approval is created either. That's a dead end: nothing for a human
-to act on, and nothing that looks any different from "waiting on a real draft"
-to a casual read of session.status. The 5-min stale-watcher sweep detects this
-exact signature (HITL_PENDING + zero pending approvals + last round has no
-outbound_message) and auto-retries, bounded by _MAX_GATEWAY_RETRIES.
+Two distinct dead-end shapes, both detected by _is_gateway_failure_deadend and
+recovered by _retry_gateway_failed_round:
+
+1. Draft failed mid-round: start_negotiation/run_round's graph invocation
+   raises (e.g. every model in the LLM Gateway's fallback chain is
+   rate-limited/exhausted). The exception is caught and the session is parked
+   at HITL_PENDING — but because the graph never produced an outbound draft,
+   _post_graph_notify's email-gating step never runs, so NO HITL approval is
+   created either. Signature: HITL_PENDING + zero pending approvals + last
+   round has no outbound_message.
+
+2. Process died before the first round: start_negotiation's own coroutine is
+   killed (deploy, OOM, system restart) somewhere between its initial
+   save_session(status=STARTED, round_no=0) and graph.ainvoke() completing.
+   Nothing ever runs the except block or writes a round record, so the
+   session sits at STARTED/round_no=0 with ZERO rounds — no draft, no
+   approval, and no exception for the caller's own try/except to route to the
+   Exception Resolver. Signature: STARTED + round_no==0 + zero round records.
+
+Either way that's a dead end: nothing for a human to act on, and nothing that
+looks any different from "waiting on a real draft" to a casual read of
+session.status. The 5-min stale-watcher sweep detects both signatures and
+auto-retries, bounded by _MAX_GATEWAY_RETRIES.
 """
 from __future__ import annotations
 
@@ -114,10 +128,52 @@ async def test_not_deadend_when_pending_approval_exists(monkeypatch):
     assert await svc._is_gateway_failure_deadend(session) is False
 
 
-async def test_not_deadend_when_round_zero(monkeypatch):
-    # round 0 is _renotify_stuck_round0's territory, not ours
+async def test_deadend_detected_when_start_negotiation_itself_failed(monkeypatch):
+    # start_negotiation unconditionally bumps round_no 0 -> 1 before saving,
+    # even when the graph raised — so a failed FIRST round lands at round_no=1
+    # with party="init" and no outbound, not round_no=0. This must still be
+    # detected as a dead-end (previously excluded by a stale round_no==0 guard
+    # whose "covered by _renotify_stuck_round0" premise never actually applied,
+    # since that path only re-notifies an approval that was never created).
     _patch_approvals(monkeypatch, FakeApprovalsEmpty)
-    session = _session(round_no=0)
+    session = _session(round_no=1)
+    rounds = [_round(1, "init", outbound_message="")]
+
+    async def fake_list_rounds(negotiation_id):
+        return rounds
+    monkeypatch.setattr(svc.get_repository(), "list_rounds", fake_list_rounds)
+
+    assert await svc._is_gateway_failure_deadend(session) is True
+
+
+async def test_deadend_detected_when_process_died_before_first_round(monkeypatch):
+    # start_negotiation's own coroutine got killed (system restart) somewhere
+    # between the initial save_session(status=STARTED, round_no=0) and
+    # graph.ainvoke() completing — no round record was ever written, so
+    # list_rounds returns []. This must still be caught: without it, a session
+    # in this exact shape is invisible to every other safety net (no draft to
+    # gate, no approval, no exception for continuations.py to route).
+    _patch_approvals(monkeypatch, FakeApprovalsEmpty)
+    session = _session(status="STARTED", round_no=0)
+
+    async def fake_list_rounds(negotiation_id):
+        return []
+    monkeypatch.setattr(svc.get_repository(), "list_rounds", fake_list_rounds)
+
+    assert await svc._is_gateway_failure_deadend(session) is True
+
+
+async def test_not_deadend_when_zero_rounds_but_not_started_round_zero(monkeypatch):
+    # Zero rounds is only a dead-end signature for a fresh STARTED/round_no=0
+    # session. Any other status/round_no combination with no rounds is an
+    # unrelated or not-yet-understood state — don't touch it.
+    _patch_approvals(monkeypatch, FakeApprovalsEmpty)
+    session = _session(status="HITL_PENDING", round_no=2)
+
+    async def fake_list_rounds(negotiation_id):
+        return []
+    monkeypatch.setattr(svc.get_repository(), "list_rounds", fake_list_rounds)
+
     assert await svc._is_gateway_failure_deadend(session) is False
 
 
@@ -167,6 +223,27 @@ async def test_retry_round_zero_uses_dedicated_path(monkeypatch):
 
     async def fake_list_rounds(negotiation_id):
         return rounds
+    monkeypatch.setattr(svc.get_repository(), "list_rounds", fake_list_rounds)
+
+    called = {}
+    async def fake_retry_round_zero(sess):
+        called["session"] = sess
+    monkeypatch.setattr(svc, "_retry_round_zero", fake_retry_round_zero)
+
+    ok = await svc._retry_gateway_failed_round(session)
+    assert ok is True
+    assert called["session"].negotiation_id == NEG_ID
+
+
+async def test_retry_uses_round_zero_path_when_no_rounds_exist(monkeypatch):
+    # The process-died-before-first-round case: list_rounds returns [].
+    # _retry_gateway_failed_round must not bail out (last is None) — it should
+    # fall back to _retry_round_zero, the same recovery path start_negotiation
+    # itself would have taken.
+    session = _session(status="STARTED", round_no=0)
+
+    async def fake_list_rounds(negotiation_id):
+        return []
     monkeypatch.setattr(svc.get_repository(), "list_rounds", fake_list_rounds)
 
     called = {}

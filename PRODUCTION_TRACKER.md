@@ -273,7 +273,9 @@ hosting.
   boot in production profile** if any of: Mongo unreachable, any `*_WEBHOOK_SECRET`
   unset, email in log-only mode, `TRADE_MIN_MOCK_MODE`/`AUTO_FLOW_ENABLED` on,
   document store on local-disk fallback, LLM gateway keyless, event bus on
-  in-process fallback. Add `ENV_PROFILE=dev|staging|production` with
+  in-process fallback, **Trade-Min's default HS codes/markets would resolve to
+  `source: "simulated"`** (i.e. neither `COMTRADE` nor `CENSUS_API_KEY` configured
+  — see P1-D1a). Add `ENV_PROFILE=dev|staging|production` with
   environment validation by profile.
 - [ ] **P1-2 Durable Mongo everywhere** — single production cluster + per-service
   collections verified for all 13 stateful modules (auth, deals, trade_min,
@@ -290,6 +292,32 @@ hosting.
 - [ ] **P1-D1** Obtain and configure live data APIs: Comtrade/open trade data,
   Volza-class buyer data or free alternatives, Alibaba RFQ / IndiaMART, MacMap
   tariff source, API Setu.
+  - [ ] **P1-D1a Silent SHA-256 simulated fallback** — when Phase 1 gets fewer
+    than `phase1_min_connectors` (currently 1) live responses from
+    Comtrade/Census, `_phase1_historical_demand()` falls back to
+    `ranking.simulated_demand_index()` / `simulated_price_gap_pct()`
+    (`backend/services/trade_min/service.py:251-259`,
+    `backend/services/trade_min/ranking.py:17-29`) — a deterministic SHA-256
+    hash of `(hs_code, market)` that produces plausible-looking but entirely
+    fake `demand_index`/`price_gap_pct` numbers. This runs in **production**,
+    not just `TRADE_MIN_MOCK_MODE`, any time Comtrade/Census both fail or
+    return empty for a scanned pair. `result.source = "simulated"` is set on
+    the opportunity but nothing today blocks a simulated opportunity from
+    becoming a real deal or visually distinguishes it in the UI (→ UI-1).
+    Fix: (a) surface `source="simulated"` distinctly wherever opportunities
+    are listed, (b) block deal creation from a simulated opportunity in
+    production profile (or require explicit operator override), (c) feed into
+    the P1-1 boot gate above.
+  - [ ] **P1-D1b Paid connectors coded but excluded from the pipeline** — Volza,
+    Trademo, ImportGenius, and MacMap have full connector classes and registry
+    entries (`backend/shared/connectors/registry.py:64-85`) with extractors
+    already written (`_extract_volza`, `_extract_importgenius`,
+    `_extract_trademo` in `service.py`), but Phase 1/3/4 only call
+    `comtrade`/`census`/`wits_tariff`/`access2markets` — the paid ones are
+    dead code today, switched off by a code comment rather than a tracked
+    decision. Re-enabling any of them is a config/pricing decision (see Phase 7
+    table), not new engineering — restore them to the phase call lists in
+    `service.py` once a subscription is bought.
 - [ ] **P1-D2** Replace graceful connector stubs with live connectors incrementally;
   show per-source quality/confidence in the UI.
 - [ ] **P1-D3** Freshness SLAs for opportunity data: scan time, source, validity

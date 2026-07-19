@@ -47,6 +47,10 @@ class InboundEmailStatus(str, Enum):
     """No active negotiation found for this email."""
     REJECTED = "rejected"
     """Operator marked as irrelevant / spam."""
+    SELF_ECHO = "self_echo"
+    """From address matches PortLess's own outbound sender — a copy of our own
+    sent mail landed back in the polled inbox/folder (shared send+poll mailbox,
+    an auto-forward rule, etc.), not a real reply. Never advances a round."""
 
 
 # ---------------------------------------------------------------------------

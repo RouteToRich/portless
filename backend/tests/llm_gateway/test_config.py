@@ -15,13 +15,17 @@ def test_groq_api_key_has_correct_prefix():
 
 def test_three_fallback_models_configured():
     # These reflect the live shared/llm_gateway/.env, not the class defaults.
-    # fallback_1 was moved off qwen/qwen3-32b to llama-3.3-70b-versatile to dodge
-    # qwen3-32b's low free-tier TPM ceiling (the 413 "request too large" errors);
-    # update here whenever the .env chain is deliberately re-tuned. All three
-    # must be real text-generation chat models (never a *-guard classifier).
-    assert llm_gateway_settings.fallback_1_model == "llama-3.3-70b-versatile"
+    # 2026-07-18: fallback_1 moved off llama-3.3-70b-versatile (Groq deprecates
+    # it 2026-08-16) to openai/gpt-oss-120b, Groq's own recommended replacement
+    # and a different model family from fallback_2's Qwen. fallback_3 moved off
+    # openai/gpt-oss-safeguard-20b (a content-moderation classifier, not a chat
+    # model — can't draft negotiation text) to its general-purpose sibling
+    # gpt-oss-20b. Update here whenever the .env chain is deliberately re-tuned.
+    # All three must be real text-generation chat models (never a *-guard
+    # classifier).
+    assert llm_gateway_settings.fallback_1_model == "openai/gpt-oss-120b"
     assert llm_gateway_settings.fallback_2_model == "qwen/qwen3.6-27b"
-    assert llm_gateway_settings.fallback_3_model == "openai/gpt-oss-safeguard-20b"
+    assert llm_gateway_settings.fallback_3_model == "openai/gpt-oss-20b"
 
 
 def test_all_fallback_connectors_are_groq():
@@ -34,9 +38,12 @@ def test_auth_disabled_by_default():
     assert llm_gateway_settings.auth_enabled is False
 
 
-def test_primary_api_key_empty_by_default():
-    # primary is opt-in; Groq fallbacks handle all traffic until a primary is set
-    assert llm_gateway_settings.primary_api_key == ""
+def test_primary_configured_as_openai_gpt4o_mini():
+    # 2026-07-18: primary activated — OpenAI gpt-4o-mini is now tried before the
+    # Groq fallback chain (see test_fallback.test_primary_from_live_env_is_openai).
+    assert llm_gateway_settings.primary_model == "gpt-4o-mini"
+    assert llm_gateway_settings.primary_connector == "openai"
+    assert llm_gateway_settings.primary_api_key.startswith("sk-proj-")
 
 
 def test_retry_defaults():

@@ -62,6 +62,28 @@ def _looks_like_inr(body: str, match: re.Match[str]) -> bool:
     return bool(_INR_CONTEXT.search(left) or _INR_CONTEXT.search(right))
 
 
+def _is_self_echo(from_address: str) -> bool:
+    """True if *from_address* is PortLess's own configured outbound sender.
+
+    Reads GMAIL_SENDER_ADDRESS from the Email Gateway's own settings (the
+    single source of truth for "who PortLess sends as") rather than
+    duplicating the address here. Compared case-insensitively and only when
+    both sides are non-empty — an empty configured sender (dev/CI, no real
+    mailbox wired up) must never make every inbound email match.
+    """
+    if not from_address:
+        return False
+    try:
+        from services.email_gateway.config import settings as gateway_settings  # type: ignore[import]
+        sender = gateway_settings.gmail_sender_address
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not read email_gateway sender address: %s", exc)
+        return False
+    if not sender:
+        return False
+    return from_address.strip().casefold() == sender.strip().casefold()
+
+
 async def _usd_inr_rate() -> float:
     """Live USD/INR rate via the negotiation agent's shared helper; falls back to
     its configured static rate. Never raises — a rate is always returned."""
@@ -156,6 +178,36 @@ async def process_inbound(
         updated_at=now,
     )
     await repo.save(record)
+
+    # ── Reject self-echo before anything else touches it ──────────────────
+    # A shared send+poll mailbox (or an auto-forward/label rule that files
+    # PortLess's own sent mail into the polled folder) can hand the exact
+    # email PortLess just sent right back to this function as if it were a
+    # genuine reply — from_address equals our own outbound sender. Treating
+    # that as real input starts a self-feeding loop: draft -> send -> echo
+    # back in -> draft again, without either counterparty ever replying.
+    # Checked case-insensitively (email local-parts/domains are effectively
+    # case-insensitive in practice) before mapping/price-extraction/run_round
+    # ever run, so no round is ever advanced off our own mail.
+    if _is_self_echo(raw.from_address):
+        record = record.model_copy(update={
+            "status": InboundEmailStatus.SELF_ECHO,
+            "error": (
+                f"from_address {raw.from_address!r} matches PortLess's own "
+                "outbound sender — treated as a self-echo, not a reply"
+            ),
+            "updated_at": datetime.now(timezone.utc),
+        })
+        await repo.save(record)
+        logger.warning(
+            "Inbound %s is a self-echo (from=%s) — discarding, no round advanced",
+            inbound_id, raw.from_address,
+        )
+        return ProcessingResult(
+            inbound_id=inbound_id,
+            status=InboundEmailStatus.SELF_ECHO,
+            message="Self-echo: from_address matches our own outbound sender.",
+        )
 
     # ── Map to negotiation session ─────────────────────────────────────────
     mapping = await map_email(
