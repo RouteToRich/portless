@@ -271,3 +271,111 @@ the fixed daily call cap.
 cost" — it's "which annual seller membership tier to buy." IndiaMART has at
 least a partially documented price ladder; TradeIndia's is entirely
 sales-gated.
+
+---
+
+## 10. Broader market scan — alternate buyer/supplier discovery sources
+
+A wider candidate list (23 providers) was evaluated for Indian
+supplier/buyer discovery, beyond the two (IndiaMART, TradeIndia) already
+wired into Phase 4 and the ones (Alibaba RFQ, EU TED) already wired into
+Phase 2. None of these are integrated into `trade_min/service.py` today —
+this is reference material for a future connector decision, not a change to
+the active pipeline.
+
+Grouped first by **which side of the transaction the source informs** —
+buyer discovery (Phase 2 role) vs. seller/supplier discovery (Phase 4
+role) vs. sources that cover both. Within each group, sources are sorted
+into **API available** (sub-sorted free before paid) and **No API**, since
+that split determines whether a source can be wired into this pipeline's
+connector pattern at all, before cost is even a question.
+
+### A. Buyer-information sources (Phase 2 role — "who is buying")
+
+**API available — free**
+
+| Provider | Data type | API | Cost | Reliability notes |
+|---|---|---|---|---|
+| **EU TED** *(already wired, §2)* | Named EU institutional buyers — formal tenders, budgets, deadlines | Yes (free, no key) | Free | Best free, named-buyer source; EU-only |
+
+**API available — paid**
+
+| Provider | Data type | API | Approx. cost | Reliability notes |
+|---|---|---|---|---|
+| **Volza** *(registered, not invoked — §3)* | Buyer/importer identity from Bill-of-Lading manifests, 203 countries | Yes (paid, usage-based) | $0.10/search + $1.50–$3.50/record; general access from ~$1,500/yr | Named, verified buyer companies (not just country-level trends) — the strongest *buyer*-identity source on this list; pricing is inconsistent across Volza's own pages, treat figures as approximate |
+| **Alibaba RFQ** *(already wired, §2)* | Active buyer RFQ feed — buyer country + product, not a real company name in this connector's current mapping | Yes (paid, bundled in seller membership) | Beta API free to registered developers; underlying GGS membership price not public | Strongest buying-*intent* signal (buyer is shopping right now), weakest buyer-*identity* signal on this list |
+
+**No API**
+
+| Provider | Data type | Notes |
+|---|---|---|
+| **Alibaba** (general marketplace, beyond the RFQ connector) | Foreign buyer discovery across all categories, not just active RFQs | Partner/affiliate only — no open self-serve API; only the RFQ feed above is actually reachable |
+| `Trade Connect – Buyer Connect (Govt of India)` | Curated global buyer leads via DGFT | Free (govt portal), web tool only, no programmatic access |
+| `Indian embassies' commercial wings & trade offices` | Buyer lists, market reports, introductions | Free (govt), web/email/PDF only |
+
+### B. Seller/supplier-information sources (Phase 4 role — "who can supply")
+
+**API available — free**
+
+*(none — every seller/supplier data source found offers a free registration
+tier at most; actual data access is paid in every case)*
+
+**API available — paid**
+
+| Provider | Data type | API | Approx. cost | Reliability notes |
+|---|---|---|---|---|
+| **IndiaMART** *(already wired, §1/§9)* | Indian supplier directory, leads | Yes (paid) | ₹28K–₹5L/yr, bundled, no per-call fee | Largest Indian B2B directory; already in production use in this codebase |
+| **TradeIndia** *(already wired, §1/§9)* | Indian supplier directory, leads | Yes (paid) | Gold/Platinum, not publicly listed | Secondary Indian directory; already in production use |
+| **Seair Exim Solutions** | India export shipment data — exporter names, HS code, price, port, from 190+ Indian ports | Yes (per product page), also sold via IndiaMART storefront | From ≈ ₹1,500/yr for base data services; API tier pricing not separately published | 15+ years in the India EXIM data business; data-service pricing found is for the web/report product, not confirmed as the API-tier price |
+| **EximFetch** | India trade *reference* data — ports, HSN codes, customs locations, airline codes | Yes (REST API) | Paid, "applicable fees on pricing page" — exact figure not public | Reference/enrichment data, not a seller contact list — useful for normalizing HS codes/ports alongside a real supplier source, not for discovery on its own |
+| **ExportersIndia** | Indian exporter directory + WhatsApp-integrated CRM (CRM@Weblink, Meta partner) | Indirect — CRM/messaging API, not a data-list API | Not public | The API surface is for lead *communication*, not for pulling supplier lists programmatically |
+
+**No API**
+
+| Provider | Data type | Notes |
+|---|---|---|
+| `TradeWheel`, `Made in India (madeinindia.world)`, `Indian Trade Mart`, `GlobalSources`, `EximNext` | Web-first Indian/global supplier directories | Free to browse; manual export or negotiated enterprise feed only |
+| `Export Promotion Councils (EPCs)`, `MSME portals & industry associations` (CII, PHDCCI, FIEO, state MSME), `EPC/FIEO trade fairs & events` | Authoritative member/exporter directories | Free (govt/industry); web pages, PDFs, event-based — same institutional-trust tier as the free Udyam MSME dataset in §8, but less API-friendly (Udyam at least has a `data.gov.in` API) |
+
+### C. Sources covering both buyer and seller data
+
+**API available — free**
+
+*(none)*
+
+**API available — paid**
+
+| Provider | Data type | API | Approx. cost | Reliability notes |
+|---|---|---|---|---|
+| **Trademo** *(registered, not invoked — legacy)* | Global Buyer/Supplier List + Profile API, searchable by HS code/country | Yes (paid, sold via Microsoft/Azure Marketplace) | Not publicly listed — quote-based via Datarade/Marketplace | Enterprise-grade, structured, sold as a proper SaaS API product (unusual for this space); no self-serve price transparency |
+| **Kompass India** | Global B2B directory — firmographics, products, contacts, import/export activity filter | Yes (enterprise) | SaaS from ≈ €1,490/yr; on-premise €16,000–€30,000/yr | Long-established global directory (60M+ companies); pricing floor is publicly confirmed, unusual for this category |
+| **Eximpedia** | Global import/export shipment data, 200+ countries — buyer name, supplier name, HS code, price, port | Yes (REST API) | Tiered plans (Starter → Enterprise), country-count-gated; exact rupee/dollar figures not public | Broad country coverage; API exists but pricing requires contacting sales |
+| **EximJunction / Exim Trade Data** | Global trade data, 200+ countries — HS code, importer, exporter, port | Yes (API + bulk delivery) | Starter → Premium tiers, +18% GST, exact figures not public | Positions itself as enterprise-capable (bulk delivery option); same "contact for pricing" gap as Eximpedia |
+
+**No API**
+
+| Provider | Data type | Notes |
+|---|---|---|
+| `The Dollar Business`, `Happily Trade EXIM` | AI-based EXIM analysis / verified buyer+seller transaction histories | Free to browse / not public; web UI and exported reports only |
+
+### Takeaways
+
+- **For supplier discovery (Phase 4 role):** nothing in this list beats
+  IndiaMART/TradeIndia (group B) on API self-serve access *and*
+  India-specific supplier coverage. Kompass and Trademo (group C) are more
+  enterprise-polished but neither publishes a usable low-cost self-serve
+  price the way IndiaMART does.
+- **For buyer discovery (Phase 2 role, per the earlier buyer-vs-supplier
+  question):** **Volza** (group A) is the standout — it's the only source on
+  this list that returns *named, verified buyer companies* with shipment
+  history, via a usable pay-per-use API, rather than country-level trend
+  data (Comtrade/Census) or a placeholder buyer label (this codebase's
+  current Alibaba RFQ mapping — see §2/answer above). Volza is already a
+  registered-but-unused connector in this codebase (§3); wiring it into
+  Phase 2 would be the smallest-lift way to get real buyer identities
+  without adding a brand-new provider.
+- **No entirely free alternative exists** for either buyer or supplier
+  discovery at this data quality — every API-backed option across groups
+  A/B/C is paid; the no-API rows in each group are free-to-browse but
+  conflict with this pipeline's connector pattern (`shared/connectors/` —
+  typed `quote/book/status/webhook_verify` interface, not a scraper).
