@@ -815,8 +815,9 @@ and the same prompt-injection filter (`afilter_prompt_injection_chunks`) the
 main RAG query graph runs on every web-search chunk before it reaches a
 generation prompt — raw open-web content flowing into a prompt that
 autonomously drafts business email is a prompt-injection surface, and this
-repo already has the standard answer for it (see `shared/rag/workflow_rag.md`
-§"Web search retrieval leg"). Every drafted email is still independently
+repo already has the standard answer for it (see
+`shared/rag/RAG_IMPLEMENTATION_FLOWS.md` §15b "Live Web Search"). Every
+drafted email is still independently
 routed through the mandatory L0 HITL approval gate before send regardless of
 what informed the draft — defense in depth, not a replacement for the filter.
 

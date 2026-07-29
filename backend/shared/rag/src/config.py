@@ -8,7 +8,7 @@ Env file load order (later file wins):
 
 Vector database: MongoDB Atlas with $vectorSearch aggregation.
 
-Atlas Vector Search index (create once in Atlas UI or via ensure_vector_index()):
+Atlas Vector Search index (created by ensure_indexes(), or once in the Atlas UI):
   - Index type:    vectorSearch
   - Field path:    embedding
   - numDimensions: LLM_EMBEDDING_DIMENSIONS (in shared/llm_gateway/.env; default
@@ -56,7 +56,7 @@ class RAGSettings(BaseSettings):
     mongo_server_selection_timeout_ms: int = 5_000
 
     # ──────────────────────────────────────────── Atlas Vector Search
-    # The index must exist before queries run — see ensure_vector_index() in
+    # The index must exist before queries run — see ensure_indexes() in
     # vector_store.py for programmatic creation or the Atlas UI instructions.
     # numDimensions comes from the LLM Gateway's embedding config
     # (LLM_EMBEDDING_DIMENSIONS in shared/llm_gateway/.env) — RAG declares no

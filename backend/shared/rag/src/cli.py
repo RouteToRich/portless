@@ -18,11 +18,11 @@ def main() -> None:
         authorization context.
 
     Usage:
-        Run `practice-rag ingest --strategy recursive` to populate Chroma, then
-        run `practice-rag ask "your question"` to retrieve and answer from the
-        indexed documents. Use `--filter section=Release` or
-        `--filter page_number=3` to scope retrieval. Use `--user` and `--team`
-        to apply authorization metadata.
+        Run `practice-rag ingest --path ./data --strategy recursive` to populate
+        the MongoDB vector store, then run `practice-rag ask "your question"` to
+        retrieve and answer from the indexed documents. Use
+        `--filter section=Release` or `--filter page_number=3` to scope
+        retrieval. Use `--user` and `--team` to apply authorization metadata.
 
     How it helps other functions:
         This function is the user-facing entry point that connects terminal
@@ -122,8 +122,8 @@ def _coerce_filter_value(value: str) -> Any:
 
     Implementation:
         The function recognizes booleans and integers, otherwise returns the
-        original string. Chroma metadata filters work best with simple scalar
-        values.
+        original string. Metadata filters work best with simple scalar values,
+        since they are matched exactly against stored metadata.
 
     Usage:
         `parse_metadata_filters` calls this for every filter value.

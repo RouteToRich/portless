@@ -1075,7 +1075,8 @@ LLM_MONGO_URI=<uri>                  LLM_MONGO_DB_NAME=llm_gateway
 **Atlas Vector Search index** (create once before RAG queries):
 1. In Atlas UI → **Search** → **Create Search Index**
 2. Index type: `vectorSearch`, field: `embedding`, dimensions: `1536`, similarity: `cosine`
-3. OR call `ensure_vector_index()` from `shared/rag/src/vector_store.py`
+3. OR call `ensure_indexes()` from `shared/rag/src/vector_store.py` (already
+   invoked at startup via `shared.rag.src.router.startup()`)
 
 > ⚠️ **Security note:** The default MongoDB credentials are committed in source code.
 > Rotate them in Atlas before sharing this repository publicly:

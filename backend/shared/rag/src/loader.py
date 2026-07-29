@@ -65,8 +65,9 @@ def format_text_documents(path: Path, text: str) -> list[Document]:
         `load_documents` calls this for `.md` and `.txt` files.
 
     How it helps other functions:
-        Section metadata is inherited by chunks, stored in Chroma, available as a
-        retrieval filter, and shown in prompts and citations.
+        Section metadata is inherited by chunks, stored in the MongoDB `chunks`
+        collection, available as a retrieval filter, and shown in prompts and
+        citations.
     """
     if path.suffix.lower() == ".md":
         return [
@@ -91,9 +92,10 @@ def format_document(path: Path, text: str) -> Document:
         string.
 
     How it helps other functions:
-        The metadata created here is inherited by every chunk, inserted into
-        Chroma, used by hybrid retrieval for identity, metadata filters,
-        parent-child expansion, and displayed in prompts for citations.
+        The metadata created here is inherited by every chunk, written to the
+        MongoDB `chunks` collection, used by hybrid retrieval for identity,
+        metadata filters, parent-child expansion, and displayed in prompts for
+        citations.
     """
     return _format_document(path, text)
 
@@ -119,9 +121,9 @@ def _format_document(
         this helper so all document types have the same metadata contract.
 
     How it helps other functions:
-        Consistent metadata lets chunking, Chroma insertion, metadata-filtered
-        retrieval, authorization filtering, citations, and evaluation work the
-        same way across file types.
+        Consistent metadata lets chunking, vector-store insertion,
+        metadata-filtered retrieval, authorization filtering, citations, and
+        evaluation work the same way across file types.
     """
     title = _extract_title(text) or path.stem.replace("_", " ").replace("-", " ").title()
     content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()

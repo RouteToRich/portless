@@ -1,7 +1,13 @@
 # RAG Implementation Flows
 ### Detailed Walkthrough of the Portless Shared RAG Module (`shared/rag/`)
 
-This document explains every major flow in this RAG implementation. It is a companion to `README.md` and `workflow_rag.md`.
+This document explains every major flow in this RAG implementation. It is a
+companion to `README.md`, and to `workflow_llm_gateway.md` for the generation
+backend.
+
+> **Consolidated 2026-07-29.** The former `workflow_rag.md` has been merged into
+> this file — its status tables, readiness checklist, and roadmap now live in
+> §39–§41, corrected against the source. There is one RAG reference document.
 
 The module lives in `shared/rag/src/` and is mounted into the Portless backend
 as the `/rag/*` FastAPI routes (`router.py`), powering the Knowledge Base UI
@@ -16,7 +22,7 @@ POST /rag/upload (files persisted to MongoDB GridFS) or POST /rag/ingest (paths)
 -> documents + metadata -> section/page metadata -> chunks
 -> parent-child chunk metadata -> embeddings (LLM Gateway)
 -> MongoDB Atlas vector store, re-indexed by content_hash
--> graph store nodes and relationships (Mongo or Neo4j backend, optional)
+-> graph store Document/Chunk/Entity nodes (Mongo or Neo4j backend, optional)
 
 Query:
 question + optional metadata filters -> query embedding
@@ -27,18 +33,20 @@ question + optional metadata filters -> query embedding
 -> citation validation -> evaluation metrics
 ```
 
-### Platform integration at a glance (updated 2026-07)
+### Platform integration at a glance (verified against source 2026-07-29)
 
 | Concern | Implementation |
 |---|---|
-| Vector store | MongoDB Atlas `$vectorSearch` (`chunks` collection; `ensure_vector_index()` creates the index; `RAG_MONGO_URI` falls back to the shared `MONGO_URI`) |
+| Vector store | MongoDB Atlas `$vectorSearch` (`chunks` collection; **`ensure_indexes()`** creates both the regular indexes and the Atlas vector index; `RAG_MONGO_URI` falls back to the shared `MONGO_URI`) |
+| Startup wiring | `shared.rag.src.router.startup()` — called from `app.py`'s lifespan; runs `ensure_indexes()` + `ensure_graph_indexes()`, logging a warning (never raising) if either fails |
 | Embeddings | `shared.llm_gateway.GatewayEmbeddings` — model/provider/key configured once via `LLM_EMBEDDING_*`; offline `LocalHashEmbeddings` fallback when no key |
-| Generation | `shared.llm_gateway.LLMClient` — primary model → Groq fallback chain, retries, MongoDB call tracking |
+| Generation | `shared.llm_gateway.LLMClient` — primary model → Groq fallback chain, retries, MongoDB call tracking; **falls back to a local extractive answer** if the whole chain fails (see §20) |
 | Raw uploaded files | MongoDB **GridFS** (`rag_files` bucket) via `file_store.py` — the app's only blob store; listed at `GET /rag/files` |
 | Parent documents | MongoDB `parent_docs` collection (`parent_store.py`) |
-| Graph retrieval (optional) | `RAG_GRAPH_RETRIEVAL_ENABLED` + `RAG_GRAPH_DB_BACKEND=mongo` (same shared DB, recommended) or `neo4j` (Cypher over async driver); no-op backend when disabled/misconfigured |
+| Ingestion job status | **In-process `_jobs` dict in `router.py`** — not persisted. `RAG_INGESTION_JOBS_COLLECTION` is declared in `config.py` but currently unused (see §37) |
+| Graph retrieval (optional) | `RAG_GRAPH_RETRIEVAL_ENABLED` + `RAG_GRAPH_DB_BACKEND=mongo` (same shared DB, recommended) or `neo4j` (Cypher over async driver); **config default is `neo4j`**; no-op backend when disabled/misconfigured |
 | Live web search (optional) | 4th retrieval leg via Tavily (`RAG_WEB_SEARCH_ENABLED`, `TAVILY_API_KEY`); fails open to empty results — never fabricates hits; results pass the same safety filter |
-| HTTP API | `POST /rag/ingest`, `POST /rag/upload`, `GET /rag/ingest/{job_id}` (async job polling), `POST /rag/query`, `DELETE /rag/documents/{source}`, `GET /rag/files`, `GET /rag/stats`, `GET /rag/health` — all gated to Portless platform staff (`require_portless`) |
+| HTTP API | `POST /rag/ingest`, `POST /rag/upload`, `GET /rag/ingest/{job_id}` (async job polling), `POST /rag/query`, `DELETE /rag/documents/{source}`, `GET /rag/files`, `GET /rag/stats` — gated to Portless platform staff (`require_portless`). **`GET /rag/health` is deliberately ungated** so liveness probes work without a token |
 | Consumers | Knowledge Base UI page (upload + test chat); Negotiation Agent `load_rag_context()` (with `NEGOTIATION_RAG_ENABLED` escape hatch + `RAG_TIMEOUT_SECONDS` budget, falling back to a static playbook stub); Negotiation market intel reuses the web-search adapter + safety filter |
 
 ---
@@ -56,7 +64,7 @@ question + optional metadata filters -> query embedding
         |                                            |
         +--------------------+-----------------------+
                              v
-  router.py: background ingestion job (status in `ingestion_jobs` collection,
+  router.py: background ingestion job (status in the in-process `_jobs` dict,
   polled via GET /rag/ingest/{job_id})
                              |
                              v
@@ -66,8 +74,9 @@ question + optional metadata filters -> query embedding
                              |
                              v
   chunking.py
-  split text into child chunks and add parent-child chunk metadata
-  (parent documents stored in the `parent_docs` Mongo collection)
+  split text into child chunks and build parent context groups
+  returns (child_chunks, parent_docs); the graph node awaits
+  MongoParentStore().save(parent_docs) -> `parent_docs` collection
                              |
                              v
   embeddings.py -> shared.llm_gateway.GatewayEmbeddings
@@ -76,11 +85,12 @@ question + optional metadata filters -> query embedding
                              v
   vector_store.py
   delete stale content_hash records, then store vector + page_content + metadata
-  in the `chunks` collection (Atlas vector index via ensure_vector_index())
+  in the `chunks` collection (indexes created by ensure_indexes())
                              |
                              v
   graph_store.py  (optional — RAG_GRAPH_RETRIEVAL_ENABLED)
-  store chunk/entity/source/section/page/parent nodes and relationships
+  store Document / Chunk / Entity nodes with PART_OF, MENTIONS and
+  ADJACENT_TO relationships
   (backend: `mongo` graph_chunks collection, or `neo4j` via Cypher)
 
 
@@ -90,6 +100,8 @@ question + optional metadata filters -> query embedding
         |
         v
   graph.py: embed_query  (GatewayEmbeddings)
+  NOTE: the resulting vector is stored in state but not consumed —
+  semantic_search re-embeds the question itself (see §12)
         |
         v
   vector_store.py
@@ -104,6 +116,9 @@ question + optional metadata filters -> query embedding
   live Tavily search; empty on missing key/failure, never fabricated
         |
         v
+  (authorization.py filters EVERY leg above before fusion)
+        |
+        v
   hybrid_fusion  (reciprocal rank fusion across all legs)
         |
         v
@@ -111,15 +126,17 @@ question + optional metadata filters -> query embedding
         |
         v
   rerank.py
-  local rerank or cross-encoder rerank + knee-point selection
+  local rerank or cross-encoder rerank + knee-point selection (min_k=3, max_k=8)
         |
         v
   security.py
-  prompt-injection filtering (internal chunks AND web results)
+  prompt-injection filtering, async: heuristic rules + optional LLM classifier
+  (internal chunks AND web results)
         |
         v
   llm.py -> shared.llm_gateway.LLMClient
-  build augmented prompt and generate answer (fallback chain, tracking)
+  build augmented prompt and generate answer (fallback chain, tracking,
+  local extractive answer as last resort)
         |
         v
   citations.py + evaluation.py
@@ -132,13 +149,27 @@ question + optional metadata filters -> query embedding
 
 Platform integration changes (2026-07, superseding the practice-era stack):
 
-- **MongoDB Atlas vector store**: Chroma was replaced by Atlas `$vectorSearch` on the shared app database (`chunks` collection). `ensure_vector_index()` creates the index; `RAG_MONGO_URI`/`RAG_MONGO_DB_NAME` fall back to the app-wide `MONGO_URI`/`MONGO_DB_NAME`.
-- **LLM Gateway everywhere**: embeddings go through `GatewayEmbeddings` (`LLM_EMBEDDING_*` config, `LocalHashEmbeddings` offline fallback) and generation through `LLMClient` (primary model → Groq fallback chain, retries, MongoDB call tracking). RAG holds no provider SDKs or keys of its own.
-- **FastAPI surface** (`router.py`): async ingestion jobs (`POST /rag/ingest`, `POST /rag/upload`, poll `GET /rag/ingest/{job_id}`), `POST /rag/query`, `DELETE /rag/documents/{source}`, `GET /rag/files|stats|health` — all endpoints require Portless platform staff. This powers the Knowledge Base UI page.
-- **GridFS file persistence** (`file_store.py`): raw uploaded knowledge files are stored durably in MongoDB GridFS (`rag_files` bucket) — the app's only blob store; they survive restarts and can be re-ingested or audited.
-- **Pluggable graph backends** (`graph_store.py`): the local JSON graph store became `mongo` (a `graph_chunks` collection in the same shared DB — recommended, zero new infrastructure) or `neo4j` (Cypher over the async driver), selected by `RAG_GRAPH_DB_BACKEND` and gated by `RAG_GRAPH_RETRIEVAL_ENABLED`; a safe no-op backend applies when disabled or misconfigured.
+- **MongoDB Atlas vector store**: Chroma was replaced by Atlas `$vectorSearch` on the shared app database (`chunks` collection). `ensure_indexes()` creates the four regular indexes *and* attempts programmatic Atlas vector-index creation; `RAG_MONGO_URI`/`RAG_MONGO_DB_NAME` fall back to the app-wide `MONGO_URI`/`MONGO_DB_NAME`.
+- **Fully async pipeline**: both LangGraph graphs are async end to end, so MongoDB and LLM Gateway calls never block the FastAPI event loop. `VectorStore`, `MongoParentStore`, `GraphStore`, `WebSearchStore`, and the safety filter are all coroutines.
+- **LLM Gateway everywhere**: embeddings go through `GatewayEmbeddings` (`LLM_EMBEDDING_*` config, `LocalHashEmbeddings` offline fallback) and generation through `LLMClient` (primary model → Groq fallback chain, retries, MongoDB call tracking). RAG holds no provider SDKs or keys of its own. The optional prompt-injection classifier (`rag.security.injection_classifier`) and LLM-as-judge evaluator (`rag.evaluation.llm_judge`) route through the same gateway under their own `caller` tags.
+- **FastAPI surface** (`router.py`): async ingestion jobs (`POST /rag/ingest`, `POST /rag/upload`, poll `GET /rag/ingest/{job_id}`), `POST /rag/query`, `DELETE /rag/documents/{source}`, `GET /rag/files|stats`. All of those require Portless platform staff; `GET /rag/health` is intentionally ungated for liveness probes. This powers the Knowledge Base UI page.
+- **Lazy module exports** (`__init__.py`): `query`, `ingest`, the graph builders, `settings`, `router`, and `startup` are resolved through PEP 562 `__getattr__`, so importing `shared.rag.src` (or any single submodule) does not drag in LangGraph and the optional retrieval dependencies.
+- **GridFS file persistence** (`file_store.py`): raw uploaded knowledge files are stored durably in MongoDB GridFS (`rag_files` bucket) — the app's only blob store; they survive restarts and can be re-ingested or audited. A `FileStore` Protocol fronts the single `MongoGridFSFileStore` implementation.
+- **Pluggable graph backends** (`graph_store.py`): the local JSON graph store became `mongo` (a `graph_chunks` collection in the same shared DB — recommended, zero new infrastructure) or `neo4j` (Cypher over the async driver), selected by `RAG_GRAPH_DB_BACKEND` and gated by `RAG_GRAPH_RETRIEVAL_ENABLED`; a safe no-op backend applies when disabled or misconfigured. Both backends share one graph shape (`Document` / `Chunk` / `Entity` with `PART_OF`, `MENTIONS`, `ADJACENT_TO`) and one entity extractor, so switching backends changes no retrieval semantics.
 - **Live web-search retrieval leg** (`web_search.py`): optional 4th leg (Tavily, `RAG_WEB_SEARCH_ENABLED` + `TAVILY_API_KEY`) fused by RRF with the other candidates. Fails open to an empty list — a retrieval source must never fabricate stub evidence. Web results are fetched fresh per query, never persisted, and pass the same prompt-injection safety filter.
+- **Cascading delete** (`DELETE /rag/documents/{source}`): fans out concurrently (`asyncio.gather`) to the vector store, parent store, *and* graph store, so a removed source leaves no orphaned parent docs or graph nodes.
 - **Negotiation Agent integration**: `agents/negotiation_agent/rag.py::load_rag_context()` calls this pipeline with a wall-clock budget (`RAG_TIMEOUT_SECONDS`) and an escape hatch (`NEGOTIATION_RAG_ENABLED=false`), falling back to a static playbook stub on any failure; the agent's per-round market intel reuses the same web-search adapter and safety filter.
+
+> **Behaviours that commonly surprise readers** — all verified against the source on 2026-07-29. Each is expanded in the section noted:
+>
+> | Behaviour | Where |
+> |---|---|
+> | Generation **does** silently degrade to a local extractive answer when the whole gateway chain fails | §20 |
+> | Ingestion job status lives in a process-local dict — lost on restart, wrong under multiple workers | §37 |
+> | Only `authorized_users`, `source`, and `content_hash` are Atlas pre-filterable; a `section=`/`page_number=` filter makes `$vectorSearch` fail and return zero semantic hits | §13, §37 |
+> | Graph entity extraction only matches **capitalised** tokens, so an all-lowercase question retrieves nothing from the graph leg | §15 |
+> | Every `RAG_*` setting needs the `RAG_` prefix — `CHUNK_SIZE` alone is ignored | §36.4 |
+> | The `embed_query` node's vector is never consumed; `semantic_search` re-embeds the question | §12 |
 
 The following features are implemented in the modular `shared/rag/src/` flow:
 
@@ -146,15 +177,15 @@ The following features are implemented in the modular `shared/rag/src/` flow:
 - **PDF layout extraction**: `pdfplumber` can extract page text, tables as Markdown, and figure counts.
 - **OCR fallback**: scanned PDF pages can be OCRed with `pdf2image` and `pytesseract` when enabled.
 - **Markdown section metadata**: Markdown files are split by headings, and every section document gets `section`.
-- **Metadata filters during retrieval**: `practice-rag ask` supports repeated `--filter key=value` options, passed into semantic and keyword retrieval.
-- **Authorization filtering**: `practice-rag ask` supports `--user` and `--team`, and retrieval results are filtered by authorization metadata.
+- **Metadata filters during retrieval**: both the HTTP API (`metadata_filter` in the request body) and `practice-rag ask --filter key=value` pass filters into semantic and keyword retrieval. Keys are auto-prefixed with `metadata.`. See §13 for the Atlas pre-filter limitation.
+- **Authorization filtering**: the HTTP API accepts `user_id`/`team_id`, `practice-rag ask` accepts `--user`/`--team`, and **all four** retrieval legs are filtered by authorization metadata before fusion.
 - **Parent-child retrieval**: child chunks are grouped into parent context blocks during chunking, parent text is stored outside the `chunks` collection (in `parent_docs`), and retrieval expands matched child chunks to parent context before reranking.
-- **Optional cross-encoder reranking**: enable with `USE_CROSS_ENCODER_RERANKER=true`; the local reranker remains the fallback.
+- **Optional cross-encoder reranking**: enable with `RAG_USE_CROSS_ENCODER_RERANKER=true`; the local reranker remains the fallback.
 - **Citation validation**: generated answers are checked for `[1]`, `[2]` style citations that map to selected chunks.
 - **Prompt-injection filtering**: selected chunks are scanned with a rule classifier and optional LLM classifier before prompt augmentation.
 - **Deletion and re-indexing by `content_hash`**: `VectorStore.upsert()` deletes existing records with matching content hashes before inserting fresh chunks.
 - **Evaluation metrics**: each query returns local heuristic metrics and can attach RAGAS, DeepEval, or LLM-as-judge evaluation notes.
-- **Graph-hybrid RAG**: ingestion writes chunk/entity/source/section/page/parent relationships to a local graph store, and query retrieval fuses graph candidates with semantic and keyword candidates.
+- **Graph-hybrid RAG**: ingestion writes `Document` / `Chunk` / `Entity` nodes with `PART_OF`, `MENTIONS`, and `ADJACENT_TO` relationships to the configured graph backend, and query retrieval fuses graph candidates with semantic and keyword candidates.
 
 ---
 
@@ -214,7 +245,11 @@ It reads the input paths from graph state:
 state["input_paths"]
 ```
 
-If no path is passed, it uses the default `data/` folder.
+If no path is passed, `load_documents([])` simply returns an empty list — there
+is **no** implicit `data/` folder default. The CLI enforces this explicitly
+(`practice-rag ingest` requires at least one `--path`), and the HTTP API always
+supplies paths (`/rag/ingest` from the request body, `/rag/upload` from the temp
+files it just materialised).
 
 Then it calls:
 
@@ -239,21 +274,31 @@ Unsupported files are skipped.
 
 ### Output Shape
 
-Each file becomes a LangChain `Document`:
+Each file becomes **one or more** LangChain `Document`s — Markdown is split by
+heading into one document per section, PDFs into one document per page, and
+`.txt` into a single document:
 
 ```python
 Document(
-    page_content="full text from file",
+    page_content="full text from file / section / page",
     metadata={
         "source": "...",
         "file_name": "...",
         "file_type": "...",
         "title": "...",
-        "content_hash": "...",
-        "loaded_at": "..."
+        "section": "...",          # heading, or "Page N", or the title
+        "content_hash": "...",      # SHA-256 of THIS section/page text
+        "loaded_at": "...",
+        "authorized_users": "*",   # default public
+        "authorized_teams": "*",
+        # PDFs additionally: page_number, extraction_method,
+        # table_count, figure_count, has_tables, has_figures
     }
 )
 ```
+
+Note that `content_hash` is computed per section/page, not per file, so editing
+one Markdown section re-indexes only that section's chunks.
 
 ### Why This Step Matters
 
@@ -273,26 +318,41 @@ The `metadata` becomes the traceability layer that follows every chunk into the 
 shared/rag/src/loader.py
 ```
 
-### Function
+### Functions
 
 ```python
-format_document(path: Path, text: str) -> Document
+format_text_documents(path, text) -> list[Document]   # .md / .txt entry point
+format_document(path, text) -> Document               # single-document helper
+_format_document(path, text, section=None,
+                 page_number=None, extra_metadata=None) -> Document
 ```
 
-### Document Metadata Formed Here
+`_format_document()` is the one place every file type converges on, so Markdown,
+plain text, and PDF pages all share an identical metadata contract.
+`format_document()` is the thin public wrapper used by tests and callers that
+have an in-memory string.
 
-The metadata is formed at document level:
+### Document Metadata Formed Here
 
 ```python
 metadata = {
     "source": str(path),
     "file_name": path.name,
     "file_type": path.suffix.lower().lstrip("."),
-    "title": title,
-    "content_hash": content_hash,
+    "title": title,                     # first H1, else prettified file stem
+    "section": section or title,        # always present
+    "content_hash": content_hash,       # SHA-256 of this section/page text
     "loaded_at": datetime.now(timezone.utc).isoformat(),
+    "authorized_users": "*",            # public by default
+    "authorized_teams": "*",
 }
+# page_number added when not None; extra_metadata merged last
 ```
+
+Two fields are easy to miss: `section` is **always** set (falling back to the
+title) rather than being PDF/Markdown-only, and the authorization defaults are
+applied at load time — which is why an un-tagged corpus is readable by everyone
+until you deliberately narrow it.
 
 ### Important Point
 
@@ -369,7 +429,9 @@ chunk
 ### Router Function
 
 ```python
-chunk_documents(documents, embeddings, strategy)
+chunk_documents(
+    documents, embeddings, strategy
+) -> tuple[list[Document], dict[str, Document]]
 ```
 
 This function chooses between:
@@ -378,6 +440,14 @@ This function chooses between:
 recursive chunking
 semantic chunking
 ```
+
+**Return shape matters**: every chunking entry point returns a
+`(child_chunks, parent_docs)` tuple, where `parent_docs` is a
+`{parent_id: Document}` mapping. Chunking itself stays pure and CPU-bound — it
+never touches MongoDB. The `chunk` graph node is what awaits
+`MongoParentStore().save(parent_docs)` before the chunks move on to embedding.
+Treating the return value as a plain list is the most common integration
+mistake here.
 
 ---
 
@@ -499,11 +569,15 @@ If similarity drops below this threshold, the code treats that point as a topic 
 
 The function creates a new chunk when:
 
-```text
-similarity is below threshold
-or
-current chunk is too large
+```python
+should_break = similarity < threshold and len(current_text) >= settings.chunk_size // 3
+too_large    = len(current_text) >= settings.chunk_size
 ```
+
+The `chunk_size // 3` guard on the semantic break is the part worth
+remembering: a similarity dip alone is not enough to cut. Without that minimum,
+a document with choppy short paragraphs would shatter into many tiny chunks and
+destroy retrieval precision.
 
 ### Why This Is Useful
 
@@ -534,20 +608,30 @@ shared/rag/src/chunking.py
 ### Function
 
 ```python
-_number_chunks(chunks, strategy)
+_number_chunks(chunks, strategy) -> tuple[list[Document], dict[str, Document]]
 ```
 
 ### What Happens
 
-After splitting, each chunk gets chunk-level metadata:
+Chunks are first bucketed by a **group key** so numbering restarts per
+source/section/page rather than running globally across a file:
+
+```python
+group_key = f"{source}::{safe_section}::page-{page}"
+# safe_section = section with non [A-Za-z0-9_.-] runs replaced by "-"
+```
+
+Each chunk then gets chunk-level metadata:
 
 ```python
 {
     **chunk.metadata,
-    "chunk_id": f"{source}::{strategy}::{chunk_index}",
+    "chunk_id": f"{group_key}::{strategy}::child::{chunk_index}",
     "chunk_index": chunk_index,
-    "chunk_strategy": strategy,
+    "chunk_strategy": chunk.metadata.get("chunk_strategy", strategy),
     "chunk_chars": len(chunk.page_content),
+    "parent_id": f"{group_key}::{strategy}::parent::{parent_index}",
+    "parent_index": chunk_index // settings.child_chunks_per_parent,
 }
 ```
 
@@ -563,15 +647,27 @@ Document(
         "file_name": "...",
         "file_type": "...",
         "title": "...",
+        "section": "Retrieval Flow",
         "content_hash": "...",
         "loaded_at": "...",
-        "chunk_id": "...",
-        "chunk_index": 0,
+        "authorized_users": "*",
+        "authorized_teams": "*",
+        "chunk_id": "design.md::Retrieval-Flow::page-no-page::recursive::child::4",
+        "chunk_index": 4,
         "chunk_strategy": "recursive",
-        "chunk_chars": 842
+        "chunk_chars": 842,
+        "parent_id": "design.md::Retrieval-Flow::page-no-page::recursive::parent::1",
+        "parent_index": 1,
     }
 )
 ```
+
+The corresponding parent document carries the same metadata plus
+`parent_chunk_count` (the configured `RAG_CHILD_CHUNKS_PER_PARENT` fan-in).
+
+Because the section name is baked into `chunk_id`, renaming a heading produces
+new chunk IDs. Stale rows are still cleaned up correctly — deletion keys off
+`content_hash`, not `chunk_id` (§10).
 
 ### Important Point
 
@@ -595,15 +691,17 @@ Example child chunk metadata:
 
 ```python
 {
-    "chunk_id": "design.md::recursive::4",
+    "chunk_id": "design.md::Retrieval-Flow::page-no-page::recursive::child::4",
     "chunk_index": 4,
-    "child_index": 4,
-    "parent_id": "design.md::parent::1",
+    "parent_id": "design.md::Retrieval-Flow::page-no-page::recursive::parent::1",
     "parent_index": 1,
     "source": "design.md",
     "section": "Retrieval Flow",
 }
 ```
+
+(There is no separate `child_index` field — `chunk_index` serves that role, and
+`parent_index` is simply `chunk_index // RAG_CHILD_CHUNKS_PER_PARENT`.)
 
 Why this helps:
 
@@ -737,15 +835,59 @@ the **MongoDB Atlas `chunks` collection** — one document per chunk:
 }
 ```
 
+Writes go through `bulk_write` with one `ReplaceOne(..., upsert=True)` per
+`chunk_id`, so re-ingesting is idempotent. The returned count is
+`upserted_count + modified_count`.
+
 Before insert, existing records with the same `content_hash` are deleted
-(re-index on document change). The Atlas **vector index** (`vector_index`,
-cosine similarity, `numDimensions` = `LLM_EMBEDDING_DIMENSIONS`) is created
-programmatically by `ensure_vector_index()` — it must exist before queries run.
+(re-index on document change).
+
+### Index Creation — `ensure_indexes()`
+
+The function is called `ensure_indexes()` (not `ensure_vector_index()`), lives in
+`vector_store.py`, and is invoked from `router.startup()` during the app
+lifespan. It is idempotent and safe on every boot. It creates two different
+kinds of index:
+
+**1. Regular MongoDB indexes**
+
+```text
+chunk_id_unique      unique on chunk_id           (the upsert key)
+content_hash_idx     on metadata.content_hash     (re-index deletes)
+source_idx           on metadata.source           (delete-by-source)
+content_text_idx     text index on content
+```
+
+**2. The Atlas Vector Search index** (`vector_index`, cosine similarity,
+`numDimensions` = `LLM_EMBEDDING_DIMENSIONS`), created via the
+`createSearchIndexes` command:
+
+```json
+{ "fields": [
+    { "type": "vector", "path": "embedding",
+      "numDimensions": 1536, "similarity": "cosine" },
+    { "type": "filter", "path": "metadata.authorized_users" },
+    { "type": "filter", "path": "metadata.source" },
+    { "type": "filter", "path": "metadata.content_hash" }
+]}
+```
+
+**Only those three `filter` paths are pre-filterable at query time.** That is a
+hard constraint on `metadata_filter` — see §13.
+
+Programmatic creation of the vector index requires an Atlas tier that permits
+it. On free-tier clusters the command fails; `ensure_indexes()` logs a warning
+with the full index definition to paste into the Atlas UI and **continues
+startup** rather than raising. `GET /rag/health` reports index presence, though
+it currently checks only for the regular `chunk_id_unique` index, so a healthy
+response does not by itself prove the *vector* index exists.
 
 ### Important Point
 
 The embedding is computed explicitly through `GatewayEmbeddings` before the
 Mongo write. The metadata is stored as structured fields, not as vector values.
+`_serialise_metadata()` coerces any non-`str/int/float/bool/list` value to a
+string first, so `Path` objects and similar never reach MongoDB.
 
 ### Graph DB Insert After Vector Insert
 
@@ -763,25 +905,57 @@ This writes the same chunks into the configured graph backend
 mongo  -> `graph_chunks` collection in the same shared MongoDB (recommended;
           no extra service or credentials)
 neo4j  -> Cypher over the async Neo4j driver (RAG_GRAPH_DB_URI/USER/PASSWORD)
+arangodb / falkordb -> reserved names; currently resolve to the no-op store
 no-op  -> when disabled or misconfigured: skips ingestion, returns empty
           retrieval results, and the rest of the pipeline is unaffected
 ```
 
-The graph store creates:
+**Config default is `neo4j`.** Setting only `RAG_GRAPH_RETRIEVAL_ENABLED=true`
+without also setting `RAG_GRAPH_DB_BACKEND` leaves you on the Neo4j path, which
+additionally requires `RAG_GRAPH_DB_URI` — with no URI the resolver logs a
+warning and hands back the no-op store. For the zero-infrastructure path set
+both:
 
-- chunk nodes,
-- entity-to-chunk relationships,
-- metadata-to-chunk relationships for source, file name, file type, title, section, page number, parent ID, users, and teams.
+```env
+RAG_GRAPH_RETRIEVAL_ENABLED=true
+RAG_GRAPH_DB_BACKEND=mongo
+```
 
-Example relationship shape:
+### Actual Graph Schema
+
+Both real backends store the same shape:
 
 ```text
-(chunk:abc) -> (entity:veracode)
-(chunk:abc) -> (section:Release Gates)
-(chunk:abc) -> (page_number:12)
-(chunk:abc) -> (source:security-policy.pdf)
-(chunk:abc) -> (parent:policy-page-12)
+Nodes:
+  (:Document {source, title})
+  (:Chunk    {chunk_id, content, source, section, page_number})
+  (:Entity   {name})
+
+Edges:
+  (Chunk)-[:PART_OF]->(Document)
+  (Chunk)-[:MENTIONS]->(Entity)
+  (Chunk)-[:ADJACENT_TO]->(Chunk)   -- consecutive chunks of the same source
 ```
+
+Section, page number, and parent ID are **properties on the `Chunk` node**, not
+separate nodes with their own relationships. Only entity mentions and
+document/adjacency links are true edges.
+
+Example:
+
+```text
+(chunk:abc)-[:PART_OF]->(document:security-policy.pdf)
+(chunk:abc)-[:MENTIONS]->(entity:veracode)
+(chunk:abc)-[:ADJACENT_TO]->(chunk:abd)
+```
+
+The Mongo backend models this as one document per chunk with array fields
+(`entities: [str]`, `adjacent_to: [chunk_id]`) rather than separate nodes and
+edges. That is sufficient because the only traversal this pipeline performs is a
+single-hop shared-entity count, which `$setIntersection` answers natively — no
+`$graphLookup` is needed unless multi-hop traversal is added later. Its indexes
+(`graph_chunk_id_unique`, `graph_entities_idx`, `graph_source_idx`) are created
+by `ensure_graph_indexes()`, which no-ops unless the backend is `mongo`.
 
 The graph DB does not replace the vector DB. It adds a relationship index that query-time graph search can use alongside vector and keyword search.
 
@@ -811,10 +985,15 @@ embed_query
 
 ### Query State
 
+All nodes run sequentially — the four retrieval legs are chained edges, not
+parallel branches, so a slow web-search leg adds latency to the whole query.
+
 ```python
 class QueryState(TypedDict, total=False):
     question: str
     metadata_filter: dict[str, Any]
+    user_id: str
+    team_id: str
     query_embedding: list[float]
     semantic_results: list[ScoredDocument]
     keyword_results: list[ScoredDocument]
@@ -847,6 +1026,17 @@ The user question is embedded:
 ```python
 embeddings.embed_query(state["question"])
 ```
+
+### Known Redundancy
+
+The vector this node writes to `state["query_embedding"]` is **never read**.
+`VectorStore.semantic_search()` takes the raw question string and calls
+`embed_query()` again internally, so every query pays for two embedding calls.
+It is correct but wasteful — with a remote embedding provider it doubles the
+embedding latency and cost of the retrieval phase; with `LocalHashEmbeddings`
+it is free. Either have `semantic_search()` accept a precomputed vector or drop
+the node; until then, do not assume `query_embedding` is what Atlas actually
+searched with.
 
 ### Why This Matters
 
@@ -896,9 +1086,38 @@ pipeline = [
 ]
 ```
 
-This returns chunks that are semantically close to the question. If a metadata
-filter is supplied it is applied as an Atlas **pre-filter** (only fields
-declared as `filter` type in the vector index are supported).
+This returns chunks that are semantically close to the question.
+
+### Metadata Pre-Filter Limitation (important)
+
+If a metadata filter is supplied it is applied as an Atlas **pre-filter**, and
+Atlas only accepts fields declared as `filter` type in the vector index. In this
+deployment that is exactly three paths (§10):
+
+```text
+metadata.authorized_users
+metadata.source
+metadata.content_hash
+```
+
+Filtering on anything else — `section`, `page_number`, `file_type`, `hs_code` —
+makes the `$vectorSearch` aggregation fail. The failure is caught and logged,
+and the method **returns an empty list**, so the symptom is not an error
+response but a query that silently loses its entire semantic leg and answers
+from keyword/graph hits alone.
+
+Two consequences worth internalising:
+
+1. `practice-rag ask --filter section=Retrieval` still works overall, because
+   `keyword_search()` uses a regular MongoDB filter (which can match any
+   metadata field) — but the results are BM25-only.
+2. The Negotiation Agent calls `query(..., metadata_filter={"hs_code": hs_code})`.
+   `hs_code` is neither an indexed filter path nor a field any loader writes, so
+   that call currently contributes no semantic hits and typically falls through
+   to the static playbook stub. See §37.
+
+To filter semantically on a new field, add it as a `filter` path in
+`_VECTOR_INDEX_DEFINITION` and rebuild the Atlas index.
 
 Detailed runtime flow:
 
@@ -971,7 +1190,8 @@ ScoredDocument(
 `semantic_search` is one branch of retrieval. Its candidates are fused with:
 
 1. BM25 keyword candidates,
-2. graph-retrieval candidates.
+2. graph-retrieval candidates (optional),
+3. live web-search candidates (optional).
 
 Fusion strengthens chunks that are supported by multiple retrieval signals and reduces dependence on any single retriever.
 
@@ -1061,7 +1281,8 @@ chunk_id
 
 1. semantic search results,
 2. keyword/BM25 results,
-3. graph relationship results.
+3. graph relationship results (optional),
+4. live web-search results (optional).
 
 These are merged in `hybrid_fusion` (reciprocal-rank style), then sent to parent-child expansion, reranking, knee-point selection, and safety filtering before generation.
 
@@ -1096,29 +1317,58 @@ The flow is:
 
 ```text
 query
-  -> extract query entities
-  -> find graph entity nodes
-  -> traverse entity_to_chunks adjacency
-  -> score related chunks by entity overlap and inverse entity frequency
-  -> apply metadata filters
+  -> extract query entities  (_extract_entities)
+  -> match chunks that MENTION any of those entities
+  -> score by shared-entity count / number of query entities
+  -> apply the `source` metadata filter (the only one supported here)
   -> apply authorization filters in graph.py
   -> return graph ScoredDocument candidates
 ```
 
 Detailed runtime flow:
 
-1. The query is tokenized into entity-like terms.
-2. Graph entity nodes matching those terms are located.
-3. Traversal expands to neighboring chunk nodes through relationships such as:
-   - `entity -> chunk`,
-   - `section -> chunk`,
-   - `source -> chunk`,
-   - `page_number -> chunk`,
-   - `parent -> chunk`.
-4. Candidate chunks are scored by relationship evidence (entity overlap and inverse entity frequency weighting).
-5. Optional metadata filters are applied.
-6. Authorization filtering is applied in `graph.py`.
-7. Results are returned as `ScoredDocument(..., source="graph")`.
+1. The query is run through `_extract_entities()` (see below).
+2. If it yields **no** entities the store returns `[]` immediately — there is
+   nothing to traverse, and vector/keyword carry the query.
+3. Chunks mentioning any query entity are matched — a single hop over
+   `MENTIONS`. `PART_OF` and `ADJACENT_TO` are written at ingestion time but are
+   **not** traversed by the current retrieval query; they exist for future
+   multi-hop expansion.
+4. Each candidate is scored:
+
+   ```python
+   score = min(shared_entity_count / len(query_entities), 1.0)
+   ```
+
+   This is a plain overlap ratio. There is **no** inverse-entity-frequency (IDF)
+   weighting — a rare, high-signal entity currently counts exactly as much as a
+   common one. Adding IDF would be a genuine precision improvement.
+5. Only `source` is honoured as a metadata filter (read from either `source` or
+   `metadata.source`); other keys are ignored on this leg.
+6. Authorization filtering is applied in `graph.py`, as for every other leg.
+7. Results are returned as `ScoredDocument(..., source="graph")`, capped at
+   `RAG_GRAPH_RETRIEVAL_TOP_K` (default 8).
+
+### Entity Extraction — and its case-sensitivity trap
+
+`_extract_entities()` is a deliberately dependency-free heuristic shared by both
+backends, so the same phrase maps to the same entity string in a chunk and in a
+query:
+
+```python
+_ENTITY_RE = r"\b([A-Z][A-Za-z]{2,})\b"   # Capitalised words, 3+ chars
+_CODE_RE   = r"\b(\d{4,10})\b"            # numeric codes (HS codes, IDs)
+# minus a stopword list, deduplicated, lowercased, capped at 25 entities
+```
+
+**The regex requires an initial capital letter.** A question typed in all
+lowercase — `"what does the black duck scanner check?"` — extracts zero
+word-entities and the graph leg returns nothing at all. Numeric codes still
+match, since digits have no case. This is the single most likely reason for
+"graph retrieval is enabled but never contributes anything."
+
+Swap `_extract_entities` for spaCy or an LLM NER call for production-grade
+recall; no other code needs to change.
 
 ### Why It Is Needed
 
@@ -1136,11 +1386,12 @@ It is particularly useful for:
 Graph scoring is relationship-driven, not embedding-distance-driven:
 
 ```text
-more shared important entities + stronger graph linkage
-=> higher graph score
+more shared entities with the query => higher graph score
 ```
 
-Rare, high-signal entities contribute more than very common entities.
+Note this is unweighted overlap in the current implementation — every entity
+counts the same, whether it is `Veracode` or `Report`. The stopword list is the
+only defence against common words dominating.
 
 ### Best For
 
@@ -1154,14 +1405,17 @@ Graph search is useful for:
 
 ### Example
 
-If the query mentions `Black Duck`, graph search can retrieve chunks connected to:
+If the query mentions `Black Duck`, extraction yields `["black", "duck"]` and
+graph search retrieves every chunk that `MENTIONS` either entity:
 
 ```text
-entity:black
-entity:duck
-section:SCA Risk
-source:devsecops_control_plane.md
+entity:black -> chunk:abc, chunk:def
+entity:duck  -> chunk:abc
+=> chunk:abc scores 2/2 = 1.0, chunk:def scores 1/2 = 0.5
 ```
+
+Written lowercase as `black duck`, the same query extracts nothing and this leg
+returns `[]`.
 
 Those graph candidates are fused with vector and keyword candidates.
 
@@ -1188,9 +1442,39 @@ shared/rag/src/web_search.py
 ### What Happens
 
 When `RAG_WEB_SEARCH_ENABLED=true` and `TAVILY_API_KEY` is set (root `.env`,
-like the other third-party connector keys), the query is sent to the Tavily
-search API and the top `RAG_WEB_SEARCH_TOP_K` (default 3) results are wrapped
-as `ScoredDocument(..., source="web")` with URL/title metadata.
+like the other third-party connector keys), the query is POSTed to
+`https://api.tavily.com/search` (`search_depth: "basic"`, `include_answer:
+false`, 10 s timeout) and the top `RAG_WEB_SEARCH_TOP_K` (default 3) results are
+wrapped as `ScoredDocument(..., source="web")`. Results with empty `content` are
+dropped.
+
+The key is read from the process environment (`os.getenv`) at construction
+time — it is deliberately *not* a `RAG_*` setting, so it lives alongside the
+other third-party connector credentials.
+
+### Result Metadata Shape
+
+Web results are given synthetic metadata so they render through the same
+citation machinery as internal chunks:
+
+```python
+{
+    "source":         "<result url>",
+    "title":          "<result title>" or "untitled",
+    "section":        "web",
+    "page_number":    "n/a",
+    "chunk_id":       "web-<idx>-<8 hex chars of url hash>",
+    "chunk_index":    idx,
+    "published_date": "<tavily published_date, may be empty>",
+}
+```
+
+The synthetic `chunk_id` is what lets RRF deduplicate web results against each
+other. Note there is no `parent_id`, so `expand_parent_context()` finds no
+parent document and keeps the web snippet's own text (§16). Web chunks also
+carry no `authorized_users`/`authorized_teams`, which means the authorization
+filter treats them as public — correct for public web content, but worth knowing
+if you tighten the default policy.
 
 ### Degradation Rule (different from booking connectors)
 
@@ -1281,7 +1565,7 @@ the same chunk will produce the same key and will be collapsed into one fused en
 
 #### Step 3 — Compute RRF score for every document in every list
 
-The algorithm iterates over all three ranked lists and accumulates a score for
+The algorithm iterates over all four ranked lists and accumulates a score for
 each unique document using **Reciprocal Rank Fusion (RRF)**:
 
 ```python
@@ -1365,8 +1649,9 @@ RRF rank-based fused score is carried forward.
 
 ```text
 semantic_results  [ranked by cosine similarity]  ─────┐
-keyword_results   [ranked by BM25 score]         ──────┤──► hybrid_fusion (RRF)
-graph_results     [ranked by entity overlap]     ─────┘         │
+keyword_results   [ranked by BM25 score]         ─────┤
+graph_results     [ranked by entity overlap]     ─────┤──► hybrid_fusion (RRF)
+web_results       [ranked by Tavily relevance]   ─────┘         │
                                                                  ▼
                                           fused + deduplicated top-(K×2) chunks
                                                                  │
@@ -1375,6 +1660,8 @@ graph_results     [ranked by entity overlap]     ─────┘         │
                                                             rerank
                                                                  │
                                                        knee_point_select
+                                                                 │
+                                                          safety_filter
                                                                  │
                                                          final context chunks
                                                          → augment → generate
@@ -1435,9 +1722,23 @@ expand_parent_context(candidates)
 What happens:
 
 1. Retrieval finds precise child chunks.
-2. Each child chunk carries `parent_id` and `parent_content` metadata.
-3. The function deduplicates by `parent_id`.
-4. The child result is expanded into the broader parent context before reranking.
+2. Each child chunk carries a `parent_id` in its metadata (falling back to
+   `chunk_id` when absent, as with web results).
+3. The function deduplicates by `parent_id`, keeping only the **first**
+   (highest-fused-score) candidate of each parent group and discarding the rest.
+4. `MongoParentStore().load(parent_id)` fetches the parent text from the
+   `parent_docs` collection. If no parent document exists, the child's own
+   content is kept unchanged — never an error.
+5. The parent's metadata is merged over the child's, and
+   `expanded_from_child_id` records which child matched.
+6. The result is re-emitted as `ScoredDocument(..., source="parent_child")`
+   carrying the original fused score.
+
+Note the deduplication happens *before* reranking, so if three sibling chunks of
+one parent all rank highly, they collapse into a single context block — this is
+what keeps the prompt from repeating near-identical text. It also means the
+candidate count entering `rerank` is often smaller than the `top_k × 2` that
+fusion emitted.
 
 Why this helps:
 
@@ -1463,17 +1764,26 @@ retrieval_top_k = 8
 
 ### How It Is Used
 
-Semantic search retrieves top `k`.
+Semantic search retrieves top `k` (`RAG_RETRIEVAL_TOP_K`, default 8).
 
-Keyword search retrieves top `k`.
+Keyword search retrieves top `k` — but only after fetching up to
+`RAG_KEYWORD_SEARCH_FETCH_LIMIT` (500) documents to build the in-memory BM25
+index, so on a corpus larger than that its recall is bounded by whichever 500
+documents MongoDB happens to return.
 
-Graph search retrieves `graph_retrieval_top_k`.
+Graph search retrieves `RAG_GRAPH_RETRIEVAL_TOP_K` (default 8).
 
-Hybrid fusion may keep a wider pool:
+Web search retrieves `RAG_WEB_SEARCH_TOP_K` (default 3).
+
+Hybrid fusion keeps a wider pool:
 
 ```python
-top_k=settings.retrieval_top_k * 2
+top_k=settings.retrieval_top_k * 2      # 16 by default
 ```
+
+Parent-child expansion then collapses siblings sharing a `parent_id`, so the
+reranker usually sees fewer than 16, and knee-point selection finally clamps the
+prompt to 3–8 chunks.
 
 ### Why Not Send Top-K Directly to the LLM?
 
@@ -1489,7 +1799,7 @@ reranking -> knee-point selection
 
 ---
 
-## 17. Flow 14: Reranking
+## 17b. Flow 14b: Reranking
 
 ### Graph Node
 
@@ -1517,13 +1827,19 @@ chunk together, then re-orders them so the most relevant chunks appear first.
 ```text
 rerank()
   │
-  ├── USE_CROSS_ENCODER_RERANKER=true?
+  ├── RAG_USE_CROSS_ENCODER_RERANKER=true?
   │       └── YES  ->  cross_encoder_rerank()
   │                        │
   │                        └── model unavailable? -> local_rerank() (fallback)
   │
   └── NO  ->  local_rerank()
 ```
+
+Both modes are **synchronous** and CPU-bound. `rerank` is an async graph node,
+but the work inside it is not awaited off the loop — a cross-encoder pass over
+16 candidates blocks the event loop for its duration. That is acceptable for
+the local reranker (pure string ops) and worth knowing before enabling the
+cross-encoder under concurrent load.
 
 ---
 
@@ -1576,8 +1892,14 @@ edge case: if all raw scores are equal  ->  all normalized scores = 1.0
 #### Default model
 
 ```env
-CROSS_ENCODER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+RAG_CROSS_ENCODER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 ```
+
+The model is constructed fresh on **every** rerank call
+(`CrossEncoder(settings.cross_encoder_model)`) — there is no module-level cache,
+so the first query after enabling it pays the download and each subsequent query
+pays model load. Cache the instance before using this in a latency-sensitive
+path.
 
 This is a small, fast cross-encoder fine-tuned on MS MARCO passage ranking,
 which gives good out-of-the-box relevance quality for document retrieval.
@@ -1727,7 +2049,7 @@ shared/rag/src/rerank.py
 ### Function
 
 ```python
-select_by_knee_point(ranked)
+select_by_knee_point(ranked, min_k: int = 3, max_k: int = 8)
 ```
 
 ### Problem It Solves
@@ -1755,13 +2077,35 @@ The sharp drop after rank 3 is the knee.
 
 So the algorithm selects chunks before the quality flattens.
 
+### How the Knee Is Actually Found
+
+It is a Kneedle-style maximum-distance-from-chord computation, not a
+first-derivative threshold:
+
+1. If `len(ranked) <= min_k`, return everything — no cutoff to find.
+2. If all scores are effectively equal (`np.allclose`), return the first
+   `max_k` — a flat curve has no knee.
+3. Normalise ranks to `x ∈ [0, 1]` and scores to `y ∈ [0, 1]`.
+4. Draw the chord from the first point to the last, and measure each point's
+   perpendicular distance from it (via a 2-D cross product).
+5. The farthest point is the knee: `knee_index = argmax(distances) + 1`.
+6. Clamp into bounds: `selected_k = max(min_k, min(knee_index, max_k, len(ranked)))`.
+
+### Bounds
+
+`min_k=3` and `max_k=8` are hard defaults in the function signature, not
+settings — they are not configurable through `RAG_*` env vars. So the final
+context window is always 3–8 chunks regardless of what the curve suggests,
+which bounds prompt cost predictably.
+
 ### Output
 
 ```text
 selected_chunks
 ```
 
-These are the chunks that go into the final augmented prompt.
+These are the chunks that go into the final augmented prompt (after safety
+filtering, which can shrink the list further — potentially below `min_k`).
 
 ### Prompt-Injection Filtering Before Augmentation
 
@@ -1777,17 +2121,26 @@ Code location:
 shared/rag/src/security.py
 ```
 
-Function:
+Function (the graph node calls the **async** variant):
 
 ```python
-filter_prompt_injection_chunks(chunks)
+await afilter_prompt_injection_chunks(chunks)
 ```
 
 What happens:
 
-1. Selected chunks are scanned for high-risk instruction patterns.
-2. Examples include attempts to ignore previous instructions or reveal system prompts.
-3. Suspicious chunks are removed before prompt construction.
+1. Each selected chunk goes through `aclassify_prompt_injection()`.
+2. The deterministic regex rules run first — attempts to ignore previous
+   instructions, reveal or override the system prompt, `you are now …`,
+   `developer message`, `exfiltrate`.
+3. A rule hit short-circuits as risky without spending an LLM call.
+4. Only if the rules pass *and* `RAG_USE_LLM_PROMPT_INJECTION_CLASSIFIER=true`
+   is the LLM classifier consulted.
+5. Risky chunks are dropped (with a warning log naming the classifier and
+   reason) before prompt construction.
+
+A sync `filter_prompt_injection_chunks()` also exists for callers that cannot
+await; it applies the heuristic rules only and never invokes the LLM.
 
 Why this helps:
 
@@ -1828,22 +2181,34 @@ The function builds a prompt containing:
 - chunk index,
 - chunk text.
 
-Example prompt shape:
+Exact prompt shape:
 
 ```text
 You are a grounded RAG assistant.
 
 Answer the question using only the context below.
 If the context is insufficient, say what evidence is missing.
-Include citations like [1] or [2].
+Include citations like [1] or [2] for important claims.
 
 Question:
-...
+<question>
 
 Retrieved context:
-[1] title=...; source=...; chunk=...
-...
+[1] title=...; section=...; page=...; source=...; chunk=<chunk_index>
+<chunk text>
+
+---
+
+[2] title=...; section=...; page=...; source=...; chunk=<chunk_index>
+<chunk text>
+
+Answer:
 ```
+
+Blocks are joined by `\n\n---\n\n`. Missing metadata degrades to literal
+placeholders (`untitled`, `unknown`, `n/a`) rather than being omitted, so the
+citation numbering stays dense and `validate_citations()` can map `[n]` back to
+position `n` in `selected_chunks`.
 
 ### Why This Helps
 
@@ -1890,8 +2255,39 @@ gateway every other module in the app uses. This inherits:
 RAG holds no provider SDK or API key of its own — model/provider/key live in
 `shared/llm_gateway/.env` (`LLM_PRIMARY_*`, `LLM_GROQ_API_KEY`).
 
-If every model in the chain is unavailable, the gateway raises and the query
-endpoint reports the failure — generation is never silently faked.
+### Failure Behaviour — it degrades, it does not raise
+
+`generate_answer()` wraps the whole gateway call in a broad `except`. If every
+model in the chain fails (or no key is configured at all), it logs a warning and
+returns `_local_extractive_answer()` — a deterministic, non-LLM summary built
+from the retrieved chunks:
+
+```text
+Local grounded answer (LLM Gateway unavailable):
+
+Question: <question>
+
+Most relevant evidence:
+- [1] <first 500 chars of chunk>  (source: ..., section: ..., page: ...)
+- [2] ...
+
+Configure LLM_PRIMARY_API_KEY or LLM_GROQ_API_KEY for a fluent LLM-generated response.
+```
+
+Two consequences to plan for:
+
+- `POST /rag/query` returns **200 with an answer** even when no LLM is reachable.
+  The router's 500 handler only fires for errors raised *outside* generation
+  (for example an unhandled retrieval fault). Do not use HTTP status as an
+  LLM-health signal — the `"Local grounded answer (LLM Gateway unavailable)"`
+  prefix is the actual tell.
+- The fallback text contains no `[n]`-style inline citations in prose, so
+  `validate_citations()` will report `missing_citations` and `faithfulness`
+  drops to its overlap-only component. Degraded LLM availability therefore shows
+  up as a metrics dip, which is a useful alert.
+
+If the retrieved-chunk list is empty, the fallback returns
+`"I do not have enough retrieved evidence to answer this question."`
 
 ### Output
 
@@ -1963,11 +2359,22 @@ Function:
 evaluate_answer(question, answer, chunks, citation_validation)
 ```
 
-The implementation computes local heuristic metrics:
+The implementation computes local heuristic metrics and returns five fields:
 
-- `faithfulness`: citation validity plus answer/context overlap.
-- `context_precision`: fraction of selected chunks that overlap with the question.
-- `answer_relevance`: overlap between the question and answer.
+```python
+{
+    "faithfulness":      0.0-1.0,   # 0.6 × citations_valid + 0.4 × answer/context overlap
+    "context_precision": 0.0-1.0,   # fraction of selected chunks overlapping the question
+    "answer_relevance":  0.0-1.0,   # question→answer token overlap
+    "evaluator":         "local",   # echoes RAG_ADVANCED_EVAL_PROVIDER
+    "advanced_notes":    "Local lexical metrics only.",
+}
+```
+
+All three scores are rounded to 3 decimals. Note the weighting inside
+`faithfulness`: citation validity is a binary 0/1 worth 60% of the score, so an
+otherwise-grounded answer that forgets to write `[1]` markers scores at most
+0.4.
 
 These are lightweight practice metrics, not a replacement for a production evaluator such as RAGAS, DeepEval, or LLM-as-judge evaluation.
 
@@ -2059,33 +2466,34 @@ citation validation + evaluation metrics
 
 | Flow | Module | Notes |
 |---|---|---|
-| HTTP API (ingest/upload/query/files/stats/health) | `shared/rag/src/router.py` | Mounted at `/rag/*`; Portless-staff only; async ingestion jobs in `ingestion_jobs` |
-| CLI (local experimentation) | `shared/rag/src/cli.py` | `practice-rag ingest / ask` |
-| Graph orchestration | `shared/rag/src/graph.py` | `build_ingestion_graph()`, `build_query_graph()` |
+| HTTP API (ingest/upload/query/files/stats/health) | `shared/rag/src/router.py` | Mounted at `/rag/*`; Portless-staff only except `/health`; job status in an in-process `_jobs` dict; exports `startup()` for the app lifespan |
+| Lazy public exports | `shared/rag/src/__init__.py` | PEP 562 `__getattr__` for `query`/`ingest`/graph builders/`settings`/`router`/`startup` |
+| CLI (local experimentation) | `shared/rag/src/cli.py` | `practice-rag ingest / ask`; `--path` required for ingest |
+| Graph orchestration | `shared/rag/src/graph.py` | `build_ingestion_graph()`, `build_query_graph()`, `ingest()`, `query()` — all async |
 | Configuration | `shared/rag/src/config.py` | `RAG_*` env prefix; root `.env` then `shared/rag/.env` (module wins) |
 | Parse/load + document metadata | `shared/rag/src/loader.py` | `.md`/`.txt`/`.pdf`, section + page metadata, layout/OCR options |
-| Recursive / semantic chunking + chunk & parent-child metadata | `shared/rag/src/chunking.py` | |
+| Recursive / semantic chunking + chunk & parent-child metadata | `shared/rag/src/chunking.py` | Returns `(child_chunks, parent_docs)` |
 | Embeddings | `shared/rag/src/embeddings.py` | Delegates to `shared.llm_gateway.GatewayEmbeddings` (offline hash fallback) |
-| Vector DB (Atlas `$vectorSearch`), BM25 keyword search, metadata filters, content-hash re-index, RRF fusion, parent expansion | `shared/rag/src/vector_store.py` | `chunks` collection; `ensure_vector_index()` |
-| Uploaded-file persistence | `shared/rag/src/file_store.py` | MongoDB GridFS (`rag_files` bucket) |
-| Parent document store | `shared/rag/src/parent_store.py` | Mongo `parent_docs` collection |
-| Graph DB ingestion + retrieval | `shared/rag/src/graph_store.py` | Backends: `mongo` (`graph_chunks`) / `neo4j` / no-op |
-| Live web search leg | `shared/rag/src/web_search.py` | Tavily; empty on missing key/failure; reused by negotiation market intel |
-| Reranking (local + cross-encoder) and knee-point | `shared/rag/src/rerank.py` | |
-| Prompt-injection filtering | `shared/rag/src/security.py` | Rules + optional LLM classifier |
-| Prompt augmentation + generation | `shared/rag/src/llm.py` | Via `shared.llm_gateway.LLMClient` (fallback chain, tracking) |
+| Vector DB (Atlas `$vectorSearch`), BM25 keyword search, metadata filters, content-hash re-index, RRF fusion, parent expansion | `shared/rag/src/vector_store.py` | `chunks` collection; **`ensure_indexes()`** |
+| Uploaded-file persistence | `shared/rag/src/file_store.py` | MongoDB GridFS (`rag_files` bucket); `FileStore` Protocol + `MongoGridFSFileStore` |
+| Parent document store | `shared/rag/src/parent_store.py` | Mongo `parent_docs` collection; `MongoParentStore` |
+| Graph DB ingestion + retrieval | `shared/rag/src/graph_store.py` | Backends: `mongo` (`graph_chunks`) / `neo4j` / no-op; `ensure_graph_indexes()` |
+| Live web search leg | `shared/rag/src/web_search.py` | Tavily `WebSearchStore`; empty on missing key/failure; reused by negotiation market intel |
+| Reranking (local + cross-encoder) and knee-point | `shared/rag/src/rerank.py` | Sync; knee-point bounded to 3–8 chunks |
+| Prompt-injection filtering | `shared/rag/src/security.py` | `afilter_prompt_injection_chunks()` — rules + optional LLM classifier |
+| Prompt augmentation + generation | `shared/rag/src/llm.py` | Via `shared.llm_gateway.LLMClient`; local extractive fallback |
 | Citation validation | `shared/rag/src/citations.py` | |
 | Evaluation metrics | `shared/rag/src/evaluation.py` | Local metrics + RAGAS/DeepEval/LLM-judge hooks |
-| Authorization filtering | `shared/rag/src/authorization.py` | `authorized_users` / `authorized_teams` metadata |
+| Authorization filtering | `shared/rag/src/authorization.py` | `authorized_users` / `authorized_teams` metadata; applied to all four legs |
 
 ---
 
 ## 24. What Happens When You Run Ingest
 
-Command:
+Command (`--path` is required — there is no default folder):
 
 ```powershell
-practice-rag ingest --strategy recursive
+practice-rag ingest --path ./data --strategy recursive
 ```
 
 Flow:
@@ -2093,20 +2501,31 @@ Flow:
 ```text
 cli.py main()
   -> build_ingestion_graph()
+  -> asyncio.run(graph.ainvoke(...))
   -> parse_and_load()
   -> load_documents()
-  -> format_document()
+  -> format_text_documents() / load_pdf_documents() -> _format_document()
   -> chunk()
   -> chunk_documents()
   -> recursive_chunk_documents()
-  -> _number_chunks()
+  -> _number_chunks()  -> (child_chunks, parent_docs)
+  -> await MongoParentStore().save(parent_docs)   # `parent_docs` collection
   -> embed_and_insert()
   -> VectorStore.upsert()
-  -> GatewayEmbeddings.embed_documents() + Mongo chunks upsert
+  -> delete_by_content_hashes() for the batch's hashes
+  -> GatewayEmbeddings.embed_documents() + Mongo chunks bulk upsert
   -> graph_insert()
   -> GraphStore.upsert_chunks()
-  -> graph nodes and relationships (mongo `graph_chunks` collection or Neo4j;
-     no-op when RAG_GRAPH_RETRIEVAL_ENABLED is false)
+  -> Document/Chunk/Entity nodes + PART_OF/MENTIONS/ADJACENT_TO
+     (mongo `graph_chunks` collection or Neo4j;
+      no-op when RAG_GRAPH_RETRIEVAL_ENABLED is false)
+```
+
+It then prints both counters:
+
+```text
+Inserted vector chunks: <inserted_count>
+Inserted graph chunks:  <graph_inserted_count>
 ```
 
 In the running backend the same ingestion graph is triggered by
@@ -2153,34 +2572,40 @@ Flow:
 ```text
 cli.py main()
   -> build_query_graph()
-  -> embed_query()
-  -> semantic_search()
-  -> VectorStore.semantic_search()
-  -> keyword_search()
-  -> VectorStore.keyword_search()
-  -> graph_search()
-  -> GraphStore.retrieve()
-  -> web_search()
-  -> Tavily search (empty when disabled / key absent)
-  -> fuse_results()
-  -> hybrid_fusion()
-  -> parent_child_expand()
-  -> expand_parent_context()
-  -> rerank_results()
-  -> rerank()
-  -> knee_point_select()
-  -> select_by_knee_point()
-  -> safety_filter()
-  -> filter_prompt_injection_chunks()
-  -> augment()
-  -> build_augmented_prompt()
-  -> generate()
-  -> generate_answer()
-  -> validate_answer_citations()
-  -> validate_citations()
-  -> evaluate()
-  -> evaluate_answer()
+  -> asyncio.run(graph.ainvoke(...))
+  -> _embed_query()            [node: embed_query]
+  -> _semantic_search()        [node: semantic_search]
+       VectorStore.semantic_search() + filter_authorized_results()
+  -> _keyword_search()         [node: keyword_search]
+       VectorStore.keyword_search() + filter_authorized_results()
+  -> _graph_search()           [node: graph_search]
+       GraphStore.retrieve() + filter_authorized_results()
+  -> _web_search()             [node: web_search]
+       WebSearchStore.retrieve() (empty when disabled / key absent)
+  -> _fuse_results()           [node: hybrid_fusion]
+       hybrid_fusion(top_k = retrieval_top_k * 2)
+  -> _parent_child_expand()    [node: parent_child_expand]
+       expand_parent_context()
+  -> _rerank_results()         [node: rerank]
+       rerank()
+  -> _knee_point_select()      [node: knee_point_select]
+       select_by_knee_point()
+  -> _safety_filter()          [node: safety_filter]
+       afilter_prompt_injection_chunks()
+  -> _augment()                [node: augment]
+       build_augmented_prompt()
+  -> _generate()               [node: generate]
+       generate_answer()
+  -> _validate_citations()     [node: validate_citations]
+       validate_citations()
+  -> _evaluate()               [node: evaluate]
+       evaluate_answer()
 ```
+
+The node names are the LangGraph identifiers (useful when reading traces); the
+`_`-prefixed functions are their implementations. Note the node named
+`hybrid_fusion` is implemented by `_fuse_results`, which is the one place the
+two naming schemes diverge.
 
 ---
 
@@ -2326,13 +2751,14 @@ Sometimes it is useful to intentionally include selected metadata, such as a tit
 
 ### Hybrid Search
 
-The system uses three retrieval signals:
+The system uses up to four retrieval signals:
 
 - vector semantic search,
 - BM25 keyword search,
-- graph relationship search.
+- graph relationship search (optional),
+- live web search (optional).
 
-This gives better recall than either method alone.
+This gives better recall than any single method alone.
 
 ### Graph-Hybrid Retrieval
 
@@ -2348,7 +2774,7 @@ It helps when:
 The final candidate pool is:
 
 ```text
-semantic candidates + keyword candidates + graph candidates -> reciprocal rank fusion
+semantic + keyword + graph + web candidates -> reciprocal rank fusion
 ```
 
 ### Reranking After Retrieval
@@ -2400,7 +2826,11 @@ Implemented enhancement set:
 - Production-style prompt-injection classifier hook.
 - RAGAS, DeepEval, or LLM-as-judge evaluation hooks.
 - Parent document storage in a dedicated Mongo collection (`parent_docs`) for large parent chunks.
-- Graph DB based hybrid retrieval with chunk/entity/metadata relationships.
+- Graph DB based hybrid retrieval over `Document` / `Chunk` / `Entity` nodes, with pluggable Mongo and Neo4j backends.
+- Optional live web-search retrieval leg (Tavily) fused by RRF, failing open to empty results.
+- Fully async ingestion and query pipelines, backed by MongoDB Atlas and the LLM Gateway.
+- Durable GridFS persistence for uploaded knowledge files.
+- Cascading delete across the vector, parent, and graph stores.
 
 ---
 
@@ -2423,13 +2853,18 @@ ocr_pdf_page(path, page_number)
 
 ### What Was Implemented
 
-`load_pdf_documents()` now tries layout-aware parsing first when:
+`load_pdf_documents()` tries layout-aware parsing first when:
 
 ```env
-ENABLE_PDF_LAYOUT_EXTRACTION=true
+RAG_ENABLE_PDF_LAYOUT_EXTRACTION=true   # this is the DEFAULT
 ```
 
-The layout path uses `pdfplumber` when available.
+Unlike most optional features here, this one is **on by default**
+(`enable_pdf_layout_extraction: bool = True`). Set it to `false` to force the
+plain `pypdf` path.
+
+The layout path uses `pdfplumber` when available; if the import fails it returns
+an empty list and `load_pdf_documents()` silently falls through to `pypdf`.
 
 For every page, it extracts:
 
@@ -2488,7 +2923,7 @@ ocr_pdf_page(path, page_number)
 If a PDF page has no extractable text and OCR is enabled:
 
 ```env
-ENABLE_PDF_OCR=true
+RAG_ENABLE_PDF_OCR=true   # default false
 ```
 
 the loader tries to:
@@ -2560,11 +2995,24 @@ The query CLI accepts:
 practice-rag ask "question" --user alice --team appsec
 ```
 
-After semantic and keyword retrieval, the graph filters results by:
+and the HTTP API takes the same values as `user_id` / `team_id` in the
+`POST /rag/query` body.
+
+**Every** retrieval leg — semantic, keyword, graph, and web — is filtered
+before fusion, by:
 
 - `authorized_users`
 - `authorized_teams`
 - public wildcard `*`
+
+Values may be a list or a comma-separated string; `_metadata_values()`
+normalises both. A document is visible if either field contains `*`, or if it
+names the requesting user/team.
+
+Because `loader.py` stamps `authorized_users: "*"` and `authorized_teams: "*"`
+on every document at load time, an un-tagged corpus is fully public and passing
+`--user`/`--team` narrows nothing. Restriction requires writing real values into
+those metadata fields at ingestion time.
 
 ### How It Helps the Flow
 
@@ -2589,24 +3037,35 @@ shared/rag/src/security.py
 ### Functions
 
 ```python
-classify_prompt_injection(text)
-has_prompt_injection_risk(text)
-llm_prompt_injection_assessment(text)
-filter_prompt_injection_chunks(chunks)
+has_prompt_injection_risk(text)            # sync regex rules
+aclassify_prompt_injection(text)           # async: rules, then optional LLM
+_llm_injection_assessment(text)            # async: LLM-as-judge via the gateway
+afilter_prompt_injection_chunks(chunks)    # async — used by the graph node
+filter_prompt_injection_chunks(chunks)     # sync, rules-only convenience
 ```
 
 ### What Was Implemented
 
-The prompt-injection filter now has two layers:
+The prompt-injection filter has two layers:
 
-1. Deterministic rule classifier.
-2. Optional LLM classifier.
+1. Deterministic rule classifier (`PROMPT_INJECTION_PATTERNS`).
+2. Optional LLM classifier, consulted only when the rules find nothing.
 
 Enable the LLM classifier with:
 
 ```env
-USE_LLM_PROMPT_INJECTION_CLASSIFIER=true
+RAG_USE_LLM_PROMPT_INJECTION_CLASSIFIER=true   # default false
 ```
+
+The LLM leg sends at most 4000 characters of the chunk with `max_tokens=10` and
+`temperature=0.0`, asking for a bare `SAFE` / `RISKY` verdict, tagged
+`caller="rag.security.injection_classifier"` in gateway tracking.
+
+**It fails open**: if the gateway is unavailable the assessment returns
+`is_risky=False` with `classifier="llm-unavailable"`, so an LLM outage lets
+chunks through rather than emptying the context. The deterministic rules always
+run first and are unaffected, so the baseline protection never depends on model
+availability.
 
 The classifier returns a structured assessment:
 
@@ -2661,10 +3120,10 @@ The system still computes local metrics:
 It now also supports advanced evaluator modes:
 
 ```env
-ADVANCED_EVAL_PROVIDER=local
-ADVANCED_EVAL_PROVIDER=ragas
-ADVANCED_EVAL_PROVIDER=deepeval
-ADVANCED_EVAL_PROVIDER=llm
+RAG_ADVANCED_EVAL_PROVIDER=local      # default
+RAG_ADVANCED_EVAL_PROVIDER=ragas
+RAG_ADVANCED_EVAL_PROVIDER=deepeval
+RAG_ADVANCED_EVAL_PROVIDER=llm
 ```
 
 Behavior:
@@ -2672,7 +3131,23 @@ Behavior:
 - `local`: uses only local lexical metrics.
 - `ragas`: checks RAGAS availability and reports integration readiness.
 - `deepeval`: checks DeepEval availability and reports integration readiness.
-- `llm`: runs a compact LLM-as-judge prompt if OpenAI is configured.
+- `llm`: runs a compact LLM-as-judge prompt **through the LLM Gateway**
+  (`caller="rag.evaluation.llm_judge"`, `max_tokens=200`) — not a direct OpenAI
+  call. Chunks are truncated to 700 characters each for the judge prompt.
+- any other value: falls back to local metrics and says so in `advanced_notes`.
+
+The result of whichever branch runs is returned as the `advanced_notes` string;
+it never raises, reporting `"LLM judge unavailable: …"` instead.
+
+### Sync-in-async caveat
+
+`evaluate_answer()` is synchronous but is called from the async `evaluate` node.
+The `llm` branch therefore has to bridge back into async: it detects a running
+event loop and, when it finds one (as under FastAPI), runs the judge coroutine
+in a one-off `ThreadPoolExecutor` with a 30-second timeout rather than nesting
+loops. This works, but it means enabling `llm` evaluation adds a blocking wait
+of up to 30 s to every query. Leave it on `local` for interactive paths and use
+it for offline evaluation runs.
 
 ### How It Helps the Flow
 
@@ -2697,10 +3172,18 @@ shared/rag/src/vector_store.py
 ### Functions
 
 ```python
+MongoParentStore().save(parent_documents)   # dict[parent_id, Document]
+MongoParentStore().load(parent_id)          # -> Document | None
+MongoParentStore().delete(parent_ids)       # -> int
+MongoParentStore().delete_by_source(source) # -> int, used by DELETE /rag/documents
+
+# thin async wrappers kept for backward compatibility:
 save_parent_documents(parent_documents)
 load_parent_document(parent_id)
-delete_parent_documents(parent_ids)
 ```
+
+(All of these are coroutines. There is no `delete_parent_documents()` helper —
+use `MongoParentStore().delete()`.)
 
 ### What Was Implemented
 
@@ -2733,8 +3216,13 @@ Instead:
 4. Query-time `expand_parent_context()` loads the full parent text with:
 
 ```python
-load_parent_document(parent_id)
+await MongoParentStore().load(parent_id)
 ```
+
+Indexes on the `parent_docs` collection (`parent_id_unique`,
+`parent_source_idx`, `parent_hash_idx`) are ensured lazily on **every**
+`_get_collection()` call rather than once at startup — correct and idempotent,
+but it adds an `ensure_indexes` round trip per parent operation.
 
 ### Why This Is Better
 
@@ -2781,7 +3269,7 @@ The current project is intentionally provider-neutral and local-friendly. The sa
 | `embeddings.py` → LLM Gateway `GatewayEmbeddings` | Embedding (offline hash fallback) | Azure OpenAI embedding deployment |
 | MongoDB Atlas `$vectorSearch` in `vector_store.py` | Vector DB | Azure AI Search vector index, optionally Cosmos DB for MongoDB vCore vector search |
 | BM25 in `VectorStore.keyword_search()` | Keyword search | Azure AI Search BM25 lexical search |
-| `graph_store.py` (mongo `graph_chunks` / Neo4j backends) | Entity/chunk/source/section/page/parent relationship retrieval | Azure Cosmos DB Gremlin API, Azure Cosmos DB for NoSQL adjacency model, Azure SQL graph tables, Neo4j on Azure Marketplace |
+| `graph_store.py` (mongo `graph_chunks` / Neo4j backends) | Document/Chunk/Entity relationship retrieval (`PART_OF`, `MENTIONS`, `ADJACENT_TO`) | Azure Cosmos DB Gremlin API, Azure Cosmos DB for NoSQL adjacency model, Azure SQL graph tables, Neo4j on Azure Marketplace |
 | `web_search.py` (Tavily) | Live web retrieval leg | Bing Search API / Azure AI Agent Service grounding with Bing |
 | `hybrid_fusion()` | Semantic + keyword + graph + web fusion | Azure AI Search hybrid search plus graph DB retrieval fused with Reciprocal Rank Fusion |
 | `rerank.py` local/cross-encoder reranking | Improve top retrieved chunks | Azure AI Search Semantic Ranker, cross-encoder hosted on Azure ML/AKS/Container Apps |
@@ -2877,24 +3365,23 @@ Use:
 
 ### 34.3.1 Azure Graph DB Design
 
-If you replace the local JSON `graph_store.py` with an Azure graph-style store, model the graph like this:
+If you replace `graph_store.py`'s Mongo/Neo4j backends with an Azure graph-style
+store, model the graph exactly as the current backends do:
 
 ```text
 Nodes:
-  Chunk(chunk_id, source, section, page_number, parent_id)
-  Entity(value)
-  Source(path)
-  Section(name)
-  Page(number)
-  Parent(parent_id)
+  Document(source, title)
+  Chunk(chunk_id, content, source, section, page_number)
+  Entity(name)
 
 Edges:
+  Chunk -[:PART_OF]-> Document
   Chunk -[:MENTIONS]-> Entity
-  Chunk -[:IN_SOURCE]-> Source
-  Chunk -[:IN_SECTION]-> Section
-  Chunk -[:ON_PAGE]-> Page
-  Chunk -[:HAS_PARENT]-> Parent
+  Chunk -[:ADJACENT_TO]-> Chunk
 ```
+
+Section and page number are Chunk **properties**, not nodes — promote them to
+nodes only if you intend to traverse them, which this pipeline does not.
 
 Azure options:
 
@@ -2903,7 +3390,8 @@ Azure options:
 - **Azure SQL graph tables**: useful when your enterprise already standardizes on SQL Server or Azure SQL.
 - **Neo4j on Azure**: useful when graph traversal and graph algorithms are central to the product.
 
-In this app, graph retrieval does this:
+In this app, graph retrieval does this (a single `MENTIONS` hop — no multi-hop
+traversal today):
 
 ```text
 query entities -> Entity nodes -> connected Chunk nodes -> graph candidates
@@ -3141,18 +3629,21 @@ send parent context to LLM
 
 ### 36.4 Recommended Defaults
 
-For this project:
+For this project (note the mandatory `RAG_` prefix — `config.py` sets
+`env_prefix="RAG_"`, so an unprefixed `CHUNK_SIZE` is silently ignored and the
+default is used):
 
 ```env
-CHUNK_SIZE=900
-CHUNK_OVERLAP=120
-CHILD_CHUNKS_PER_PARENT=3
+RAG_CHUNK_SIZE=900
+RAG_CHUNK_OVERLAP=120
+RAG_CHILD_CHUNKS_PER_PARENT=3
+RAG_SEMANTIC_BREAKPOINT_PERCENTILE=25
 ```
 
 Use recursive chunking by default:
 
 ```powershell
-practice-rag ingest --strategy recursive
+practice-rag ingest --path ./data --strategy recursive
 ```
 
 Use semantic chunking when:
@@ -3163,7 +3654,7 @@ Use semantic chunking when:
 - paragraphs are long and concept boundaries matter.
 
 ```powershell
-practice-rag ingest --strategy semantic
+practice-rag ingest --path ./data --strategy semantic
 ```
 
 ### 36.5 When to Tune Chunk Size
@@ -3236,9 +3727,320 @@ After choosing a chunking strategy, inspect:
 
 If not, tune:
 
-- `CHUNK_SIZE`,
-- `CHUNK_OVERLAP`,
-- `CHILD_CHUNKS_PER_PARENT`,
-- recursive separators,
-- semantic breakpoint percentile,
+- `RAG_CHUNK_SIZE`,
+- `RAG_CHUNK_OVERLAP`,
+- `RAG_CHILD_CHUNKS_PER_PARENT`,
+- recursive separators (code-level, in `chunking.py`),
+- `RAG_SEMANTIC_BREAKPOINT_PERCENTILE`,
 - metadata enrichment before embedding.
+
+---
+
+## 37. Known Gaps and Operational Caveats
+
+Verified against `shared/rag/src/` on 2026-07-29. None of these are bugs that
+break the happy path — they are behaviours that will mislead you if you assume
+otherwise, listed roughly by how likely they are to bite.
+
+### 37.1 Atlas pre-filter fields are limited to three paths
+
+Only `metadata.authorized_users`, `metadata.source`, and
+`metadata.content_hash` are declared as `filter` type in the vector index. Any
+other `metadata_filter` key makes `$vectorSearch` fail; the exception is caught
+and logged, and `semantic_search()` returns `[]`. The query still answers — from
+keyword and graph hits alone — so the failure is invisible in the response.
+
+*Symptom*: filtered queries return noticeably worse answers than unfiltered ones.
+*Check*: grep the logs for `Atlas $vectorSearch failed`.
+*Fix*: add the field to `_VECTOR_INDEX_DEFINITION` and rebuild the Atlas index.
+
+### 37.2 The Negotiation Agent's `hs_code` filter matches nothing
+
+`agents/negotiation_agent/rag.py::load_rag_context()` calls:
+
+```python
+rag_query(question=..., metadata_filter={"hs_code": hs_code})
+```
+
+`hs_code` is neither an indexed Atlas filter path (37.1) nor a field any loader
+writes — `loader.py` stamps `source`, `file_name`, `file_type`, `title`,
+`section`, `content_hash`, `loaded_at`, the authorization defaults, and PDF page
+fields, and nothing else. So the semantic leg fails to `[]` and the keyword leg
+matches zero documents, meaning the agent almost always lands on its static
+playbook fallback regardless of what is indexed.
+
+Closing this needs both halves: tag documents with `hs_code` at ingestion time
+*and* declare it as an Atlas filter path.
+
+### 37.3 Ingestion job status is process-local
+
+`router.py` keeps jobs in a module-level `_jobs: dict`. Consequences:
+
+- job status is lost on restart — a poll after a redeploy 404s,
+- with more than one uvicorn worker, `GET /rag/ingest/{job_id}` only finds the
+  job if the poll lands on the worker that accepted it,
+- completed jobs are never evicted, so the dict grows for the process lifetime.
+
+`RAG_INGESTION_JOBS_COLLECTION` (`"ingestion_jobs"`) is already declared in
+`config.py` but is **not referenced anywhere** — the intended MongoDB-backed
+store is the obvious fix and the config slot is waiting for it.
+
+### 37.4 Generation degrades silently
+
+Covered in §20: a total LLM Gateway failure yields a 200 response containing a
+local extractive summary, not a 5xx. Alert on the
+`"Local grounded answer (LLM Gateway unavailable)"` prefix or on
+`citation_validation.missing_citations`, not on HTTP status.
+
+### 37.5 The graph leg is case-sensitive
+
+`_extract_entities()` only matches capitalised words (plus 4–10 digit numeric
+codes), so an all-lowercase question contributes nothing from the graph leg
+(§15). Combined with the `neo4j` config default requiring a URI, this is why
+graph retrieval is frequently enabled but silently inert.
+
+### 37.6 The query is embedded twice
+
+The `embed_query` node's output is never consumed; `semantic_search()`
+re-embeds the question string (§12). Harmless with `LocalHashEmbeddings`,
+but it doubles embedding cost and latency against a paid provider.
+
+### 37.7 Unprefixed env vars are ignored
+
+`config.py` sets `env_prefix="RAG_"`. Every setting needs it — `CHUNK_SIZE`,
+`USE_CROSS_ENCODER_RERANKER`, `ENABLE_PDF_OCR`, `ADVANCED_EVAL_PROVIDER` and
+friends do nothing on their own. Two exceptions that are genuinely unprefixed
+because they are not RAG settings: `TAVILY_API_KEY` (read via `os.getenv` in
+`web_search.py`) and the `LLM_EMBEDDING_*` / `LLM_PRIMARY_*` / `LLM_GROQ_API_KEY`
+gateway variables. Note also that `rag_temperature` and `rag_max_tokens` become
+the doubled `RAG_RAG_TEMPERATURE` / `RAG_RAG_MAX_TOKENS`.
+
+### 37.8 Blocking work inside async nodes
+
+`rerank` (especially with the cross-encoder, which reloads the model per call),
+`select_by_knee_point`, and `evaluate_answer` are synchronous CPU-bound
+functions called from async nodes. The `llm` evaluation provider additionally
+blocks up to 30 s on a thread-pool bridge (§32). Fine at low concurrency;
+consider `asyncio.to_thread` before scaling.
+
+### 37.9 Stale references in code comments — resolved 2026-07-29
+
+Previously, docstrings in `loader.py` and `cli.py` described inserting into
+**Chroma** (replaced by MongoDB Atlas), and `config.py` / `vector_store.py`
+named a nonexistent `ensure_vector_index()`. Those comments have been corrected,
+along with the same stale name in `technical_doc.md` and
+`workflow-implementation.md`. The code was always correct; only the comments
+were wrong.
+
+If you find `Chroma`, `ensure_vector_index`, or `workflow_rag.md` anywhere else,
+they are leftovers — the current names are the MongoDB `chunks` collection,
+`ensure_indexes()`, and this file.
+
+---
+
+## 38. Settings Reference (`config.py`)
+
+Every field carries the `RAG_` prefix. Load order: `backend/.env`, then
+`backend/shared/rag/.env` (module file wins on conflict).
+
+| Setting | Default | Notes |
+|---|---|---|
+| `RAG_MONGO_URI` | `""` | Falls back to `MONGO_URI` |
+| `RAG_MONGO_DB_NAME` | `portless` | Falls back to `MONGO_DB_NAME` |
+| `RAG_CHUNKS_COLLECTION` | `chunks` | Vector-searched collection |
+| `RAG_PARENTS_COLLECTION` | `parent_docs` | Parent context blocks |
+| `RAG_INGESTION_JOBS_COLLECTION` | `ingestion_jobs` | **Declared but unused** (§37.3) |
+| `RAG_MONGO_MAX_POOL_SIZE` | `50` | |
+| `RAG_MONGO_CONNECT_TIMEOUT_MS` | `5000` | |
+| `RAG_MONGO_SERVER_SELECTION_TIMEOUT_MS` | `5000` | |
+| `RAG_VECTOR_INDEX_NAME` | `vector_index` | Must exist before queries run |
+| `RAG_VECTOR_SIMILARITY` | `cosine` | `cosine` \| `euclidean` \| `dotProduct` |
+| `RAG_CHUNK_SIZE` | `900` | |
+| `RAG_CHUNK_OVERLAP` | `120` | |
+| `RAG_SEMANTIC_BREAKPOINT_PERCENTILE` | `25` | Semantic strategy only |
+| `RAG_CHILD_CHUNKS_PER_PARENT` | `3` | Parent fan-in |
+| `RAG_RETRIEVAL_TOP_K` | `8` | Fusion widens to `× 2` |
+| `RAG_RETRIEVAL_NUM_CANDIDATES` | `100` | Atlas `numCandidates`; 10–20× top-k |
+| `RAG_KEYWORD_SEARCH_FETCH_LIMIT` | `500` | Docs pulled for in-memory BM25 |
+| `RAG_USE_CROSS_ENCODER_RERANKER` | `false` | |
+| `RAG_CROSS_ENCODER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Reloaded per call |
+| `RAG_RAG_TEMPERATURE` | `0.0` | Note the doubled prefix |
+| `RAG_RAG_MAX_TOKENS` | `2048` | Note the doubled prefix |
+| `RAG_ENABLE_PDF_LAYOUT_EXTRACTION` | **`true`** | On by default |
+| `RAG_ENABLE_PDF_OCR` | `false` | Needs Poppler + Tesseract |
+| `RAG_FILE_STORE_GRIDFS_BUCKET` | `rag_files` | GridFS bucket |
+| `RAG_USE_LLM_PROMPT_INJECTION_CLASSIFIER` | `false` | Fails open |
+| `RAG_ADVANCED_EVAL_PROVIDER` | `local` | `local` \| `ragas` \| `deepeval` \| `llm` |
+| `RAG_GRAPH_RETRIEVAL_ENABLED` | `false` | |
+| `RAG_GRAPH_RETRIEVAL_TOP_K` | `8` | |
+| `RAG_GRAPH_DB_BACKEND` | **`neo4j`** | Set to `mongo` for the zero-infra path |
+| `RAG_GRAPH_DB_URI` / `_USER` / `_PASSWORD` / `_DATABASE` | `""` | Neo4j only; URI required |
+| `RAG_GRAPH_CHUNKS_COLLECTION` | `graph_chunks` | Mongo backend only |
+| `RAG_WEB_SEARCH_ENABLED` | `false` | |
+| `RAG_WEB_SEARCH_TOP_K` | `3` | |
+| `TAVILY_API_KEY` | — | **Unprefixed**, read from the process env |
+
+Not configurable via env, despite looking like they should be: the knee-point
+`min_k=3` / `max_k=8` bounds, the RRF constant `rrf_k=60`, the local reranker's
+`0.70/0.25/+0.05` weights, the Tavily 10 s timeout, and the recursive splitter's
+separator list.
+
+### 38.1 Variables that are NOT RAG settings
+
+These appear in older notes under a `RAG_` prefix but do not exist. Embedding
+and generation model config lives entirely in the LLM Gateway — RAG declares
+none of its own:
+
+| Wrong (does nothing) | Correct |
+|---|---|
+| `RAG_EMBEDDING_PROVIDER` | `LLM_EMBEDDING_PROVIDER` |
+| `RAG_EMBEDDING_MODEL` | `LLM_EMBEDDING_MODEL` |
+| `RAG_EMBEDDING_API_KEY` | `LLM_EMBEDDING_API_KEY` |
+| `RAG_EMBEDDING_DIMENSIONS` | `LLM_EMBEDDING_DIMENSIONS` (must match the Atlas index `numDimensions`) |
+| `RAG_TEMPERATURE` | `RAG_RAG_TEMPERATURE` |
+| `RAG_MAX_TOKENS` | `RAG_RAG_MAX_TOKENS` |
+
+---
+
+## 39. Implementation Status
+
+Legend: ✅ implemented · ⚠️ partial / optional / needs infra · ❌ not implemented
+
+### 39.1 Where RAG sits (callers ↔ callees)
+
+```text
+Callers                        RAG                     Callees
+───────                        ───                     ───────
+negotiation_agent   ──▶  query() / ingest()   ──▶  MongoDB Atlas ($vectorSearch
+(any service)       ──▶                            + doc fetch — shared DB)
+Knowledge Base UI   ──▶  POST /rag/query      ──▶  LLM Gateway (generation
+                                                    + embeddings)
+POST /rag/upload    ──▶  file_store           ──▶  MongoDB GridFS (raw files,
+                                                    same shared DB)
+                                               ──▶  MongoDB `graph_chunks`
+                                                    or Neo4j (optional graph)
+                                               ──▶  Tavily (optional web leg)
+```
+
+Any service can call `from shared.rag.src import query`.
+
+### 39.2 Core retrieval + generation — no hollow stubs in this path
+
+| Feature | Status | File |
+|---|---|---|
+| Query pipeline (**14**-node LangGraph) | ✅ | `graph.py` |
+| Ingestion pipeline (4-node) | ✅ | `graph.py` |
+| Vector store — Atlas `$vectorSearch` | ✅ | `vector_store.py` |
+| Keyword search — in-memory BM25 | ✅ | `vector_store.py` (`rank_bm25` lazy-imported) |
+| Hybrid fusion — Reciprocal Rank Fusion | ✅ | `vector_store.py` |
+| Parent-child context expansion | ✅ | `parent_store.py`, `vector_store.py` |
+| Reranking + knee-point selection | ✅ | `rerank.py` |
+| Prompt-injection safety filter | ✅ | `security.py` |
+| Citation validation | ✅ | `citations.py` |
+| Answer evaluation metrics | ✅ | `evaluation.py` |
+| Authorization (user/team ACL) filtering | ✅ | `authorization.py` — all four legs |
+| Embeddings — gateway + local-hash fallback | ✅ | `shared.llm_gateway.GatewayEmbeddings`; `embeddings.py` is a thin adapter importing no provider SDK |
+| Chunking (recursive/semantic) + parent docs | ✅ | `chunking.py` |
+| Document loading (PDF/text/Markdown) | ✅ | `loader.py` |
+| FastAPI router + CLI | ✅ | `router.py`, `cli.py` |
+| Web search — 4th retrieval leg (Tavily) | ✅ | `web_search.py`; off by default, fails open, never persisted |
+
+### 39.3 Backends
+
+| Backend | Status | Notes |
+|---|---|---|
+| Graph store — **MongoDB** | ✅ | `MongoGraphStore` — `graph_chunks` collection in the shared DB, `$setIntersection` entity-overlap retrieval. **The recommended backend**: no extra service or credentials. Set `RAG_GRAPH_DB_BACKEND=mongo` explicitly; the config default is `neo4j`. |
+| Graph store — **Neo4j** | ✅ | `Neo4jGraphStore` — Cypher over the async driver; same Document/Chunk/Entity schema. Needs `RAG_GRAPH_DB_URI` (+ user/password) and `pip install neo4j`. |
+| Graph store — arangodb / falkordb | ❌ | Reserved names; resolve to the no-op store. |
+| Graph store — no-op | ✅ | Automatic when disabled, misconfigured, or the driver is missing. Returns empty results so the rest of the pipeline is unaffected. |
+| File store — **MongoDB GridFS** | ✅ | Sole backend (`file_store.py`). S3/blob support was implemented and then **removed** — the app is MongoDB-only for every persistence need (documents, vectors, files). `test_file_store_has_no_s3_backend` guards against it returning. |
+
+### 39.4 Gaps / partial
+
+| Item | Status | Notes |
+|---|---|---|
+| Cross-encoder reranker | ⚠️ | Present but off by default; also reloads the model per call (§17b). |
+| Graph entity extraction | ⚠️ | Heuristic `_extract_entities` — capitalised tokens + numeric codes, so lowercase queries retrieve nothing (§15). Real NER is the upgrade. |
+| Graph scoring | ⚠️ | Unweighted entity overlap; no IDF (§15). |
+| PDF OCR | ⚠️ | Off by default; needs Poppler + Tesseract system binaries. |
+| Advanced eval (RAGAS / DeepEval / LLM) | ⚠️ | `local` by default; the LLM branch blocks up to 30 s per query (§32). |
+| Ingestion job persistence | ⚠️ | In-process dict; config slot exists but is unwired (§37.3). |
+| Atlas pre-filter coverage | ⚠️ | Three filter paths only; other filters silently void the semantic leg (§37.1). |
+| Tests for the core pipeline | ❌ | `tests/test_rag_backends.py` (24 tests) covers the graph store, GridFS file store, and gateway embeddings. Fusion, knee-point, citations, evaluation, and the query graph end-to-end remain **untested**. |
+
+---
+
+## 40. Operational Readiness
+
+### 40.1 "Is RAG workable if I just set the configs?"
+
+Necessary but not sufficient. Four things must all be true:
+
+1. **Dependencies installed** — `pip install -r shared/rag/requirements.txt`
+   (`rank_bm25`, `langchain-text-splitters`, `pypdf`, …), plus `neo4j` only if
+   you choose that graph backend. Note this file is **not** pulled in by the
+   top-level `backend/requirements.txt`.
+2. **Atlas reachable and the vector index provisioned** — `ensure_indexes()`
+   runs at startup, but on clusters that reject programmatic search-index
+   creation you must create it in the Atlas UI from the definition it logs.
+   Missing index is the single most common "RAG returns nothing" cause.
+3. **Env configured** — `MONGO_URI` at minimum. Without an embedding key the
+   pipeline still runs on `LocalHashEmbeddings`, but retrieval quality is
+   placeholder-grade, not semantic.
+4. **Documents ingested** — the store starts empty; `ingest([...])` or
+   `POST /rag/upload` must run before any query returns evidence.
+
+### 40.2 Smoke test
+
+The fastest end-to-end proof:
+
+```text
+install deps → set MONGO_URI + LLM_EMBEDDING_API_KEY → start app (index auto-created)
+→ POST /rag/upload  (or practice-rag ingest --path ./data)
+→ poll GET /rag/ingest/{job_id} until completed
+→ GET /rag/stats     (total_chunks > 0 confirms ingestion landed)
+→ POST /rag/query    (check the answer is not the local-extractive fallback)
+```
+
+`GET /rag/stats` is the useful diagnostic here: it reports the **active**
+embedding provider/model, file-store backend, and whether graph retrieval and
+web search are on — reflecting whichever `.env` actually won (root vs.
+module-local), rather than what a config file appears to say.
+
+### 40.3 Notes
+
+- The core retrieval + generation path has **no hollow stubs**. The graph store
+  is genuinely implemented on two backends; arangodb/falkordb and advanced eval
+  are deliberate, gated future work.
+- **MongoDB is the only persistence, vector, and blob technology in this app.**
+  Vector search, keyword-search documents, parent docs, graph nodes, and
+  uploaded raw files (GridFS) all live in the one shared database.
+- **Verification, not code, is the real gap.** The pipeline is fully coded but
+  the core query nodes are untested and unproven against live Atlas +
+  embeddings.
+- `__init__.py` is **lazy (PEP 562)** so submodules import without dragging in
+  the whole pipeline and its optional deps — keep it that way when adding
+  exports.
+
+---
+
+## 41. Roadmap / Nice-to-Haves
+
+- **Real NER for graph retrieval** — replace heuristic `_extract_entities`
+  (spaCy or an LLM NER call) for much higher graph recall, and fix the
+  lowercase-query blind spot in one stroke.
+- **IDF weighting in graph scoring** — so rare, high-signal entities outrank
+  common ones.
+- **MongoDB-backed ingestion job store** — wire up the already-declared
+  `RAG_INGESTION_JOBS_COLLECTION` (§37.3).
+- **Tests for the core query pipeline** — fusion, knee-point, citations,
+  evaluation, embedding fallback.
+- **Cache the cross-encoder model** and consider enabling it by default.
+- **ArangoDB / FalkorDB graph backends** behind the same `GraphStore` interface.
+- **RAGAS / DeepEval** as real evaluation providers rather than readiness checks.
+- **Per-HS-code playbook ingestion UI** — operators upload/edit trade playbooks
+  per product; pairs with fixing the `hs_code` filter gap (§37.2).
+- **Dedicated intraday commodity-price feed** — the web-search leg already
+  injects live pricing color; a structured exchange API (CME / Volza) would be
+  more precise, but is separate, not-yet-built work.
+- **Streaming answers** — once the LLM Gateway exposes `stream_chat()`.

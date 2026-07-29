@@ -30,9 +30,14 @@ Atlas Vector Search index definition (create once per cluster):
     }
   }
 
-The index is created programmatically by ensure_vector_index().  If the Atlas
+The index is created programmatically by ensure_indexes().  If the Atlas
 tier does not allow programmatic index creation, create it via the UI using
 the definition above.
+
+Only the paths declared as "filter" type above can be used as $vectorSearch
+pre-filters.  A metadata_filter on any other field makes the aggregation fail;
+semantic_search() catches it and returns [], so the query silently loses its
+semantic leg.  Add the field here and rebuild the index to filter on it.
 
 Keyword search uses in-memory BM25 over a metadata-filtered document fetch
 (up to RAG_KEYWORD_SEARCH_FETCH_LIMIT docs).  This avoids requiring a

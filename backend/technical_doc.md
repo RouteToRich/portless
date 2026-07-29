@@ -165,7 +165,8 @@ unset — so the whole platform runs with **no database at all** in dev/CI.
 **Special stores**
 - **Vector database:** MongoDB **Atlas Vector Search** (`$vectorSearch`), index
   `vector_index`, field `embedding`, **1536 dims** (`text-embedding-3-small`),
-  cosine similarity. Create once via `ensure_vector_index()` or the Atlas UI.
+  cosine similarity. Created by `ensure_indexes()` (run from the RAG router's
+  `startup()` hook) or once via the Atlas UI.
 - **Cache / locks:** a shared MongoDB collection doubles as the API-response
   cache and the negotiation **session lock** — no Redis required.
 - **Postgres:** `asyncpg` is declared in `requirements.txt` but **no current

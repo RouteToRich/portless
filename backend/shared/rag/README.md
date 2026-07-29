@@ -1,5 +1,23 @@
 # Practice RAG with LangGraph
 
+> ## ⚠️ This README describes the upstream practice project, not this module
+>
+> It was carried over when RAG was vendored into Portless and has **not** been
+> rewritten. It is inaccurate in structural ways — it describes a standalone
+> `practice-RAG/` project with a `single_file_langgraph_rag.py`, a
+> `src/rag_practice/` package, Chroma as the vector DB, and `USE_OPENAI_*`
+> env vars. In this repo the code lives in `src/`, the vector store is
+> **MongoDB Atlas `$vectorSearch`**, and all model config comes from the
+> shared LLM Gateway (`LLM_EMBEDDING_*` / `LLM_PRIMARY_*`).
+>
+> **Authoritative reference: [`RAG_IMPLEMENTATION_FLOWS.md`](RAG_IMPLEMENTATION_FLOWS.md)**
+> — architecture, every pipeline flow, the full settings table (§38),
+> implementation status (§39), and known gaps (§37).
+>
+> The conceptual material below (why metadata is stored separately, why hybrid
+> retrieval helps, what reranking buys you) is still sound. Treat every file
+> path, env var, and vector-DB reference in it as wrong.
+
 This project is a practical Retrieval-Augmented Generation system using **LangGraph** for both:
 
 1. **Ingestion pipeline**: parse/load data -> form content and metadata -> chunk -> embed -> insert into vector DB.
