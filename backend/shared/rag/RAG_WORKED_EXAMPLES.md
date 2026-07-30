@@ -655,13 +655,205 @@ precision/recall-for-cost-and-determinism tradeoff, not a strict upgrade.
   "content": "## Counter-offer strategy for HS Code 8471.30\n\n...",
   "section": "",
   "page_number": null,
-  "entities": ["counter", "hs", "code", "freightos", "incoterms", "shenzhen", "guangzhou", "suppliers", "8471"],
+  "entities": ["counter", "code", "when", "fob", "freightos", "incoterms", "suppliers", "shenzhen", "guangzhou", "8471"],
   "adjacent_to": ["negotiation_playbook.md::...::child::1"]
 }
 ```
 `adjacent_to` links this chunk to the *next* chunk sharing the same `source` (empty here since this is the only chunk — populated when a document produces multiple sequential chunks, e.g. Example B).
 
+Two things in that `entities` array are worth pausing on, because they are the
+extractor's behaviour rather than typos — **`hs` is absent** even though the
+chunk says "HS Code" twice, and **`when` is present** even though it carries no
+meaning. Both fall out of the regex; A.5.2 explains why and catalogues the rest.
+
 Ingestion for this file is now complete: `{inserted_count: 1, graph_inserted_count: 1}`.
+
+#### A.5.2 Known limitations of the regex extractor and the persisted shape
+
+Every entity list in this document was produced by running `_ENTITY_RE` /
+`_CODE_RE` / `_STOPWORDS` (verbatim from `graph_store.py:51-84`) over the exact
+example text. The behaviours below are what that produces — they are
+consequences of the heuristic being case- and boundary-driven, and they are the
+practical reason `RAG_GRAPH_RETRIEVAL_ENABLED` defaults to `false`.
+
+**Extraction-side limits**
+
+| # | Limitation | Why | Verified example |
+|---|---|---|---|
+| 1 | **Two-character acronyms are never extracted** | `[A-Z][A-Za-z]{2,}` needs ≥3 chars total | `HS`, `PI`, `PO`, `QC`, `CI`, `PL`, `BL` — much of this domain's vocabulary — are invisible. A.5's chunk says "HS Code" twice and yields `code`, never `hs` |
+| 2 | **`SNAKE_CASE` tokens are entirely invisible** | `_` is a word character, so `\b` never fires beside it — neither `QC` nor `FAILED` in `QC_FAILED` has a word boundary on the underscore side | `"Deal moved to ESCROW_FUNDED then PO_ISSUED."` → `['deal']`. Every `DealStatus` value, `AUTO_FIX`, `QC_FAILED`, `RESOLVE_EXCEPTION` extract as **nothing** |
+| 3 | **Lowercase text is skipped entirely** | The first character must be `A-Z` | B.1's page-3 text contains "(cotton knit garments)" → `cotton` and `garments` are **not** entities. Users typing lowercase queries lose nearly all signal: `"what is the aql level for hs code 100630?"` → `['100630']` |
+| 4 | **A query with no capitalised word and no 4–10 digit run yields `[]`** | `retrieve()` returns early at `graph_store.py:262-263` | `"how long do suppliers have to respond?"` → `[]` → the graph leg contributes nothing to RRF for that question |
+| 5 | **Sentence-initial capitals become noise entities** | Not in `_STOPWORDS`, structurally indistinguishable from a real entity | A.5 yields `when`; B.3's page-3 chunk yields `reject` and `minor`; C.4's question yields `what`. These inflate the score denominator (see #8) |
+| 6 | **Multi-word entities split into unrelated tokens** | Each match is independent; no phrase detection | `"Bureau Veritas inspected the lot."` → `['bureau', 'veritas']`, two separate `Entity` nodes with no link between them |
+| 7 | **Numeric matches are context-free** | `\b(\d{4,10})\b` cannot tell an HS code from a price, quantity, or year | `8471` (HS code) and `1250` (a unit price) are indistinguishable entity strings |
+| 8 | **Noise entities silently deflate every score** | Score is `shared / len(query_entities)` (`graph_store.py:293`), and noise counts in the denominator | In C.4, `what` makes a perfect 3-of-3 content match score `0.75` instead of `1.0` |
+
+Note that #1/#2/#3 are *symmetric* — they suppress the term at ingestion **and**
+at query time — so they cause misses, not false matches. That symmetry is the
+same property A.5.1 argues makes the regex safer than a non-deterministic
+extractor; the cost is that whole classes of domain vocabulary never enter the
+graph at all.
+
+**Persistence-side limits**
+
+- **`adjacent_to` is written but never read.** `retrieve()` matches only on
+  `entities`; no query path in either backend touches `adjacent_to`. The Neo4j
+  backend is identical — `_ADJ_CYPHER` creates the `ADJACENT_TO` edge, but
+  `_RETRIEVE_CYPHER` (`graph_store.py:129-138`) traverses only `MENTIONS`. As
+  B.3 notes, it is stored for a future multi-hop query; today it is dead weight
+  on every write.
+- **Adjacency only forms within a single ingestion batch.** `prev_by_source` is
+  a local dict rebuilt per `upsert_chunks()` call (`graph_store.py:218-225`), so
+  ingesting a document one chunk per call produces **zero** adjacency edges. A
+  re-upsert also `$set`s `adjacent_to` wholesale, overwriting whatever the
+  previous batch computed.
+- **There are no entity-to-entity edges.** The graph is bipartite (chunk ↔
+  entity), not a knowledge graph: there is no `(SGS)-[:INSPECTS]->(Garments)`.
+  It cannot answer relational questions — only "which chunks mention the same
+  terms as this query," which is closer to a keyword search over an
+  auto-curated term list than to graph reasoning.
+- **Chunk content is stored twice.** Full `content` lives in `graph_chunks`
+  *and* in the `chunks` collection alongside its embedding (A.4), doubling
+  corpus text storage when the graph leg is enabled.
+- **The `chunk_id` fallback is not stable across restarts.** When metadata has
+  no `chunk_id`, `_chunk_fields` synthesizes one from `hash(chunk.page_content)`
+  (`graph_store.py:91`) — Python randomizes string hashing per process unless
+  `PYTHONHASHSEED` is set, so the same chunk re-ingested in a new process
+  upserts under a *different* `_id` instead of replacing the old row. Chunks
+  arriving from `chunking.py` always carry a deterministic `chunk_id`, so this
+  only bites on hand-constructed `Document`s.
+
+**What would actually fix the recall gaps.** Swapping `_extract_entities` for a
+model (A.5.1's upgrade path) addresses #3 and #6 but not #1/#2, and it forfeits
+the determinism the matching depends on. The cheaper, determinism-preserving fix
+for the biggest offenders is to keep the two regexes and add (a) a
+case-insensitive gazetteer of known domain vocabulary — HS/PI/PO/QC, Incoterms,
+provider names, `DealStatus` values — and (b) an `_` → space normalisation pass
+before matching, which alone recovers every `SNAKE_CASE` enum value. Both apply
+identically at ingestion and query time, so the symmetry property survives.
+
+#### A.5.3 How a start-of-document chunk relates to an end-of-document chunk
+
+A natural question once `adjacent_to` is on the page: if chunk 0 and chunk 47 of
+the same file are related, how does the graph express that across 47 hops?
+
+**The chain is complete; nothing walks it.** `prev_by_source` is keyed on
+**`source`**, not on `_chunk_group_key()`, so the adjacency chain deliberately
+crosses section and page boundaries. Combined with `_number_chunks()` emitting
+chunks in document order (dict insertion order over group keys, then
+`chunk_index` within each group), one unbroken linked list is written per source
+file:
+
+```
+sgs_qc_sop.pdf::Sampling::page-3::...::child::0
+  → sgs_qc_sop.pdf::Sampling::page-3::...::child::1
+  → sgs_qc_sop.pdf::Escalation::page-4::...::child::0
+  → ...                                              (start of file → end of file)
+```
+
+So the structure linking first chunk to last chunk genuinely exists in Mongo. It
+is simply never queried (A.5.2, persistence limits).
+
+**The retrieval traversal is depth-1 from the query.** This is the part that
+makes the distance question moot. What `retrieve()` does:
+
+```
+query ──_extract_entities──> entity strings ──$in──> chunks     (one hop, stop)
+```
+
+What it never does:
+
+```
+chunk ──MENTIONS──> entity <──MENTIONS── other chunk            (not implemented)
+```
+
+Chunks are therefore never related **to each other** by any query in this
+codebase — not distant ones, and not even adjacent ones. Two chunks that both
+contain `freightos` are not linked; they independently match a query that
+contains `freightos`. There is no path between them that anything traverses.
+
+The practical consequence: **document distance is not a factor, because
+retrieval has no notion of distance.** A start chunk and an end chunk stand in
+exactly the same relation as two chunks from unrelated files — none, beyond
+independently matching the same query terms. Functionally, `graph_chunks` is an
+inverted index (term → chunks) that happens to be shaped like a graph.
+
+Nor does anything else in the pipeline bridge the gap. Parent expansion (C.7)
+cannot: `_chunk_group_key()` partitions on `source::section::page` and parents
+group 3 *consecutive* children inside one partition, so a parent never spans
+pages. RRF (C.6) and the reranker (C.8) score independent candidates. If a start
+chunk and an end chunk both reach the prompt, each earned its place separately —
+Example C is exactly this, with Sampling and Escalation arriving via different
+legs.
+
+**Activating the chain is the cheapest available improvement to this leg,**
+because the data is already written on every ingest. Post-expanding each graph
+hit with its ±1 neighbours would deliver the "pull the next section too"
+behaviour B.3 promises but does not implement — in Mongo a `$graphLookup` over
+`adjacent_to` with `maxDepth: 1`, or simply a second `$in` query against the
+returned `adjacent_to` arrays; in Neo4j a variable-length `MATCH` on
+`ADJACENT_TO`. One caveat to settle first: per A.5.2 the chain is only complete
+when a document is ingested in a single `upsert_chunks()` call, so that
+invariant needs asserting before anything depends on it.
+
+#### A.5.4 Would a model be better for entity *relationships*?
+
+Worth separating two jobs that are easy to conflate — the answer differs sharply
+between them:
+
+| Job | Status in this codebase | Can a regex do it? |
+|---|---|---|
+| **Entity extraction** — which strings are entities | Implemented (`_extract_entities`) | Yes, imperfectly (A.5.2) — and the gaps are fixable *deterministically* |
+| **Entity relationships** — typed edges between entities | **Does not exist at all** | **No** |
+
+All three edge types in the schema are structural: `PART_OF` from the `source`
+field, `MENTIONS` from regex output, `ADJACENT_TO` from list position. None is
+derived from reading the text. There is no `(SGS)-[:INSPECTS]->(Garments)`
+anywhere. So for genuine relationship extraction the answer is unambiguous: **a
+model is the only option** — "SGS shall inspect garment shipments" cannot be
+turned into a typed triple by pattern matching. That is what GraphRAG is.
+
+**The argument against doing it here** is not cost, it is signal correlation.
+The four retrieval legs are orthogonal by construction: vector = fuzzy semantic
+similarity, keyword/BM25 = lexical frequency, graph = exact shared-term overlap,
+web = external. RRF (C.6) derives its lift from that independence — a chunk
+ranking well across *decorrelated* signals is genuinely strong. Make entity
+extraction semantic and model-driven and the graph leg begins surfacing the same
+chunks as the embedding leg, for the same reasons. The cost is per-token
+latency, a new failure mode (`_graph_insert` today cannot fail), and loss of
+determinism; the return is a third vote correlated with a vote already counted.
+
+Three further practicalities:
+
+- **The retrieval query would need rewriting regardless.** `$setIntersection`
+  over a flat string array cannot express typed triples — A.5.1's "swap
+  `_extract_entities`, no other code changes" only holds for extractors that
+  still emit a flat entity list.
+- **Full GraphRAG is much costlier than A.5.1's table suggests.** That
+  ≈$0.037/500-chunk figure covers per-chunk entity extraction only. Community
+  detection plus community summarisation — what makes GraphRAG worth having —
+  is 10–100× those tokens.
+- **Corpus shape matters.** This store serves negotiation playbooks and QC SOPs
+  for the negotiation agent, where answers live *inside* chunks. GraphRAG earns
+  its cost on corpus-wide sensemaking ("what themes recur across all supplier
+  contracts?"), which is not a query this pipeline is asked to serve.
+
+**Recommended order of work**, cheapest and most certain first:
+
+1. **Fix extraction deterministically** (A.5.2's gazetteer + `_`→space
+   normalisation). Zero cost, zero latency, recovers most of the current miss
+   rate, preserves ingest/query symmetry.
+2. **Activate the adjacency already being written** (A.5.3). Also free, and the
+   only mechanism in the current design that encodes document locality across
+   page boundaries.
+3. **Only then consider a model** — and scope it to relationship extraction as a
+   *separate* leg rather than replacing `_extract_entities`, keeping the
+   deterministic exact-match leg intact so decorrelation survives.
+
+Steps 1 and 2 are hours of work on a leg that ships disabled by default
+(`RAG_GRAPH_RETRIEVAL_ENABLED=false`). Worth seeing it enabled, measured, and
+still falling short before an LLM call enters the ingestion path.
 
 ---
 
@@ -702,18 +894,37 @@ Because both chunks share `source: "sgs_qc_sop.pdf"` and are processed in page o
   {
     "chunk_id": "sgs_qc_sop.pdf::Sampling::page-3::recursive::child::0",
     "source": "sgs_qc_sop.pdf",
-    "entities": ["sgs", "qc", "inspection", "sop", "section", "sampling", "hs", "code", "cotton", "ansi", "asq", "aql", "6109"],
+    "entities": ["sgs", "inspection", "sop", "section", "sampling", "code", "aql", "ansi", "asq", "reject", "minor", "6109"],
     "adjacent_to": ["sgs_qc_sop.pdf::Escalation::page-4::recursive::child::0"]
   },
   {
     "chunk_id": "sgs_qc_sop.pdf::Escalation::page-4::recursive::child::0",
     "source": "sgs_qc_sop.pdf",
-    "entities": ["sgs", "qc", "inspection", "sop", "section", "escalation", "exception", "resolver", "auto", "fix", "hitl"],
+    "entities": ["sgs", "inspection", "sop", "section", "escalation", "exception", "resolver", "hitl"],
     "adjacent_to": []
   }
 ]
 ```
-`ADJACENT_TO` is what lets a future multi-hop graph query pull "the next section" even when only one page matches on entities directly — not exercised by the single-hop `retrieve()` used today, but stored for that future use.
+
+These two lists are a compact illustration of A.5.2's limits — worth reading
+against the page text in B.1 rather than skimming:
+
+- **`hs` and `qc` are missing from both**, despite "HS Code" and "QC Inspection"
+  appearing in the text — both are 2-character acronyms (A.5.2 #1).
+- **`cotton` and `garments` are missing** from the Sampling chunk: the source
+  writes them lowercase inside "(cotton knit garments)" (A.5.2 #3).
+- **`auto`, `fix`, and `failed` are missing** from the Escalation chunk even
+  though `AUTO_FIX` and `QC_FAILED` are its most distinctive terms — the
+  underscore suppresses the word boundary (A.5.2 #2).
+- **`reject` and `minor` appear** in the Sampling chunk purely because they
+  start sentences (A.5.2 #5).
+
+The net effect is that the Escalation chunk's 8 entities are almost entirely
+boilerplate shared with its neighbour (`sgs`, `inspection`, `sop`, `section`),
+with only `escalation`/`exception`/`resolver`/`hitl` carrying real signal — which
+is exactly why it fails to match the QC-failure half of C.4's question.
+
+`ADJACENT_TO` is what lets a future multi-hop graph query pull "the next section" even when only one page matches on entities directly — not exercised by the single-hop `retrieve()` used today, but stored for that future use. Note the chain here spans a page boundary (page 3 → page 4) because `prev_by_source` keys on `source`, not on the chunk group key; A.5.3 works through what that chain does and does not buy you, and why activating it is the cheapest available improvement to this leg.
 
 ---
 
@@ -769,22 +980,31 @@ built from unchunked documents, this query could only ever return "yes,
 `sgs_qc_sop.pdf` matches" with no way to prefer the Sampling section over the
 Escalation section.
 
-`_extract_entities(question)` → `["what", ...]` filtered by stopwords → entities extracted: `["aql", "hs", "code", "garments", "qc"]` plus numeric code `6109`. (`what`, `and`, `if`, `the` are stopwords; lowercase-only common words without a capital first letter don't match `_ENTITY_RE` at all — in practice the regex only catches **capitalized** tokens from the *original*-case question, e.g. "HS", "AQL", "QC".)
+`_extract_entities(question)` runs the **same** two regexes over the question that ran over the chunks at ingestion — that symmetry is the whole matching mechanism (A.5.1). For this question it yields exactly:
 
-Mongo aggregation: `$match: {entities: {$in: ["aql","hs","code","garments","qc","6109"]}}`, then `$project` a `shared` count via `$setIntersection`, sort descending, `$limit: 8`.
+```python
+_extract_entities("What AQL threshold applies to HS Code 6109.10 garments, and what happens if the shipment fails QC?")
+# → ['what', 'aql', 'code', '6109']
+```
+
+Only four entities, and one of them is noise. Everything A.5.2 catalogues is visible in that single line: `hs` and `qc` are dropped as 2-character acronyms (#1); `threshold`, `garments`, and `shipment` are dropped as lowercase (#3); `what` survives because it starts the sentence and isn't in `_STOPWORDS` (#5). The second, lowercase `what` is deduped by the `seen` set, so it appears once.
+
+Mongo aggregation: `$match: {entities: {$in: ["what","aql","code","6109"]}}`, then `$project` a `shared` count via `$setIntersection`, sort descending, `$limit: 8`.
 
 **Output (`graph_results`):**
 ```json
 [
-  { "score": 0.80, "source": "graph",
+  { "score": 0.75, "source": "graph",
     "document": { "page_content": "SGS QC Inspection SOP — Section 3: Sampling\n\n...",
-                  "metadata": { "chunk_id": "sgs_qc_sop.pdf::Sampling::page-3::...::child::0", "source": "sgs_qc_sop.pdf" } } },
-  { "score": 0.40, "source": "graph",
-    "document": { "page_content": "SGS QC Inspection SOP — Section 4: Escalation\n\n...",
-                  "metadata": { "chunk_id": "sgs_qc_sop.pdf::Escalation::page-4::...::child::0", "source": "sgs_qc_sop.pdf" } } }
+                  "metadata": { "chunk_id": "sgs_qc_sop.pdf::Sampling::page-3::...::child::0", "source": "sgs_qc_sop.pdf" } } }
 ]
 ```
-Score = `shared_entities / total_query_entities` (4 of 5 shared entities: `aql, hs, code, qc` → 0.80; 2 of 5 for Escalation: `qc, hs`-adjacent context → 0.40, illustrative). This leg only fires when `RAG_GRAPH_RETRIEVAL_ENABLED=true`; otherwise `NoopGraphStore` returns `[]` and the pipeline is unaffected.
+
+Score = `shared_entities / total_query_entities`. The Sampling chunk shares `aql`, `code`, and `6109` with the query → **3 / 4 = 0.75**. Note it would have scored a perfect `1.0` if `what` hadn't padded the denominator (A.5.2 #8).
+
+**The Escalation chunk is not returned at all.** Its entity list (B.3) is `["sgs","inspection","sop","section","escalation","exception","resolver","hitl"]`, which intersects the query's four entities **zero** times — so it never passes `$match`, let alone gets scored. The question explicitly asks *"and what happens if the shipment fails QC?"*, and the chunk that answers it is invisible to this leg, because the terms that would have connected them (`QC`, `QC_FAILED`, `fails`) are all suppressed by limits #1, #2, and #3 respectively.
+
+That is the honest picture of graph retrieval as shipped: it contributes a strong signal for the half of the question expressed in capitalised acronyms and numeric codes, and nothing at all for the half expressed in ordinary prose. The Escalation chunk is still recovered downstream — by the keyword leg (C.3) and parent expansion (C.7) — which is precisely why the graph leg is fused via RRF as one voice among four rather than trusted alone. This leg only fires when `RAG_GRAPH_RETRIEVAL_ENABLED=true`; otherwise `NoopGraphStore` returns `[]` and the pipeline is unaffected.
 
 ### C.5 `web_search` node — [Tool: Tavily Search API via raw `httpx`, when `RAG_WEB_SEARCH_ENABLED=true` — see §0]
 
@@ -797,9 +1017,11 @@ Each of the 3 non-empty result lists contributes `1/(60+rank)` per chunk it cont
 | chunk_id | semantic rank | keyword rank | graph rank | RRF score |
 |---|---|---|---|---|
 | `...Sampling::page-3...child::0` | 1 → 1/61=0.01639 | 1 → 1/61=0.01639 | 1 → 1/61=0.01639 | **0.04918** |
-| `...Escalation::page-4...child::0` | 2 → 1/62=0.01613 | 2 → 1/62=0.01613 | 2 → 1/62=0.01613 | **0.04839** |
+| `...Escalation::page-4...child::0` | 2 → 1/62=0.01613 | 2 → 1/62=0.01613 | — (absent) | **0.03226** |
 
-**Output (`hybrid_chunks`, top `retrieval_top_k*2=16` kept):** both chunks, Sampling ranked first, `source: "hybrid"`.
+Note the Escalation row's empty graph cell: per C.4 that chunk shared zero entities with the query, so it never entered `graph_results` and contributes only two of the three terms. RRF handles this natively — a list that omits a candidate simply adds nothing for it, no penalty term and no missing-value handling required. This is the mechanism that lets a weak or blind retrieval leg stay wired in without dragging the ranking down.
+
+**Output (`hybrid_chunks`, top `retrieval_top_k*2=16` kept):** both chunks, Sampling ranked first, `source: "hybrid"`. The Escalation chunk survives into the answer purely on its semantic and keyword ranks — a concrete instance of the safe-degrade property section D describes for the graph leg as a whole.
 
 ### C.7 `parent_child_expand` node — [Tool: custom `MongoParentStore` lookup, no library — see §0]
 
@@ -811,8 +1033,13 @@ Each of the 3 non-empty result lists contributes `1/(60+rank)` per chunk it cont
 
 For each candidate: `score = 0.70 * lexical_overlap + 0.25 * original_score + metadata_boost(0.05 if title present)`.
 
-- Sampling chunk: query terms `{aql, hs, code, garments, qc, threshold, 6109, 10, shipment, fails, applies}` (11 terms) ∩ chunk terms → overlap ≈ `5/11 = 0.4545`. `0.70×0.4545 + 0.25×0.04918 + 0.05 ≈ 0.3437`
-- Escalation chunk: overlap ≈ `3/11 = 0.2727`. `0.70×0.2727 + 0.25×0.04839 + 0.05 ≈ 0.2530`
+- Sampling chunk: query terms `{aql, hs, code, garments, qc, threshold, 6109, 10, shipment, fails, applies}` (11 terms) ∩ chunk terms → overlap ≈ `5/11 = 0.4545`. `0.70×0.4545 + 0.25×0.04918 + 0.05 ≈ 0.3804`
+- Escalation chunk: overlap ≈ `3/11 = 0.2727`. `0.70×0.2727 + 0.25×0.03226 + 0.05 ≈ 0.2490`
+
+(The reranker tokenizes the query itself — it does **not** reuse
+`_extract_entities`, which is why `hs` and `qc` appear as terms here despite
+being invisible to the graph leg in C.4. The reranker is where those
+two-character acronyms actually earn their keep.)
 
 Min-max normalized to `[0,1]` → Sampling = `1.0`, Escalation = `0.0`. **Output (`reranked_chunks`):** Sampling first, `source: "reranked"`.
 
