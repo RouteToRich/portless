@@ -53,6 +53,90 @@ hypothetical. Config-gated alternatives are noted inline where relevant.
 
 ---
 
+## 0.1 Function-level call map — which function of which tool runs at each stage
+
+§0 answers *"which library"*. This section answers *"which call"* — the exact
+API surface this pipeline touches, so a stage can be traced from our node
+function down to the third-party method that does the work. Everything below is
+read off `shared/rag/src/` and `shared/llm_gateway/`; nothing is illustrative.
+
+### Ingestion pipeline (`build_ingestion_graph()`)
+
+| Node | Our function (`shared/rag/src/`) | Third-party / gateway call it makes |
+|---|---|---|
+| *(orchestration)* | `graph.py::build_ingestion_graph()`, `ingest()` | `langgraph`: `StateGraph(IngestionState)`, `.add_node()`, `.add_edge()`, `.set_entry_point()`, `.compile()`, `.ainvoke()` |
+| `parse_and_load` | `graph.py::_parse_and_load` → `loader.py::load_documents()` | **PDF (layout):** `load_pdf_documents_with_layout()` → `pdfplumber.open()`, `page.extract_text()`, `page.extract_tables()`<br>**PDF (fallback):** `load_pdf_documents()` → `pypdf.PdfReader()`, `page.extract_text()`<br>**OCR (opt-in):** `ocr_pdf_page()` → `pdf2image.convert_from_path()`, `pytesseract.image_to_string()`<br>**MD/TXT:** stdlib only — `pathlib.Path.read_text()`, `_split_markdown_sections()`, `_extract_title()` |
+| `chunk` | `graph.py::_chunk` → `chunking.py::chunk_documents()` | **recursive:** `RecursiveCharacterTextSplitter(chunk_size, chunk_overlap, separators).split_documents()`<br>**semantic:** `Embeddings.embed_documents(units)` + `numpy` `np.percentile` / `np.dot` / `np.linalg.norm`<br>**both:** `_number_chunks()` → `_chunk_group_key()`, `_build_parent_groups()` (stdlib) |
+| `chunk` (parent persist) | `parent_store.py::MongoParentStore.save()` | `motor`: `collection.bulk_write([ReplaceOne(…, upsert=True)])` |
+| `embed_and_insert` | `graph.py::_embed_and_insert` → `vector_store.py::VectorStore.upsert()` | `GatewayEmbeddings.embed_documents(texts)` → one of `OpenAIEmbeddings` / `GeminiEmbeddings` / `LocalHashEmbeddings.embed_documents()`<br>`pymongo.ReplaceOne`, `motor` `collection.bulk_write(ops, ordered=False)`<br>dedupe: `delete_by_content_hashes()` → `collection.delete_many()` |
+| `graph_insert` | `graph.py::_graph_insert` → `graph_store.py::GraphStore.upsert_chunks()` → `_chunk_fields()` → `_extract_entities()` | **extraction:** stdlib `re` only — `_ENTITY_RE.finditer()`, `_CODE_RE.finditer()` (**no model** — A.5.1)<br>**mongo:** `pymongo.UpdateOne`, `collection.bulk_write(ordered=False)`<br>**neo4j:** `AsyncGraphDatabase.driver()`, `session.run(_UPSERT_CHUNKS_CYPHER / _UPSERT_ENTITIES_CYPHER / _ADJ_CYPHER)` |
+| *(startup, once)* | `vector_store.py::ensure_indexes()`, `graph_store.py::ensure_graph_indexes()` | `motor`: `conn.ensure_indexes()` → `create_index()` for regular indexes; the Atlas `$vectorSearch` index goes through a raw `col.database.command("createSearchIndexes", …)` — free-tier clusters reject it, which is logged as a warning and never blocks startup |
+
+### Query pipeline (`build_query_graph()`)
+
+| Node | Our function (`shared/rag/src/`) | Third-party / gateway call it makes |
+|---|---|---|
+| *(orchestration)* | `graph.py::build_query_graph()`, `query()` | `langgraph` `StateGraph(QueryState)` → `.compile()`, `.ainvoke()` |
+| `embed_query` | `graph.py::_embed_query` → `embeddings.py::get_embeddings()` | `GatewayEmbeddings.embed_query(question)` |
+| `semantic_search` | `vector_store.py::VectorStore.semantic_search()` | `embed_query()`, then `motor` `collection.aggregate([{"$vectorSearch": …}])` |
+| `keyword_search` | `vector_store.py::VectorStore.keyword_search()` | `motor` `collection.find()`, then `rank_bm25.BM25Okapi(tokenized)` + `bm25.get_scores(_tokenize(query))` |
+| `graph_search` | `graph_store.py::GraphStore.retrieve()` | `_extract_entities(question)` (stdlib `re`), then `collection.aggregate([$match, $project{$setIntersection}, $sort, $limit])` — or `session.run(_RETRIEVE_CYPHER)` on Neo4j |
+| *(all 3 legs)* | `authorization.py::filter_authorized_results()` | none — plain Python filtering |
+| `web_search` | `web_search.py::WebSearchStore.retrieve()` | `httpx.AsyncClient().post()` → Tavily REST (no SDK) |
+| `hybrid_fusion` | `vector_store.py::hybrid_fusion()` | none — RRF hand-implemented, `1/(k+rank)` |
+| `parent_child_expand` | `vector_store.py::expand_parent_context()` → `MongoParentStore.load()` | `motor` `collection.find_one({"parent_id": …})` |
+| `rerank` | `rerank.py::rerank()` | **default:** `local_rerank()` → `_tokenize()` + `numpy`<br>**opt-in:** `cross_encoder_rerank()` → `sentence_transformers.CrossEncoder(model)`, `model.predict(pairs)` |
+| `knee_point_select` | `rerank.py::select_by_knee_point()` | `numpy`: `np.asarray`, `np.allclose`, `np.linspace`, `np.cross`, `np.linalg.norm`, `np.argmax` |
+| `safety_filter` | `security.py::afilter_prompt_injection_chunks()` | **default:** `has_prompt_injection_risk()` — stdlib `re` over `PROMPT_INJECTION_PATTERNS`<br>**opt-in:** `aclassify_prompt_injection()` → `_llm_injection_assessment()` → `LLMClient().chat(caller="rag.security.injection_classifier")` |
+| `augment` | `llm.py::build_augmented_prompt()` | none — string assembly |
+| `generate` | `llm.py::generate_answer()` | `LLMClient().chat(messages=[{"role": "user", …}], caller="rag.generate", temperature=settings.rag_temperature, max_tokens=settings.rag_max_tokens)` → `.content`<br>on any exception: `_local_extractive_answer()` (stdlib, cannot fail) |
+| `validate_citations` | `citations.py::validate_citations()` | none — stdlib `re` |
+| `evaluate` | `evaluation.py::evaluate_answer()` | **default:** `_faithfulness()`, `_context_precision()`, `_term_overlap()`, `_tokenize()` — stdlib<br>**opt-in:** `advanced_evaluation_notes()` → `_ragas_notes()` / `_deepeval_notes()` / `_llm_judge_notes()` → `LLMClient().chat(caller="rag.evaluation.llm_judge")` |
+
+### Shared infrastructure (every Mongo-touching stage)
+
+| Concern | Function | Underlying call |
+|---|---|---|
+| Connection pool | `shared/llm_gateway/mongo_connection.py::get_connection(uri, db_name)` | `motor.motor_asyncio.AsyncIOMotorClient` — **one client** reused by vector store, parent store, and graph store |
+| Collection handle | `conn.get_collection(name)` | `motor` database indexing |
+| Index bootstrap | `conn.ensure_indexes(collection, specs)` | `motor` `create_index()` (idempotent, safe on every startup) |
+
+### Two things this map makes obvious
+
+**There are exactly three LLM call sites in the whole pipeline, and only one is
+on by default.** All go through the same `LLMClient().chat()` and are
+distinguished by their `caller` tag, which is what the gateway's MongoDB request
+tracker records:
+
+| `caller` tag | Where | Default |
+|---|---|---|
+| `rag.generate` | `llm.py::generate_answer` | **on** — the only unavoidable LLM call |
+| `rag.security.injection_classifier` | `security.py::_llm_injection_assessment` | off (`RAG_USE_LLM_PROMPT_INJECTION_CLASSIFIER`) |
+| `rag.evaluation.llm_judge` | `evaluation.py::_llm_judge_notes` | off (`RAG_ADVANCED_EVAL_PROVIDER=llm`) |
+
+Everything else — chunking, entity extraction, fusion, knee-point selection,
+citation validation, default reranking, default safety filtering, default
+evaluation — is stdlib, `numpy`, or a small pure-Python function. That is why
+the pipeline still returns an answer with **zero API keys configured**:
+`LocalHashEmbeddings` covers embedding and `_local_extractive_answer()` covers
+generation.
+
+**The embedding model is called at exactly three points**, and only one of them
+is unconditional:
+
+| Call | Where | When |
+|---|---|---|
+| `embed_documents(units)` | `chunking.py::semantic_chunk_documents` | only when `chunk_strategy="semantic"` |
+| `embed_documents(texts)` | `vector_store.py::VectorStore.upsert` | every ingestion |
+| `embed_query(question)` | `_embed_query` + `VectorStore.semantic_search` | every query |
+
+Note the last row: `_embed_query` stores an embedding in `QueryState`, and
+`semantic_search()` independently calls `embed_query()` again on the same
+question — so a query embeds twice per run. Harmless under
+`LocalHashEmbeddings`, but it is a duplicated billable call on a real provider.
+
+---
+
 ## Example A — Negotiation playbook chunk (semantic + graph retrieval both fire)
 
 *Orchestration for the whole ingestion trace below (A.1–A.5) — [Tool: `langgraph` `StateGraph`, `build_ingestion_graph()` — see §0].*
