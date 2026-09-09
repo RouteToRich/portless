@@ -1,213 +1,296 @@
-INFO:     Will watch for changes in these directories: ['C:\\workArea\\richfyMe\\routeToRich\\portless\\backend']
+ï»¿python : C:\WBG\Python313\Lib\site-packages\langgraph\cache\base\__init__.py:8: LangChainPendingDeprecationWarning: 
+The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., 
+allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+At line:1 char:381
++ ... portless\backend"; python -m uvicorn app:app --port 8081 2>&1 | Tee-O ...
++                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\WBG\Python31...s this warning.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+INFO:     Started server process [42136]
+INFO:     Waiting for application startup.
+Trade-Min MongoDB connection failed: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
+connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
+5000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
+5000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms), Timeout: 5.0s, 
+Topology Description: <TopologyDescription id: 6a6b3c7bf6942d9a66e9f13e, topology_type: ReplicaSetNoPrimary, servers: 
+[<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>]> â€” 
+falling back to in-memory storage
+Cache: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
+connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
+5000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
+5000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms), Timeout: 5.0s, 
+Topology Description: <TopologyDescription id: 6a6b3c82f6942d9a66e9f13f, topology_type: ReplicaSetNoPrimary, servers: 
+[<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>]>) 
+â€” using in-memory backend.
+Deals MongoDB connection failed â€” falling back to in-memory store: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: 
+[WinError 10054] An existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 
+20000.0ms, connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing 
+connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+5.0s, Topology Description: <TopologyDescription id: 6a6b3c87f6942d9a66e9f140, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
+Sourcing MongoDB connection failed â€” falling back to in-memory store: 
+ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly closed by the 
+remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+5.0s, Topology Description: <TopologyDescription id: 6a6b3c8df6942d9a66e9f141, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
+Mongo init failed â€” falling back to in-memory: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An 
+existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, 
+connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
+was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+30s, Topology Description: <TopologyDescription id: 6a6b3c92f6942d9a66e9f142, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
+Mongo email history init failed â€” falling back to in-memory: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: 
+[WinError 10054] An existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 
+20000.0ms, connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing 
+connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+30s, Topology Description: <TopologyDescription id: 6a6b3cb1f6942d9a66e9f143, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
+Seeding 5 mock negotiation scenarios...
+Mock negotiation seed complete (5 sessions, 15 emails)
+DealMaker: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
+connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+5.0s, Topology Description: <TopologyDescription id: 6a6b3ccff6942d9a66e9f144, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms)')>]>) â€” falling back to in-memory store.
+DocuGen: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
+connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+5.0s, Topology Description: <TopologyDescription id: 6a6b3cd5f6942d9a66e9f145, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms)')>]>) â€” falling back to in-memory store.
+ShieldLink: MongoDB failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
+was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+5.0s, Topology Description: <TopologyDescription id: 6a6b3cdaf6942d9a66e9f146, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms)')>]>) â€” in-memory fallback
+EscrowGuard: MongoDB failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
+was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+5.0s, Topology Description: <TopologyDescription id: 6a6b3ce0f6942d9a66e9f147, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms)')>]>) â€” in-memory fallback
+HitlApproval: MongoDB failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
+connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+5.0s, Topology Description: <TopologyDescription id: 6a6b3ce5f6942d9a66e9f148, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms)')>]>) â€” in-memory fallback
+ExceptionResolver: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An 
+existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, 
+connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
+was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+5.0s, Topology Description: <TopologyDescription id: 6a6b3ceaf6942d9a66e9f149, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms)')>]>) â€” falling back to in-memory store.
+Auth: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
+connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+5.0s, Topology Description: <TopologyDescription id: 6a6b3cf0f6942d9a66e9f14a, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms)')>]>) â€” falling back to in-memory.
+RAG module startup index check failed: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
+connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
+5000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
+5000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms), Timeout: 5.0s, 
+Topology Description: <TopologyDescription id: 6a6b3cf6f6942d9a66e9f14b, topology_type: ReplicaSetNoPrimary, servers: 
+[<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>]>
+RAG module graph-store index check failed: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An 
+existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, 
+connectTimeoutMS: 5000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
+was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
+5000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms), Timeout: 5.0s, 
+Topology Description: <TopologyDescription id: 6a6b3cfbf6942d9a66e9f14c, topology_type: ReplicaSetNoPrimary, servers: 
+[<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>]>
+EmailProcessor: MongoDB index creation failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An 
+existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, 
+connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
+was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
+closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
+30s, Topology Description: <TopologyDescription id: 6a6b3d01f6942d9a66e9f14d, topology_type: ReplicaSetNoPrimary, 
+servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
+<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
+error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
+forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
+20000.0ms)')>]>) â€” using in-memory fallback
+INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8081 (Press CTRL+C to quit)
-INFO:     Started reloader process [1932] using WatchFiles
-C:\Users\sunda\AppData\Roaming\Python\Python313\site-packages\langgraph\cache\base\__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
-  from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-INFO:     Started server process [8788]
-INFO:     Waiting for application startup.
-Trade-Min MongoDB connection failed: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net. — falling back to in-memory storage
-Cache: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — using in-memory backend.
-Deals MongoDB connection failed — falling back to in-memory store: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-Sourcing MongoDB connection failed — falling back to in-memory store: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-Mongo init failed — falling back to in-memory: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-Mongo email history init failed — falling back to in-memory: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-Seeding 5 mock negotiation scenarios...
-Mock negotiation seed complete (5 sessions, 15 emails)
-DealMaker: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — falling back to in-memory store.
-DocuGen: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — falling back to in-memory store.
-ShieldLink: MongoDB failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — in-memory fallback
-EscrowGuard: MongoDB failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — in-memory fallback
-HitlApproval: MongoDB failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — in-memory fallback
-ExceptionResolver: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — falling back to in-memory store.
-Auth: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — falling back to in-memory.
-RAG module startup index check failed: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-EmailProcessor: MongoDB index creation failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — using in-memory fallback
-INFO:     Application startup complete.
-ImapPoller[supplier]: fetch error (attempt 1, retrying in 60s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 1, retrying in 60s): command SELECT illegal in state NONAUTH
-INFO:     127.0.0.1:50179 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50180 - "GET /docs HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50208 - "GET /health HTTP/1.1" 200 OK
-ImapPoller[supplier]: fetch error (attempt 2, retrying in 120s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 2, retrying in 120s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 3, retrying in 180s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 3, retrying in 180s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 4, retrying in 240s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 4, retrying in 240s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 5, retrying in 300s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 5, retrying in 300s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 6, retrying in 360s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 6, retrying in 360s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 7, retrying in 420s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 7, retrying in 420s): command SELECT illegal in state NONAUTH
-Connector 'comtrade' quote() failed: Client error '401 Access Denied' for url 'https://comtradeapi.un.org/data/v1/get/C/A/HS?cmdCode=090422&period=2025&flowCode=M&partnerCode=356&maxrecords=500&subscription-key=your_comtrade_subscription_key_here&reporterCode=842'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
-Connector 'comtrade' quote() failed: Client error '401 Access Denied' for url 'https://comtradeapi.un.org/data/v1/get/C/A/HS?cmdCode=090422&period=2025&flowCode=M&partnerCode=356&maxrecords=500&subscription-key=your_comtrade_subscription_key_here&reporterCode=276'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
-Connector 'comtrade' quote() failed: Client error '401 Access Denied' for url 'https://comtradeapi.un.org/data/v1/get/C/A/HS?cmdCode=100190&period=2025&flowCode=M&partnerCode=356&maxrecords=500&subscription-key=your_comtrade_subscription_key_here&reporterCode=784'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
-Connector 'comtrade' quote() failed: Client error '401 Access Denied' for url 'https://comtradeapi.un.org/data/v1/get/C/A/HS?cmdCode=290543&period=2025&flowCode=M&partnerCode=356&maxrecords=500&subscription-key=your_comtrade_subscription_key_here&reporterCode=826'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
-Connector 'comtrade' quote() failed: Client error '401 Access Denied' for url 'https://comtradeapi.un.org/data/v1/get/C/A/HS?cmdCode=100190&period=2025&flowCode=M&partnerCode=356&maxrecords=500&subscription-key=your_comtrade_subscription_key_here&reporterCode=276'
-For more information check: https://developer.mozilla.WARNING:  WatchFiles detected changes in 'shared\connectors\google_drive.py'. Reloading...
- C:\Users\sunda\AppData\Roaming\Python\Python313\site-packages\langgraph\cache\base\__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
-  from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-INFO:     Started server process [13524]
-INFO:     Waiting for application startup.
-Trade-Min MongoDB connection failed: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net. — falling back to in-memory storage
-Cache: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — using in-memory backend.
-Deals MongoDB connection failed — falling back to in-memory store: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-Sourcing MongoDB connection failed — falling back to in-memory store: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-Mongo init failed — falling back to in-memory: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-Mongo email history init failed — falling back to in-memory: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-Seeding 5 mock negotiation scenarios...
-Mock negotiation seed complete (5 sessions, 15 emails)
-DealMaker: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — falling back to in-memory store.
-DocuGen: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — falling back to in-memory store.
-ShieldLink: MongoDB failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — in-memory fallback
-EscrowGuard: MongoDB failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — in-memory fallback
-HitlApproval: MongoDB failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — in-memory fallback
-ExceptionResolver: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — falling back to in-memory store.
-Auth: MongoDB connection failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — falling back to in-memory.
-RAG module startup index check failed: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-RAG module graph-store index check failed: The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.
-EmailProcessor: MongoDB index creation failed (The DNS query name does not exist: _mongodb._tcp.<cluster>.mongodb.net.) — using in-memory fallback
-INFO:     Application startup complete.
-ImapPoller[buyer]: fetch error (attempt 1, retrying in 60s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 1, retrying in 60s): command SELECT illegal in state NONAUTH
-INFO:     127.0.0.1:52335 - "OPTIONS /hitl-approval/approvals HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51636 - "GET /hitl-approval/stream?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJVU1ItNTAxMUM1NTUzM0JGIiwianRpIjoiMjUxN2Y4OTk4YWVjMDVmYThlNDk4YjFjMjVjODZhNGMiLCJpYXQiOjE3ODQwOTkyNDIsImV4cCI6MTc4NDE0MjQ0MiwiZW1haWwiOiJyaWNobWluZHM4NEBnbWFpbC5jb20iLCJuYW1lIjoiUmljaCBNaW5kcyIsIm9yZ19pZCI6InBvcnRsZXNzIiwiaXNfcG9ydGxlc3MiOnRydWV9.OOgxR9bFdw8Y35ljSGz8ejVixUGiFEvcqc5JoLg3Yns HTTP/1.1" 200 OK
-INFO:     127.0.0.1:52335 - "GET /hitl-approval/approvals HTTP/1.1" 200 OK
-WARNING:  WatchFiles detected changes in 'services\dealmaker\service.py'. Reloading...
- ImapPoller[supplier]: fetch error (attempt 2, retrying in 120s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 2, retrying in 120s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 3, retrying in 180s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 3, retrying in 180s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 4, retrying in 240s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 4, retrying in 240s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 5, retrying in 300s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 5, retrying in 300s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 6, retrying in 360s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 6, retrying in 360s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 7, retrying in 420s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 7, retrying in 420s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 8, retrying in 480s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 8, retrying in 480s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 9, retrying in 540s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 9, retrying in 540s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 10, retrying in 600s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 10, retrying in 600s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 11, retrying in 600s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 11, retrying in 600s): command SELECT illegal in state NONAUTH
-estamp=1784097014011&keywords=glycerol+alcohol&pageIndex=1&pageSize=20&countryCode=GB&sign=8C8190125288EA2882ABEB3A80E3FE3E570C8F85F3D4527E3635C26A9B342EB9'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097017425&keywords=glycerol+alcohol&pageIndex=1&pageSize=20&countryCode=AE&sign=F999A51F0B1EC432970E626733FF4CC95ED19EE721FBDFD1C099144D20FF980E'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097016294&keywords=ground+pepper+spices&pageIndex=1&pageSize=20&countryCode=GB&sign=D2E17C05CF0DB81BEB85B8725A0C2E3A0FE9CB98FEC8799CF786A2B392B4F90E'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097015141&keywords=wheat+grain&pageIndex=1&pageSize=20&countryCode=DE&sign=C45BCE6499D7F5F2F95073C933301D0821F46B2661244572AE731EC7EE9D172F'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097023491&keywords=wheat+grain&pageIndex=1&pageSize=20&countryCode=US&sign=CC23D8A86BE6AFFA9143FC8C706550C46D52A9716F3038B94880D7D175FC2081'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097019810&keywords=glycerol+alcohol&pageIndex=1&pageSize=20&countryCode=DE&sign=557DD9CD57450B5513DA7A9DFA4E137320B40F2C9463B15F19759F9DE00FF318'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097029267&keywords=wheat+grain&pageIndex=1&pageSize=20&countryCode=GB&sign=63BC070A381B7D4421455E8F61243719590D0B9D69D08FD90E4DE11CDD2E3A70'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097020943&keywords=ground+pepper+spices&pageIndex=1&pageSize=20&countryCode=AE&sign=03431E0A23ECD33A7BF359FC939CF7D4D8106B2D80830D3272E8F64302A4E618'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097026261&keywords=glycerol+alcohol&pageIndex=1&pageSize=20&countryCode=US&sign=E7ED3B1D156F2676478132A5428E4CCD5390221C5053E17F4382ECF716C3D474'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097022058&keywords=ground+pepper+spices&pageIndex=1&pageSize=20&countryCode=ES&sign=B6E0039DC9AB5E1026CB0FD5EE8C89F8D8B14CD06CA9615F931022AD591106FA'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097018556&keywords=wheat+grain&pageIndex=1&pageSize=20&countryCode=ES&sign=45971D735EB2C1B9BF82C92B57D0A2625A16068141581D48E58CB372D12F1F25'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097024791&keywords=glycerol+alcohol&pageIndex=1&pageSize=20&countryCode=ES&sign=B9697501E3FAB3F5DC2D5C4C846E15B3DA879163928AD780BA4390D100382BFE'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'alibaba_rfq' quote() failed: Client error '400 ' for url 'https://gw.api.alibaba.com/openapi/param2/1/aliinternational.trade.leads.search?appKey=your_alibaba_app_key_here&timestamp=1784097027814&keywords=ground+pepper+spices&pageIndex=1&pageSize=20&countryCode=US&sign=3FD40F7E92D5BFEAE146CB488C6F0DA12ACBEE778690677A91FC199FC60F3D62'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063026&enddatetime=20260715063026&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063018&enddatetime=20260715063018&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063013&enddatetime=20260715063013&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063012&enddatetime=20260715063012&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063017&enddatetime=20260715063017&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063016&enddatetime=20260715063016&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063015&enddatetime=20260715063015&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063021&enddatetime=20260715063021&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063022&enddatetime=20260715063022&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063029&enddatetime=20260715063029&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063025&enddatetime=20260715063025&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20260712063014&enddatetime=20260715063014&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'tradeindia' quote() failed: Client error '404 Not Found' for url 'https://api.tradeindia.com/v1/products/search?keyword=glycerol+alcohol&page=1&limit=20&country=IN'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
-Connector 'tradeindia' quote() failed: Client error '404 Not Found' for url 'https://api.tradeindia.com/v1/products/search?keyword=wheat+grain&page=1&limit=20&country=IN'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
-Connector 'indiamart' quote() failed: Client error '403 Forbidden' for url 'https://seller.indiamart.com/lmsrest/api/v1/product/catalog/search?mobile_no=your_registered_mobile_number_here&api_key=your_indiamart_api_key_here&keyword=glycerol+alcohol&page=1&page_size=20'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
-Connector 'indiamart' quote() failed: Client error '403 Forbidden' for url 'https://seller.indiamart.com/lmsrest/api/v1/product/catalog/search?mobile_no=your_registered_mobile_number_here&api_key=your_indiamart_api_key_here&keyword=wheat+grain&page=1&page_size=20'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' quote() failed: 
-Connector 'tradeindia' quote() failed: 
-Connector 'indiamart' quote() failed: 
-Connector 'indiamart' quote() failed: 
-Connector 'tradeindia' quote() failed: 
-Connector 'tradeindia' quote() failed: 
-Connector 'indiamart' quote() failed: 
-Connector 'indiamart' quote() failed: 
-Connector 'tradeindia' quote() failed: 
-Connector 'tradeindia' quote() failed: 
-Connector 'indiamart' quote() failed: 
-Connector 'indiamart' quote() failed: 
-Connector 'indiamart' quote() failed: 
-Connector 'tradeindia' quote() failed: 
-Connector 'tradeindia' quote() failed: 
-Connector 'tradeindia' quote() failed: 
-Connector 'indiamart' quote() failed: 
-Connector 'tradeindia' quote() failed: 
-Connector 'tradeindia' quote() failed: Client error '404 Not Found' for url 'https://api.tradeindia.com/v1/products/search?keyword=glycerol+alcohol&page=1&limit=20&country=IN'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
-Connector 'tradeindia' quote() failed: Client error '404 Not Found' for url 'https://api.tradeindia.com/v1/products/search?keyword=glycerol+alcohol&page=1&limit=20&country=IN'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
-Connector 'tradeindia' quote() failed: Client error '404 Not Found' for url 'https://api.tradeindia.com/v1/products/search?keyword=wheat+grain&page=1&limit=20&country=IN'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
-Connector 'tradeindia' quote() failed: Client error '404 Not Found' for url 'https://api.tradeindia.com/v1/products/search?keyword=ground+pepper+spices&page=1&limit=20&country=IN'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
-Connector 'indiamart' quote() failed: Client error '403 Forbidden' for url 'https://seller.indiamart.com/lmsrest/api/v1/product/catalog/search?mobile_no=your_registered_mobile_number_here&api_key=your_indiamart_api_key_here&keyword=glycerol+alcohol&page=1&page_size=20'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
-Connector 'indiamart' quote() failed: Client error '403 Forbidden' for url 'https://seller.indiamart.com/lmsrest/api/v1/product/catalog/search?mobile_no=your_registered_mobile_number_here&api_key=your_indiamart_api_key_here&keyword=glycerol+alcohol&page=1&page_size=20'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
-Connector 'indiamart' quote() failed: Client error '403 Forbidden' for url 'https://seller.indiamart.com/lmsrest/api/v1/product/catalog/search?mobile_no=your_registered_mobile_number_here&api_key=your_indiamart_api_key_here&keyword=ground+pepper+spices&page=1&page_size=20'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
-Connector 'indiamart' quote() failed: Client error '403 Forbidden' for url 'https://seller.indiamart.com/lmsrest/api/v1/product/catalog/search?mobile_no=your_registered_mobile_number_here&api_key=your_indiamart_api_key_here&keyword=wheat+grain&page=1&page_size=20'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
-ImapPoller[supplier]: fetch error (attempt 8, retrying in 480s): command SELECT illegal in state NONAUTH
-ImapPoller[buyer]: fetch error (attempt 8, retrying in 480s): command SELECT illegal in state NONAUTH
-INFO:     127.0.0.1:53051 - "GET /health HTTP/1.1" 200 OK
-ImapPoller[buyer]: fetch error (attempt 9, retrying in 540s): command SELECT illegal in state NONAUTH
-ImapPoller[supplier]: fetch error (attempt 9, retrying in 540s): command SELECT illegal in state NONAUTH
+INFO:     127.0.0.1:50320 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55757 - "OPTIONS /hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+C:\WBG\Python313\Lib\site-packages\jwt\api_jwt.py:371: InsecureKeyLengthWarning: The HMAC key is 29 bytes long, which 
+is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+  decoded = self.decode_complete(
+INFO:     127.0.0.1:55757 - "GET /hitl-approval/approvals?status=PENDING HTTP/1.1" 401 Unauthorized
+ImapPoller[shared]: fetch error (attempt 1, retrying in 60s): 
+INFO:     127.0.0.1:60593 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60595 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54318 - "OPTIONS /auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54318 - "POST /auth/login HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:63223 - "POST /auth/login HTTP/1.1" 401 Unauthorized
+ImapPoller[shared]: fetch error (attempt 2, retrying in 120s): 
