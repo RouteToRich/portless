@@ -225,15 +225,31 @@ def _seed_parties_from_opportunity(
     later."""
     parties: list[Party] = []
     try:
-        signals = getattr(opportunity, "buyer_signals", None) or []
+        signals = list(getattr(opportunity, "buyer_signals", None) or [])
         if signals:
-            top = signals[0]
+            # Prefer the buyer the actors scored highest / that carries a
+            # contact — a named importer with a website beats an anonymous RFQ.
+            def _rank(b: Any) -> tuple:
+                has_contact = bool(getattr(b, "email", None) or getattr(b, "website", None)
+                                   or getattr(b, "contact_url", None))
+                return (-(getattr(b, "fit_score", None) or 0), not has_contact,
+                        -(getattr(b, "urgency_tier", None) or 0))
+            top = sorted(signals, key=_rank)[0]
+            email = getattr(top, "email", None)
             parties.append(Party(
                 party_id=getattr(top, "company_id", None),
                 role="buyer",
                 legal_name=top.buyer_name,
                 country=top.buyer_country or market,
                 risk_score=getattr(top, "risk_score", None),
+                email=email,
+                website=getattr(top, "website", None),
+                phone=getattr(top, "phone", None),
+                address=getattr(top, "address", None),
+                contact_source=(f"opportunity:{getattr(top, 'source', '')}"
+                                if (email or getattr(top, "website", None)) else None),
+                email_status="unverified" if email else None,
+                sanctions_status="unchecked",
             ))
         candidates = getattr(opportunity, "seller_candidates", None) or []
         winner = next(
@@ -241,11 +257,21 @@ def _seed_parties_from_opportunity(
             candidates[0] if candidates else None,
         )
         if winner is not None:
+            s_email = getattr(winner, "email", None)
             parties.append(Party(
                 party_id=winner.candidate_id,
                 role="supplier",
                 legal_name=winner.company_name,
                 country="IN",
+                gstin=getattr(winner, "gstin", None),
+                iec=getattr(winner, "iec", None),
+                email=s_email,
+                website=getattr(winner, "website", None),
+                phone=getattr(winner, "phone", None),
+                contact_source=(f"opportunity:{getattr(winner, 'source', '')}"
+                                if (s_email or getattr(winner, "website", None)) else None),
+                email_status="unverified" if s_email else None,
+                sanctions_status="unchecked",
             ))
     except Exception as exc:  # noqa: BLE001 — party seeding must never block creation
         logger.warning("Could not seed parties from opportunity: %s", exc)
@@ -485,6 +511,125 @@ async def update_financials(deal_id: str, payload: UpdateFinancialsRequest) -> D
     updated_deal = deal.model_copy(update=updates)
     await repo.save(updated_deal)
     return updated_deal
+
+
+async def record_match_result(
+    deal_id: str,
+    supplier_id: str,
+    company_name: str = "",
+    fob_price_usd: float | None = None,
+    composite_score: float | None = None,
+    match_id: str | None = None,
+    buyer_target_price_usd: float | None = None,
+    make_winner: bool = False,
+) -> DealRecord:
+    """Upsert a supplier into ``match_results`` and optionally make it the winner.
+
+    Used by the CONFIRM_SUPPLIER_SELECTION saga callback: a supplier that
+    quoted through sourcing (or a next-best candidate proposed after a failed
+    negotiation) may not be in the Match Engine results yet, and the
+    negotiation seed reads the supplier's ask from the winning MatchResult —
+    so it has to be there before the deal moves to NEGOTIATING.
+    """
+    repo = get_repository()
+    deal = await repo.get(deal_id)
+    if deal is None:
+        raise DealNotFoundError(deal_id)
+
+    results = list(deal.match_results)
+    idx = next((i for i, m in enumerate(results) if m.supplier_id == supplier_id), None)
+    if idx is None:
+        results.append(MatchResult(
+            match_id=match_id or f"MATCH-{uuid4().hex[:12].upper()}",
+            supplier_id=supplier_id,
+            company_name=company_name,
+            composite_score=composite_score if composite_score is not None else 0.0,
+            gatekeeper_passed=True,
+            arbitrage_score=0.0,
+            proximity_score=0.0,
+            reliability_score=0.0,
+            decision="SOURCE" if make_winner else "DISCARD",
+            fob_price_usd=fob_price_usd,
+        ))
+    else:
+        current = results[idx]
+        results[idx] = current.model_copy(update={
+            "company_name": company_name or current.company_name,
+            "fob_price_usd": fob_price_usd if fob_price_usd is not None else current.fob_price_usd,
+            "composite_score": (
+                composite_score if composite_score is not None else current.composite_score
+            ),
+            "decision": "SOURCE" if make_winner else current.decision,
+        })
+
+    updates: dict[str, Any] = {"match_results": results, "updated_at": datetime.now(timezone.utc)}
+    if make_winner:
+        updates["winning_supplier_id"] = supplier_id
+        if composite_score is not None:
+            updates["winning_cms"] = composite_score
+    if buyer_target_price_usd is not None and deal.buyer_target_price_usd is None:
+        updates["buyer_target_price_usd"] = buyer_target_price_usd
+
+    updated_deal = deal.model_copy(update=updates)
+    await repo.save(updated_deal)
+    logger.info(
+        "Deal %s: match result recorded for supplier %s (winner=%s, fob=%s)",
+        deal_id, supplier_id, make_winner, fob_price_usd,
+    )
+    return updated_deal
+
+
+async def update_party(
+    deal_id: str,
+    role: str,
+    updates: dict[str, Any],
+    *,
+    source: str | None = "operator",
+) -> DealRecord:
+    """Patch (or create) the deal's buyer/supplier party.
+
+    ``source="operator"`` (the HTTP endpoint) stamps ``contact_source`` so a
+    later actor run never overwrites a human correction; the enrichment module
+    passes ``source=None`` and sets ``contact_source`` itself.
+    """
+    role = (role or "").lower()
+    if role not in ("buyer", "supplier"):
+        raise ValueError(f"role must be buyer or supplier, got {role!r}")
+    repo = get_repository()
+    deal = await repo.get(deal_id)
+    if deal is None:
+        raise DealNotFoundError(deal_id)
+
+    clean = {k: v for k, v in updates.items() if v is not None}
+    contact_keys = {"email", "website", "phone", "address"}
+    if source == "operator" and contact_keys & set(clean):
+        clean["contact_source"] = "operator"
+        if "email" in clean:
+            clean.setdefault("email_status", "unverified")
+            clean["contact_confidence"] = 1.0
+
+    parties = list(deal.parties)
+    idx = next((i for i, p in enumerate(parties)
+                if (getattr(p.role, "value", p.role) or "").lower() == role), None)
+    if idx is None:
+        legal_name = clean.pop("legal_name", None) or f"Unknown {role}"
+        country = clean.pop("country", None) or (deal.market if role == "buyer" else "IN")
+        parties.append(Party(role=role, legal_name=legal_name, country=country, **clean))
+    else:
+        parties[idx] = parties[idx].model_copy(update=clean)
+
+    updated = deal.model_copy(update={"parties": parties, "updated_at": datetime.now(timezone.utc)})
+    await repo.save(updated)
+    logger.info("Deal %s: %s party updated (%s)", deal_id, role, ", ".join(sorted(clean)))
+    return updated
+
+
+async def enrich_deal(deal_id: str, *, screen: bool = True, contacts: bool = True) -> dict[str, Any]:
+    """Run the Apify contact finder + sanctions screening on the deal's parties
+    (see ``shared/orchestration/enrichment.py``)."""
+    await get_deal(deal_id)  # 404 before any actor run is started
+    from shared.orchestration.enrichment import enrich_deal_parties
+    return await enrich_deal_parties(deal_id, screen=screen, contacts=contacts)
 
 
 async def set_counterparty_orgs(

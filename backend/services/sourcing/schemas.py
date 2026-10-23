@@ -43,6 +43,11 @@ class SupplierRef(BaseModel):
     """Which connector to use for this supplier."""
 
     company_name: str = ""
+    email: str | None = None
+    """Supplier contact address (Apify india-supplier / contact-finder actors,
+    the deal party, or an operator). When present the RFQ is e-mailed with an
+    ``[RFQ:<rfq_id>]`` subject token so the supplier's reply maps straight
+    back to this RFQ (Email Processor → receive_quote)."""
 
 
 class DispatchResult(BaseModel):
@@ -51,7 +56,9 @@ class DispatchResult(BaseModel):
     supplier_id: str
     contact_id: str | None = None
     channel: str
-    """Connector used: ``"indiamart"`` | ``"tradeindia"`` | ``"portal"`` | ``"failed"``."""
+    """Connector used: ``"indiamart"`` | ``"tradeindia"`` | ``"email"`` | ``"portal"`` | ``"failed"``."""
+    email: str | None = None
+    """Address the RFQ e-mail went to (channel ``email``)."""
     ext_rfq_id: str | None = None
     """External RFQ reference returned by the connector."""
     success: bool

@@ -30,6 +30,7 @@ from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from .notification import deregister_sse_client, get_recent_events, register_sse_client
 from .schemas import (
@@ -50,6 +51,39 @@ from .service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/hitl-approval", tags=["hitl-approval"])
+
+
+# ---------------------------------------------------------------------------
+# Autonomy policy (per-action L0–L3) — backs the Autonomy Settings page
+# ---------------------------------------------------------------------------
+
+class AutonomyPolicyUpdate(BaseModel):
+    levels: dict[str, str | None] = Field(default_factory=dict)
+    """action → L0|L1|L2|L3; null clears the override for that action."""
+    updated_by: str = "operator"
+
+
+@router.get("/autonomy-policy")
+async def api_get_autonomy_policy() -> dict[str, Any]:
+    """Effective autonomy level per action class and where each one comes from
+    (override / env / default / money ceiling)."""
+    from shared.orchestration.autonomy_policy import effective_policy, money_ceiling
+
+    return {"money_ceiling": money_ceiling(), "actions": list(effective_policy().values())}
+
+
+@router.put("/autonomy-policy")
+async def api_put_autonomy_policy(req: AutonomyPolicyUpdate) -> dict[str, Any]:
+    """Set per-action overrides (persisted in Mongo when configured)."""
+    from shared.orchestration.autonomy_policy import (
+        effective_policy, money_ceiling, set_policy,
+    )
+
+    try:
+        await set_policy(req.levels, updated_by=req.updated_by)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    return {"money_ceiling": money_ceiling(), "actions": list(effective_policy().values())}
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,31 @@ class Party(BaseModel):
     credit_status: str | None = None
     risk_score: float | None = None
 
+    # ── Contact (filled by the Apify company-contact-finder actor, the
+    #    opportunity's buyer/seller signal, or an operator edit) ───────────
+    email: str | None = None
+    website: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    contact_source: str | None = None
+    """Where the contact came from: ``apify:<actor>``, ``opportunity``,
+    ``operator`` — shown in the UI so a human knows how much to trust it."""
+    contact_confidence: float | None = None
+    """0–1 confidence of the website/email choice (actor's websiteConfidence)."""
+    email_status: str | None = None
+    """``ok`` (domain takes mail) · ``risky`` (no MX / catch-all) · ``invalid``
+    · ``unverified`` (never checked)."""
+
+    # ── Counterparty screening (Apify counterparty-check actor: OFAC / UN /
+    #    EU / UK sanctions lists, GLEIF LEI, EU VIES) ───────────────────────
+    sanctions_status: str | None = None
+    """``clear`` · ``review`` · ``block`` · ``unchecked``."""
+    sanctions_reason: str | None = None
+    sanctions_checked_at: datetime | None = None
+    lei: str | None = None
+    vat_valid: bool | None = None
+    enriched_at: datetime | None = None
+
 
 class Deal(BaseModel):
     deal_id: str

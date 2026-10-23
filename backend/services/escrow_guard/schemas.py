@@ -27,6 +27,10 @@ from pydantic import BaseModel, Field
 EscrowProviderName = Literal["tazapay", "escrow_com"]
 TrancheTrigger = Literal["PO_ISSUED", "QC_PASSED", "CLEARED", "ACCEPTED"]
 TrancheStatus = Literal["PENDING", "RELEASED"]
+PayoutKind = Literal["supplier_payout", "supplier_balance"]
+"""``supplier_payout`` — the main disbursement at CLEARED (capped by the funds
+released from escrow so far); ``supplier_balance`` — the remainder once the
+final tranche settled."""
 
 
 class TrancheSpec(BaseModel):
@@ -54,14 +58,19 @@ class EscrowHoldRecord(BaseModel):
     provider: str
     amount: float
     currency: str
-    status: Literal["PENDING", "FUNDED", "RELEASED", "REFUNDED", "FAILED"]
+    status: Literal["PENDING", "PARTIALLY_FUNDED", "FUNDED", "RELEASED", "REFUNDED", "FAILED"]
     ext_ref: str | None = None
     client_secret: str | None = None
     funded_at: datetime | None = None
     funded_amount: float | None = None
     """Actual amount confirmed by the funded webhook, normalized to major units.
     Reconciled against ``amount`` (the requested principal) on funding."""
+    shortfall: float | None = None
+    """``amount − funded_amount`` while the provider confirmed less than the
+    principal (status ``PARTIALLY_FUNDED``); None once fully funded."""
     released_at: datetime | None = None
+    settled_at: datetime | None = None
+    """Set when every tranche has left the escrow (money side of the trade closed)."""
     created_at: datetime
     updated_at: datetime
     provider_payload: dict[str, Any] = Field(default_factory=dict)
@@ -74,6 +83,12 @@ class EscrowHoldRecord(BaseModel):
     tranches: list[TrancheSpec] = Field(default_factory=list)
     released_total: float = 0.0
     refunded_total: float = 0.0
+    fee_pct: float | None = None
+    """Provider fee (%) quoted when the escrow was opened — deducted from every release."""
+    fees_total: float = 0.0
+    """Estimated provider fees on the amounts released so far."""
+    processed_events: list[str] = Field(default_factory=list)
+    """Provider webhook event ids already applied (replay protection)."""
 
     # -- final-tranche release authority (buyer acceptance / inspection window) --
     inspection_deadline: datetime | None = None
@@ -101,6 +116,11 @@ class PayoutRecord(BaseModel):
     updated_at: datetime
     provider_payload: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str
+    kind: PayoutKind = "supplier_payout"
+    total_owed: float | None = None
+    """What the supplier is owed in total (PO value) — the deal is PAID only
+    once completed payouts reach it."""
+    processed_events: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +143,11 @@ class PayoutRequest(BaseModel):
     currency: str = "USD"
     description: str | None = None
     idempotency_key: str
+    kind: PayoutKind = "supplier_payout"
+    total_owed: float | None = None
+    """Supplier's total entitlement (PO value). When set, the deal only moves to
+    PAID once completed payouts reach it; the remainder is paid as a
+    ``supplier_balance`` payout after the final tranche settles."""
 
 
 class TrancheInput(BaseModel):
@@ -175,11 +200,18 @@ class RefundRequest(BaseModel):
 
 
 class EscrowFundedWebhookPayload(BaseModel):
-    """Inbound webhook confirming buyer funds are held."""
+    """Inbound webhook confirming buyer funds are held.
+
+    ``amount`` is the TOTAL the provider holds for this escrow (Stripe: minor
+    units; neutral providers: major units). A total below the principal keeps
+    the escrow ``PARTIALLY_FUNDED`` and the deal in ESCROW_PENDING.
+    """
     ext_ref: str
     status: str
-    amount: int | None = None
+    amount: int | float | None = None
     currency: str | None = None
+    event_id: str | None = None
+    """Provider event id — a replayed id is acknowledged and ignored."""
 
 
 class PayoutWebhookPayload(BaseModel):
@@ -189,6 +221,7 @@ class PayoutWebhookPayload(BaseModel):
     amount: float | None = None
     currency: str | None = None
     notes: str | None = None
+    event_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -214,10 +247,15 @@ class EscrowResponse(BaseModel):
     checkout_url: str | None = None
     released_total: float = 0.0
     refunded_total: float = 0.0
+    fee_pct: float | None = None
+    fees_total: float = 0.0
+    shortfall: float | None = None
+    settled_at: datetime | None = None
     tranches: list[TrancheSpec] = Field(default_factory=list)
     inspection_deadline: datetime | None = None
     buyer_accepted_at: datetime | None = None
     disputed: bool = False
+    disputed_at: datetime | None = None
 
     @classmethod
     def from_record(cls, r: EscrowHoldRecord) -> "EscrowResponse":
@@ -237,10 +275,15 @@ class EscrowResponse(BaseModel):
             checkout_url=r.checkout_url,
             released_total=r.released_total,
             refunded_total=r.refunded_total,
+            fee_pct=r.fee_pct,
+            fees_total=r.fees_total,
+            shortfall=r.shortfall,
+            settled_at=r.settled_at,
             tranches=r.tranches,
             inspection_deadline=r.inspection_deadline,
             buyer_accepted_at=r.buyer_accepted_at,
             disputed=r.disputed,
+            disputed_at=r.disputed_at,
         )
 
 
@@ -254,6 +297,8 @@ class PayoutResponse(BaseModel):
     ext_ref: str | None = None
     completed_at: datetime | None = None
     created_at: datetime
+    kind: str = "supplier_payout"
+    total_owed: float | None = None
 
     @classmethod
     def from_record(cls, r: PayoutRecord) -> "PayoutResponse":
@@ -267,6 +312,8 @@ class PayoutResponse(BaseModel):
             ext_ref=r.ext_ref,
             completed_at=r.completed_at,
             created_at=r.created_at,
+            kind=r.kind,
+            total_owed=r.total_owed,
         )
 
 
@@ -287,16 +334,37 @@ class DealLedger(BaseModel):
     deal_id: str
     currency: str
     provider: str | None = None
+    escrow_id: str | None = None
+    status: str | None = None
     principal: float = 0.0
     """Requested escrow amount (held)."""
     funded_amount: float | None = None
     """Actual amount the funded webhook confirmed."""
+    shortfall: float | None = None
     released_total: float = 0.0
     refunded_total: float = 0.0
     outstanding: float = 0.0
     """principal − released_total − refunded_total (still in escrow)."""
+    fees_total: float = 0.0
+    """Estimated provider fees on the released amounts."""
+    net_to_portless: float = 0.0
+    """released_total − fees_total — cash PortLess actually received."""
     payouts_total: float = 0.0
     """Sum of COMPLETED supplier payouts."""
+    payouts_pending: float = 0.0
+    """Sum of REQUESTED / PROCESSING supplier payouts (committed, not yet confirmed)."""
+    available_for_payout: float = 0.0
+    """net_to_portless − completed − pending payouts: what can still be paid to the supplier now."""
+    supplier_owed: float | None = None
+    """Supplier's total entitlement (Purchase Order value) when known."""
+    supplier_balance_due: float | None = None
+    """supplier_owed − payouts_total (None when the PO value is unknown)."""
+    realized_margin: float | None = None
+    """net_to_portless − payouts_total — PortLess's realised margin so far."""
     tranches: list[TrancheSpec] = Field(default_factory=list)
+    payouts: list[PayoutResponse] = Field(default_factory=list)
+    inspection_deadline: datetime | None = None
+    disputed: bool = False
+    settled: bool = False
     reconciled: bool = True
     issues: list[str] = Field(default_factory=list)

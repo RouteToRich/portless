@@ -11,3 +11,10 @@ from __future__ import annotations
 import os
 
 os.environ["EVENT_BUS_BACKEND"] = "inprocess"
+
+# The PortLess-owned Apify actors cost money per run. A developer logged in
+# with the Apify CLI (~/.apify/auth.json) must never have a unit test start a
+# real actor run: pin the connector to stub mode for the whole suite. Tests
+# that exercise the connector itself monkeypatch ``run()`` explicitly.
+os.environ["APIFY_TOKEN"] = ""
+os.environ["APIFY_TOKEN_AUTODISCOVER"] = "false"

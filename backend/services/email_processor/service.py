@@ -219,6 +219,10 @@ async def process_inbound(
         party_override=party_override,
     )
 
+    # ── Supplier quote replying to an RFQ e-mail (sourcing stage) ──────────
+    if getattr(mapping, "rfq_id", None) and not mapping.negotiation_id:
+        return await _handle_rfq_reply(record, raw, mapping, counter_price_override)
+
     if not mapping.negotiation_id:
         record = record.model_copy(update={
             "status": InboundEmailStatus.UNMATCHED,
@@ -269,6 +273,10 @@ async def process_inbound(
         )
     except Exception as exc:
         logger.debug("record_inbound_email (non-fatal): %s", exc)
+
+    # ── Post-agreement reply (PI acceptance etc.) — never a negotiation round ──
+    if mapping.session_status == "AGREED":
+        return await _handle_post_agreement_reply(record, raw, mapping)
 
     # ── Extract counter-price ──────────────────────────────────────────────
     price = counter_price_override or await _extract_price(raw.body_text)
@@ -359,11 +367,239 @@ async def process_inbound(
 
 
 # ---------------------------------------------------------------------------
+# RFQ replies (sourcing stage) — supplier quote by e-mail
+# ---------------------------------------------------------------------------
+# RFQs go out by e-mail with an [RFQ:<id>] subject token (sourcing
+# _dispatch_by_email). The supplier's reply lands here: the price is extracted
+# the same way as a negotiation counter-offer and handed to
+# sourcing.receive_quote_by_email, which verifies the supplier (GSTN / DGFT),
+# re-scores it and moves the deal MATCHING → NEGOTIATING. No price → the
+# operator reads it (PARSE_INBOUND_EMAIL).
+
+async def _handle_rfq_reply(
+    record: InboundEmailRecord,
+    raw: InboundRawEmail,
+    mapping,
+    counter_price_override: float | None,
+) -> ProcessingResult:
+    repo = get_repository()
+    rfq_id = mapping.rfq_id
+    deal_id: str | None = None
+    try:
+        from services.sourcing.service import get_rfq  # type: ignore[import]
+        rfq = await get_rfq(rfq_id)
+        deal_id = rfq.deal_id
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RFQ reply %s: RFQ %s lookup failed: %s", record.inbound_id, rfq_id, exc)
+
+    record = record.model_copy(update={
+        "status": InboundEmailStatus.MAPPED,
+        "deal_id": deal_id,
+        "party": "supplier",
+        "mapping_confidence": mapping.confidence,
+        "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(record)
+
+    price = counter_price_override or await _extract_price(raw.body_text)
+    if price is None or deal_id is None:
+        hitl_id = await _create_price_hitl(
+            record,
+            summary=(
+                f"Supplier quote reply to RFQ {rfq_id} from {record.from_address} — "
+                f"{'RFQ not found' if deal_id is None else 'no price could be extracted'}. "
+                f"Preview: {record.body_text[:200]}"
+            ),
+            risk_flags=["rfq_reply", "price_extraction_failed" if deal_id else "rfq_not_found"],
+        )
+        record = record.model_copy(update={
+            "status": InboundEmailStatus.NEEDS_OPERATOR,
+            "hitl_approval_id": hitl_id,
+            "updated_at": datetime.now(timezone.utc),
+        })
+        await repo.save(record)
+        return ProcessingResult(
+            inbound_id=record.inbound_id,
+            status=InboundEmailStatus.NEEDS_OPERATOR,
+            message=f"RFQ {rfq_id} reply stored for operator review (approval {hitl_id}).",
+        )
+
+    try:
+        from services.sourcing.service import receive_quote_by_email  # type: ignore[import]
+        quote = await receive_quote_by_email(
+            rfq_id, record.from_address, price, body_text=raw.body_text,
+        )
+        record = record.model_copy(update={
+            "status": InboundEmailStatus.PROCESSED,
+            "extracted_price": price,
+            "processed_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        })
+        await repo.save(record)
+        logger.info(
+            "Inbound %s → quote %s for RFQ %s (supplier %s, %.2f USD/MT, decision=%s)",
+            record.inbound_id, quote.quote_id, rfq_id, quote.supplier_id, price, quote.re_scored_decision,
+        )
+        return ProcessingResult(
+            inbound_id=record.inbound_id,
+            status=InboundEmailStatus.PROCESSED,
+            message=f"Quote {quote.quote_id} recorded for RFQ {rfq_id} (decision {quote.re_scored_decision}).",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("RFQ reply %s: receive_quote failed: %s", record.inbound_id, exc)
+        hitl_id = await _create_price_hitl(
+            record,
+            summary=f"Supplier quote for RFQ {rfq_id} could not be recorded ({exc}). Preview: {record.body_text[:200]}",
+            risk_flags=["rfq_reply", "quote_intake_failed"],
+        )
+        record = record.model_copy(update={
+            "status": InboundEmailStatus.NEEDS_OPERATOR,
+            "extracted_price": price,
+            "hitl_approval_id": hitl_id,
+            "error": str(exc),
+            "updated_at": datetime.now(timezone.utc),
+        })
+        await repo.save(record)
+        return ProcessingResult(
+            inbound_id=record.inbound_id,
+            status=InboundEmailStatus.NEEDS_OPERATOR,
+            message=f"Quote intake failed: {exc}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Post-agreement replies (deal-stage handling)
+# ---------------------------------------------------------------------------
+# Once a negotiation is AGREED the thread stays alive: the buyer receives the
+# Proforma Invoice and the escrow funding instructions on it, the supplier
+# receives the PO and the inspection booking. Their replies map back here
+# via the same [NEG:...] token but must never feed run_round() (there is no
+# round to run). The one reply we can act on automatically is the buyer
+# accepting the PI — detected with the same conservative acceptance guard the
+# negotiation agent uses, then gated behind CONFIRM_PI_ACCEPTANCE (policy
+# level, default L0). Everything else becomes a PARSE_INBOUND_EMAIL approval
+# so a human reads it.
+
+async def _handle_post_agreement_reply(
+    record: InboundEmailRecord,
+    raw: InboundRawEmail,
+    mapping,
+) -> ProcessingResult:
+    repo = get_repository()
+    deal_status: str | None = None
+    pi = None
+    if record.deal_id:
+        try:
+            from services.deals.service import get_deal  # type: ignore[import]
+            deal = await get_deal(record.deal_id)
+            deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Post-agreement reply: deal %s lookup failed: %s", record.deal_id, exc)
+        try:
+            from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
+            pi = await _dm_repo().get_pi_by_deal(record.deal_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Post-agreement reply: PI lookup failed: %s", exc)
+
+    try:
+        from agents.negotiation_agent.guards import is_explicit_acceptance  # type: ignore[import]
+        accepted = is_explicit_acceptance(raw.body_text)
+    except Exception:  # noqa: BLE001
+        accepted = False
+
+    if (
+        mapping.party == "buyer"
+        and deal_status == "PI_SENT"
+        and pi is not None
+        and pi.status == "SENT"
+        and accepted
+    ):
+        hitl_id = await _create_pi_acceptance_hitl(record, pi)
+        record = record.model_copy(update={
+            "status": InboundEmailStatus.PROCESSED,
+            "hitl_approval_id": hitl_id,
+            "processed_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        })
+        await repo.save(record)
+        logger.info(
+            "Inbound %s reads as buyer acceptance of PI %s — CONFIRM_PI_ACCEPTANCE %s created",
+            record.inbound_id, pi.pi_id, hitl_id,
+        )
+        return ProcessingResult(
+            inbound_id=record.inbound_id,
+            status=InboundEmailStatus.PROCESSED,
+            negotiation_id=record.negotiation_id,
+            message=f"Buyer acceptance of PI {pi.pi_id} detected; approval {hitl_id} created.",
+        )
+
+    hitl_id = await _create_price_hitl(
+        record,
+        summary=(
+            f"Post-agreement reply from {record.party or 'counterparty'} "
+            f"{record.from_address} (deal {deal_status or 'unknown'}) — read and act. "
+            f"Preview: {record.body_text[:200]}"
+        ),
+        risk_flags=["post_agreement_reply"],
+    )
+    record = record.model_copy(update={
+        "status": InboundEmailStatus.NEEDS_OPERATOR,
+        "hitl_approval_id": hitl_id,
+        "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(record)
+    return ProcessingResult(
+        inbound_id=record.inbound_id,
+        status=InboundEmailStatus.NEEDS_OPERATOR,
+        negotiation_id=record.negotiation_id,
+        message=f"Post-agreement reply stored for operator review (approval {hitl_id}).",
+    )
+
+
+async def _create_pi_acceptance_hitl(record: InboundEmailRecord, pi) -> str:
+    try:
+        from services.hitl_approval.service import create_approval  # type: ignore[import]
+        from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
+        from shared.orchestration.autonomy_policy import resolve_level
+
+        req = CreateApprovalRequest(
+            deal_id=record.deal_id or "",
+            action="CONFIRM_PI_ACCEPTANCE",
+            summary=(
+                f"Buyer {record.from_address} appears to accept PI {pi.pi_id} "
+                f"({pi.currency} {pi.total_value:,.2f}). Preview: {record.body_text[:200]}"
+            ),
+            financial_impact_usd=float(pi.total_value),
+            risk_flags=["buyer_acceptance_detected"],
+            autonomy_level=resolve_level("CONFIRM_PI_ACCEPTANCE"),
+            callback_payload={
+                "pi_id": pi.pi_id,
+                "deal_id": record.deal_id,
+                "accepted_by": record.from_address,
+                "buyer_email": record.from_address,
+                "notes": f"Accepted by email reply (inbound {record.inbound_id}): {record.subject}",
+                "inbound_id": record.inbound_id,
+            },
+            idempotency_key=f"pi-accept-{pi.pi_id}",
+        )
+        approval = await create_approval(req)
+        return approval.approval_id
+    except Exception as exc:  # noqa: BLE001
+        logger.error("CONFIRM_PI_ACCEPTANCE creation failed for %s: %s", record.inbound_id, exc)
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # HITL helper
 # ---------------------------------------------------------------------------
 
-async def _create_price_hitl(record: InboundEmailRecord) -> str:
-    """Create a HITL approval so an operator can supply the missing price."""
+async def _create_price_hitl(
+    record: InboundEmailRecord,
+    summary: str | None = None,
+    risk_flags: list[str] | None = None,
+) -> str:
+    """Create a HITL approval so an operator can read the email and supply
+    what the pipeline could not extract (price / intent)."""
     try:
         from services.hitl_approval.service import create_approval  # type: ignore[import]
         from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
@@ -371,11 +607,11 @@ async def _create_price_hitl(record: InboundEmailRecord) -> str:
         req = CreateApprovalRequest(
             deal_id=record.deal_id or record.negotiation_id or record.inbound_id,
             action="PARSE_INBOUND_EMAIL",
-            summary=(
+            summary=summary or (
                 f"Inbound email from {record.from_address} — price could not be "
                 f"extracted automatically. Preview: {record.body_text[:200]}"
             ),
-            risk_flags=["price_extraction_failed"],
+            risk_flags=risk_flags or ["price_extraction_failed"],
             autonomy_level="L0",
             callback_payload={
                 "inbound_id": record.inbound_id,

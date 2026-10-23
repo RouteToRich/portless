@@ -315,6 +315,33 @@ def draft_risk_flags(body: str, degraded: bool = False) -> list[str]:
     return flags
 
 
+def _resolve_gate_level(action: str) -> str:
+    """Autonomy level for a negotiation gate from the shared per-action policy
+    (shared/orchestration/autonomy_policy.py). Falls back to L0 — always ask —
+    if the policy module is unavailable for any reason."""
+    try:
+        from shared.orchestration.autonomy_policy import resolve_level
+        return resolve_level(action)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Autonomy policy unavailable for %s (%s) — defaulting to L0", action, exc)
+        return "L0"
+
+
+def _email_gate_level(session: NegotiationSession, flags: list[str]) -> str:
+    """Autonomy level for one SEND_NEGOTIATION_EMAIL approval.
+
+    Policy decides (default L0), with two hard overrides that no policy can
+    lift: a degraded/placeholder draft is never auto-sent, and the very first
+    outbound of a negotiation stays human-gated while
+    ``hitl_on_first_outbound`` is on.
+    """
+    if "degraded_llm_fallback" in flags or "unresolved_placeholders" in flags:
+        return "L0"
+    if session.round_no == 0 and settings.hitl_on_first_outbound:
+        return "L0"
+    return _resolve_gate_level("SEND_NEGOTIATION_EMAIL")
+
+
 async def _create_and_gate_email(
     session: NegotiationSession,
     party: str,
@@ -368,7 +395,7 @@ async def _create_and_gate_email(
                 f"{quality_note}Round {session.round_no} draft email to {party} — {preview}"
             ),
             risk_flags=flags,
-            autonomy_level="L0",
+            autonomy_level=_email_gate_level(session, flags),
             callback_payload={
                 "email_id": email_id,
                 "negotiation_id": session.negotiation_id,
@@ -425,7 +452,7 @@ async def _create_agreement_gate(
                 f"{final_state.get('reasoning', '')[:200]}"
             ),
             risk_flags=["deal_closing_confirmation"],
-            autonomy_level="L0",
+            autonomy_level=_resolve_gate_level("CONFIRM_NEGOTIATION_AGREEMENT"),
             callback_payload={
                 "negotiation_id": session.negotiation_id,
                 "agreed_price": session.agreed_price,

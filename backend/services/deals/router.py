@@ -10,8 +10,10 @@ from .schemas import (
     CreateDealRequest,
     DealRecord,
     DealStatus,
+    EnrichmentResult,
     MatchResult,
     UpdateFinancialsRequest,
+    UpdatePartyRequest,
     UpdateStatusRequest,
 )
 from .service import DealNotFoundError, InvalidTransitionError
@@ -141,6 +143,53 @@ async def update_financials(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Parties: operator corrections + Apify enrichment
+# ---------------------------------------------------------------------------
+
+@router.patch("/{deal_id}/parties/{role}", response_model=DealRecord)
+async def update_party(
+    deal_id: str,
+    role: str,
+    payload: UpdatePartyRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> DealRecord:
+    """Correct a counterparty's identity or contact (buyer / supplier).
+
+    Operator-entered contacts are stamped ``contact_source="operator"`` and are
+    never overwritten by a later enrichment run.
+    """
+    await _org_deal(deal_id, user)
+    try:
+        return await service.update_party(
+            deal_id, role, payload.model_dump(exclude_none=True), source="operator"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/{deal_id}/enrich", response_model=EnrichmentResult)
+async def enrich_deal(
+    deal_id: str,
+    screen: bool = Query(default=True, description="Run sanctions / registry screening"),
+    contacts: bool = Query(default=True, description="Run the company contact finder"),
+    user: AuthUser = Depends(get_current_user),
+) -> EnrichmentResult:
+    """Identify and verify the deal's counterparties with the PortLess Apify
+    actors: website + checked e-mail + phone (company-contact-finder-ai) and
+    OFAC/UN/EU/UK sanctions + LEI + VIES (counterparty-check-ai). Results are
+    written onto the deal's parties; ``blocked`` is true when any party is
+    sanctioned (a deal exception is raised as well)."""
+    await _org_deal(deal_id, user)
+    try:
+        result = await service.enrich_deal(deal_id, screen=screen, contacts=contacts)
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return EnrichmentResult(**result)
 
 
 # ---------------------------------------------------------------------------

@@ -1,65 +1,17 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Settings2, Save, Info } from "lucide-react";
+import { Settings2, Save, Info, RotateCcw, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { AutonomyApi, type AutonomyActionPolicy } from "@/api/endpoints";
+import type { AutonomyLevel } from "@/api/types";
 
-type Level = "L0" | "L1" | "L2" | "L3";
-
-const ACTION_CLASSES = [
-  {
-    key: "opportunity_scan",
-    label: "Opportunity Scanning",
-    description: "Auto-scan Comtrade/Census/WITS for arbitrage signals",
-    def: "L3" as Level,
-  },
-  {
-    key: "qc_booking",
-    label: "QC Booking",
-    description: "Book SGS/Intertek inspection for outbound shipments",
-    def: "L3" as Level,
-  },
-  {
-    key: "doc_generation",
-    label: "Document Generation",
-    description: "Generate PI, CI, PL, CoO, SDF, Shipping Bill documents",
-    def: "L2" as Level,
-  },
-  {
-    key: "rfq_dispatch",
-    label: "RFQ Dispatch",
-    description: "Send RFQ emails to verified suppliers via negotiation agent",
-    def: "L2" as Level,
-  },
-  {
-    key: "freight_booking",
-    label: "Freight Booking",
-    description: "Book Cogoport/Freightos freight for approved shipments",
-    def: "L1" as Level,
-  },
-  {
-    key: "negotiation_email",
-    label: "Negotiation Emails",
-    description: "Approve outbound negotiation emails before sending",
-    def: "L1" as Level,
-  },
-  {
-    key: "supplier_payout",
-    label: "Supplier Payout",
-    description: "Release Payoneer payout to supplier after QC pass",
-    def: "L0" as Level,
-  },
-  {
-    key: "po_issuance",
-    label: "PO Issuance",
-    description: "Issue Purchase Order to supplier after PI acceptance",
-    def: "L0" as Level,
-  },
-];
+type Level = AutonomyLevel;
 
 const LEVELS: { value: Level; label: string; hint: string; color: string }[] = [
   {
@@ -87,6 +39,13 @@ const LEVELS: { value: Level; label: string; hint: string; color: string }[] = [
     color: "#2ec28a",
   },
 ];
+
+const SOURCE_LABEL: Record<AutonomyActionPolicy["source"], string> = {
+  override: "saved override",
+  env: "environment",
+  default: "built-in default",
+  money_ceiling: "capped by money ceiling",
+};
 
 function LevelChip({
   level,
@@ -123,23 +82,72 @@ function LevelChip({
 }
 
 export function AutonomySettings() {
-  const [config, setConfig] = useState<Record<string, Level>>(
-    Object.fromEntries(ACTION_CLASSES.map((a) => [a.key, a.def]))
-  );
-  const [saved, setSaved] = useState(false);
+  const [policy, setPolicy] = useState<AutonomyActionPolicy[]>([]);
+  const [moneyCeiling, setMoneyCeiling] = useState<Level>("L1");
+  // Pending edits: action → level (or null = clear the override)
+  const [edits, setEdits] = useState<Record<string, Level | null>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function handleSave() {
-    // Backend endpoint not yet implemented — local only
-    setSaved(true);
-    toast.success("Autonomy profile saved", {
-      description: "Changes are local until backend support is added",
-    });
-    setTimeout(() => setSaved(false), 2000);
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await AutonomyApi.get();
+      setPolicy(res.actions);
+      setMoneyCeiling(res.money_ceiling);
+      setEdits({});
+    } catch (e) {
+      setError((e as Error).message ?? "Could not load the autonomy policy");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  function handleReset() {
-    setConfig(Object.fromEntries(ACTION_CLASSES.map((a) => [a.key, a.def])));
-    toast.info("Reset to defaults");
+  useEffect(() => {
+    void load();
+  }, []);
+
+  // Level shown per action: pending edit → saved override → env → default.
+  const shown = useMemo(() => {
+    const out: Record<string, Level> = {};
+    for (const a of policy) {
+      const pending = edits[a.action];
+      out[a.action] =
+        pending !== undefined
+          ? (pending ?? a.env ?? a.default)
+          : a.override ?? a.env ?? a.default;
+    }
+    return out;
+  }, [policy, edits]);
+
+  const dirty = Object.keys(edits).length > 0;
+
+  async function handleSave() {
+    if (!dirty) return;
+    setSaving(true);
+    try {
+      const res = await AutonomyApi.save(edits);
+      setPolicy(res.actions);
+      setMoneyCeiling(res.money_ceiling);
+      setEdits({});
+      toast.success("Autonomy policy saved", {
+        description: "New approvals are created at the updated levels immediately.",
+      });
+    } catch (e) {
+      toast.error("Save failed", { description: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleResetDefaults() {
+    // Clear every saved override (env + built-in defaults apply again).
+    const cleared: Record<string, Level | null> = {};
+    for (const a of policy) if (a.override) cleared[a.action] = null;
+    setEdits(cleared);
+    toast.info("Overrides cleared — press Save to apply");
   }
 
   return (
@@ -153,17 +161,31 @@ export function AutonomySettings() {
           <div>
             <h1 className="text-lg font-bold">Autonomy Settings</h1>
             <p className="text-xs text-muted-foreground">
-              Configure per-action autonomy levels for the AI agent
+              Per-action autonomy levels for the pipeline — L2 on every row runs a deal
+              end-to-end without an operator; money movement stays capped at{" "}
+              <span className="font-semibold">{moneyCeiling}</span>
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={handleReset}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5 text-xs"
+            onClick={handleResetDefaults}
+            disabled={loading}
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
             Reset
           </Button>
-          <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={handleSave}>
+          <Button
+            size="sm"
+            className="h-8 gap-1.5 text-xs"
+            onClick={handleSave}
+            disabled={!dirty || saving || loading}
+          >
             <Save className="w-3.5 h-3.5" />
-            {saved ? "Saved!" : "Save"}
+            {saving ? "Saving…" : dirty ? "Save" : "Saved"}
           </Button>
         </div>
       </div>
@@ -198,6 +220,13 @@ export function AutonomySettings() {
               </div>
             ))}
           </div>
+          <p className="text-xs text-muted-foreground mt-3 flex items-center gap-1.5">
+            <ShieldAlert className="w-3.5 h-3.5" />
+            Supplier payout and escrow tranche release never run above the money ceiling
+            (<code>AUTONOMY_MONEY_CEILING</code>, currently {moneyCeiling}); degraded or
+            placeholder email drafts and the first outbound negotiation email always stay
+            at L0.
+          </p>
         </CardContent>
       </Card>
 
@@ -208,31 +237,68 @@ export function AutonomySettings() {
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
           Action Classes
         </p>
-        {ACTION_CLASSES.map((action) => {
-          const current = config[action.key] as Level;
-          return (
-            <Card key={action.key}>
-              <CardContent className="flex items-center gap-4 pt-4">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold">{action.label}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">{action.description}</p>
-                </div>
-                <div className="flex items-center gap-1 shrink-0 w-[200px] bg-secondary rounded-lg border border-border p-1">
-                  {LEVELS.map((level) => (
-                    <LevelChip
-                      key={level.value}
-                      level={level}
-                      selected={current === level.value}
-                      onClick={() =>
-                        setConfig((c) => ({ ...c, [action.key]: level.value }))
-                      }
-                    />
-                  ))}
-                </div>
+        {error && (
+          <Card>
+            <CardContent className="pt-4 text-sm text-destructive">
+              {error}{" "}
+              <button className="underline" onClick={() => void load()}>
+                retry
+              </button>
+            </CardContent>
+          </Card>
+        )}
+        {loading &&
+          [0, 1, 2, 3].map((i) => (
+            <Card key={i}>
+              <CardContent className="pt-4">
+                <Skeleton className="h-10 w-full" />
               </CardContent>
             </Card>
-          );
-        })}
+          ))}
+        {!loading &&
+          policy.map((action) => {
+            const current = shown[action.action];
+            const pending = edits[action.action] !== undefined;
+            return (
+              <Card key={action.action} className={cn(pending && "border-[#4f8cff]/60")}>
+                <CardContent className="flex items-center gap-4 pt-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold">{action.label}</p>
+                      {action.money_moving && (
+                        <Badge variant="outline" className="text-[10px]">
+                          money
+                        </Badge>
+                      )}
+                      {action.follows_deal_profile && (
+                        <Badge variant="outline" className="text-[10px]">
+                          per-deal profile
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">{action.description}</p>
+                    <p className="text-[11px] text-muted-foreground mt-1">
+                      effective <span className="font-semibold">{action.effective}</span> ·{" "}
+                      {SOURCE_LABEL[action.source]}
+                      {pending && " · unsaved change"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0 w-[200px] bg-secondary rounded-lg border border-border p-1">
+                    {LEVELS.map((level) => (
+                      <LevelChip
+                        key={level.value}
+                        level={level}
+                        selected={current === level.value}
+                        onClick={() =>
+                          setEdits((e) => ({ ...e, [action.action]: level.value }))
+                        }
+                      />
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
       </div>
 
       {/* Summary */}
@@ -243,7 +309,7 @@ export function AutonomySettings() {
           </p>
           <div className="flex flex-wrap gap-2">
             {LEVELS.map((level) => {
-              const count = ACTION_CLASSES.filter((a) => config[a.key] === level.value).length;
+              const count = policy.filter((a) => shown[a.action] === level.value).length;
               return (
                 <div
                   key={level.value}

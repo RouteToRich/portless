@@ -66,6 +66,20 @@ class Settings(BaseSettings):
     # HITL approval. See shared/orchestration/auto_flow.py.
     auto_flow_enabled: bool = False
 
+    # --- Opportunity → deal auto-creation (production automation leg) ---
+    # When true, every OPPORTUNITY_DETECTED event that clears the thresholds
+    # below becomes a deal automatically (status MATCHING → RFQ dispatch →
+    # negotiation …) instead of waiting for an operator to click "Start Deal".
+    # Simulated-source opportunities (no live Comtrade/Census data) are never
+    # converted. One deal per opportunity; an existing non-terminal deal on the
+    # same HS code × market also blocks a second one. Off by default.
+    auto_deal_from_opportunity_enabled: bool = False
+    auto_deal_min_arbitrage_rank: float = 60.0
+    auto_deal_min_confidence: float = 50.0
+    auto_deal_operator_id: str = "system:auto-deal"
+    auto_deal_org_id: str = "portless"
+    auto_deal_autonomy_profile: str = "L0"
+
     # --- Shared MongoDB (single connection string + single database) ---
     # Set MONGO_URI once and every service/module uses it, writing to the SAME
     # database (MONGO_DB_NAME) via its own collection(s) — one Mongo database for

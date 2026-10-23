@@ -16,6 +16,14 @@ Guards
   • Idempotency key on every create to prevent double-holds / double-payouts
   • Deal state validation before every state-changing operation
   • HMAC webhook verification (Stripe Stripe-Signature, Payoneer x-payoneer-signature)
+    + replay protection on provider ``event_id``
+  • Funding shortfall: a provider total below the principal keeps the escrow
+    ``PARTIALLY_FUNDED`` and the deal in ESCROW_PENDING (no PO against money
+    that is not there)
+  • Tranches release strictly in schedule order, never while the deal is in
+    DISPUTE / CANCELLED / REFUNDED, never above the principal
+  • Supplier payouts never exceed the net funds released from escrow; the deal
+    is PAID only once the supplier received the full PO value
   • Graceful stub: when API keys are absent the connectors return realistic stubs
     so the deal pipeline can progress in dev/CI
 
@@ -75,6 +83,12 @@ DEFAULT_TRANCHES: list[tuple[str, str, float]] = [
 
 # Tolerance (major currency units) for funding / reconciliation comparisons.
 _FUNDING_TOLERANCE = 0.01
+
+# Deal statuses in which no money may leave the escrow towards PortLess.
+_RELEASE_BLOCKING_DEAL_STATUSES = {"DISPUTE", "CANCELLED", "REFUNDED", "QC_FAILED"}
+
+# Provider fee (% of each release) when the connector cannot quote one.
+_DEFAULT_FEE_PCT = {"tazapay": 1.0, "escrow_com": 0.89, "stripe": 2.9, "stripe_treasury": 2.9}
 
 
 def _normalize_funded_amount(provider: str, amount: float | int | None) -> float | None:
@@ -235,6 +249,7 @@ async def create_hold(req: EscrowHoldRequest) -> EscrowResponse:
         currency=req.currency.upper(),
         status="PENDING",
         idempotency_key=req.idempotency_key,
+        fee_pct=await _provider_fee_pct(provider),
         created_at=now,
         updated_at=now,
     )
@@ -297,17 +312,68 @@ async def handle_escrow_funded_webhook(
     if not valid:
         raise WebhookVerifyError(f"Escrow webhook signature invalid for ext_ref={payload.ext_ref}")
 
-    # Idempotent — already funded
-    if hold.status == "FUNDED":
+    # Replay protection — a provider re-delivering the same event is acknowledged, not re-applied.
+    if payload.event_id and payload.event_id in hold.processed_events:
+        logger.info("EscrowGuard: funded webhook event %s already applied — ignored", payload.event_id)
+        return {"status": "ok", "escrow_id": hold.escrow_id, "deal_id": hold.deal_id, "replayed": True}
+
+    # Idempotent — already funded (or past funding)
+    if hold.status in ("FUNDED", "RELEASED", "REFUNDED"):
         return {"status": "ok", "escrow_id": hold.escrow_id, "deal_id": hold.deal_id}
 
     now = datetime.now(timezone.utc)
     funded_amount = _normalize_funded_amount(hold.provider, payload.amount)
+    events = list(hold.processed_events) + ([payload.event_id] if payload.event_id else [])
+    base_update: dict[str, Any] = {
+        "updated_at": now,
+        "processed_events": events,
+        "provider_payload": {**hold.provider_payload, "funded_event": payload.model_dump()},
+    }
+
+    # Funding shortfall: the provider holds less than the Proforma Invoice total.
+    # Money that is not there cannot back a PO — keep the deal waiting, tell the
+    # buyer the balance, and raise an exception so the operator sees it.
+    if funded_amount is not None and funded_amount < hold.amount - _FUNDING_TOLERANCE:
+        shortfall = round(hold.amount - funded_amount, 2)
+        updated = hold.model_copy(update={
+            **base_update,
+            "status": "PARTIALLY_FUNDED",
+            "funded_amount": funded_amount,
+            "shortfall": shortfall,
+        })
+        await repo.save_hold(updated)
+        logger.warning(
+            "EscrowGuard: funding shortfall for deal %s — expected %.2f, received %.2f %s (short %.2f)",
+            hold.deal_id, hold.amount, funded_amount, hold.currency, shortfall,
+        )
+        await _emit(EventTopic.DEAL_EXCEPTION, hold.deal_id, {
+            "source": "escrow_guard",
+            "escrow_id": hold.escrow_id,
+            "reason": "funding_shortfall",
+            "category": "PAYMENT_FAILED",
+            "expected": hold.amount,
+            "received": funded_amount,
+            "shortfall": shortfall,
+            "currency": hold.currency,
+            "action_required": "buyer_must_fund_balance",
+        })
+        await _emit(EventTopic.ESCROW_FUNDING_SHORTFALL, hold.deal_id, {
+            "escrow_id": hold.escrow_id,
+            "expected": hold.amount,
+            "received": funded_amount,
+            "shortfall": shortfall,
+            "currency": hold.currency,
+            "checkout_url": hold.checkout_url,
+        })
+        await _notify_funding_shortfall(updated)
+        return {"status": "shortfall", "escrow_id": hold.escrow_id, "deal_id": hold.deal_id,
+                "shortfall": shortfall}
+
     update: dict[str, Any] = {
+        **base_update,
         "status": "FUNDED",
         "funded_at": now,
-        "updated_at": now,
-        "provider_payload": {**hold.provider_payload, "funded_event": payload.model_dump()},
+        "shortfall": None,
     }
     if funded_amount is not None:
         update["funded_amount"] = funded_amount
@@ -319,10 +385,11 @@ async def handle_escrow_funded_webhook(
     except Exception as exc:
         logger.error("EscrowGuard: ESCROW_FUNDED transition failed for deal %s: %s", hold.deal_id, exc)
 
-    # Reconcile the received amount against the requested principal.
-    if funded_amount is not None and abs(funded_amount - hold.amount) > _FUNDING_TOLERANCE:
+    # Over-funding is not a blocker (the surplus is refundable) but it is a
+    # ledger mismatch the operator must see.
+    if funded_amount is not None and funded_amount > hold.amount + _FUNDING_TOLERANCE:
         logger.warning(
-            "EscrowGuard: funding mismatch for deal %s — expected %.2f, received %.2f %s",
+            "EscrowGuard: over-funding for deal %s — expected %.2f, received %.2f %s",
             hold.deal_id, hold.amount, funded_amount, hold.currency,
         )
         await _emit(EventTopic.DEAL_EXCEPTION, hold.deal_id, {
@@ -332,7 +399,7 @@ async def handle_escrow_funded_webhook(
             "expected": hold.amount,
             "received": funded_amount,
             "currency": hold.currency,
-            "action_required": "review_funding_amount",
+            "action_required": "review_funding_amount_refund_surplus",
         })
 
     await _emit(EventTopic.ESCROW_FUNDED, hold.deal_id, {
@@ -345,6 +412,103 @@ async def handle_escrow_funded_webhook(
 
     logger.info("EscrowGuard: hold %s funded for deal %s", hold.escrow_id, hold.deal_id)
     return {"status": "ok", "escrow_id": hold.escrow_id, "deal_id": hold.deal_id}
+
+
+async def _notify_funding_shortfall(hold: EscrowHoldRecord) -> None:
+    """Best-effort buyer notice with the outstanding balance (templated e-mail)."""
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        from shared.orchestration import notifications
+        deal = await get_deal(hold.deal_id)
+        await notifications.notify_funding_shortfall(deal, hold)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("EscrowGuard: shortfall notice for deal %s not sent: %s", hold.deal_id, exc)
+
+
+async def _provider_fee_pct(provider: str) -> float | None:
+    """Fee the provider takes on each release (from its quote, else a documented default)."""
+    try:
+        connector = _payment_connector(provider)
+        quote = await connector.quote({})
+        fee = quote.get("fee_pct") if isinstance(quote, dict) else None
+        if fee is not None:
+            return float(fee)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("EscrowGuard: fee quote for %s unavailable: %s", provider, exc)
+    return _DEFAULT_FEE_PCT.get(provider)
+
+
+def _fee_on(hold: EscrowHoldRecord, amount: float) -> float:
+    return round(amount * (hold.fee_pct or 0.0) / 100.0, 2)
+
+
+async def _deal_status(deal_id: str) -> str | None:
+    """Best-effort deal status (None when the deal service is unreachable)."""
+    try:
+        deal = await _fetch_deal(deal_id)
+        return deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _supplier_owed(deal_id: str) -> float | None:
+    """What the supplier is owed in total — the Purchase Order value (best-effort)."""
+    try:
+        from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
+        po = await _dm_repo().get_po_by_deal(deal_id)
+        if po is not None and po.total_value:
+            return round(float(po.total_value), 2)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("EscrowGuard: PO lookup failed for %s: %s", deal_id, exc)
+    return None
+
+
+def _net_received(hold: EscrowHoldRecord) -> float:
+    """Cash PortLess holds from this escrow: released tranches net of fees, or —
+    for a legacy Stripe hold (no tranches) — the funded principal."""
+    if hold.tranches:
+        return round(hold.released_total - hold.fees_total, 2)
+    if hold.status in ("FUNDED", "RELEASED"):
+        return round(hold.funded_amount if hold.funded_amount is not None else hold.amount, 2)
+    return 0.0
+
+
+def _payout_totals(payouts: list[PayoutRecord]) -> tuple[float, float]:
+    """→ (completed_total, pending_total) over non-failed payouts."""
+    completed = round(sum(p.amount for p in payouts if p.status == "COMPLETED"), 2)
+    pending = round(sum(p.amount for p in payouts if p.status in ("REQUESTED", "PROCESSING")), 2)
+    return completed, pending
+
+
+async def _settle_if_complete(hold: EscrowHoldRecord, now: datetime) -> EscrowHoldRecord:
+    """When every tranche is RELEASED: stamp ``settled_at``, emit ESCROW_SETTLED,
+    refresh the deal's realised margin. Idempotent."""
+    if hold.settled_at is not None or not hold.tranches:
+        return hold
+    if not all(t.status == "RELEASED" for t in hold.tranches):
+        return hold
+    repo = get_repository()
+    settled = hold.model_copy(update={"settled_at": now, "updated_at": now})
+    await repo.save_hold(settled)
+    owed = await _supplier_owed(hold.deal_id)
+    completed, pending = _payout_totals(await repo.list_payouts_by_deal(hold.deal_id))
+    await _emit(EventTopic.ESCROW_SETTLED, hold.deal_id, {
+        "escrow_id": hold.escrow_id,
+        "provider": hold.provider,
+        "principal": hold.amount,
+        "released_total": settled.released_total,
+        "fees_total": settled.fees_total,
+        "net_to_portless": _net_received(settled),
+        "supplier_owed": owed,
+        "supplier_paid": completed,
+        "supplier_pending": pending,
+        "supplier_balance_due": round(owed - completed - pending, 2) if owed is not None else None,
+        "currency": hold.currency,
+    })
+    await _patch_deal_realized_margin(hold.deal_id)
+    logger.info("EscrowGuard: escrow %s settled for deal %s (released %.2f, fees %.2f)",
+                hold.escrow_id, hold.deal_id, settled.released_total, settled.fees_total)
+    return settled
 
 
 # ---------------------------------------------------------------------------
@@ -367,17 +531,35 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
 
     deal = await _fetch_deal(req.deal_id)
     deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
-    if deal_status != "CLEARED":
-        raise InvalidDealState(req.deal_id, deal_status, "CLEARED")
+    # The main payout needs cleared cargo; the balance payout follows the final
+    # tranche and may land after the deal is already PAID-on-paper (CLEARED/PAID).
+    allowed = ("CLEARED", "PAID") if req.kind == "supplier_balance" else ("CLEARED",)
+    if deal_status not in allowed:
+        raise InvalidDealState(req.deal_id, deal_status, "/".join(allowed))
 
-    # Verify funded escrow exists
+    # Verify funded escrow exists (RELEASED = every tranche already left the
+    # escrow towards PortLess — the money is there to pay the supplier from).
     hold = await repo.get_hold_by_deal(req.deal_id)
-    if hold is None or hold.status != "FUNDED":
+    if hold is None or hold.status not in ("FUNDED", "RELEASED"):
         raise InvalidDealState(
             req.deal_id,
             f"escrow={hold.status if hold else 'none'}",
             "escrow=FUNDED",
         )
+    if hold.disputed:
+        raise InvalidDealState(req.deal_id, "escrow disputed", "not_disputed")
+
+    # Never pay out money PortLess has not received from the escrow.
+    completed, pending = _payout_totals(await repo.list_payouts_by_deal(req.deal_id))
+    available = round(_net_received(hold) - completed - pending, 2)
+    if req.amount > available + _FUNDING_TOLERANCE:
+        raise InvalidDealState(
+            req.deal_id,
+            f"payout {req.amount:.2f} exceeds funds released from escrow (available {available:.2f})",
+            "amount <= available_for_payout",
+        )
+    if req.amount <= 0:
+        raise InvalidDealState(req.deal_id, "payout amount <= 0", "amount > 0")
 
     now = datetime.now(timezone.utc)
     payout_id = _new_payout_id()
@@ -391,6 +573,8 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
         status="REQUESTED",
         description=req.description or f"Payout for deal {req.deal_id}",
         idempotency_key=req.idempotency_key,
+        kind=req.kind,
+        total_owed=req.total_owed,
         created_at=now,
         updated_at=now,
     )
@@ -418,19 +602,25 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
     })
     await repo.save_payout(updated)
 
-    # Mark hold as RELEASED
-    released_hold = hold.model_copy(update={
-        "status": "RELEASED",
-        "released_at": now,
-        "updated_at": now,
-    })
-    await repo.save_hold(released_hold)
+    # Legacy Stripe hold (no tranche ledger): the payout IS the release.
+    # A staged escrow keeps its own tranche ledger — the hold status is driven
+    # by tranche releases, never by a payout.
+    if not hold.tranches:
+        released_hold = hold.model_copy(update={
+            "status": "RELEASED",
+            "released_at": now,
+            "updated_at": now,
+        })
+        await repo.save_hold(released_hold)
 
     await _emit(EventTopic.PAYOUT_REQUESTED, req.deal_id, {
         "payout_id": payout_id,
         "payee_id": req.payee_id,
         "amount": req.amount,
         "currency": req.currency,
+        "kind": req.kind,
+        "total_owed": req.total_owed,
+        "available_before": available,
         "ext_ref": result.get("ext_ref"),
         "stub": result.get("stub", False),
     })
@@ -467,34 +657,63 @@ async def handle_payout_webhook(
     if not valid:
         raise WebhookVerifyError(f"Payout webhook signature invalid for ext_ref={payload.ext_ref}")
 
+    # Replay protection
+    if payload.event_id and payload.event_id in payout.processed_events:
+        return {"status": "ok", "payout_id": payout.payout_id, "deal_id": payout.deal_id, "replayed": True}
+
     # Idempotent
     if payout.status == "COMPLETED" and payload.status == "COMPLETED":
         return {"status": "ok", "payout_id": payout.payout_id, "deal_id": payout.deal_id}
 
     now = datetime.now(timezone.utc)
+    events = list(payout.processed_events) + ([payload.event_id] if payload.event_id else [])
 
     if payload.status == "COMPLETED":
         updated = payout.model_copy(update={
             "status": "COMPLETED",
             "completed_at": now,
             "updated_at": now,
+            "processed_events": events,
         })
         await repo.save_payout(updated)
-        try:
-            await _transition_deal(payout.deal_id, "PAID", f"Payout completed — ref {payload.ext_ref}")
-        except Exception as exc:
-            logger.error("EscrowGuard: PAID transition failed for deal %s: %s", payout.deal_id, exc)
+
+        # PAID means the supplier received everything they are owed — not
+        # merely that *a* payout went through. Partial payouts (capped by the
+        # escrow releases) leave the deal CLEARED until the balance is paid.
+        owed = updated.total_owed if updated.total_owed is not None else await _supplier_owed(payout.deal_id)
+        completed, pending = _payout_totals(await repo.list_payouts_by_deal(payout.deal_id))
+        fully_paid = owed is None or completed >= owed - _FUNDING_TOLERANCE
+        balance_due = round(owed - completed, 2) if owed is not None else None
+        if fully_paid:
+            if await _deal_status(payout.deal_id) != "PAID":
+                try:
+                    await _transition_deal(payout.deal_id, "PAID", f"Payout completed — ref {payload.ext_ref}")
+                except Exception as exc:
+                    logger.error("EscrowGuard: PAID transition failed for deal %s: %s", payout.deal_id, exc)
+        else:
+            logger.info(
+                "EscrowGuard: payout %s completed but supplier still owed %.2f of %.2f for deal %s — "
+                "deal stays CLEARED until the balance is paid",
+                payout.payout_id, balance_due or 0.0, owed or 0.0, payout.deal_id,
+            )
         await _emit(EventTopic.PAYOUT_COMPLETED, payout.deal_id, {
             "payout_id": payout.payout_id,
             "ext_ref": payload.ext_ref,
             "amount": payout.amount,
             "currency": payout.currency,
+            "kind": updated.kind,
+            "fully_paid": fully_paid,
+            "completed_total": completed,
+            "pending_total": pending,
+            "supplier_owed": owed,
+            "balance_due": balance_due,
         })
         await _patch_deal_realized_margin(payout.deal_id)
     elif payload.status == "FAILED":
         updated = payout.model_copy(update={
             "status": "FAILED",
             "updated_at": now,
+            "processed_events": events,
         })
         await repo.save_payout(updated)
         await _emit(EventTopic.DEAL_EXCEPTION, payout.deal_id, {
@@ -509,6 +728,7 @@ async def handle_payout_webhook(
         updated = payout.model_copy(update={
             "status": "PROCESSING",
             "updated_at": now,
+            "processed_events": events,
         })
         await repo.save_payout(updated)
 
@@ -575,6 +795,7 @@ async def create_escrow(req: CreateEscrowRequest) -> EscrowResponse:
         payment_method=req.payment_method,
         qc_provider=req.qc_provider,
         tranches=tranches,
+        fee_pct=await _provider_fee_pct(req.provider),
         created_at=now,
         updated_at=now,
     )
@@ -637,6 +858,21 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
     if tranche.status == "RELEASED":  # idempotent
         return EscrowResponse.from_record(hold)
 
+    # A deal in dispute / cancelled / refunded keeps its money where it is.
+    deal_status = await _deal_status(hold.deal_id)
+    if deal_status in _RELEASE_BLOCKING_DEAL_STATUSES:
+        raise InvalidDealState(hold.deal_id, deal_status, "deal not in DISPUTE/CANCELLED/REFUNDED/QC_FAILED")
+
+    # Tranches release in schedule order: QC money never leaves before the PO
+    # advance did (a rejected/failed earlier gate must be resolved first).
+    earlier_pending = [t.tranche_id for t in hold.tranches[:idx] if t.status == "PENDING"]
+    if earlier_pending:
+        raise InvalidDealState(
+            hold.deal_id,
+            f"tranche {tranche.tranche_id} requested while {', '.join(earlier_pending)} still PENDING",
+            "earlier tranches released first",
+        )
+
     # Release authority: the final (ACCEPTED-trigger) tranche is NOT releasable by
     # a PortLess proof call — it needs buyer acceptance or an inspection-window
     # lapse (see accept_escrow / check_inspection_windows). This prevents PortLess
@@ -685,12 +921,15 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
     # final ACCEPTED-trigger ones (i.e. all proof-gated tranches are released).
     inspection_deadline = hold.inspection_deadline
     remaining_pending = [t for t in new_tranches if t.status == "PENDING"]
+    window_opened = False
     if remaining_pending and all(t.trigger == "ACCEPTED" for t in remaining_pending) and inspection_deadline is None:
         inspection_deadline = now + timedelta(hours=settings.inspection_window_hours)
+        window_opened = True
 
     updated = hold.model_copy(update={
         "tranches": new_tranches,
         "released_total": released_total,
+        "fees_total": round(hold.fees_total + _fee_on(hold, amount), 2),
         "status": "RELEASED" if all_released else hold.status,
         "released_at": now if all_released else hold.released_at,
         "inspection_deadline": inspection_deadline,
@@ -698,19 +937,28 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
     })
     await repo.save_hold(updated)
 
-    await _emit(EventTopic.PAYOUT_REQUESTED, hold.deal_id, {
+    next_pending = remaining_pending[0] if remaining_pending else None
+    await _emit(EventTopic.ESCROW_TRANCHE_RELEASED, hold.deal_id, {
         "escrow_id": escrow_id,
         "tranche_id": tranche.tranche_id,
         "trigger": tranche.trigger,
         "amount": amount,
         "released_total": released_total,
+        "fees_total": updated.fees_total,
+        "all_released": all_released,
+        "next_pending_tranche": next_pending.tranche_id if next_pending else None,
+        "next_pending_trigger": next_pending.trigger if next_pending else None,
+        "inspection_window_opened": window_opened,
+        "inspection_deadline": inspection_deadline.isoformat() if inspection_deadline else None,
         "provider": hold.provider,
         "proof_refs": req.proof_refs,
+        "currency": hold.currency,
     })
     logger.info(
         "EscrowGuard: released tranche %s (%.2f %s) for deal %s (escrow=%s, total=%.2f)",
         tranche.tranche_id, amount, hold.currency, hold.deal_id, escrow_id, released_total,
     )
+    updated = await _settle_if_complete(updated, now)
     return EscrowResponse.from_record(updated)
 
 
@@ -726,10 +974,17 @@ async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
         raise HoldNotFoundError(escrow_id)
     if hold.status == "REFUNDED":  # idempotent
         return EscrowResponse.from_record(hold)
-    if hold.status not in ("FUNDED", "RELEASED"):
+    if hold.status not in ("FUNDED", "RELEASED", "PARTIALLY_FUNDED"):
         raise InvalidDealState(hold.deal_id, f"escrow={hold.status}", "escrow=FUNDED")
 
-    undisbursed = round(hold.amount - hold.released_total, 2)
+    received = hold.funded_amount if hold.funded_amount is not None else hold.amount
+    undisbursed = round(received - hold.released_total, 2)
+    if undisbursed <= _FUNDING_TOLERANCE:
+        raise InvalidDealState(
+            hold.deal_id,
+            f"nothing left to refund (received {received:.2f}, released {hold.released_total:.2f})",
+            "undisbursed > 0",
+        )
     connector = _payment_connector(hold.provider)
     try:
         result = await connector.refund({  # type: ignore[union-attr]
@@ -748,6 +1003,19 @@ async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
         "provider_payload": {**hold.provider_payload, "refund": result},
     })
     await repo.save_hold(updated)
+
+    # A refund closes the dispute path: DISPUTE → REFUNDED (terminal). Any other
+    # deal status is left alone — the refund is recorded on the hold either way.
+    try:
+        deal = await _fetch_deal(hold.deal_id)
+        deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+        if deal_status == "DISPUTE":
+            await _transition_deal(
+                hold.deal_id, "REFUNDED",
+                f"Escrow {escrow_id} refunded {undisbursed:.2f} {hold.currency} to buyer",
+            )
+    except Exception as exc:  # noqa: BLE001 — the refund itself already committed
+        logger.error("EscrowGuard: REFUNDED transition failed for deal %s: %s", hold.deal_id, exc)
 
     await _emit(EventTopic.DEAL_EXCEPTION, hold.deal_id, {
         "source": "escrow_guard",
@@ -822,9 +1090,11 @@ async def accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowRespo
     new_tranches, released_total, all_released = await _release_final_tranches(
         hold, f"Buyer acceptance ({req.accepted_by or 'buyer'}) for deal {hold.deal_id}"
     )
+    final_amount = round(released_total - hold.released_total, 2)
     updated = hold.model_copy(update={
         "tranches": new_tranches,
         "released_total": released_total,
+        "fees_total": round(hold.fees_total + _fee_on(hold, final_amount), 2),
         "status": "RELEASED" if all_released else hold.status,
         "released_at": now if all_released else hold.released_at,
         "buyer_accepted_at": now,
@@ -832,14 +1102,22 @@ async def accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowRespo
     })
     await repo.save_hold(updated)
 
-    await _emit(EventTopic.PAYOUT_REQUESTED, hold.deal_id, {
+    await _emit(EventTopic.ESCROW_TRANCHE_RELEASED, hold.deal_id, {
         "escrow_id": escrow_id,
+        "tranche_id": "FINAL",
+        "trigger": "ACCEPTED",
         "event": "buyer_accepted",
+        "amount": final_amount,
         "released_total": released_total,
+        "fees_total": updated.fees_total,
+        "all_released": all_released,
         "accepted_by": req.accepted_by,
+        "provider": hold.provider,
+        "currency": hold.currency,
     })
     logger.info("EscrowGuard: buyer accepted escrow %s (deal %s); released_total=%.2f",
                 escrow_id, hold.deal_id, released_total)
+    updated = await _settle_if_complete(updated, now)
     return EscrowResponse.from_record(updated)
 
 
@@ -896,22 +1174,32 @@ async def check_inspection_windows(now: datetime | None = None) -> int:
         except ConnectorCallError as exc:
             logger.warning("EscrowGuard: window auto-release failed for %s: %s", hold.escrow_id, exc)
             continue
+        final_amount = round(released_total - hold.released_total, 2)
         updated = hold.model_copy(update={
             "tranches": new_tranches,
             "released_total": released_total,
+            "fees_total": round(hold.fees_total + _fee_on(hold, final_amount), 2),
             "status": "RELEASED" if all_released else hold.status,
             "released_at": now if all_released else hold.released_at,
             "buyer_accepted_at": now,
             "updated_at": now,
         })
         await repo.save_hold(updated)
-        await _emit(EventTopic.PAYOUT_REQUESTED, hold.deal_id, {
+        await _emit(EventTopic.ESCROW_TRANCHE_RELEASED, hold.deal_id, {
             "escrow_id": hold.escrow_id,
+            "tranche_id": "FINAL",
+            "trigger": "ACCEPTED",
             "event": "auto_release_window_lapsed",
+            "amount": final_amount,
             "released_total": released_total,
+            "fees_total": updated.fees_total,
+            "all_released": all_released,
+            "provider": hold.provider,
+            "currency": hold.currency,
         })
         logger.info("EscrowGuard: auto-released final tranche for %s (deal %s) — window lapsed",
                     hold.escrow_id, hold.deal_id)
+        await _settle_if_complete(updated, now)
         released += 1
     return released
 
@@ -992,7 +1280,18 @@ def _ledger_issues(hold: EscrowHoldRecord) -> tuple[float, list[str]]:
     tranche_sum = round(sum((t.amount or 0.0) for t in hold.tranches if t.status == "RELEASED"), 2)
     if abs(tranche_sum - hold.released_total) > _FUNDING_TOLERANCE:
         issues.append(f"released tranche sum {tranche_sum} != released_total {hold.released_total}")
+    if hold.fees_total < -_FUNDING_TOLERANCE or hold.fees_total > hold.released_total + _FUNDING_TOLERANCE:
+        issues.append(f"fees_total {hold.fees_total} inconsistent with released_total {hold.released_total}")
     return outstanding, issues
+
+
+def _payout_issues(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> list[str]:
+    """Supplier payouts may never exceed what PortLess received from the escrow."""
+    completed, pending = _payout_totals(payouts)
+    received = _net_received(hold)
+    if completed + pending > received + _FUNDING_TOLERANCE:
+        return [f"payouts {completed + pending:.2f} exceed net funds received from escrow {received:.2f}"]
+    return []
 
 
 async def _patch_deal_realized_margin(deal_id: str) -> None:
@@ -1008,9 +1307,11 @@ async def _patch_deal_realized_margin(deal_id: str) -> None:
         if hold is None:
             return
         payouts = await repo.list_payouts_by_deal(deal_id)
-        payouts_total = round(sum(p.amount for p in payouts if p.status == "COMPLETED"), 2)
-        funded = hold.funded_amount if hold.funded_amount is not None else hold.amount
-        realized = round(funded - payouts_total, 2)
+        payouts_total, _ = _payout_totals(payouts)
+        # Realised margin = cash actually received from the escrow (released
+        # tranches net of provider fees; the funded principal for a legacy
+        # Stripe hold) minus everything paid to the supplier.
+        realized = round(_net_received(hold) - payouts_total, 2)
 
         from services.deals.schemas import UpdateFinancialsRequest  # type: ignore[import]
         from services.deals.service import update_financials  # type: ignore[import]
@@ -1034,28 +1335,61 @@ async def get_deal_ledger(deal_id: str) -> DealLedger:
     repo = get_repository()
     hold = await repo.get_hold_by_deal(deal_id)
     payouts = await repo.list_payouts_by_deal(deal_id)
-    payouts_total = round(sum(p.amount for p in payouts if p.status == "COMPLETED"), 2)
-
     if hold is None:
+        payouts_total, _ = _payout_totals(payouts)
         return DealLedger(
             deal_id=deal_id, currency="", payouts_total=payouts_total, reconciled=True,
+            payouts=[PayoutResponse.from_record(p) for p in payouts],
         )
+    return await _ledger_for(hold, payouts)
 
+
+async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> DealLedger:
     outstanding, issues = _ledger_issues(hold)
+    issues = issues + _payout_issues(hold, payouts)
+    completed, pending = _payout_totals(payouts)
+    net = _net_received(hold)
+    owed = next((p.total_owed for p in payouts if p.total_owed is not None), None)
+    if owed is None:
+        owed = await _supplier_owed(hold.deal_id)
     return DealLedger(
-        deal_id=deal_id,
+        deal_id=hold.deal_id,
         currency=hold.currency,
         provider=hold.provider,
+        escrow_id=hold.escrow_id,
+        status=hold.status,
         principal=hold.amount,
         funded_amount=hold.funded_amount,
+        shortfall=hold.shortfall,
         released_total=hold.released_total,
         refunded_total=hold.refunded_total,
         outstanding=outstanding,
-        payouts_total=payouts_total,
+        fees_total=hold.fees_total,
+        net_to_portless=net,
+        payouts_total=completed,
+        payouts_pending=pending,
+        available_for_payout=round(max(net - completed - pending, 0.0), 2),
+        supplier_owed=owed,
+        supplier_balance_due=(round(owed - completed, 2) if owed is not None else None),
+        realized_margin=round(net - completed, 2) if (hold.tranches and hold.released_total) or completed else None,
         tranches=hold.tranches,
+        payouts=[PayoutResponse.from_record(p) for p in payouts],
+        inspection_deadline=hold.inspection_deadline,
+        disputed=hold.disputed,
+        settled=hold.settled_at is not None,
         reconciled=(len(issues) == 0),
         issues=issues,
     )
+
+
+async def list_deal_ledgers() -> list[DealLedger]:
+    """One ledger per escrow — the Money & Margin page's escrow view."""
+    repo = get_repository()
+    out: list[DealLedger] = []
+    for hold in sorted(await repo.list_holds(), key=lambda h: h.created_at, reverse=True):
+        payouts = await repo.list_payouts_by_deal(hold.deal_id)
+        out.append(await _ledger_for(hold, payouts))
+    return out
 
 
 async def check_reconciliation() -> int:
@@ -1067,6 +1401,7 @@ async def check_reconciliation() -> int:
     flagged = 0
     for hold in await repo.list_holds():
         _, issues = _ledger_issues(hold)
+        issues = issues + _payout_issues(hold, await repo.list_payouts_by_deal(hold.deal_id))
         if issues and not hold.reconciliation_flagged:
             await repo.save_hold(hold.model_copy(update={
                 "reconciliation_flagged": True, "updated_at": now,

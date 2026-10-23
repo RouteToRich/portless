@@ -79,6 +79,13 @@ _SERVICE_ROUTERS = [
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import asyncio as _asyncio  # shared by the background watchers below
 
+    # ── Production readiness gate (P1-1) ──────────────────────────────────
+    # Names every silent fallback (stub escrow, unsigned money webhooks,
+    # log-only e-mail, missing Apify token …). Informational in dev/staging;
+    # ENV_PROFILE=production refuses to boot while a check fails.
+    from shared.readiness import assert_ready_or_log
+    assert_ready_or_log()
+
     # ── Trade-Min: MongoDB + APScheduler ─────────────────────────────────
     from services.trade_min.main import on_startup as tm_startup, on_shutdown as tm_shutdown
     try:
@@ -152,6 +159,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("HitlApproval startup failed (service will run degraded): %s", exc)
 
+    # ── Autonomy policy: per-action L0–L3 overrides (Mongo-persisted) ─────
+    try:
+        from shared.orchestration.autonomy_policy import load_policy
+        await load_policy()
+    except Exception as exc:
+        logger.error("AutonomyPolicy load failed (built-in defaults apply): %s", exc)
+
     # ── Exception Resolver: MongoDB repository ────────────────────────────
     from services.exception_resolver.repository import init_repository as er_init, close_repository as er_close
     try:
@@ -223,9 +237,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("AutoFlow resume failed (in-flight deals may stay orphaned): %s", exc)
 
+    # ── Deal SLA watcher: reminders + stall exceptions for parked deals ──────
+    # PI_SENT with no buyer acceptance, ESCROW_PENDING with no funding, and any
+    # status unchanged past DEAL_STALL_SLA_HOURS. Reminders go out as templated
+    # counterparty notifications; expiries/stalls become deal.exception events
+    # for the Exception Resolver. See shared/orchestration/deal_watcher.py.
+    _deal_watcher: _asyncio.Task | None = None
+    try:
+        from shared.orchestration.deal_watcher import run_deal_watcher
+        _deal_watcher = _asyncio.create_task(run_deal_watcher())
+    except Exception as exc:
+        logger.error("DealWatcher start failed (parked deals get no reminders): %s", exc)
+
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
+    if _deal_watcher and not _deal_watcher.done():
+        _deal_watcher.cancel()
+        try:
+            await _deal_watcher
+        except _asyncio.CancelledError:
+            pass
+
     try:
         from shared.bus import close_event_bus
         await close_event_bus()
@@ -343,6 +376,24 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "portless-combined"}
+
+    @app.get("/health/readiness", tags=["meta"])
+    async def readiness() -> dict:
+        """Production readiness report: every stub / fallback the pipeline is
+        currently running on, with ok / warn / fail per check (System Health page)."""
+        from shared.readiness import evaluate
+        return evaluate()
+
+    @app.get("/health/downstream", tags=["meta"])
+    async def downstream() -> dict[str, str]:
+        """In the monolith every module is in-process: report each router's
+        health so the System Health page works without the standalone gateway."""
+        names = [
+            "deals", "trade-min", "match-engine", "sourcing", "negotiation-agent", "dealmaker",
+            "shield-link", "docugen", "escrow-guard", "hitl-approval", "exception-resolver",
+            "email-gateway", "email-processor", "auth",
+        ]
+        return {n: "ok" for n in names}
 
     app.include_router(auth_router)
     for router in _SERVICE_ROUTERS:

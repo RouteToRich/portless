@@ -113,12 +113,24 @@ def _generic_scenario(hs_code: str, market: str) -> dict:
     }
 
 
-def _match_scenario(req: dict) -> dict:
-    key = req.get("hs_code") or req.get("product_keyword") or req.get("query") or "UNKNOWN"
+def _scenario_key(req: dict) -> tuple[str, str]:
+    """(hs_code-or-keyword, market) from any connector's request shape — the
+    Apify actor connectors pass ``products``/``keyword`` and ``markets``."""
+    products = req.get("products") or []
+    key = (
+        req.get("hs_code") or req.get("product_keyword") or req.get("query") or req.get("keyword")
+        or (products[0] if products else None) or "UNKNOWN"
+    )
+    markets = req.get("markets") or []
     market = (
         req.get("market") or req.get("country") or req.get("buyer_country")
-        or req.get("reporter_iso2") or "US"
+        or req.get("reporter_iso2") or (markets[0] if markets else None) or "US"
     )
+    return str(key), str(market)
+
+
+def _match_scenario(req: dict) -> dict:
+    key, market = _scenario_key(req)
     return _SCENARIOS.get(key) or _generic_scenario(key, market)
 
 
@@ -186,5 +198,119 @@ def mock_quote(name: str, req: dict) -> dict | None:
 
     if name == "tradeindia":
         return {"sellers": []}
+
+    # ── PortLess-owned Apify actors (shared/connectors/apify.py) ─────────
+    # Shapes mirror each connector's normalised quote() output exactly, so the
+    # pipeline exercises the same extraction code paths as a live run.
+    ct = scenario["comtrade"]
+    key, requested_market = _scenario_key(req)
+    # Curated scenarios pin their market; generic ones follow the request.
+    market = scenario["market"] if key in _SCENARIOS else requested_market
+
+    if name == "apify_export_markets":
+        return {
+            "markets": [{
+                "market": market,
+                "market_name": market,
+                "hs_code": key,
+                "latest_period": "2025",
+                "import_value_usd": float(ct["total_records"]) * 250_000.0,
+                "growth_1y_pct": 12.5,
+                "exporter_value_usd": float(ct["total_records"]) * 40_000.0,
+                "exporter_share_pct": 16.0,
+                "unit_value_usd_per_kg": round(ct["cif"] / 1000.0, 4),
+                "unit_value_usd_per_mt": float(ct["cif"]),
+                "exporter_unit_value_usd_per_mt": float(ct["fob"]),
+                "exporter_world_unit_value_usd_per_mt": float(ct["fob"]),
+                "top_suppliers": [],
+                "score": min(100, 30 + ct["total_records"] // 4),
+                "flags": ["fast_growing"],
+                "summary": "",
+                "next_step": "",
+                "url": None,
+                "mirror": False,
+            }],
+            "total": 1,
+            "actor": "mock~export-market-finder-ai",
+        }
+
+    if name == "apify_alibaba_rfq":
+        count = min(scenario["rfq_count"], 5)
+        return {
+            "rfqs": [{
+                "rfq_id": f"RFQ-{key}-{i + 1}",
+                "title": f"Need {10 + i * 5} MT of HS {key}",
+                "buyer_name": f"{market} Importer {i + 1}",
+                "buyer_country": market,
+                "quantity": 10.0 + i * 5,
+                "quantity_unit": "tons",
+                "posted_at": "2026-10-20T09:00:00Z",
+                "quotes_left": 5,
+                "unit_price_usd": float(ct["cif"]),
+                "price_unit": "USD/MT",
+                "contact_url": f"https://sourcing.alibaba.com/rfq/{key}-{i + 1}",
+                "fit_score": 80 - i * 5,
+                "fit_reason": "matched product line",
+                "quote_reply": None,
+            } for i in range(count)],
+            "total": count,
+            "actor": "mock~alibaba-rfq-leads-ai",
+        }
+
+    if name == "apify_us_importers":
+        if market != "US":
+            return {"buyers": [], "total": 0}
+        return {
+            "buyers": [{
+                "buyer_name": f"US Importer {i + 1} Inc",
+                "buyer_country": "US",
+                "company_id": f"iy:us-importer-{key}-{i + 1}",
+                "signal_type": "manifest",
+                "source": "apify_us_importers",
+                "last_import_date": "2026-09-15",
+                "annual_volume_mt": 120.0 - i * 20,
+                "estimated_order_value_usd": (120.0 - i * 20) * ct["cif"],
+                "unit_price_usd": float(ct["cif"]),
+                "price_unit": "USD/MT",
+                "shipments_12m": 12 - i,
+                "website": f"https://us-importer-{i + 1}.example.com",
+                "phone": None,
+                "contact_url": f"https://us-importer-{i + 1}.example.com",
+                "address": "Newark, NJ",
+                "hs_codes": [key],
+                "fit_score": 85 - i * 10,
+                "fit_reason": "imports this HS code from Asia every month",
+                "pitch_angle": "You already buy this product from Vietnam; India ships 2 weeks faster.",
+            } for i in range(3)],
+            "total": 3,
+            "actor": "mock~us-importer-finder-ai",
+        }
+
+    if name == "apify_india_suppliers":
+        return {
+            "sellers": [{
+                "company_id": f"APIFY-IN-{i + 1}",
+                "company_name": s["company_name"],
+                "city": s["city"],
+                "state": s["state"],
+                "product_name": f"HS {key}",
+                "hs_code": key,
+                "min_price": s["min_price"],
+                "max_price": s["max_price"],
+                "price_unit": "USD/MT",
+                "min_order_qty": "20 MT",
+                "annual_capacity_mt": s["annual_capacity_mt"],
+                "listing_url": f"https://www.indiamart.com/{s['company_name'].lower().replace(' ', '-')}",
+                "contact_id": None,
+                "email": f"sales@{s['company_name'].lower().replace(' ', '')}.in",
+                "phone": "+919876543210",
+                "website": f"https://{s['company_name'].lower().replace(' ', '')}.in",
+                "gstin": None,
+                "iec": None,
+                "fit_score": 75,
+            } for i, s in enumerate(scenario["sellers"][:2])],
+            "total": min(2, len(scenario["sellers"])),
+            "actor": "mock~india-supplier-finder-ai",
+        }
 
     return None

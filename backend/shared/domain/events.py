@@ -37,6 +37,17 @@ class EventTopic(str, Enum):
     CUSTOMS_CLEARED = "customs.cleared"
     PAYOUT_REQUESTED = "payout.requested"
     PAYOUT_COMPLETED = "payout.completed"
+    ESCROW_TRANCHE_RELEASED = "escrow.tranche_released"
+    """One staged tranche left the neutral escrow for PortLess (proof-gated
+    release, buyer acceptance, or inspection-window lapse)."""
+    ESCROW_SETTLED = "escrow.settled"
+    """Every tranche of the escrow is released — the money side of the trade
+    is closed (PortLess margin realised, supplier balance payable)."""
+    ESCROW_FUNDING_SHORTFALL = "escrow.funding_shortfall"
+    """The provider confirmed less than the Proforma Invoice total — the deal
+    stays ESCROW_PENDING until the balance arrives."""
+    COUNTERPARTY_SCREENED = "counterparty.screened"
+    """Sanctions / registry screening finished for a deal party (verdict in payload)."""
     APPROVAL_REQUESTED = "approval.requested"
     APPROVAL_RESOLVED = "approval.resolved"
     DEAL_EXCEPTION = "deal.exception"

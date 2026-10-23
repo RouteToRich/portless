@@ -4,21 +4,30 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft,
+  AlertTriangle,
   CheckCircle2,
   XCircle,
   ExternalLink,
   Eye,
   FileDown,
+  Globe,
+  Lock,
+  Mail,
+  Pencil,
+  Phone,
+  Scale,
   Ship,
   ShieldCheck,
+  Sparkles,
   TruckIcon,
   CreditCard,
   FileText,
   Repeat2,
   Send,
   Users,
+  Wallet,
 } from "lucide-react";
-import { cn, fmtUSD, fmtPct, timeAgo, fmtDateTime } from "@/lib/utils";
+import { cn, fmtUSD, fmtPct, timeAgo, fmtDateTime, countdown } from "@/lib/utils";
 import {
   useDeal,
   useNegotiationSessions,
@@ -26,13 +35,18 @@ import {
   useNegotiationEmails,
   useRunNegotiationRound,
   useApprovals,
-  useEscrowHolds,
+  useEscrowHold,
+  useDealLedger,
+  useEscrowAction,
+  useUpdateParty,
+  useEnrichDeal,
   useQcRecords,
   useFreightRecords,
   useDealmakerDocuments,
   useDocuments,
   useMatchScore,
   useOpportunity,
+  type EscrowActionKind,
 } from "@/api/hooks";
 import { FilesApi } from "@/api/endpoints";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -51,7 +65,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
-import type { QcRecord, FreightRecord } from "@/api/types";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import type {
+  QcRecord,
+  FreightRecord,
+  Party,
+  EscrowRecord,
+  DealLedger,
+  UpdatePartyRequest,
+} from "@/api/types";
 
 const NEGOTIATION_TERMINAL = new Set(["AGREED", "FAILED", "ESCALATED"]);
 
@@ -383,6 +412,345 @@ function OriginOpportunityCard({
   );
 }
 
+// ── Party card: identity + contact + screening (Apify enrichment) ───────────
+
+function sanctionsVariant(status: string | null | undefined) {
+  switch (status) {
+    case "clear": return "success" as const;
+    case "review": return "warning" as const;
+    case "block": return "destructive" as const;
+    default: return "secondary" as const;
+  }
+}
+
+function emailStatusVariant(status: string | null | undefined) {
+  switch (status) {
+    case "ok": return "success" as const;
+    case "risky": return "warning" as const;
+    case "invalid": return "destructive" as const;
+    default: return "secondary" as const;
+  }
+}
+
+function PartyEditForm({
+  party,
+  dealId,
+  onDone,
+}: {
+  party: Party;
+  dealId: string;
+  onDone: () => void;
+}) {
+  const update = useUpdateParty(dealId);
+  const [form, setForm] = useState<UpdatePartyRequest>({
+    legal_name: party.legal_name,
+    country: party.country,
+    email: party.email ?? "",
+    website: party.website ?? "",
+    phone: party.phone ?? "",
+    address: party.address ?? "",
+    gstin: party.gstin ?? "",
+    iec: party.iec ?? "",
+    vat_number: party.vat_number ?? "",
+  });
+
+  const set = (k: keyof UpdatePartyRequest) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  async function save() {
+    // Only send what changed / is non-empty so blanks don't wipe actor data.
+    const payload: UpdatePartyRequest = {};
+    (Object.keys(form) as (keyof UpdatePartyRequest)[]).forEach((k) => {
+      const v = (form[k] ?? "").toString().trim();
+      const prev = ((party as unknown as Record<string, unknown>)[k] ?? "") as string;
+      if (v && v !== prev) payload[k] = v;
+    });
+    if (Object.keys(payload).length === 0) {
+      onDone();
+      return;
+    }
+    try {
+      await update.mutateAsync({ role: party.role, payload });
+      toast.success(`${party.role === "buyer" ? "Buyer" : "Supplier"} contact updated`);
+      onDone();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Could not update the party");
+    }
+  }
+
+  const field = (label: string, key: keyof UpdatePartyRequest, placeholder = "") => (
+    <div className="space-y-1">
+      <Label className="text-[11px]">{label}</Label>
+      <Input
+        value={(form[key] ?? "") as string}
+        onChange={set(key)}
+        placeholder={placeholder}
+        className="h-8 text-xs"
+      />
+    </div>
+  );
+
+  return (
+    <div className="space-y-3 pt-2">
+      <Separator />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {field("Legal name", "legal_name")}
+        {field("Country (ISO-2)", "country", "DE")}
+        {field("E-mail", "email", "purchasing@company.com")}
+        {field("Website", "website", "https://")}
+        {field("Phone", "phone", "+49…")}
+        {field("Address", "address")}
+        {party.role === "supplier" ? (
+          <>
+            {field("GSTIN", "gstin")}
+            {field("IEC", "iec")}
+          </>
+        ) : (
+          field("VAT number", "vat_number", "DE123456789")
+        )}
+      </div>
+      <p className="text-[10px] text-muted-foreground">
+        Operator-entered contacts are marked <span className="font-mono">operator</span> and are
+        never overwritten by a later actor run.
+      </p>
+      <div className="flex gap-2">
+        <Button size="sm" className="h-8 text-xs" onClick={save} disabled={update.isPending}>
+          {update.isPending ? "Saving…" : "Save"}
+        </Button>
+        <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function PartyCard({ party, dealId }: { party: Party; dealId: string }) {
+  const [editing, setEditing] = useState(false);
+  const sanctions = party.sanctions_status ?? "unchecked";
+
+  return (
+    <Card className={cn(sanctions === "block" && "border-[#ff5d6c]/50")}>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <CardTitle className="capitalize">{party.role}</CardTitle>
+            <Badge variant={party.role === "buyer" ? "info" : "teal"}>{party.role}</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge
+              variant={sanctionsVariant(sanctions)}
+              className="text-[10px] gap-1"
+              title={party.sanctions_reason ?? "No sanctions / registry screening has run yet"}
+            >
+              <Scale className="w-2.5 h-2.5" />
+              screening: {sanctions}
+            </Badge>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs gap-1"
+              onClick={() => setEditing((e) => !e)}
+            >
+              <Pencil className="w-3 h-3" /> {editing ? "Close" : "Edit contact"}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+          <div>
+            <p className="text-[10px] text-muted-foreground">Legal Name</p>
+            <p className="font-medium">{party.legal_name}</p>
+          </div>
+          <div>
+            <p className="text-[10px] text-muted-foreground">Country</p>
+            <p className="font-medium">{party.country}</p>
+          </div>
+          <div>
+            <p className="text-[10px] text-muted-foreground">E-mail</p>
+            {party.email ? (
+              <p className="flex items-center gap-1.5 flex-wrap">
+                <Mail className="w-3 h-3 text-muted-foreground" />
+                <span className="font-mono text-xs break-all">{party.email}</span>
+                <Badge variant={emailStatusVariant(party.email_status)} className="text-[9px] h-4 px-1.5">
+                  {party.email_status ?? "unverified"}
+                </Badge>
+              </p>
+            ) : (
+              <p className="text-xs text-[#f5a623]">no address — outreach waits for a contact</p>
+            )}
+          </div>
+          <div>
+            <p className="text-[10px] text-muted-foreground">Website</p>
+            {party.website ? (
+              <a
+                href={party.website}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-xs text-[#4f8cff] hover:underline break-all"
+              >
+                <Globe className="w-3 h-3" /> {party.website}
+              </a>
+            ) : (
+              <p className="text-xs text-muted-foreground">—</p>
+            )}
+          </div>
+          {party.phone && (
+            <div>
+              <p className="text-[10px] text-muted-foreground">Phone</p>
+              <p className="flex items-center gap-1 text-xs font-mono">
+                <Phone className="w-3 h-3 text-muted-foreground" /> {party.phone}
+              </p>
+            </div>
+          )}
+          {party.address && (
+            <div>
+              <p className="text-[10px] text-muted-foreground">Address</p>
+              <p className="text-xs">{party.address}</p>
+            </div>
+          )}
+          {party.gstin && (
+            <div>
+              <p className="text-[10px] text-muted-foreground">GSTIN</p>
+              <p className="font-mono text-xs">{party.gstin}</p>
+            </div>
+          )}
+          {party.iec && (
+            <div>
+              <p className="text-[10px] text-muted-foreground">IEC</p>
+              <p className="font-mono text-xs">{party.iec}</p>
+            </div>
+          )}
+          {party.vat_number && (
+            <div>
+              <p className="text-[10px] text-muted-foreground">VAT</p>
+              <p className="font-mono text-xs flex items-center gap-1.5">
+                {party.vat_number}
+                {party.vat_valid != null && (
+                  <Badge variant={party.vat_valid ? "success" : "destructive"} className="text-[9px] h-4 px-1.5">
+                    VIES {party.vat_valid ? "valid" : "invalid"}
+                  </Badge>
+                )}
+              </p>
+            </div>
+          )}
+          {party.lei && (
+            <div>
+              <p className="text-[10px] text-muted-foreground">LEI</p>
+              <p className="font-mono text-xs">{party.lei}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Verification / provenance chips */}
+        <div className="flex items-center gap-2 flex-wrap pt-1">
+          {party.verification_status && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border font-medium",
+                party.verification_status === "verified" || party.verification_status === "registry_match"
+                  ? "bg-[rgba(46,194,138,0.15)] text-[#2ec28a] border-[rgba(46,194,138,0.4)]"
+                  : "bg-[rgba(245,166,35,0.15)] text-[#f5a623] border-[rgba(245,166,35,0.4)]"
+              )}
+            >
+              {party.verification_status === "verified" || party.verification_status === "registry_match" ? (
+                <CheckCircle2 className="w-2.5 h-2.5" />
+              ) : (
+                <XCircle className="w-2.5 h-2.5" />
+              )}
+              {party.verification_status.replace(/_/g, " ")}
+            </span>
+          )}
+          {party.credit_status && (
+            <span className="inline-flex items-center text-[10px] px-2 py-0.5 rounded-full border bg-[rgba(79,140,255,0.15)] text-[#4f8cff] border-[rgba(79,140,255,0.4)] font-medium">
+              Credit: {party.credit_status}
+            </span>
+          )}
+          {party.risk_score != null && (
+            <span
+              className={cn(
+                "text-[10px] px-2 py-0.5 rounded-full border font-medium",
+                party.risk_score < 30
+                  ? "bg-[rgba(46,194,138,0.15)] text-[#2ec28a] border-[rgba(46,194,138,0.4)]"
+                  : party.risk_score < 60
+                  ? "bg-[rgba(245,166,35,0.15)] text-[#f5a623] border-[rgba(245,166,35,0.4)]"
+                  : "bg-[rgba(255,93,108,0.15)] text-[#ff5d6c] border-[rgba(255,93,108,0.4)]"
+              )}
+            >
+              Risk: {party.risk_score}
+            </span>
+          )}
+          {party.contact_source && (
+            <span
+              className="text-[10px] px-2 py-0.5 rounded-full border border-border text-muted-foreground"
+              title="Where the contact came from"
+            >
+              contact via {party.contact_source}
+              {party.contact_confidence != null && ` · ${Math.round(party.contact_confidence * 100)}%`}
+            </span>
+          )}
+          {party.sanctions_checked_at && (
+            <span className="text-[10px] text-muted-foreground">
+              screened {timeAgo(party.sanctions_checked_at)}
+            </span>
+          )}
+        </div>
+        {party.sanctions_reason && sanctions !== "clear" && (
+          <p className="text-[11px] text-[#f5a623] flex items-start gap-1.5 pt-1">
+            <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+            <span>{party.sanctions_reason}</span>
+          </p>
+        )}
+
+        {editing && <PartyEditForm party={party} dealId={dealId} onDone={() => setEditing(false)} />}
+      </CardContent>
+    </Card>
+  );
+}
+
+function EnrichButton({ dealId }: { dealId: string }) {
+  const enrich = useEnrichDeal(dealId);
+
+  async function run() {
+    try {
+      const res = await enrich.mutateAsync({ screen: true, contacts: true });
+      const actors = res.actors_used.length
+        ? res.actors_used.map((a) => a.split("~").pop()).join(", ")
+        : "no actors (stub mode)";
+      if (res.blocked) {
+        toast.error("Counterparty screening returned BLOCK — a deal exception was raised", {
+          description: actors,
+          duration: 10000,
+        });
+      } else if (res.warnings.length) {
+        toast.warning("Enrichment finished with warnings", {
+          description: res.warnings.join(" · "),
+          duration: 8000,
+        });
+      } else {
+        toast.success("Counterparties enriched", { description: `Actors: ${actors}` });
+      }
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Enrichment failed");
+    }
+  }
+
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-8 text-xs gap-1.5"
+      onClick={run}
+      disabled={enrich.isPending}
+      title="Company contact finder + OFAC/UN/EU/UK sanctions, LEI and VIES screening on the PortLess Apify actors"
+    >
+      <Sparkles className={cn("w-3.5 h-3.5", enrich.isPending && "animate-pulse")} />
+      {enrich.isPending ? "Running actors…" : "Enrich via Apify actors"}
+    </Button>
+  );
+}
+
 function OverviewTab({ dealId }: { dealId: string }) {
   const { data: deal } = useDeal(dealId);
   const { data: matchScore, isLoading: scoreLoading } = useMatchScore(dealId);
@@ -391,9 +759,20 @@ function OverviewTab({ dealId }: { dealId: string }) {
 
   const buyer = deal.parties.find((p) => p.role === "buyer");
   const supplier = deal.parties.find((p) => p.role === "supplier");
+  const blocked = deal.parties.some((p) => p.sanctions_status === "block");
 
   return (
     <div className="space-y-4">
+      {blocked && (
+        <div className="flex items-start gap-2 rounded-lg border border-[#ff5d6c]/40 bg-[#ff5d6c]/10 px-3 py-2 text-xs text-[#ff5d6c]">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>
+            A counterparty on this deal is <b>sanctions-blocked</b>. No Proforma Invoice will be
+            issued and the RFQ gate is forced to L0 — resolve the exception before continuing.
+          </span>
+        </div>
+      )}
+
       {/* Metric cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
@@ -432,86 +811,25 @@ function OverviewTab({ dealId }: { dealId: string }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Parties */}
+        {/* Parties — identity, contact and screening from the Apify actors */}
         <div className="lg:col-span-2 space-y-3">
-          {[buyer, supplier].filter(Boolean).map((party) => {
-            if (!party) return null;
-            return (
-              <Card key={party.role}>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="capitalize">{party.role}</CardTitle>
-                    <Badge variant={party.role === "buyer" ? "info" : "teal"}>
-                      {party.role}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-                    <div>
-                      <p className="text-[10px] text-muted-foreground">Legal Name</p>
-                      <p className="font-medium">{party.legal_name}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-muted-foreground">Country</p>
-                      <p className="font-medium">{party.country}</p>
-                    </div>
-                    {party.gstin && (
-                      <div>
-                        <p className="text-[10px] text-muted-foreground">GSTIN</p>
-                        <p className="font-mono text-xs">{party.gstin}</p>
-                      </div>
-                    )}
-                    {party.iec && (
-                      <div>
-                        <p className="text-[10px] text-muted-foreground">IEC</p>
-                        <p className="font-mono text-xs">{party.iec}</p>
-                      </div>
-                    )}
-                  </div>
-                  {/* Verification badges */}
-                  <div className="flex items-center gap-2 flex-wrap pt-1">
-                    {party.verification_status && (
-                      <span
-                        className={cn(
-                          "inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border font-medium",
-                          party.verification_status === "verified"
-                            ? "bg-[rgba(46,194,138,0.15)] text-[#2ec28a] border-[rgba(46,194,138,0.4)]"
-                            : "bg-[rgba(245,166,35,0.15)] text-[#f5a623] border-[rgba(245,166,35,0.4)]"
-                        )}
-                      >
-                        {party.verification_status === "verified" ? (
-                          <CheckCircle2 className="w-2.5 h-2.5" />
-                        ) : (
-                          <XCircle className="w-2.5 h-2.5" />
-                        )}
-                        {party.verification_status}
-                      </span>
-                    )}
-                    {party.credit_status && (
-                      <span className="inline-flex items-center text-[10px] px-2 py-0.5 rounded-full border bg-[rgba(79,140,255,0.15)] text-[#4f8cff] border-[rgba(79,140,255,0.4)] font-medium">
-                        Credit: {party.credit_status}
-                      </span>
-                    )}
-                    {party.risk_score != null && (
-                      <span
-                        className={cn(
-                          "text-[10px] px-2 py-0.5 rounded-full border font-medium",
-                          party.risk_score < 30
-                            ? "bg-[rgba(46,194,138,0.15)] text-[#2ec28a] border-[rgba(46,194,138,0.4)]"
-                            : party.risk_score < 60
-                            ? "bg-[rgba(245,166,35,0.15)] text-[#f5a623] border-[rgba(245,166,35,0.4)]"
-                            : "bg-[rgba(255,93,108,0.15)] text-[#ff5d6c] border-[rgba(255,93,108,0.4)]"
-                        )}
-                      >
-                        Risk: {party.risk_score}
-                      </span>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              Counterparties
+            </p>
+            <EnrichButton dealId={dealId} />
+          </div>
+          {[buyer, supplier].filter(Boolean).map((party) =>
+            party ? <PartyCard key={party.role} party={party} dealId={dealId} /> : null
+          )}
+          {!buyer && !supplier && (
+            <Card>
+              <CardContent className="py-6 text-xs text-muted-foreground">
+                No buyer or supplier recorded on this deal yet — run the enrichment or add them
+                once sourcing identifies the parties.
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Match scores */}
@@ -1265,98 +1583,557 @@ function DocumentsTab({ dealId }: { dealId: string }) {
   );
 }
 
+// ── Payments: neutral staged-release escrow + per-trade money ledger ────────
+
+function escrowStatusVariant(status: string) {
+  switch (status) {
+    case "FUNDED": return "success" as const;
+    case "RELEASED": return "teal" as const;
+    case "PARTIALLY_FUNDED": return "warning" as const;
+    case "REFUNDED": return "warning" as const;
+    case "FAILED": return "destructive" as const;
+    default: return "secondary" as const;
+  }
+}
+
+function providerLabel(provider: string | null | undefined): string {
+  switch (provider) {
+    case "tazapay": return "Tazapay";
+    case "escrow_com": return "Escrow.com";
+    case "stripe":
+    case "stripe_treasury": return "Stripe (legacy hold)";
+    default: return provider ?? "—";
+  }
+}
+
+const TRIGGER_LABELS: Record<string, string> = {
+  PO_ISSUED: "PO issued",
+  QC_PASSED: "QC passed",
+  CLEARED: "Customs cleared",
+  ACCEPTED: "Buyer acceptance",
+};
+
+interface EscrowDialogSpec {
+  kind: EscrowActionKind;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  needsReason: boolean;
+  variant: "success" | "destructive" | "default";
+}
+
+function EscrowActionDialog({
+  spec,
+  escrow,
+  dealId,
+  onClose,
+}: {
+  spec: EscrowDialogSpec | null;
+  escrow: EscrowRecord;
+  dealId: string;
+  onClose: () => void;
+}) {
+  const action = useEscrowAction(dealId);
+  const [reason, setReason] = useState("");
+
+  async function confirm() {
+    if (!spec) return;
+    if (spec.needsReason && !reason.trim()) {
+      toast.error("A reason is required");
+      return;
+    }
+    try {
+      const res = await action.mutateAsync({
+        kind: spec.kind,
+        escrowId: escrow.escrow_id,
+        reason: reason.trim() || undefined,
+        actor: "operator",
+      });
+      toast.success(`${spec.title} — escrow now ${res.status}`, {
+        description: `Released ${fmtUSD(res.released_total)} · refunded ${fmtUSD(res.refunded_total)}`,
+      });
+      setReason("");
+      onClose();
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(detail ?? (e instanceof Error ? e.message : "Escrow action failed"));
+    }
+  }
+
+  return (
+    <Dialog open={spec !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        {spec && (
+          <>
+            <DialogHeader>
+              <DialogTitle>{spec.title}</DialogTitle>
+              <DialogDescription>{spec.description}</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label className="text-[11px]">
+                {spec.needsReason ? "Reason *" : "Note (optional)"}
+              </Label>
+              <Textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                className="min-h-[70px] text-xs"
+                placeholder={spec.needsReason ? "e.g. goods damaged in transit" : "e.g. buyer confirmed by e-mail on …"}
+              />
+              <p className="text-[10px] text-muted-foreground">
+                This moves money on escrow {escrow.escrow_id} ({providerLabel(escrow.provider)}) and is
+                recorded on the ledger.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" size="sm" onClick={onClose} disabled={action.isPending}>
+                Cancel
+              </Button>
+              <Button
+                variant={spec.variant}
+                size="sm"
+                onClick={confirm}
+                disabled={action.isPending}
+              >
+                {action.isPending ? "Working…" : spec.confirmLabel}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EscrowCard({ escrow, dealId }: { escrow: EscrowRecord; dealId: string }) {
+  const [dialog, setDialog] = useState<EscrowDialogSpec | null>(null);
+
+  const status = escrow.status;
+  const funded = status === "FUNDED" || status === "RELEASED";
+  const pendingFinal = escrow.tranches.some((t) => t.trigger === "ACCEPTED" && t.status === "PENDING");
+  const received = escrow.funded_amount ?? escrow.amount;
+  const undisbursed = Math.max(0, Number((received - escrow.released_total).toFixed(2)));
+
+  const canAccept = status === "FUNDED" && pendingFinal && !escrow.disputed;
+  const canDispute = funded && !escrow.disputed;
+  const canRefund =
+    (status === "FUNDED" || status === "PARTIALLY_FUNDED" || status === "RELEASED") &&
+    undisbursed > 0.01;
+
+  const windowOpen =
+    escrow.inspection_deadline && !escrow.buyer_accepted_at && pendingFinal;
+
+  return (
+    <Card className={cn(escrow.disputed && "border-[#ff5d6c]/40")}>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Lock className="w-4 h-4 text-[#28c2a0]" />
+            <CardTitle>Escrow</CardTitle>
+            <span className="text-[10px] font-mono text-muted-foreground">{escrow.escrow_id}</span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {escrow.disputed && (
+              <Badge variant="destructive" className="text-[10px]">disputed</Badge>
+            )}
+            {escrow.settled_at && (
+              <Badge variant="teal" className="text-[10px]">settled {timeAgo(escrow.settled_at)}</Badge>
+            )}
+            <Badge variant={escrowStatusVariant(status)}>
+              {status.replace(/_/g, " ")}
+              {status === "PARTIALLY_FUNDED" && escrow.shortfall != null && (
+                <span className="ml-1 font-normal">· short {fmtUSD(escrow.shortfall)}</span>
+              )}
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="rounded-lg bg-secondary border border-border p-3">
+            <p className="text-[10px] text-muted-foreground">Principal (PI total)</p>
+            <p className="text-xl font-bold text-[#2ec28a]">{fmtUSD(escrow.amount)}</p>
+            <p className="text-[10px] text-muted-foreground">{escrow.currency}</p>
+          </div>
+          <div className="rounded-lg bg-secondary border border-border p-3">
+            <p className="text-[10px] text-muted-foreground">Funded by buyer</p>
+            <p
+              className={cn(
+                "text-xl font-bold",
+                escrow.funded_amount == null
+                  ? "text-muted-foreground"
+                  : escrow.funded_amount + 0.01 < escrow.amount
+                  ? "text-[#f5a623]"
+                  : "text-[#2ec28a]"
+              )}
+            >
+              {escrow.funded_amount != null ? fmtUSD(escrow.funded_amount) : "—"}
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              {escrow.funded_at ? `at ${fmtDateTime(escrow.funded_at)}` : "awaiting provider webhook"}
+            </p>
+          </div>
+          <div className="rounded-lg bg-secondary border border-border p-3">
+            <p className="text-[10px] text-muted-foreground">Provider</p>
+            <p className="text-sm font-semibold mt-1">{providerLabel(escrow.provider)}</p>
+            <p className="text-[10px] text-muted-foreground">
+              fee {escrow.fee_pct != null ? `${escrow.fee_pct}%` : "n/a"}
+              {escrow.payment_method && ` · ${escrow.payment_method}`}
+            </p>
+          </div>
+          <div className="rounded-lg bg-secondary border border-border p-3">
+            <p className="text-[10px] text-muted-foreground">Inspection window</p>
+            {windowOpen ? (
+              <>
+                <p className="text-sm font-semibold mt-1 text-[#f5a623]">
+                  {countdown(escrow.inspection_deadline)}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  auto-release {fmtDateTime(escrow.inspection_deadline)}
+                </p>
+              </>
+            ) : escrow.buyer_accepted_at ? (
+              <>
+                <p className="text-sm font-semibold mt-1 text-[#2ec28a]">accepted</p>
+                <p className="text-[10px] text-muted-foreground">{timeAgo(escrow.buyer_accepted_at)}</p>
+              </>
+            ) : (
+              <p className="text-sm font-semibold mt-1 text-muted-foreground">not open</p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 flex-wrap text-xs">
+          {escrow.checkout_url && (
+            <a
+              href={escrow.checkout_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-[#4f8cff] hover:underline"
+            >
+              Buyer payment link <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
+          {escrow.ext_ref && (
+            <span className="text-muted-foreground">
+              provider ref <span className="font-mono">{escrow.ext_ref}</span>
+            </span>
+          )}
+          <span className="text-muted-foreground">opened {timeAgo(escrow.created_at)}</span>
+        </div>
+
+        {/* Tranche schedule */}
+        {escrow.tranches.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border text-muted-foreground">
+                  <th className="text-left py-2 pr-3 font-semibold text-[10px] uppercase">Tranche</th>
+                  <th className="text-left py-2 px-3 font-semibold text-[10px] uppercase">Trigger</th>
+                  <th className="text-right py-2 px-3 font-semibold text-[10px] uppercase">Share</th>
+                  <th className="text-right py-2 px-3 font-semibold text-[10px] uppercase">Amount</th>
+                  <th className="text-left py-2 px-3 font-semibold text-[10px] uppercase">Status</th>
+                  <th className="text-left py-2 px-3 font-semibold text-[10px] uppercase">Proof</th>
+                  <th className="text-right py-2 pl-3 font-semibold text-[10px] uppercase">Released</th>
+                </tr>
+              </thead>
+              <tbody>
+                {escrow.tranches.map((t) => (
+                  <tr key={t.tranche_id} className="border-b border-border/50">
+                    <td className="py-2 pr-3 font-mono font-semibold">{t.tranche_id}</td>
+                    <td className="py-2 px-3">{TRIGGER_LABELS[t.trigger] ?? t.trigger}</td>
+                    <td className="py-2 px-3 text-right">{Math.round(t.pct * 100)}%</td>
+                    <td className="py-2 px-3 text-right font-medium">
+                      {fmtUSD(t.amount ?? escrow.amount * t.pct)}
+                    </td>
+                    <td className="py-2 px-3">
+                      <Badge
+                        variant={t.status === "RELEASED" ? "success" : "secondary"}
+                        className="text-[9px] h-4 px-1.5"
+                      >
+                        {t.status}
+                      </Badge>
+                    </td>
+                    <td className="py-2 px-3 font-mono text-[10px] text-muted-foreground max-w-[220px] truncate">
+                      {t.proof_refs.length ? t.proof_refs.join(", ") : "—"}
+                    </td>
+                    <td className="py-2 pl-3 text-right text-muted-foreground">
+                      {t.released_at ? timeAgo(t.released_at) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Legacy single hold — no staged tranches on this escrow.
+          </p>
+        )}
+
+        {/* Operator actions — every one moves money, all confirm first */}
+        <div className="flex items-center gap-2 flex-wrap pt-1">
+          <Button
+            variant="success"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            disabled={!canAccept}
+            title={
+              canAccept
+                ? "Relay the buyer's acceptance of the goods — releases the final tranche"
+                : "Enabled once the escrow is funded, the final tranche is pending and no dispute is open"
+            }
+            onClick={() =>
+              setDialog({
+                kind: "accept",
+                title: "Record buyer acceptance",
+                description:
+                  "Releases the final ACCEPTED-trigger tranche to PortLess on the buyer's behalf. Use only when the buyer confirmed acceptance of the goods.",
+                confirmLabel: "Release final tranche",
+                needsReason: false,
+                variant: "success",
+              })
+            }
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" /> Record buyer acceptance
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            disabled={!canDispute}
+            onClick={() =>
+              setDialog({
+                kind: "dispute",
+                title: "Raise a dispute",
+                description:
+                  "Blocks every further release (including the inspection-window auto-release) until the dispute is resolved by refund or acceptance.",
+                confirmLabel: "Raise dispute",
+                needsReason: true,
+                variant: "destructive",
+              })
+            }
+          >
+            <AlertTriangle className="w-3.5 h-3.5" /> Raise dispute
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            disabled={!canRefund}
+            title={canRefund ? `Refund ${fmtUSD(undisbursed)} undisbursed` : "Nothing left to refund"}
+            onClick={() =>
+              setDialog({
+                kind: "refund",
+                title: `Refund undisbursed balance (${fmtUSD(undisbursed)})`,
+                description:
+                  "Returns everything not yet released to the buyer. Already-released tranches cannot be clawed back. A deal in DISPUTE moves to REFUNDED.",
+                confirmLabel: `Refund ${fmtUSD(undisbursed)}`,
+                needsReason: true,
+                variant: "destructive",
+              })
+            }
+          >
+            <XCircle className="w-3.5 h-3.5" /> Refund undisbursed
+          </Button>
+        </div>
+      </CardContent>
+      <EscrowActionDialog spec={dialog} escrow={escrow} dealId={dealId} onClose={() => setDialog(null)} />
+    </Card>
+  );
+}
+
+function LedgerRow({ label, value, tone }: { label: string; value: string; tone?: "good" | "warn" | "bad" | "muted" }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5 border-b border-border/50 last:border-0 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "font-semibold",
+          tone === "good" && "text-[#2ec28a]",
+          tone === "warn" && "text-[#f5a623]",
+          tone === "bad" && "text-[#ff5d6c]",
+          tone === "muted" && "text-muted-foreground"
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function LedgerCard({ ledger }: { ledger: DealLedger }) {
+  const hasEscrow = Boolean(ledger.escrow_id);
+  return (
+    <Card className={cn(!ledger.reconciled && "border-[#ff5d6c]/50")}>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Scale className="w-4 h-4 text-[#4f8cff]" />
+            <CardTitle>Money Ledger</CardTitle>
+          </div>
+          <Badge variant={ledger.reconciled ? "success" : "destructive"} className="text-[10px]">
+            {ledger.reconciled ? "reconciled" : `${ledger.issues.length} issue(s)`}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {!hasEscrow ? (
+          <p className="text-xs text-muted-foreground">No escrow opened for this deal yet.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                Buyer side (escrow)
+              </p>
+              <LedgerRow label="Principal held" value={fmtUSD(ledger.principal)} />
+              <LedgerRow
+                label="Funded"
+                value={ledger.funded_amount != null ? fmtUSD(ledger.funded_amount) : "—"}
+                tone={ledger.shortfall ? "warn" : undefined}
+              />
+              {ledger.shortfall ? (
+                <LedgerRow label="Shortfall" value={fmtUSD(ledger.shortfall)} tone="warn" />
+              ) : null}
+              <LedgerRow label="Released to PortLess" value={fmtUSD(ledger.released_total)} tone="good" />
+              <LedgerRow label="Provider fees (est.)" value={fmtUSD(ledger.fees_total)} tone="muted" />
+              <LedgerRow label="Net received" value={fmtUSD(ledger.net_to_portless)} tone="good" />
+              <LedgerRow label="Refunded to buyer" value={fmtUSD(ledger.refunded_total)} tone={ledger.refunded_total ? "warn" : "muted"} />
+              <LedgerRow label="Still in escrow" value={fmtUSD(ledger.outstanding)} />
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                Supplier side (payouts)
+              </p>
+              <LedgerRow
+                label="Supplier owed (PO value)"
+                value={ledger.supplier_owed != null ? fmtUSD(ledger.supplier_owed) : "—"}
+              />
+              <LedgerRow label="Paid out" value={fmtUSD(ledger.payouts_total)} tone="good" />
+              <LedgerRow label="Pending payouts" value={fmtUSD(ledger.payouts_pending)} tone={ledger.payouts_pending ? "warn" : "muted"} />
+              <LedgerRow
+                label="Balance due to supplier"
+                value={ledger.supplier_balance_due != null ? fmtUSD(ledger.supplier_balance_due) : "—"}
+                tone={ledger.supplier_balance_due ? "warn" : undefined}
+              />
+              <LedgerRow label="Available for payout now" value={fmtUSD(ledger.available_for_payout)} tone="good" />
+              <LedgerRow
+                label="Realized margin so far"
+                value={ledger.realized_margin != null ? fmtUSD(ledger.realized_margin) : "—"}
+                tone={ledger.realized_margin != null ? (ledger.realized_margin >= 0 ? "good" : "bad") : undefined}
+              />
+            </div>
+          </div>
+        )}
+        {ledger.issues.length > 0 && (
+          <ul className="mt-3 space-y-1">
+            {ledger.issues.map((issue, i) => (
+              <li key={i} className="flex items-start gap-1.5 text-xs text-[#ff5d6c]">
+                <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                {issue}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PayoutsCard({ ledger }: { ledger: DealLedger }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Wallet className="w-4 h-4 text-[#f5a623]" />
+          <CardTitle>Supplier Payouts</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {ledger.payouts.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No payouts yet — the RELEASE_SUPPLIER_PAYOUT gate opens once the cargo clears and
+            escrow funds have been released.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {ledger.payouts.map((p) => (
+              <div
+                key={p.payout_id}
+                className="flex items-center justify-between gap-3 p-3 rounded-lg bg-secondary border border-border"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">
+                    {fmtUSD(p.amount)}{" "}
+                    <span className="text-[10px] text-muted-foreground font-normal">
+                      {p.kind === "supplier_balance" ? "balance" : "main payout"} · {p.payee_id}
+                    </span>
+                  </p>
+                  <p className="text-[10px] text-muted-foreground font-mono truncate">
+                    {p.payout_id}
+                    {p.ext_ref && ` · ${p.ext_ref}`}
+                    {p.total_owed != null && ` · of ${fmtUSD(p.total_owed)} owed`}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <Badge
+                    variant={
+                      p.status === "COMPLETED"
+                        ? "success"
+                        : p.status === "FAILED"
+                        ? "destructive"
+                        : "warning"
+                    }
+                    className="text-[10px]"
+                  >
+                    {p.status}
+                  </Badge>
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    {p.completed_at ? `completed ${timeAgo(p.completed_at)}` : `requested ${timeAgo(p.created_at)}`}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function PaymentsTab({ dealId }: { dealId: string }) {
-  const { data: holds, isLoading } = useEscrowHolds(dealId);
+  const { data: escrow, isLoading } = useEscrowHold(dealId);
+  const { data: ledger, isLoading: ledgerLoading } = useDealLedger(dealId);
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <CreditCard className="w-4 h-4 text-[#28c2a0]" />
-            <CardTitle>Escrow Holds</CardTitle>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <Skeleton className="h-32 w-full" />
-          ) : !holds || holds.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No escrow holds</p>
-          ) : (
-            <div className="space-y-3">
-              {holds.map((hold) => (
-                <div
-                  key={hold.hold_id}
-                  className="p-4 rounded-lg bg-secondary border border-border space-y-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <p className="text-2xl font-bold text-[#2ec28a]">
-                      {fmtUSD(hold.amount_usd)}
-                    </p>
-                    <Badge
-                      variant={
-                        hold.status === "FUNDED"
-                          ? "success"
-                          : hold.status === "RELEASED"
-                          ? "teal"
-                          : hold.status === "REFUNDED"
-                          ? "warning"
-                          : "secondary"
-                      }
-                    >
-                      {hold.status}
-                    </Badge>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 text-xs">
-                    {hold.stripe_payment_intent_id && (
-                      <div>
-                        <p className="text-muted-foreground text-[10px]">Stripe PI</p>
-                        <p className="font-mono">{hold.stripe_payment_intent_id}</p>
-                      </div>
-                    )}
-                    {hold.funded_at && (
-                      <div>
-                        <p className="text-muted-foreground text-[10px]">Funded At</p>
-                        <p>{fmtDateTime(hold.funded_at)}</p>
-                      </div>
-                    )}
-                  </div>
-                  {/* Payment timeline */}
-                  <div className="flex items-center gap-2 text-[10px]">
-                    {["PENDING", "FUNDED", "RELEASED"].map((s, i) => {
-                      const reached =
-                        (hold.status === "PENDING" && i === 0) ||
-                        (hold.status === "FUNDED" && i <= 1) ||
-                        (hold.status === "RELEASED" && i <= 2) ||
-                        hold.status === "REFUNDED";
-                      return (
-                        <div key={s} className="flex items-center gap-2">
-                          {i > 0 && (
-                            <div
-                              className={cn(
-                                "h-0.5 w-8",
-                                reached ? "bg-[#2ec28a]" : "bg-border"
-                              )}
-                            />
-                          )}
-                          <span
-                            className={cn(
-                              "font-medium",
-                              reached ? "text-[#2ec28a]" : "text-muted-foreground"
-                            )}
-                          >
-                            {s}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+      {isLoading ? (
+        <Skeleton className="h-48 w-full rounded-xl" />
+      ) : !escrow ? (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <CreditCard className="w-4 h-4 text-[#28c2a0]" />
+              <CardTitle>Escrow</CardTitle>
             </div>
-          )}
-        </CardContent>
-      </Card>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              No escrow yet — one opens automatically when the buyer accepts the Proforma Invoice.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <EscrowCard escrow={escrow} dealId={dealId} />
+      )}
+
+      {ledgerLoading ? (
+        <Skeleton className="h-40 w-full rounded-xl" />
+      ) : ledger ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <LedgerCard ledger={ledger} />
+          <PayoutsCard ledger={ledger} />
+        </div>
+      ) : null}
     </div>
   );
 }

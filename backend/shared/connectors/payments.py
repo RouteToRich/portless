@@ -138,6 +138,14 @@ class StripeTreasuryConnector(Connector):
             parts = {kv.split("=", 1)[0]: kv.split("=", 1)[1] for kv in stripe_sig.split(",")}
             timestamp = parts.get("t", "")
             v1_sig = parts.get("v1", "")
+            # Replay window: a signed payload older than the tolerance is rejected
+            # even when the HMAC matches (Stripe's own recommendation is 5 min).
+            tolerance = int(os.getenv("STRIPE_WEBHOOK_TOLERANCE_SECONDS", "300") or 300)
+            if timestamp and tolerance > 0:
+                import time as _time
+                if abs(_time.time() - int(timestamp)) > tolerance:
+                    logger.warning("StripeTreasuryConnector: webhook timestamp outside tolerance — rejected")
+                    return False
             signed_payload = f"{timestamp}.".encode() + body
             expected = hmac.new(
                 self._webhook_secret.encode(), signed_payload, hashlib.sha256

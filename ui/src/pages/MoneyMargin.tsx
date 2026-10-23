@@ -1,13 +1,174 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
-import { TrendingUp, DollarSign, Layers, Filter } from "lucide-react";
+import { TrendingUp, DollarSign, Layers, Filter, Lock, Wallet, Scale, AlertTriangle } from "lucide-react";
 import { cn, fmtUSD, fmtPct } from "@/lib/utils";
-import type { DealStatus } from "@/api/types";
-import { useDeals } from "@/api/hooks";
+import type { DealStatus, DealLedger } from "@/api/types";
+import { useDeals, useEscrowLedgers } from "@/api/hooks";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+
+function ledgerStatusVariant(status: string | null | undefined) {
+  switch (status) {
+    case "FUNDED": return "success" as const;
+    case "RELEASED": return "teal" as const;
+    case "PARTIALLY_FUNDED":
+    case "REFUNDED": return "warning" as const;
+    case "FAILED": return "destructive" as const;
+    default: return "secondary" as const;
+  }
+}
+
+// Escrow ledgers across every deal — the cash view the deal-margin estimates
+// above cannot give: what is held, what PortLess actually received, what went
+// to suppliers, and whether every ledger reconciles.
+function EscrowLedgers() {
+  const { data: ledgers, isLoading, isError } = useEscrowLedgers();
+  const rows: DealLedger[] = ledgers ?? [];
+
+  const sum = (pick: (l: DealLedger) => number | null | undefined) =>
+    rows.reduce((s, l) => s + (pick(l) ?? 0), 0);
+  const held = sum((l) => l.principal);
+  const net = sum((l) => l.net_to_portless);
+  const payouts = sum((l) => l.payouts_total);
+  const realized = sum((l) => l.realized_margin);
+  const unreconciled = rows.filter((l) => !l.reconciled).length;
+
+  const tiles = [
+    { label: "Held principal", value: fmtUSD(held), icon: Lock, color: "#4f8cff", sub: `${rows.length} escrow(s)` },
+    { label: "Released to PortLess (net)", value: fmtUSD(net), icon: TrendingUp, color: "#2ec28a", sub: "after provider fees" },
+    { label: "Supplier payouts", value: fmtUSD(payouts), icon: Wallet, color: "#f5a623", sub: "completed" },
+    {
+      label: "Realized margin so far",
+      value: fmtUSD(realized),
+      icon: Scale,
+      color: realized >= 0 ? "#28c2a0" : "#ff5d6c",
+      sub: unreconciled ? `${unreconciled} ledger(s) unreconciled` : "all ledgers reconciled",
+    },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Lock className="w-4 h-4 text-[#28c2a0]" />
+        <h2 className="text-sm font-bold">Escrow Ledgers</h2>
+        <span className="text-[10px] text-muted-foreground">
+          neutral staged-release escrow · cash actually moved, not estimates
+        </span>
+      </div>
+
+      {isLoading ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-24 rounded-xl" />)}
+        </div>
+      ) : isError ? (
+        <p className="text-xs text-muted-foreground">Escrow ledgers unavailable</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {tiles.map((t) => {
+              const Icon = t.icon;
+              return (
+                <Card key={t.label}>
+                  <CardContent className="flex items-center gap-3 pt-4">
+                    <div
+                      className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
+                      style={{ background: `${t.color}1a` }}
+                    >
+                      <Icon className="w-5 h-5" style={{ color: t.color }} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] text-muted-foreground truncate">{t.label}</p>
+                      <p className="text-xl font-bold" style={{ color: t.color }}>{t.value}</p>
+                      <p className="text-[10px] text-muted-foreground">{t.sub}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+
+          <div className="rounded-xl border border-border overflow-x-auto">
+            <table className="w-full min-w-[960px]">
+              <thead>
+                <tr className="bg-popover border-b border-border">
+                  {[
+                    ["Deal", "left"], ["Provider", "left"], ["Status", "left"], ["Principal", "right"],
+                    ["Released", "right"], ["Fees", "right"], ["Payouts", "right"], ["Available", "right"],
+                    ["Balance due", "right"], ["Ledger", "left"],
+                  ].map(([h, align]) => (
+                    <th
+                      key={h}
+                      className={cn(
+                        "px-3 py-2.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide",
+                        align === "right" ? "text-right" : "text-left"
+                      )}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="text-center py-8 text-xs text-muted-foreground">
+                      No escrow opened yet
+                    </td>
+                  </tr>
+                ) : (
+                  rows.map((l, idx) => (
+                    <tr
+                      key={l.escrow_id ?? l.deal_id}
+                      className={cn(
+                        "border-b border-border hover:bg-card transition-colors text-xs",
+                        idx % 2 === 0 ? "bg-transparent" : "bg-secondary/30",
+                        !l.reconciled && "bg-[#ff5d6c]/5"
+                      )}
+                    >
+                      <td className="px-3 py-2.5">
+                        <Link to={`/deals/${l.deal_id}`} className="font-mono font-semibold text-[#4f8cff] hover:underline">
+                          {l.deal_id.slice(0, 14)}
+                        </Link>
+                        {l.disputed && <Badge variant="destructive" className="ml-1.5 text-[9px] h-4 px-1.5">disputed</Badge>}
+                        {l.settled && <Badge variant="teal" className="ml-1.5 text-[9px] h-4 px-1.5">settled</Badge>}
+                      </td>
+                      <td className="px-3 py-2.5 capitalize">{(l.provider ?? "—").replace("_", ".")}</td>
+                      <td className="px-3 py-2.5">
+                        <Badge variant={ledgerStatusVariant(l.status)} className="text-[9px] h-4 px-1.5">
+                          {(l.status ?? "—").replace(/_/g, " ")}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-medium">{fmtUSD(l.principal)}</td>
+                      <td className="px-3 py-2.5 text-right text-[#2ec28a] font-medium">{fmtUSD(l.released_total)}</td>
+                      <td className="px-3 py-2.5 text-right text-muted-foreground">{fmtUSD(l.fees_total)}</td>
+                      <td className="px-3 py-2.5 text-right">{fmtUSD(l.payouts_total)}</td>
+                      <td className="px-3 py-2.5 text-right">{fmtUSD(l.available_for_payout)}</td>
+                      <td className={cn("px-3 py-2.5 text-right", l.supplier_balance_due ? "text-[#f5a623] font-medium" : "text-muted-foreground")}>
+                        {l.supplier_balance_due != null ? fmtUSD(l.supplier_balance_due) : "—"}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {l.reconciled ? (
+                          <Badge variant="success" className="text-[9px] h-4 px-1.5">reconciled</Badge>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[#ff5d6c] font-medium" title={l.issues.join("\n")}>
+                            <AlertTriangle className="w-3 h-3" /> {l.issues.length} issue(s)
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 const ACTIVE_STATUSES: DealStatus[] = [
   "DRAFT", "MATCHING", "NEGOTIATING", "NEGOTIATION_AGREED",
@@ -206,6 +367,9 @@ export function MoneyMargin() {
           </CardContent>
         </Card>
       )}
+
+      {/* Escrow ledgers — cash actually held / released / paid out */}
+      <EscrowLedgers />
 
       {/* Table */}
       {isLoading ? (

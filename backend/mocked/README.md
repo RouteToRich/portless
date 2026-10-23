@@ -15,7 +15,8 @@ mocked/
 ├── health/                    API Gateway health checks (System Health screen)
 │   ├── gateway_ok.json        GET /health — gateway online
 │   ├── downstream_all_ok.json GET /health/downstream — all 13 services "ok"
-│   └── downstream_degraded.json  GET /health/downstream — 2 services unreachable
+│   ├── downstream_degraded.json  GET /health/downstream — 2 services unreachable
+│   └── readiness.json         GET /health/readiness — production readiness gate (ok/warn/fail checks)
 │
 ├── rag/                       RAG knowledge base (Knowledge Base screen)
 │   ├── stats.json             GET /rag/stats — indexed chunk count
@@ -29,10 +30,12 @@ mocked/
 │   ├── deal_detail_escrow_funded.json
 │   ├── deal_detail_in_transit.json  (includes vessel tracking)
 │   ├── deal_detail_paid.json        (includes all documents + customs)
-│   └── deal_detail_dispute.json     (QC failure → DISPUTE)
+│   ├── deal_detail_dispute.json     (QC failure → DISPUTE)
+│   └── enrich_result.json     POST /deals/{id}/enrich — Apify contact finder + sanctions screening result
 │
 ├── trade_min/
-│   └── scan_result.json       GET /trade-min/opportunities — 3 opportunities
+│   ├── scan_result.json       GET /trade-min/opportunities — 3 opportunities
+│   └── sources.json           GET /trade-min/sources — data-source reachability incl. the PortLess Apify actors
 │
 ├── match_engine/
 │   └── score_result.json      GET /match-engine/score/{deal_id} — CMS breakdown
@@ -80,7 +83,9 @@ mocked/
 │   ├── hold_funded_webhook.json     Stripe webhook → ESCROW_FUNDED
 │   ├── payout_completed.json        Payoneer payout → PAID
 │   ├── payout_failed_webhook.json   Payoneer failure → exception raised
-│   └── deal_escrow_summary.json     GET /escrow-guard/deals/{id}/summary
+│   ├── deal_escrow_summary.json     GET /escrow-guard/deals/{id}/summary
+│   ├── ledger.json                  GET /escrow-guard/deals/{id}/ledger — staged escrow ledger (tranches, payouts, balance)
+│   └── ledgers_list.json            GET /escrow-guard/ledgers — one ledger per escrow (Money & Margin view)
 │
 ├── hitl_approval/
 │   ├── approval_pending_l0.json     L0 — manual approval required, no timeout

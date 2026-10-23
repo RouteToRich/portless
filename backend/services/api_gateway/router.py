@@ -22,6 +22,13 @@ async def downstream_health() -> dict[str, str]:
     return await service.downstream_health()
 
 
+@router.get("/health/readiness")
+async def readiness() -> dict[str, Any]:
+    """Production readiness report (same checks as the monolith's /health/readiness)."""
+    from shared.readiness import evaluate
+    return evaluate()
+
+
 @router.post("/deals", response_model=DealResponse, status_code=201)
 async def create_deal(payload: CreateDealRequest) -> DealResponse:
     """Edge entry point: validate then delegate to the Deals service via REST."""

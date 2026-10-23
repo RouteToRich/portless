@@ -1,0 +1,30 @@
+{
+  "_note": "GET /health/readiness — production readiness gate (shared/readiness.py) in a dev profile: three fails, four warns.",
+  "profile": "dev",
+  "enforced": false,
+  "ready": false,
+  "fail_count": 3,
+  "warn_count": 4,
+  "generated_at": "2026-10-23T12:00:00Z",
+  "checks": [
+    { "id": "mongo", "category": "persistence", "label": "MongoDB configured", "status": "ok", "detail": "database portless" },
+    { "id": "event_bus", "category": "bus", "label": "Durable event bus (NATS JetStream)", "status": "ok", "detail": "NATS credentials present — continuations replay after a restart" },
+    { "id": "escrow_provider", "category": "money", "label": "Neutral escrow provider (Tazapay / Escrow.com)", "status": "fail", "detail": "no escrow credentials — create_escrow returns a stub and the funding link in the buyer e-mail is fake" },
+    { "id": "money_webhook_secrets", "category": "money", "label": "Money webhook signatures enforced", "status": "fail", "detail": "escrow-funded / payout webhooks are accepted unsigned when their *_WEBHOOK_SECRET is unset" },
+    { "id": "payout_rail", "category": "money", "label": "Supplier payout rail (Payoneer)", "status": "fail", "detail": "PAYONEER_CLIENT_ID unset — supplier payouts are stubbed (no money moves)" },
+    { "id": "money_ceiling", "category": "money", "label": "Money autonomy ceiling", "status": "ok", "detail": "AUTONOMY_MONEY_CEILING=L1 — a human confirms every tranche release and payout" },
+    { "id": "apify_token", "category": "data", "label": "Apify actors (buyer/seller identification + screening)", "status": "ok", "detail": "7 PortLess actors reachable as rich_minds" },
+    { "id": "trade_data", "category": "data", "label": "Live demand data (Comtrade / Census)", "status": "ok", "detail": "at least one live demand source configured" },
+    { "id": "mock_mode_off", "category": "data", "label": "Trade-Min mock mode off", "status": "ok", "detail": "scanner uses live connectors" },
+    { "id": "auto_flow_off", "category": "automation", "label": "Dev auto-flow off", "status": "ok", "detail": "production legs run on the event bus only" },
+    { "id": "smtp", "category": "email", "label": "Outbound e-mail configured", "status": "ok", "detail": "sending as ops@portless.io" },
+    { "id": "imap", "category": "email", "label": "Inbound e-mail polling configured", "status": "ok", "detail": "polling ops@portless.io" },
+    { "id": "email_domain", "category": "email", "label": "Own sending domain", "status": "ok", "detail": "sending from the PortLess domain portless.io" },
+    { "id": "document_store", "category": "documents", "label": "Google Drive document store", "status": "warn", "detail": "GOOGLE_DRIVE_* unset — documents land on local disk (lost with the container)" },
+    { "id": "exporter_identity", "category": "documents", "label": "Exporter identity on PI/PO (IEC + GSTIN)", "status": "ok", "detail": "IEC AAAC… / GSTIN 27AA…" },
+    { "id": "qc_provider", "category": "operations", "label": "QC inspection provider", "status": "warn", "detail": "no inspector API key — QC bookings are stubs; the deal waits at SUPPLIER_DISPATCH_READY for a manual result" },
+    { "id": "freight_provider", "category": "operations", "label": "Freight forwarder", "status": "warn", "detail": "no Cogoport / Freightos key — bookings are stubs and no ARRIVED milestone ever arrives" },
+    { "id": "customs", "category": "operations", "label": "Customs filing (ICEGATE)", "status": "warn", "detail": "ICEGATE_API_KEY unset — the Shipping Bill / LEO is a stub" },
+    { "id": "llm", "category": "llm", "label": "LLM gateway key", "status": "ok", "detail": "negotiation drafts + exception triage use a live model" }
+  ]
+}

@@ -51,6 +51,7 @@ from .service import (
     get_payout,
     handle_escrow_funded_webhook,
     handle_payout_webhook,
+    list_deal_ledgers,
     list_escrow_providers,
     refund,
     release_tranche,
@@ -208,9 +209,15 @@ async def api_deal_summary(deal_id: str) -> DealEscrowSummary:
 
 @router.get("/deals/{deal_id}/ledger", response_model=DealLedger)
 async def api_deal_ledger(deal_id: str) -> DealLedger:
-    """Per-trade money ledger (held / released / refunded / outstanding / payouts)
-    with a reconciliation check (`reconciled` + `issues`)."""
+    """Per-trade money ledger (held / released / refunded / outstanding / fees /
+    payouts / supplier balance) with a reconciliation check (`reconciled` + `issues`)."""
     return await get_deal_ledger(deal_id)
+
+
+@router.get("/ledgers", response_model=list[DealLedger])
+async def api_list_ledgers() -> list[DealLedger]:
+    """Every escrow's ledger, newest first — the Money & Margin escrow view."""
+    return await list_deal_ledgers()
 
 
 # ---------------------------------------------------------------------------

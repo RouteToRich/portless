@@ -52,6 +52,11 @@ pytest tests/test_shield_link.py          # QC, freight, CHA, webhooks
 pytest tests/test_escrow_guard.py         # escrow hold, funded webhook, payout
 pytest tests/test_hitl_approval.py        # HITL gate logic, SSE, callbacks
 pytest tests/test_exception_resolver.py  # LLM agent, all categories, AUTO_FIX/ESCALATE paths
+pytest tests/test_apify_connector.py      # PortLess Apify actors: normalisers, run flow, Trade-Min wiring
+pytest tests/test_enrichment.py           # counterparty contact + sanctions enrichment, party PATCH
+pytest tests/test_escrow_money_chain.py   # shortfall, replay, tranche order, fees, settlement, payout cap, PAID rule
+pytest tests/test_money_continuations.py  # screening gate, capped/balance payouts, tranche/settled legs, RFQ by e-mail
+pytest tests/test_readiness.py            # production readiness gate
 pytest -k "test_name" -q                  # single test by name
 
 # API connectivity check (trade-min third-party APIs)
@@ -82,9 +87,16 @@ In the combined monolith (`app.py`) services call each other's `service.py` dire
 | `shared/connectors/qc_providers.py` | Buyer-selectable QC inspectors — SGS, QIMA, Bureau Veritas, Intertek, TÜV SÜD — plus `QC_PROVIDER_CATALOG` metadata and alias resolution; graceful stub when API key absent |
 | `shared/connectors/shields.py` | Freight + customs: Cogoport, Freightos, ICEGATE — graceful stub when API key absent (re-exports the QC symbols for back-compat) |
 | `shared/connectors/payments.py` | Stripe Treasury, Payoneer — graceful stub when API key absent |
+| `shared/connectors/apify.py` | **PortLess-owned Apify actors** (`rich_minds` account, built with `/actor-pipeline`): `us-importer-finder-ai`, `alibaba-rfq-leads-ai`, `export-market-finder-ai`, `india-supplier-finder-ai`, `company-contact-finder-ai`, `counterparty-check-ai`, `email-list-qualifier-ai`. One base (`run` → wait → dataset) + one normaliser per actor onto `BuyerSignal` / `SellerCandidate` / `Party` shapes. Empty result (never raises) without `APIFY_TOKEN`; `tests/conftest.py` pins stub mode so unit tests never start a paid run |
+| `shared/readiness.py` | Production readiness gate: every stub / fallback as a named ok/warn/fail check (`GET /health/readiness`); `ENV_PROFILE=production` refuses to boot while a check fails |
+| `shared/orchestration/enrichment.py` | Counterparty identification: contact finder → e-mail check → sanctions / LEI / VIES screening on the Apify actors; results land on the deal `Party` (`email`, `email_status`, `sanctions_status` …). Runs at `DEAL_CREATED`, re-screens the buyer before the PI, and on demand via `POST /deals/{id}/enrich` |
 | `shared/llm_gateway/` | Resilient LLM client with Groq fallback chain + MongoDB call tracking |
 | `shared/rag/` | MongoDB Atlas vector store + RAG chunking pipeline |
 | `shared/auth/` | `AuthMiddleware` (JWT bearer enforcement + non-Portless allowlist), `dependencies.py` (`require_org_scope`, `require_portless`), `blacklist.py` (logout/token revocation), `security.py` (hash/verify/`create_access_token`) |
+| `shared/orchestration/continuations.py` | **Production automation backbone** — event subscribers that move a deal to its next step (opportunity → deal, RFQ, negotiation start, PI, escrow, PO/QC/freight/customs/tranche/payout gates, document pack, counterparty notifications, failure triage). Registered on the bus in the monolith only |
+| `shared/orchestration/autonomy_policy.py` | Per-action L0–L3 resolution for every HITL gate (override store → env → deal profile → default; money ceiling). Backs `GET/PUT /hitl-approval/autonomy-policy` |
+| `shared/orchestration/notifications.py` | Templated counterparty emails (PI, escrow funding, PO, QC booking, shipment, arrival, completion, reminders) recorded in the negotiation email history and gated by `SEND_DEAL_NOTIFICATION` |
+| `shared/orchestration/deal_watcher.py` | SLA sweep: buyer reminders for `PI_SENT` / `ESCROW_PENDING`, `deal.exception` on PI expiry, unfunded escrow, or any status stalled past `DEAL_STALL_SLA_HOURS` |
 | `shared/orchestration/auto_flow.py` | Dev/test-only auto-continuation task that drives an opportunity-seeded deal through sourcing → negotiation → PI → escrow using real service calls, gated on HITL approvals for PO/freight/payout. Off by default (`AUTO_FLOW_ENABLED`) |
 
 ### Service structure pattern
@@ -183,9 +195,22 @@ When an approval resolves APPROVE, the `execute_callback()` dispatcher calls int
 | `RELEASE_SUPPLIER_PAYOUT` | `escrow_guard.service.request_payout()` |
 | `FILE_CUSTOMS` | `shield_link.service.file_cha()` |
 | `RESOLVE_EXCEPTION` | Logs + emits `deal.exception` (exception_resolver stub) |
+| `SEND_NEGOTIATION_EMAIL` | `negotiation_agent.service.send_approved_email()`; soft REJECT → `reject_email()` |
 | `CONFIRM_NEGOTIATION_AGREEMENT` | `negotiation_agent.service.finalize_agreement()` — the ONLY path to negotiation `AGREED`; soft REJECT → `reject_agreement()` reopens the session at `ROUND` |
+| `DISPATCH_RFQ` | `sourcing.service.dispatch_rfq()` (deal reached MATCHING) |
+| `CONFIRM_SUPPLIER_SELECTION` | `deals.service.record_match_result()` + transition to `NEGOTIATING` (via `MATCHING` when re-matching after `NEGOTIATION_FAILED`) |
+| `CONFIRM_PI_ACCEPTANCE` | `dealmaker.service.accept_pi()` — buyer's email reply read as PI acceptance |
+| `RELEASE_ESCROW_TRANCHE` | `escrow_guard.service.release_tranche()` — staged tranche (T1 PO_ISSUED / T2 QC_PASSED / T3 CLEARED), strictly in schedule order; money-moving, hard REJECT |
+| `CONFIRM_COUNTERPARTY_RISK` | `continuations.issue_pi_for_deal()` — buyer screening returned `review`; APPROVE issues the PI the AGREED leg held back; hard REJECT (`block` never reaches a gate — it raises `deal.exception` and withholds the PI) |
+| `CONFIRM_BUYER_ACCEPTANCE` | `escrow_guard.service.accept_escrow()` — buyer's post-delivery e-mail confirmed as acceptance → final (T4) tranche; money-moving, soft REJECT keeps the inspection window running |
+| `SEND_DEAL_NOTIFICATION` | `negotiation_agent.service.send_approved_email()` — templated counterparty email (`shared/orchestration/notifications.py`) |
+| `PARSE_INBOUND_EMAIL` | No-op (informational) — operator acts through the Email Processor manual endpoint |
 
-On callback failure → `deal.exception` emitted with `action_required: manual_retry_or_intervention`.
+Soft rejects (`callbacks.SOFT_REJECT_ACTIONS`) log and leave the deal where it is; every other REJECT emits `deal.exception`. On callback failure → `deal.exception` emitted with `action_required: manual_retry_or_intervention`.
+
+### Autonomy policy (`shared/orchestration/autonomy_policy.py`)
+
+Every gate above is created at the level `resolve_level(action, deal)` returns: saved override (`GET/PUT /hitl-approval/autonomy-policy`, the Autonomy Settings page; Mongo-persisted) → `AUTONOMY_<ACTION>` env → the deal's `autonomy_profile` (only for PO / freight / customs / payout / tranche) → built-in default (`DISPATCH_RFQ` and `SEND_DEAL_NOTIFICATION` L2, everything else L0). Money-moving actions are clamped to `AUTONOMY_MONEY_CEILING` (default L1). Two overrides no policy lifts: degraded/placeholder negotiation drafts stay L0, and the first outbound negotiation email stays L0 while `hitl_on_first_outbound` is on. Setting every action to L2 runs a deal end-to-end with no operator click; money release still stops at L1.
 
 ### Exception Resolver Agent
 
@@ -246,7 +271,7 @@ Pipeline continuations (`shared/orchestration/continuations.py`) subscribe in th
 | `dealmaker` | ✅ Full | PI/PO, Jinja2 HTML, SHA-256, margin guard, idempotency |
 | `docugen` | ✅ Full | CI/PL/CoO/SDF/Shipping Bill templates, ICEGATE stub |
 | `shield_link` | ✅ Full | QC + freight + CHA; HMAC webhooks; graceful stubs |
-| `escrow_guard` | ✅ Full | Stripe hold + Payoneer payout; HMAC webhooks; graceful stubs |
+| `escrow_guard` | ✅ Full | Neutral staged escrow (Tazapay / Escrow.com) + legacy Stripe hold + Payoneer payout; funding shortfall → `PARTIALLY_FUNDED`; replay-safe webhooks; ordered tranche release with fees; payout capped at net released funds; PAID only when the supplier is paid in full; settlement event; per-deal ledger + `/ledgers` |
 | `hitl_approval` | ✅ Full | L0/L1/L2/L3 gates; SSE stream; webhook notify; saga callbacks; timeout watcher |
 | `exception_resolver` | ✅ Full | LangGraph agent; LLM classify+plan; AUTO_FIX/ESCALATE/CANCEL/MONITOR; HITL saga; MongoDB |
 | `email_gateway` | ✅ Full | **Transport only** — single IMAP + SMTP config. Automatic IMAP poll (15 min) forwards inbound mail to `email_processor`; sends outbound via `POST /email-gateway/send` (called from the negotiation flow after HITL approval) |
@@ -263,6 +288,7 @@ Pipeline continuations (`shared/orchestration/continuations.py`) subscribe in th
 | Stripe Treasury | `payments.py` | ✅ Wired — stub when `STRIPE_SECRET_KEY` absent |
 | Payoneer | `payments.py` | ✅ Wired — stub when `PAYONEER_CLIENT_ID` absent |
 | Google Drive | `google_drive.py` | ✅ Wired — PRIMARY store for generated PI/PO/DocuGen documents; local-disk fallback (loudly logged) when `GOOGLE_DRIVE_REFRESH_TOKEN` absent or an upload fails |
+| PortLess Apify actors | `apify.py` | ✅ Wired — 7 actors (buyers, demand benchmark, suppliers, contacts, screening, e-mail check); empty result when `APIFY_TOKEN` absent; `india-supplier-finder-ai` still to be generated with `/actor-pipeline` (row schema on the connector class) |
 
 All other connectors (`trade_intel.py`, `demand_signals.py`, `regulatory.py`) make real HTTP calls; missing credentials return empty/error results gracefully.
 
@@ -337,6 +363,17 @@ GOOGLE_DRIVE_ROOT_FOLDER     # default "Portless" — docs land in <root>/<deal_
 # <OS temp>/portless-docs/<service>) is an emergency fallback only — every
 # local write logs a loud warning that Drive needs attention.
 
+# PortLess Apify actors (buyer / seller identification + counterparty enrichment)
+APIFY_TOKEN                  # Apify API token (auto-discovered from ~/.apify/auth.json in dev unless APIFY_TOKEN_AUTODISCOVER=false)
+APIFY_ACTOR_OWNER            # default rich_minds; APIFY_ACTOR_<KEY> overrides one actor (slug / owner~slug / id)
+APIFY_ENABLE_AI / APIFY_MAX_ITEMS / APIFY_RUN_TIMEOUT_SECONDS / APIFY_MAX_DISCOVERY_CHARGE_USD / APIFY_WEBHOOK_SECRET
+ENRICHMENT_ON_DEAL_CREATED   # default true — contact finder + sanctions screening at deal.created
+
+# Production readiness gate (shared/readiness.py)
+ENV_PROFILE                  # dev | staging | production — production refuses to boot while a readiness check fails
+READINESS_ENFORCE            # override the boot refusal (never with real money)
+STRIPE_WEBHOOK_TOLERANCE_SECONDS  # signed-payload replay window (default 300)
+
 # HITL UI integration
 HITL_NOTIFY_WEBHOOK_URL     # optional — POST notifications to UI backend
 HITL_NOTIFY_WEBHOOK_SECRET  # HMAC signing key for webhook
@@ -353,6 +390,14 @@ EVENT_BUS_BACKEND            # auto (default) | nats | inprocess | noop
 NATS_CREDS_FILE              # Synadia .creds file; auto-discovers backend/*.creds if unset
 NATS_URL                     # default tls://connect.ngs.global:4222
 NATS_STREAM_NAME / NATS_SUBJECT_PREFIX / NATS_ACK_WAIT_SECONDS / NATS_MAX_DELIVER
+
+# Automation (production path — see shared/orchestration/)
+EVENT_CONTINUATION_ENABLED   # default true — event-driven legs that move a deal to its next step
+AUTONOMY_<ACTION>            # per-action L0–L3 (e.g. AUTONOMY_SEND_NEGOTIATION_EMAIL=L2); also settable from the UI
+AUTONOMY_MONEY_CEILING       # default L1 — hard cap for RELEASE_ESCROW_TRANCHE / RELEASE_SUPPLIER_PAYOUT
+DEAL_NOTIFICATIONS_ENABLED   # default true — templated PI / escrow / PO / QC / shipment / arrival / reminder emails to counterparties
+DEAL_WATCHER_ENABLED         # default true — reminders + stall exceptions (DEAL_PI_REMINDER_AFTER_HOURS, DEAL_ESCROW_REMINDER_AFTER_HOURS, DEAL_REMINDER_MAX, DEAL_STALL_SLA_HOURS, DEAL_WATCHER_INTERVAL_SECONDS)
+AUTO_DEAL_FROM_OPPORTUNITY_ENABLED  # default false — convert qualifying opportunity.detected events into deals (AUTO_DEAL_MIN_ARBITRAGE_RANK, AUTO_DEAL_MIN_CONFIDENCE, AUTO_DEAL_ORG_ID, AUTO_DEAL_OPERATOR_ID, AUTO_DEAL_AUTONOMY_PROFILE)
 
 # Dev/test-only conveniences (default off; do not enable in production)
 TRADE_MIN_MOCK_MODE          # bypass every live trade-intelligence connector with curated scenario data
@@ -372,25 +417,31 @@ Run `python scripts/check_trade_api_connections.py` to test all third-party API 
 ## Key cross-module flows
 
 **Opportunity → Deal creation:**
-`POST /trade-min/scan` → `opportunity.detected` → `POST /deals` (with `opportunity_id`) → Deals service seeds from Trade-Min + scores via Match Engine → deal at `MATCHING`. If `AUTO_FLOW_ENABLED=true` (dev/test only), this also fires a background task that drives the deal through the rest of the flows below automatically, stopping at each HITL gate for a real operator decision.
+`POST /trade-min/scan` → `opportunity.detected` → `POST /deals` (with `opportunity_id`) → Deals service seeds from Trade-Min + scores via Match Engine → deal at `MATCHING`. With `AUTO_DEAL_FROM_OPPORTUNITY_ENABLED=true` the `on_opportunity_detected` continuation creates the deal itself (thresholds + simulated-source + duplicate guards). If `AUTO_FLOW_ENABLED=true` (dev/test only), creation also fires a background task that drives the deal through the rest of the flows below automatically, stopping at each HITL gate for a real operator decision.
 
-**Quote intake → Negotiation start:**
-`POST /sourcing/quotes` → GSTN/DGFT/MCA/Udyam verified in parallel → Match Engine re-scores → if SOURCE: patches deal financials + transitions to `NEGOTIATING`.
+**Buyer / seller identification (Apify actors):**
+`POST /trade-min/scan` runs the PortLess actors next to the free APIs: Phase 1 `export-market-finder-ai` (UN Comtrade demand + the market's unit value per MT → `price_benchmark_usd_per_mt`, the real buyer price anchor that replaces the 1.25× FOB heuristic), Phase 2 `alibaba-rfq-leads-ai` (every market) + `us-importer-finder-ai` (US market; named importers with website/phone/fit score), Phase 4 `india-supplier-finder-ai` (suppliers with price, MOQ, GSTIN, e-mail). All seller prices are normalised to USD/MT (`_normalise_price_per_mt`). `GET /trade-min/sources` reports which sources are live/stub/mock. At `deal.created` the enrichment leg runs `company-contact-finder-ai` + `counterparty-check-ai` (+ `email-list-qualifier-ai` for unverified addresses) and writes `email`/`website`/`phone`/`sanctions_status` onto the deal parties, so the negotiation agent's first e-mail goes to a real mailbox; a `block` verdict raises `deal.exception` and forces the RFQ gate to L0. `PATCH /deals/{id}/parties/{role}` lets an operator correct a contact (never overwritten by a later run); `POST /deals/{id}/enrich` re-runs it.
+
+**Deal at MATCHING → RFQ → Quote intake → Negotiation start:**
+`deal.created` (MATCHING) → enrichment (above) → `DISPATCH_RFQ` gate (policy default L2) → `sourcing.dispatch_rfq()` to the top-3 shortlist (SOURCE matches first, else the opportunity's seller candidates; a missing buyer target price is derived as 1.25× the cheapest FOB and logged as a HEURISTIC). Suppliers with an e-mail (actor / contact finder / operator) get the RFQ **by e-mail** with an `[RFQ:<rfq_id>]` subject token; the Email Processor maps the reply (`mapper.rfq_id_from_subject`) → `sourcing.receive_quote_by_email()` (sender matched to the dispatched address, GSTIN/IEC picked from the body) → the normal quote pipeline; no price → `PARSE_INBOUND_EMAIL`. `POST /sourcing/quotes` → GSTN/DGFT/MCA/Udyam verified in parallel → Match Engine re-scores → if SOURCE: patches deal financials + transitions to `NEGOTIATING`; otherwise `quote.received` → `CONFIRM_SUPPLIER_SELECTION` gate (L0; forced L0 with risk flags when GST/IEC verification failed) → APPROVE records the match and moves the deal to `NEGOTIATING`. `negotiation.failed` → `deal.exception` + a re-match `CONFIRM_SUPPLIER_SELECTION` gate for the next-best SOURCE candidate.
 
 **Negotiation → PI issuance:**
-`POST /negotiation-agent/negotiations/{id}/round` × N rounds. Acceptance is detected by an LLM intent classifier (keyword guard only as gateway-down fallback) + a deterministic price-consistency check, then gated behind a `CONFIRM_NEGOTIATION_AGREEMENT` (L0) HITL approval — session parks at `HITL_PENDING`; operator APPROVE → `finalize_agreement()` → `AGREED` → `POST /dealmaker/pi` → deal `PI_SENT`. REJECT reopens the negotiation (soft reject, no deal exception).
+`POST /negotiation-agent/negotiations/{id}/round` × N rounds. Acceptance is detected by an LLM intent classifier (keyword guard only as gateway-down fallback) + a deterministic price-consistency check, then gated behind a `CONFIRM_NEGOTIATION_AGREEMENT` (L0) HITL approval — session parks at `HITL_PENDING`; operator APPROVE → `finalize_agreement()` → `AGREED` → `negotiation.agreed` → the buyer's sanctions screening is (re)checked when older than 30 days: `clear`/`unchecked` → `POST /dealmaker/pi` → deal `PI_SENT`; `review` → `CONFIRM_COUNTERPARTY_RISK` gate (APPROVE issues the PI); `block` → `deal.exception`, no PI. REJECT reopens the negotiation (soft reject, no deal exception).
 
-**PI accepted → Escrow:**
-`POST /dealmaker/pi/{id}/accept` → deal `PI_ACCEPTED` → `POST /escrow-guard/holds` → Stripe PaymentIntent created → buyer pays → `POST /escrow-guard/webhooks/escrow-funded` → deal `ESCROW_FUNDED`.
+**PI sent → PI accepted → Escrow:**
+`pi.sent` → the PI is emailed to the buyer (`SEND_DEAL_NOTIFICATION`, same `[NEG:<id>]` thread as the negotiation). The buyer's reply maps back through the Email Processor: an unconditional acceptance (`guards.is_explicit_acceptance`) → `CONFIRM_PI_ACCEPTANCE` gate → `accept_pi()`; anything else → `PARSE_INBOUND_EMAIL` approval for a human. `POST /dealmaker/pi/{id}/accept` (portal/API) remains the other path → deal `PI_ACCEPTED` → `create_escrow()` (neutral staged escrow, sized from the PI, provider fee % recorded) → deal `ESCROW_PENDING` + funding instructions (amount, checkout link, tranche schedule) emailed to the buyer → buyer pays → `POST /escrow-guard/webhooks/escrow-funded` (replay-safe on `event_id`; Stripe signatures also carry a 5-minute replay window) → deal `ESCROW_FUNDED`. A provider total **below the PI** keeps the escrow `PARTIALLY_FUNDED` and the deal in `ESCROW_PENDING` (shortfall e-mail to the buyer + `deal.exception`; the next webhook with the full total completes it) — no PO is ever issued against money that is not there. The deal watcher reminds the buyer (max `DEAL_REMINDER_MAX`) and raises `deal.exception` on PI expiry / unfunded escrow.
 
 **Escrow funded → PO → QC:**
-`POST /dealmaker/po` (margin guard: ≥8%) → deal `PO_ISSUED` → `POST /shield-link/qc` → SGS booked → deal `SUPPLIER_DISPATCH_READY` → SGS webhook → deal `QC_PASSED` or `QC_FAILED`.
+`ISSUE_PO` gate → `POST /dealmaker/po` (margin guard: ≥8%) → deal `PO_ISSUED` → PO emailed to the supplier + `RELEASE_ESCROW_TRANCHE` gate (T1) → `POST /shield-link/qc` → buyer-opted inspector booked → deal `SUPPLIER_DISPATCH_READY` + booking emailed to the supplier → QC webhook → deal `QC_PASSED` (document pack CI/PL/CoO/SDF/Shipping Bill rendered + T2 tranche gate + `BOOK_FREIGHT` gate) or `QC_FAILED` (→ deal `DISPUTE` + `deal.exception`; `refund()` then moves `DISPUTE` → `REFUNDED`).
 
-**QC passed → Freight → Cleared → Paid:**
-`POST /shield-link/freight` → deal `IN_TRANSIT` → freight webhook (ARRIVED) → deal `CLEARED` → `POST /escrow-guard/payouts` → Payoneer payout → payout webhook (COMPLETED) → deal `PAID`.
+**QC passed → Freight → Customs → Cleared → Paid:**
+`BOOK_FREIGHT` gate → `POST /shield-link/freight` → deal `IN_TRANSIT` → `freight.booked` → `FILE_CUSTOMS` gate (document ids attached) + shipment emailed to the buyer → freight webhook (ARRIVED) → deal `CLEARED` → T3 tranche gate + arrival email + `RELEASE_SUPPLIER_PAYOUT` gate whose amount is **capped at the net funds already released from escrow** (`DealLedger.available_for_payout`; `total_owed` = PO value travels in the payload) → `POST /escrow-guard/payouts` → Payoneer payout → payout webhook (COMPLETED) → deal `PAID` **only once completed payouts reach the PO value**; a partial payout leaves the deal `CLEARED` and `on_payout_completed` gates the balance as `supplier_balance`.
 
-**Document generation (parallel to freight):**
-`POST /docugen/documents` (CI, PL, CoO, SDF, Shipping Bill) → `POST /docugen/customs/file` → ICEGATE Shipping Bill + LEO.
+**Escrow money chain (`escrow_guard` + `continuations`):**
+Tranches (default 30/40/20/10 on PO_ISSUED / QC_PASSED / CLEARED / ACCEPTED) release strictly in schedule order, never while the deal is in `DISPUTE` / `CANCELLED` / `REFUNDED` / `QC_FAILED`, never above the principal; each release accrues the provider fee and emits `escrow.tranche_released`. That leg tells the buyer when the acceptance window opens (`inspection_window_open` e-mail; "We accept the goods" → `CONFIRM_BUYER_ACCEPTANCE` gate → `accept_escrow()`; silence → auto-release after `inspection_window_hours`), re-gates the next tranche whose trigger status is already reached, and tops up the supplier payout. When the last tranche leaves the escrow `escrow.settled` fires: the supplier balance is gated, both parties get a settlement notice, and `realized_margin_usd` = net received − payouts is patched onto the deal. `GET /escrow-guard/deals/{id}/ledger` (and `/ledgers` for all deals) exposes principal / funded / shortfall / released / fees / net / payouts / available / supplier owed & balance / realised margin with a reconciliation check (`payouts ≤ net received` included); the escrow watcher raises `deal.exception` once per breach.
+
+**Document generation:**
+Rendered automatically at `QC_PASSED` (`POST /docugen/documents` for CI, PL, CoO, SDF, Shipping Bill; re-rendered at `freight.booked` if missing) and attached to the `FILE_CUSTOMS` gate → `shield_link.file_cha()` → ICEGATE Shipping Bill + LEO.
 
 **HITL gate (any service, any point):**
 Service calls `POST /hitl-approval/approvals` with `action` + `callback_payload` + `autonomy_level`.

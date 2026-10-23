@@ -44,9 +44,16 @@ import ragQueryFixture from "@mocked/rag/query.json";
 // Deal-detail sub-resources.
 import matchScoreFixture from "@mocked/match_engine/score_result.json";
 import holdCreated from "@mocked/escrow_guard/hold_created.json";
+import ledgerFixture from "@mocked/escrow_guard/ledger.json";
+import ledgersListFixture from "@mocked/escrow_guard/ledgers_list.json";
 import qcBooking from "@mocked/shield_link/qc_booking.json";
 import freightBooking from "@mocked/shield_link/freight_booking.json";
 import documentsList from "@mocked/docugen/documents_list.json";
+
+// Readiness gate, data-source reachability, Apify enrichment.
+import readinessFixture from "@mocked/health/readiness.json";
+import tradeSourcesFixture from "@mocked/trade_min/sources.json";
+import enrichResultFixture from "@mocked/deals/enrich_result.json";
 
 type RawObj = Record<string, unknown>;
 
@@ -57,6 +64,8 @@ const DOWNSTREAM_FIXTURE =
 
 type Handler = (ctx: {
   id: string;
+  /** Every `:param` captured from the route, by name (e.g. { id, role }). */
+  params: Record<string, string>;
   query: URLSearchParams;
   body: RawObj;
   ownerId: string;
@@ -247,6 +256,118 @@ function normalizeDoc(d: RawObj) {
 const dealDetails = [dealNegotiating, dealEscrowFunded, dealInTransit, dealPaid, dealDispute];
 const documents = ((documentsList as { documents?: RawObj[] }).documents ?? []).map(normalizeDoc);
 
+// ── Staged escrow (neutral provider) — mutable so operator actions persist ──
+// One escrow per deal id; seeded lazily from the ledger fixture so every deal
+// detail page shows the same realistic 30/40/20/10 schedule.
+type Tranche = { tranche_id: string; trigger: string; pct: number; amount: number | null;
+  status: string; proof_refs: string[]; ext_ref: string | null; released_at: string | null };
+type MockEscrow = RawObj & { escrow_id: string; deal_id: string; amount: number; status: string;
+  released_total: number; refunded_total: number; fees_total: number; tranches: Tranche[];
+  disputed: boolean; funded_amount: number | null };
+const escrowsByDeal = new Map<string, MockEscrow>();
+
+function seedEscrow(dealId: string): MockEscrow {
+  const existing = escrowsByDeal.get(dealId);
+  if (existing) return existing;
+  const l = ledgerFixture as RawObj;
+  const legacy = normalizeHold(holdCreated as RawObj);
+  const escrow: MockEscrow = {
+    escrow_id: `ESC-${dealId.replace(/[^A-Z0-9]/gi, "").slice(-8).toUpperCase()}`,
+    deal_id: dealId,
+    provider: (l.provider as string) ?? "tazapay",
+    amount: (l.principal as number) ?? legacy.amount_usd,
+    currency: "USD",
+    status: (l.status as string) ?? "FUNDED",
+    ext_ref: `tzp_${dealId.slice(-6).toLowerCase()}`,
+    client_secret: null,
+    funded_at: legacy.funded_at ?? new Date(Date.now() - 86_400_000 * 9).toISOString(),
+    funded_amount: (l.funded_amount as number) ?? null,
+    created_at: new Date(Date.now() - 86_400_000 * 10).toISOString(),
+    payment_method: "bank_transfer",
+    checkout_url: `https://pay.tazapay.com/checkout/tzp_${dealId.slice(-6).toLowerCase()}`,
+    released_total: (l.released_total as number) ?? 0,
+    refunded_total: (l.refunded_total as number) ?? 0,
+    fee_pct: 1.0,
+    fees_total: (l.fees_total as number) ?? 0,
+    shortfall: (l.shortfall as number | null) ?? null,
+    settled_at: null,
+    tranches: ((l.tranches as Tranche[]) ?? []).map((t) => ({ ...t, proof_refs: [...t.proof_refs] })),
+    inspection_deadline: null,
+    buyer_accepted_at: null,
+    disputed: false,
+    disputed_at: null,
+  };
+  escrowsByDeal.set(dealId, escrow);
+  return escrow;
+}
+
+function escrowByEscrowId(escrowId: string): MockEscrow {
+  const found = [...escrowsByDeal.values()].find((e) => e.escrow_id === escrowId);
+  if (!found) throw new MockError(404, `Escrow hold '${escrowId}' not found`);
+  return found;
+}
+
+function ledgerFor(escrow: MockEscrow): RawObj {
+  const l = ledgerFixture as RawObj;
+  const payouts: RawObj[] = ((l.payouts as RawObj[]) ?? []).map((p): RawObj => ({ ...p, deal_id: escrow.deal_id }));
+  const paid = payouts
+    .filter((p) => p.status === "COMPLETED")
+    .reduce((s, p) => s + Number(p.amount ?? 0), 0);
+  const net = Number((escrow.released_total - escrow.fees_total).toFixed(2));
+  const owed = (l.supplier_owed as number | null) ?? null;
+  const settled = escrow.tranches.length > 0 && escrow.tranches.every((t) => t.status === "RELEASED");
+  const issues: string[] = [];
+  if (escrow.funded_amount != null && Math.abs(escrow.funded_amount - escrow.amount) > 0.01) {
+    issues.push(`funded ${escrow.funded_amount} != principal ${escrow.amount}`);
+  }
+  return {
+    deal_id: escrow.deal_id,
+    currency: "USD",
+    provider: escrow.provider,
+    escrow_id: escrow.escrow_id,
+    status: escrow.status,
+    principal: escrow.amount,
+    funded_amount: escrow.funded_amount,
+    shortfall: escrow.shortfall,
+    released_total: escrow.released_total,
+    refunded_total: escrow.refunded_total,
+    outstanding: Number((escrow.amount - escrow.released_total - escrow.refunded_total).toFixed(2)),
+    fees_total: escrow.fees_total,
+    net_to_portless: net,
+    payouts_total: paid,
+    payouts_pending: 0,
+    available_for_payout: Math.max(0, Number((net - paid).toFixed(2))),
+    supplier_owed: owed,
+    supplier_balance_due: owed != null ? Number((owed - paid).toFixed(2)) : null,
+    realized_margin: escrow.released_total || paid ? Number((net - paid).toFixed(2)) : null,
+    tranches: escrow.tranches,
+    payouts,
+    inspection_deadline: escrow.inspection_deadline,
+    disputed: escrow.disputed,
+    settled,
+    reconciled: issues.length === 0,
+    issues,
+  };
+}
+
+// Apply an enrichment result onto a deal's parties (mock POST /deals/:id/enrich).
+function applyEnrichment(deal: RawObj): RawObj {
+  const res = enrichResultFixture as RawObj;
+  const parties = (Array.isArray(deal.parties) ? deal.parties : []) as RawObj[];
+  const merged = parties.map((p) => {
+    const src = (res[p.role as string] ?? {}) as RawObj;
+    const { screening: _screening, legal_name: _ln, country: _c, ...contact } = src;
+    void _screening; void _ln; void _c;
+    return {
+      ...p,
+      ...contact,
+      sanctions_checked_at: new Date().toISOString(),
+      enriched_at: new Date().toISOString(),
+    };
+  });
+  return { ...deal, parties: merged };
+}
+
 // ── Mock auth + per-user data ────────────────────────────────────────────
 // A built-in demo account owns all the seed fixtures; freshly registered users
 // start with an empty Deal Board and build their own flow — so the UI is unique
@@ -367,6 +488,7 @@ function ragStartJob(body: RawObj) {
 const routes: Record<string, Handler> = {
   "GET /health": () => gatewayOk,
   "GET /health/downstream": () => DOWNSTREAM_FIXTURE,
+  "GET /health/readiness": () => ({ ...readinessFixture, generated_at: new Date().toISOString() }),
 
   // Auth
   "POST /auth/register": ({ body }) => {
@@ -429,9 +551,52 @@ const routes: Record<string, Handler> = {
     if (existing) dealsByOwner.set(ownerId, list.map((d) => (d.deal_id === id ? updated : d)));
     return updated;
   },
+  // Operator correction of a counterparty — persists on the owned deal.
+  "PATCH /deals/:id/parties/:role": ({ params, body, ownerId }) => {
+    const id = params.id;
+    const role = params.role;
+    if (role !== "buyer" && role !== "supplier") throw new MockError(422, "role must be buyer or supplier");
+    const list = dealsByOwner.get(ownerId) ?? [];
+    const base = list.find((d) => d.deal_id === id)
+      ?? normalizeDeal((dealDetails as RawObj[]).find((d) => d.deal_id === id) ?? (dealNegotiating as RawObj));
+    const parties = (Array.isArray(base.parties) ? base.parties : []) as RawObj[];
+    const clean = Object.fromEntries(Object.entries(body).filter(([, v]) => v != null && v !== ""));
+    const touchesContact = ["email", "website", "phone", "address"].some((k) => k in clean);
+    const stamped = touchesContact
+      ? { ...clean, contact_source: "operator", contact_confidence: 1.0,
+          email_status: clean.email ? "unverified" : undefined }
+      : clean;
+    const idx = parties.findIndex((p) => p.role === role);
+    const nextParties = idx >= 0
+      ? parties.map((p, i) => (i === idx ? { ...p, ...stamped } : p))
+      : [...parties, { role, legal_name: clean.legal_name ?? `Unknown ${role}`, country: clean.country ?? "—", ...stamped }];
+    const updated = { ...base, deal_id: id, parties: nextParties, updated_at: new Date().toISOString() };
+    if (list.some((d) => d.deal_id === id)) {
+      dealsByOwner.set(ownerId, list.map((d) => (d.deal_id === id ? updated : d)));
+    } else {
+      dealsByOwner.set(ownerId, [updated, ...list]);
+    }
+    return updated;
+  },
+  // Apify enrichment — applies the fixture contacts/screening onto the deal.
+  "POST /deals/:id/enrich": ({ id, ownerId }) => {
+    const list = dealsByOwner.get(ownerId) ?? [];
+    const base = list.find((d) => d.deal_id === id)
+      ?? normalizeDeal((dealDetails as RawObj[]).find((d) => d.deal_id === id) ?? (dealNegotiating as RawObj));
+    const updated = applyEnrichment({ ...base, deal_id: id });
+    if (list.some((d) => d.deal_id === id)) {
+      dealsByOwner.set(ownerId, list.map((d) => (d.deal_id === id ? updated : d)));
+    } else {
+      dealsByOwner.set(ownerId, [updated, ...list]);
+    }
+    return { ...(enrichResultFixture as RawObj), deal_id: id, deal: updated };
+  },
 
-  // Opportunities
+  // Opportunities — the UI calls the trade-min prefix; the bare paths are kept
+  // for the standalone gateway shape.
   "GET /opportunities": () =>
+    ((scanResult as { opportunities?: RawObj[] }).opportunities ?? []).map(toOpportunity),
+  "GET /trade-min/opportunities": () =>
     ((scanResult as { opportunities?: RawObj[] }).opportunities ?? []).map(toOpportunity),
   "GET /opportunities/:id": ({ id }) => {
     const all = (scanResult as { opportunities?: RawObj[] }).opportunities ?? [];
@@ -441,8 +606,17 @@ const routes: Record<string, Handler> = {
     // plus the normalized list-shape fields the UI type expects.
     return { ...found, ...toOpportunity(found) };
   },
+  "GET /trade-min/opportunities/:id": ({ id }) => {
+    const all = (scanResult as { opportunities?: RawObj[] }).opportunities ?? [];
+    const found = all.find((o) => o.opportunity_id === id);
+    if (!found) throw new MockError(404, `Opportunity ${id} not found`);
+    return { ...found, ...toOpportunity(found) };
+  },
   "POST /opportunities/scan": () =>
     ((scanResult as { opportunities?: RawObj[] }).opportunities ?? []).map(toOpportunity),
+  "POST /trade-min/scan": () =>
+    ((scanResult as { opportunities?: RawObj[] }).opportunities ?? []).map(toOpportunity),
+  "GET /trade-min/sources": () => tradeSourcesFixture,
 
   // Approvals
   "GET /hitl-approval/approvals": () => approvalListItems,
@@ -490,19 +664,54 @@ const routes: Record<string, Handler> = {
       gatekeeper_passed: true,
     };
   },
-  "GET /escrow-guard/deals/:id/hold": ({ id }) => {
-    const h = normalizeHold(holdCreated as RawObj);
-    return {
-      escrow_id: h.hold_id,
-      deal_id: id,
-      provider: "stripe",
-      amount: h.amount_usd,
-      currency: "USD",
-      status: h.status,
-      ext_ref: h.stripe_payment_intent_id,
-      funded_at: h.funded_at,
-      created_at: new Date().toISOString(),
-    };
+  // Neutral staged escrow — full EscrowResponse shape (tranches, fees, window).
+  "GET /escrow-guard/deals/:id/hold": ({ id }) => seedEscrow(id),
+  "GET /escrow-guard/deals/:id/ledger": ({ id }) => ledgerFor(seedEscrow(id)),
+  "GET /escrow-guard/ledgers": () => {
+    const seeded = [...escrowsByDeal.values()].map(ledgerFor);
+    const fixture = unwrap<RawObj>(ledgersListFixture as never)
+      .filter((l) => !escrowsByDeal.has(l.deal_id as string));
+    return [...seeded, ...fixture];
+  },
+  "POST /escrow-guard/escrows/:id/accept": ({ id, body }) => {
+    const e = escrowByEscrowId(id);
+    if (e.disputed) throw new MockError(422, `Deal ${e.deal_id} is 'disputed'; required 'not_disputed'`);
+    const now = new Date().toISOString();
+    let add = 0;
+    e.tranches = e.tranches.map((t) => {
+      if (t.trigger === "ACCEPTED" && t.status === "PENDING") {
+        add += t.amount ?? e.amount * t.pct;
+        return { ...t, status: "RELEASED", released_at: now, ext_ref: "tzp_rel_final" };
+      }
+      return t;
+    });
+    e.released_total = Number((e.released_total + add).toFixed(2));
+    e.fees_total = Number((e.fees_total + add * 0.01).toFixed(2));
+    e.buyer_accepted_at = now;
+    e.inspection_deadline = null;
+    if (e.tranches.every((t) => t.status === "RELEASED")) {
+      e.status = "RELEASED";
+      e.released_at = now;
+      e.settled_at = now;
+    }
+    void body;
+    return e;
+  },
+  "POST /escrow-guard/escrows/:id/dispute": ({ id, body }) => {
+    const e = escrowByEscrowId(id);
+    if (!body.reason) throw new MockError(422, "reason is required");
+    e.disputed = true;
+    e.disputed_at = new Date().toISOString();
+    return e;
+  },
+  "POST /escrow-guard/escrows/:id/refund": ({ id }) => {
+    const e = escrowByEscrowId(id);
+    const received = e.funded_amount ?? e.amount;
+    const undisbursed = Number((received - e.released_total).toFixed(2));
+    if (undisbursed <= 0.01) throw new MockError(422, "nothing left to refund");
+    e.refunded_total = undisbursed;
+    e.status = "REFUNDED";
+    return e;
   },
   "GET /shield-link/deals/:id/orders": ({ id }) => {
     const q = normalizeQc(qcBooking as RawObj);
@@ -541,22 +750,29 @@ const routes: Record<string, Handler> = {
 };
 
 // Match a concrete "METHOD /path" against the route table, capturing :params.
-function resolve(method: string, path: string): { handler: Handler; id: string } | null {
+// `id` is the FIRST captured param (back-compat); `params` holds all of them by
+// name so routes like "/deals/:id/parties/:role" see both.
+function resolve(
+  method: string,
+  path: string
+): { handler: Handler; id: string; params: Record<string, string> } | null {
   const reqParts = path.split("/").filter(Boolean);
   for (const key of Object.keys(routes)) {
     const [routeMethod, routePath] = key.split(" ");
     if (routeMethod !== method) continue;
     const routeParts = routePath.split("/").filter(Boolean);
     if (routeParts.length !== reqParts.length) continue;
+    const params: Record<string, string> = {};
     let id = "";
     const matched = routeParts.every((seg, i) => {
       if (seg.startsWith(":")) {
-        id = reqParts[i];
+        params[seg.slice(1)] = decodeURIComponent(reqParts[i]);
+        if (!id) id = decodeURIComponent(reqParts[i]);
         return true;
       }
       return seg === reqParts[i];
     });
-    if (matched) return { handler: routes[key], id };
+    if (matched) return { handler: routes[key], id, params };
   }
   return null;
 }
@@ -602,6 +818,7 @@ export const mockAdapter: AxiosAdapter = async (config: InternalAxiosRequestConf
   try {
     const data = match.handler({
       id: match.id,
+      params: match.params,
       query: new URLSearchParams(queryString),
       body: parseBody(config.data),
       ownerId: ownerFromAuthHeader(authHeader),

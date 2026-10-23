@@ -37,7 +37,6 @@ from .security import decode_token
 _PUBLIC_PREFIXES = (
     "/auth/login",
     "/auth/register",
-    "/health",
     "/docs",
     "/redoc",
     "/openapi.json",
@@ -60,8 +59,10 @@ _QUERY_TOKEN_PATH_SUFFIXES = ("/hitl-approval/stream",)
 
 
 def _is_public(path: str) -> bool:
-    # Any "<service>/health" endpoint is public too.
-    if path.endswith("/health"):
+    # "/health" and any "<service>/health" liveness endpoint are public.
+    # The deeper reports (/health/downstream, /health/readiness — which names
+    # every integration that is or is not configured) need a bearer token.
+    if path == "/health" or path.endswith("/health"):
         return True
     return any(path.startswith(p) for p in _PUBLIC_PREFIXES)
 

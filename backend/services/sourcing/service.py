@@ -187,6 +187,21 @@ async def _dispatch_one(
                 success=True,
             )
 
+    # E-mail — the channel that works for every supplier the Apify actors /
+    # contact finder gave an address for (and the only one that needs no
+    # marketplace API key). The subject token lets the reply map back here.
+    if supplier.email:
+        ext_id = await _dispatch_by_email(rfq_id, supplier, message, payload)
+        if ext_id is not None:
+            return DispatchResult(
+                supplier_id=supplier.supplier_id,
+                contact_id=contact_id,
+                channel="email",
+                ext_rfq_id=ext_id,
+                email=supplier.email,
+                success=True,
+            )
+
     # Portal fallback — treated as "queued for manual dispatch" rather than failed
     return DispatchResult(
         supplier_id=supplier.supplier_id,
@@ -195,6 +210,101 @@ async def _dispatch_one(
         ext_rfq_id=None,
         success=True,
     )
+
+
+def rfq_subject(rfq_id: str, hs_code: str, quantity_mt: float | None) -> str:
+    qty = f"{quantity_mt:g} MT " if quantity_mt else ""
+    return f"Request for quotation — {qty}HS {hs_code} [RFQ:{rfq_id}]"
+
+
+async def _dispatch_by_email(
+    rfq_id: str, supplier: SupplierRef, message: str, payload: RfqRequest,
+) -> str | None:
+    """Send the RFQ through the Email Gateway. Returns the Message-ID (or a
+    log-only marker) on success, None when the gateway refused the send."""
+    try:
+        from services.email_gateway.schemas import SendEmailRequest  # type: ignore[import]
+        from services.email_gateway.sender import send_email  # type: ignore[import]
+
+        body = (
+            f"Dear {supplier.company_name or 'Supplier'},\n\n{message}\n\n"
+            "Please reply to this e-mail with your best FOB price per MT in USD, minimum order "
+            "quantity, lead time and payment terms, and quote your GSTIN and IEC so we can "
+            "verify them. Keep the reference in the subject line so your quote reaches the "
+            "right desk.\n\nBest regards,\nPortLess Trade Operations\n"
+        )
+        result = await send_email(SendEmailRequest(
+            to_address=supplier.email or "",
+            subject=rfq_subject(rfq_id, payload.hs_code, payload.quantity_mt),
+            body=body,
+            negotiation_id="",
+            round_no=0,
+            email_id=f"RFQ{rfq_id.replace('-', '')}{supplier.supplier_id.replace('-', '')[:12]}".upper(),
+        ))
+        outcome = getattr(result, "outcome", None)
+        outcome_val = getattr(outcome, "value", outcome)
+        logger.info("RFQ %s e-mailed to %s (%s): %s", rfq_id, supplier.email, supplier.supplier_id, outcome_val)
+        return getattr(result, "message_id", None) or f"email:{outcome_val}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RFQ %s e-mail to %s failed: %s", rfq_id, supplier.email, exc)
+        return None
+
+
+async def receive_quote_by_email(
+    rfq_id: str,
+    from_address: str,
+    unit_price_usd: float,
+    body_text: str = "",
+    company_name: str | None = None,
+) -> QuoteRecord:
+    """Inbound supplier reply to an ``[RFQ:<id>]`` e-mail → formal quote.
+
+    The sender address is matched against the RFQ's e-mail dispatches to find
+    the supplier id; GSTIN / IEC are picked out of the body when quoted.
+    Everything else goes through the normal ``receive_quote`` pipeline
+    (verification → Match Engine re-score → deal transition).
+    """
+    rfq = await get_rfq(rfq_id)
+    sender = (from_address or "").strip().lower()
+    supplier_id: str | None = None
+    for d in rfq.dispatch_results:
+        if d.email and d.email.strip().lower() == sender:
+            supplier_id = d.supplier_id
+            break
+    if supplier_id is None:
+        # Same domain as a dispatched address (sales@ replied from a colleague's mailbox).
+        domain = sender.split("@")[-1]
+        for d in rfq.dispatch_results:
+            if d.email and d.email.strip().lower().split("@")[-1] == domain:
+                supplier_id = d.supplier_id
+                break
+    if supplier_id is None:
+        if len(rfq.supplier_ids) == 1:
+            supplier_id = rfq.supplier_ids[0]
+        else:
+            raise QuoteNotFoundError(f"{rfq_id}:sender:{from_address}")
+
+    gstin = _find_pattern(body_text, r"\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b")
+    iec = _find_pattern(body_text, r"\bIEC[\s:#-]*([A-Z0-9]{10})\b", group=1)
+    return await receive_quote(QuoteIntakeRequest(
+        rfq_id=rfq_id,
+        deal_id=rfq.deal_id,
+        supplier_id=supplier_id,
+        company_name=company_name or "",
+        unit_price_usd=unit_price_usd,
+        quantity_mt=rfq.quantity_mt,
+        gstin=gstin,
+        iec_number=iec,
+        payment_terms=None,
+    ))
+
+
+def _find_pattern(text: str, pattern: str, group: int = 0) -> str | None:
+    import re
+    m = re.search(pattern, text or "", re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(group).upper()
 
 
 # ---------------------------------------------------------------------------

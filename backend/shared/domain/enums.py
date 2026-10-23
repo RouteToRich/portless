@@ -65,3 +65,37 @@ class ApprovalAction(str, Enum):
     RESOLVE_EXCEPTION = "RESOLVE_EXCEPTION"
     SEND_NEGOTIATION_EMAIL = "SEND_NEGOTIATION_EMAIL"
     CONFIRM_NEGOTIATION_AGREEMENT = "CONFIRM_NEGOTIATION_AGREEMENT"
+
+    # ── Automation legs (shared/orchestration/continuations.py) ──────────
+    DISPATCH_RFQ = "DISPATCH_RFQ"
+    """Deal reached MATCHING → send RFQs to the shortlisted suppliers."""
+    CONFIRM_SUPPLIER_SELECTION = "CONFIRM_SUPPLIER_SELECTION"
+    """A quote came in that the Match Engine did not auto-SOURCE (thin
+    reliability data / verification gap / negotiation failed with the
+    previous supplier) → operator confirms the proposed supplier and the
+    deal moves to NEGOTIATING."""
+    CONFIRM_PI_ACCEPTANCE = "CONFIRM_PI_ACCEPTANCE"
+    """Buyer's email reply to the Proforma Invoice reads as an acceptance →
+    confirm it (callback: DealMaker accept_pi)."""
+    RELEASE_ESCROW_TRANCHE = "RELEASE_ESCROW_TRANCHE"
+    """A tranche trigger (PO_ISSUED / QC_PASSED / CLEARED) was reached with
+    its proof → release that escrow tranche. Money-moving."""
+    SEND_DEAL_NOTIFICATION = "SEND_DEAL_NOTIFICATION"
+    """Templated (non-LLM) status email to the buyer or supplier — PI issued,
+    escrow funding instructions, PO issued, QC booked, shipment booked,
+    cargo cleared, deal completed, reminders."""
+    PARSE_INBOUND_EMAIL = "PARSE_INBOUND_EMAIL"
+    """Inbound email mapped to a negotiation but no price could be extracted
+    (or it arrived after the agreement) — operator reads it and acts via the
+    manual inbound endpoint. Informational; the callback is a no-op."""
+    CONFIRM_COUNTERPARTY_RISK = "CONFIRM_COUNTERPARTY_RISK"
+    """Sanctions / registry screening of the buyer (Apify counterparty-check
+    actor) returned ``review`` before the Proforma Invoice goes out → an
+    operator confirms the counterparty; APPROVE issues the PI, REJECT raises a
+    deal exception. A ``block`` verdict never reaches this gate — it stops the
+    deal outright."""
+    CONFIRM_BUYER_ACCEPTANCE = "CONFIRM_BUYER_ACCEPTANCE"
+    """The buyer's email after delivery reads as acceptance of the goods →
+    confirm it (callback: Escrow-Guard ``accept_escrow`` releases the final
+    ACCEPTED-trigger tranche). Money-moving; soft REJECT keeps the inspection
+    window running."""

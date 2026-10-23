@@ -27,6 +27,9 @@ DataSource = Literal[
     "comtrade", "census", "wits_tariff",
     "alibaba_rfq", "gdelt_disruption", "eu_ted",
     "indiamart", "tradeindia", "simulated",
+    # PortLess-owned Apify actors (shared/connectors/apify.py)
+    "apify_us_importers", "apify_alibaba_rfq", "apify_export_markets",
+    "apify_india_suppliers",
     # Legacy / paid sources (retired from the default pipeline; kept so older
     # persisted opportunities still validate)
     "volza", "macmap", "trademo", "importgenius",
@@ -89,9 +92,25 @@ class BuyerSignal(BaseModel):
     estimated_order_value_usd: float | None = None
     """Total shipment/tender value in USD (not unit price)."""
     unit_price_usd: float | None = None
-    """Unit CIF price per kg/unit from Volza manifests.
-    Used by MatchEngineSeed.buyer_target_price_usd."""
+    """Buyer-side unit price. Legacy manifest sources left the unit implicit;
+    the Apify actors always set ``price_unit`` (``USD/MT``) so the Match Engine
+    corridor is unit-consistent. Used by MatchEngineSeed.buyer_target_price_usd."""
+    price_unit: str | None = None
     contact_url: str | None = None
+    # ── Contact + fit (Apify buyer actors) ───────────────────────────────
+    website: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    fit_score: int | None = None
+    """Actor's 0–100 fit score (AI tier) or rule score."""
+    fit_reason: str | None = None
+    pitch_angle: str | None = None
+    """Opening angle for the first outreach e-mail, from the row's own facts."""
+    quantity: float | None = None
+    quantity_unit: str | None = None
+    shipments_12m: int | None = None
+    hs_codes: list[str] = Field(default_factory=list)
 
 
 class TariffData(BaseModel):
@@ -131,6 +150,15 @@ class SellerCandidate(BaseModel):
     supplier_to_port_km: float | None = None
     """Static lookup: Indian state → km to nearest major seaport.
     Pre-seeded into ScoreRequest.supplier_to_port_km for the Match Engine."""
+    # ── Contact + credentials (Apify india-supplier actor) ────────────────
+    email: str | None = None
+    phone: str | None = None
+    website: str | None = None
+    gstin: str | None = None
+    iec: str | None = None
+    fit_score: int | None = None
+    price_unit: str | None = "USD/MT"
+    """``estimated_fob_price_usd`` is normalised to USD per MT (kg prices × 1000)."""
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +188,16 @@ class MatchEngineSeed(BaseModel):
 
     # Buyer-side inputs for Match Engine arbitrage score
     buyer_target_price_usd: float | None
-    """Average CIF unit price (USD/kg) from Volza manifests.
-    None when no Volza data available — caller must estimate or skip scoring."""
+    """Buyer-side unit price (USD/MT): the mean of the buyer signals' real
+    prices, else the market's Comtrade unit value (``price_benchmark_usd_per_mt``
+    from the export-market actor). None when no real price exists — the
+    caller must estimate (loudly) or skip scoring."""
+    buyer_price_source: str | None = None
+    """Where ``buyer_target_price_usd`` came from (``buyer_signals`` /
+    ``apify_export_markets`` / None)."""
+    top_buyers: list[dict[str, Any]] = Field(default_factory=list)
+    """Top buyer signals (name, country, source, contact, fit) — seeds the deal's
+    buyer party and the enrichment step."""
 
     # Seller candidates ranked by estimated FOB price (cheapest first)
     top_sellers: list[dict[str, Any]] = Field(default_factory=list)
@@ -213,6 +249,11 @@ class EnrichedOpportunity(BaseModel):
     price_gap_pct: float
     """Gross price gap before tariff deduction."""
     source: DataSource
+    price_benchmark_usd_per_mt: float | None = None
+    """What the destination market actually pays per MT (UN Comtrade unit value
+    via the export-market actor) — the real buyer price anchor, replacing the
+    1.25× FOB heuristic when no named buyer carries a price."""
+    price_benchmark_source: str | None = None
 
     # ── Phase 2 — live demand signals ─────────────────────────────────────
     buyer_signals: list[BuyerSignal] = Field(default_factory=list)

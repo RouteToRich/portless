@@ -1,14 +1,17 @@
 import { api } from "./client";
 import type {
   ApprovalRecord,
+  AutonomyLevel,
   CreateDealRequest,
   Deal,
   DealException,
+  DealLedger,
   DealmakerDealDocuments,
   DocumentRecord,
   DownstreamHealth,
   EmailHistoryRecord,
-  EscrowHold,
+  EnrichmentResult,
+  EscrowRecord,
   FreightRecord,
   MatchScore,
   NegotiationEmailThread,
@@ -24,8 +27,11 @@ import type {
   RagJobStatus,
   RagQueryResponse,
   RagStats,
+  ReadinessReport,
   ResolveApprovalRequest,
   TokenResponse,
+  TradeSourcesResponse,
+  UpdatePartyRequest,
 } from "./types";
 
 // Thin wrappers around the gateway endpoints (services/api_gateway/router.py).
@@ -56,6 +62,9 @@ export const OrganizationsApi = {
 export const HealthApi = {
   gateway: () => api.get<{ status: string; service: string }>("/health").then((r) => r.data),
   downstream: () => api.get<DownstreamHealth>("/health/downstream").then((r) => r.data),
+  // Production readiness gate (shared/readiness.py): every stub / fallback the
+  // pipeline is currently running on, ok / warn / fail per check.
+  readiness: () => api.get<ReadinessReport>("/health/readiness").then((r) => r.data),
 };
 
 export const DealsApi = {
@@ -67,6 +76,18 @@ export const DealsApi = {
     api
       .patch<Deal>(`/deals/${dealId}/status`, { target_status: targetStatus, reason })
       .then((r) => r.data),
+  // Operator correction of a counterparty (stamped contact_source="operator",
+  // never overwritten by a later actor run).
+  updateParty: (dealId: string, role: "buyer" | "supplier", payload: UpdatePartyRequest) =>
+    api.patch<Deal>(`/deals/${dealId}/parties/${role}`, payload).then((r) => r.data),
+  // Identify + verify the parties on the PortLess Apify actors (contact finder,
+  // e-mail check, OFAC/UN/EU/UK sanctions + LEI + VIES screening).
+  enrich: (dealId: string, opts?: { screen?: boolean; contacts?: boolean }) =>
+    api
+      .post<EnrichmentResult>(`/deals/${dealId}/enrich`, undefined, {
+        params: { screen: opts?.screen ?? true, contacts: opts?.contacts ?? true },
+      })
+      .then((r) => r.data),
 };
 
 export const OpportunitiesApi = {
@@ -77,6 +98,42 @@ export const OpportunitiesApi = {
     api.get<Opportunity>(`/trade-min/opportunities/${opportunityId}`).then((r) => r.data),
   scan: (payload: { hs_codes?: string[]; target_markets?: string[] }) =>
     api.post<Opportunity[]>("/trade-min/scan", payload).then((r) => r.data),
+  // Which demand / buyer / seller / enrichment sources the scanner can reach
+  // (live / stub / mock / open) — incl. the PortLess-owned Apify actors.
+  sources: () => api.get<TradeSourcesResponse>("/trade-min/sources").then((r) => r.data),
+};
+
+export interface AutonomyActionPolicy {
+  action: string;
+  label: string;
+  description: string;
+  default: AutonomyLevel;
+  override: AutonomyLevel | null;
+  env: AutonomyLevel | null;
+  effective: AutonomyLevel;
+  source: "override" | "env" | "default" | "money_ceiling";
+  follows_deal_profile: boolean;
+  money_moving: boolean;
+}
+
+export interface AutonomyPolicyResponse {
+  money_ceiling: AutonomyLevel;
+  actions: AutonomyActionPolicy[];
+}
+
+// Per-action autonomy policy (shared/orchestration/autonomy_policy.py) — the
+// Autonomy Settings page reads the effective level per action class and writes
+// overrides; null clears an override so env/default applies again.
+export const AutonomyApi = {
+  get: () =>
+    api.get<AutonomyPolicyResponse>("/hitl-approval/autonomy-policy").then((r) => r.data),
+  save: (levels: Record<string, AutonomyLevel | null>, updatedBy = "operator") =>
+    api
+      .put<AutonomyPolicyResponse>("/hitl-approval/autonomy-policy", {
+        levels,
+        updated_by: updatedBy,
+      })
+      .then((r) => r.data),
 };
 
 export const ApprovalsApi = {
@@ -150,29 +207,66 @@ function or404<T>(empty: T) {
   };
 }
 
-interface RawEscrowHold {
-  escrow_id: string;
-  deal_id: string;
-  amount: number;
-  status: string;
-  ext_ref?: string | null;
-  funded_at?: string | null;
+// Fill the staged-escrow fields a legacy Stripe hold (or an older fixture)
+// leaves out, so the Payments tab can rely on them being present.
+function normalizeEscrow(raw: Partial<EscrowRecord> & { escrow_id: string; deal_id: string }): EscrowRecord {
+  return {
+    escrow_id: raw.escrow_id,
+    deal_id: raw.deal_id,
+    provider: raw.provider ?? "stripe",
+    amount: raw.amount ?? 0,
+    currency: raw.currency ?? "USD",
+    status: raw.status ?? "PENDING",
+    ext_ref: raw.ext_ref ?? null,
+    client_secret: raw.client_secret ?? null,
+    funded_at: raw.funded_at ?? null,
+    funded_amount: raw.funded_amount ?? null,
+    created_at: raw.created_at ?? new Date().toISOString(),
+    payment_method: raw.payment_method ?? null,
+    checkout_url: raw.checkout_url ?? null,
+    released_total: raw.released_total ?? 0,
+    refunded_total: raw.refunded_total ?? 0,
+    fee_pct: raw.fee_pct ?? null,
+    fees_total: raw.fees_total ?? 0,
+    shortfall: raw.shortfall ?? null,
+    settled_at: raw.settled_at ?? null,
+    tranches: raw.tranches ?? [],
+    inspection_deadline: raw.inspection_deadline ?? null,
+    buyer_accepted_at: raw.buyer_accepted_at ?? null,
+    disputed: raw.disputed ?? false,
+    disputed_at: raw.disputed_at ?? null,
+  };
 }
 
 export const EscrowApi = {
-  // Real API: GET /escrow-guard/deals/{deal_id}/hold → single hold, 404 when none.
-  getHolds: (dealId: string) =>
+  // Real API: GET /escrow-guard/deals/{deal_id}/hold → single escrow, 404 when none.
+  getHold: (dealId: string) =>
     api
-      .get<RawEscrowHold>(`/escrow-guard/deals/${dealId}/hold`)
-      .then((r): EscrowHold[] => [{
-        hold_id: r.data.escrow_id,
-        deal_id: r.data.deal_id,
-        amount_usd: r.data.amount,
-        status: r.data.status as EscrowHold["status"],
-        stripe_payment_intent_id: r.data.ext_ref ?? null,
-        funded_at: r.data.funded_at ?? null,
-      }])
-      .catch(or404<EscrowHold[]>([])),
+      .get<Partial<EscrowRecord> & { escrow_id: string; deal_id: string }>(
+        `/escrow-guard/deals/${dealId}/hold`
+      )
+      .then((r): EscrowRecord | null => normalizeEscrow(r.data))
+      .catch(or404<EscrowRecord | null>(null)),
+  // Per-trade money ledger: held / released / fees / payouts / supplier balance +
+  // reconciliation issues. Returns an empty ledger (no 404) when there is no escrow.
+  getLedger: (dealId: string) =>
+    api.get<DealLedger>(`/escrow-guard/deals/${dealId}/ledger`).then((r) => r.data),
+  listLedgers: () => api.get<DealLedger[]>("/escrow-guard/ledgers").then((r) => r.data),
+  // Buyer acceptance of the goods → releases the final ACCEPTED-trigger tranche.
+  accept: (escrowId: string, payload: { accepted_by?: string; notes?: string }) =>
+    api
+      .post<EscrowRecord>(`/escrow-guard/escrows/${escrowId}/accept`, payload)
+      .then((r) => normalizeEscrow(r.data)),
+  // Buyer dispute within the inspection window — blocks every release.
+  dispute: (escrowId: string, payload: { reason: string; raised_by?: string }) =>
+    api
+      .post<EscrowRecord>(`/escrow-guard/escrows/${escrowId}/dispute`, payload)
+      .then((r) => normalizeEscrow(r.data)),
+  // Refund the undisbursed balance to the buyer (DISPUTE → REFUNDED).
+  refund: (escrowId: string, payload: { reason: string }) =>
+    api
+      .post<EscrowRecord>(`/escrow-guard/escrows/${escrowId}/refund`, payload)
+      .then((r) => normalizeEscrow(r.data)),
 };
 
 interface RawShieldOrder {

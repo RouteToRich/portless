@@ -9,3 +9,6 @@
 {"request_id": "6da4fe1d-c806-4086-94ba-9417714544b1", "ts": "2026-07-17T16:21:02.607094+00:00", "caller": "audit2", "model": "llama-3.3-70b-versatile", "status": "fallback", "prompt_tokens": 38, "completion_tokens": 2, "total_tokens": 40, "latency_ms": 960.5, "retry_count": 0, "fallback_model": "llama-3.3-70b-versatile", "error": ""}
 {"_marker": "session_start", "ts": "2026-07-17T16:23:25.503367+00:00"}
 {"request_id": "9c60c5f4-7f80-46ba-9158-8e15c37019ff", "ts": "2026-07-17T16:23:25.515807+00:00", "caller": "key-check", "model": "llama-3.3-70b-versatile", "status": "success", "prompt_tokens": 37, "completion_tokens": 2, "total_tokens": 39, "latency_ms": 1051.28, "retry_count": 0, "fallback_model": "", "error": ""}
+{"_marker": "session_start", "ts": "2026-10-23T16:19:09.662051+00:00"}
+{"_marker": "session_start", "ts": "2026-10-23T16:19:09.912144+00:00"}
+{"_marker": "session_start", "ts": "2026-10-23T16:21:31.610282+00:00"}

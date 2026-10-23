@@ -1,10 +1,124 @@
-import { Activity, CheckCircle2, XCircle, RefreshCw, Server, Wifi } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, ShieldCheck, XCircle, RefreshCw, Server, Wifi } from "lucide-react";
 import { cn, timeAgo } from "@/lib/utils";
-import { useDownstreamHealth, useGatewayHealth } from "@/api/hooks";
+import { useDownstreamHealth, useGatewayHealth, useReadiness } from "@/api/hooks";
+import type { ReadinessCheck } from "@/api/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+
+const CATEGORY_LABELS: Record<string, string> = {
+  persistence: "Persistence",
+  bus: "Event bus",
+  money: "Money",
+  data: "Data & identification",
+  automation: "Automation",
+  email: "E-mail",
+  documents: "Documents & identity",
+  operations: "Operations partners",
+  llm: "LLM",
+};
+
+const CATEGORY_ORDER = ["money", "data", "email", "documents", "persistence", "bus", "operations", "automation", "llm"];
+
+function statusTone(status: ReadinessCheck["status"]) {
+  switch (status) {
+    case "ok": return { color: "#2ec28a", Icon: CheckCircle2, label: "ok" };
+    case "warn": return { color: "#f5a623", Icon: AlertTriangle, label: "warn" };
+    default: return { color: "#ff5d6c", Icon: XCircle, label: "fail" };
+  }
+}
+
+// Production readiness gate (GET /health/readiness): every stub / fallback the
+// pipeline is currently running on. "fail" = the system would pretend a money
+// or legal step happened; "warn" = it still does the right thing, just by hand.
+function ReadinessPanel() {
+  const { data, isLoading, isError, refetch } = useReadiness();
+
+  if (isLoading) return <Skeleton className="h-40 w-full rounded-xl" />;
+  if (isError || !data) {
+    return (
+      <div className="rounded-xl border border-dashed border-border px-4 py-6 text-xs text-muted-foreground flex items-center justify-between">
+        Readiness report unavailable
+        <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
+      </div>
+    );
+  }
+
+  const groups = CATEGORY_ORDER
+    .map((cat) => ({ cat, checks: data.checks.filter((c) => c.category === cat) }))
+    .filter((g) => g.checks.length > 0);
+  // Anything in a category we did not list still shows up.
+  const known = new Set(CATEGORY_ORDER);
+  const rest = data.checks.filter((c) => !known.has(c.category));
+  if (rest.length) groups.push({ cat: "other", checks: rest });
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3 p-4 rounded-xl border border-border bg-popover flex-wrap">
+        <div className="flex items-center gap-2.5">
+          <ShieldCheck className={cn("w-5 h-5", data.ready ? "text-[#2ec28a]" : "text-[#ff5d6c]")} />
+          <div>
+            <p className="text-sm font-bold flex items-center gap-2">
+              Production readiness
+              <Badge variant={data.ready ? "success" : "destructive"} className="text-[10px]">
+                {data.ready ? "Ready" : "Not ready"}
+              </Badge>
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              profile <span className="font-mono">{data.profile}</span>
+              {" · "}
+              {data.enforced ? "enforced at boot" : "informational (not enforced)"}
+              {" · "}checked {timeAgo(data.generated_at)}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          <span className="text-[#ff5d6c] font-semibold">{data.fail_count} fail</span>
+          <span className="text-[#f5a623] font-semibold">{data.warn_count} warn</span>
+          <span className="text-[#2ec28a] font-semibold">
+            {data.checks.length - data.fail_count - data.warn_count} ok
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {groups.map((g) => (
+          <Card key={g.cat}>
+            <CardContent className="pt-4 pb-3">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">
+                {CATEGORY_LABELS[g.cat] ?? g.cat}
+              </p>
+              <ul className="space-y-2">
+                {g.checks.map((c) => {
+                  const tone = statusTone(c.status);
+                  const Icon = tone.Icon;
+                  return (
+                    <li key={c.id} className="flex items-start gap-2">
+                      <Icon className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: tone.color }} />
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium flex items-center gap-1.5">
+                          {c.label}
+                          <span
+                            className="text-[9px] px-1.5 py-0.5 rounded-full border font-semibold uppercase"
+                            style={{ color: tone.color, borderColor: `${tone.color}66`, background: `${tone.color}1a` }}
+                          >
+                            {tone.label}
+                          </span>
+                        </p>
+                        <p className="text-[10px] text-muted-foreground leading-relaxed">{c.detail}</p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const SERVICE_LABELS: Record<string, string> = {
   deals: "Deals",
@@ -170,6 +284,9 @@ export function SystemHealth() {
           {allOk && gatewayOk ? "All Systems Operational" : "Partial Degradation"}
         </div>
       </div>
+
+      {/* Production readiness — which stubs / fallbacks the pipeline runs on */}
+      <ReadinessPanel />
 
       {/* Service cards */}
       {downstream.isLoading ? (

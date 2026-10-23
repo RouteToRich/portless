@@ -134,6 +134,12 @@ class TradeMinConfig:
             "census":         7 * _DAY,
             "wits_tariff":    7 * _DAY,
             "access2markets": 7 * _DAY,   # EU tariffs/NTBs (when configured)
+            # PortLess-owned Apify actors — every run costs money, so cache the
+            # slow-moving ones; the Alibaba RFQ board is refreshed twice a day.
+            "apify_export_markets": 7 * _DAY,
+            "apify_us_importers":   3 * _DAY,
+            "apify_india_suppliers": 7 * _DAY,
+            "apify_alibaba_rfq":    12 * _HOUR,
         }
     )
 

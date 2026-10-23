@@ -49,11 +49,18 @@ async def _cb_issue_po(deal_id: str, payload: dict[str, Any]) -> dict | None:
 
 
 async def _cb_release_supplier_payout(deal_id: str, payload: dict[str, Any]) -> dict | None:
-    """Continue: release supplier payout after HITL approval."""
+    """Continue: release supplier payout after HITL approval.
+
+    The payload may carry ``kind`` (``supplier_payout`` / ``supplier_balance``)
+    and ``total_owed`` (PO value) — Escrow-Guard caps the amount at the funds
+    released from escrow and only marks the deal PAID once the supplier
+    received everything they are owed."""
     from services.escrow_guard.service import request_payout  # type: ignore[import]
     from services.escrow_guard.schemas import PayoutRequest  # type: ignore[import]
-    result = await request_payout(PayoutRequest(**payload))
-    return {"payout_id": result.payout_id, "status": result.status}
+    allowed = {"deal_id", "payee_id", "amount", "currency", "description", "idempotency_key",
+               "kind", "total_owed"}
+    result = await request_payout(PayoutRequest(**{k: v for k, v in payload.items() if k in allowed}))
+    return {"payout_id": result.payout_id, "status": result.status, "kind": result.kind}
 
 
 async def _cb_file_customs(deal_id: str, payload: dict[str, Any]) -> dict | None:
@@ -101,6 +108,146 @@ async def _cb_confirm_negotiation_agreement(deal_id: str, payload: dict[str, Any
     return {"negotiation_id": negotiation_id, "status": "agreed"}
 
 
+# ── Automation legs (see shared/orchestration/continuations.py) ──────────────
+
+async def _cb_dispatch_rfq(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Deal reached MATCHING → dispatch the RFQ to the shortlisted suppliers."""
+    from services.sourcing.schemas import RfqRequest  # type: ignore[import]
+    from services.sourcing.service import dispatch_rfq  # type: ignore[import]
+
+    result = await dispatch_rfq(RfqRequest(**payload))
+    return {
+        "rfq_id": result.rfq_id,
+        "status": result.status,
+        "dispatched_count": result.dispatched_count,
+        "failed_count": result.failed_count,
+    }
+
+
+async def _cb_confirm_supplier_selection(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Operator confirmed the proposed supplier → record it on the deal and
+    advance to NEGOTIATING (via MATCHING when re-matching after a failed
+    negotiation). The NEGOTIATING transition emits NEGOTIATION_STARTED, which
+    opens the negotiation session with this supplier's ask."""
+    from services.deals.schemas import UpdateStatusRequest  # type: ignore[import]
+    from services.deals.service import (  # type: ignore[import]
+        get_deal, record_match_result, update_status,
+    )
+    from shared.domain.enums import DealStatus
+
+    supplier_id: str = payload["supplier_id"]
+    await record_match_result(
+        deal_id,
+        supplier_id=supplier_id,
+        company_name=payload.get("company_name") or "",
+        fob_price_usd=payload.get("fob_price_usd"),
+        composite_score=payload.get("composite_score"),
+        match_id=payload.get("match_id"),
+        buyer_target_price_usd=payload.get("buyer_target_price_usd"),
+        make_winner=True,
+    )
+
+    deal = await get_deal(deal_id)
+    status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+    reason = payload.get("reason") or f"Supplier {supplier_id} confirmed by operator"
+    if status == "NEGOTIATION_FAILED":
+        await update_status(deal_id, UpdateStatusRequest(
+            target_status=DealStatus.MATCHING, reason=f"Re-match: {reason}",
+        ))
+        status = "MATCHING"
+    if status == "MATCHING":
+        await update_status(deal_id, UpdateStatusRequest(
+            target_status=DealStatus.NEGOTIATING, reason=reason,
+        ))
+        return {"deal_id": deal_id, "supplier_id": supplier_id, "status": "NEGOTIATING"}
+    logger.info(
+        "HITL: CONFIRM_SUPPLIER_SELECTION for deal %s — deal is %s, no transition applied",
+        deal_id, status,
+    )
+    return {"deal_id": deal_id, "supplier_id": supplier_id, "status": status}
+
+
+async def _cb_confirm_pi_acceptance(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Buyer's reply read as PI acceptance and the operator (or policy) confirmed it."""
+    from services.dealmaker.schemas import AcceptPiRequest  # type: ignore[import]
+    from services.dealmaker.service import accept_pi  # type: ignore[import]
+
+    pi_id: str = payload["pi_id"]
+    result = await accept_pi(pi_id, AcceptPiRequest(
+        accepted_by=payload.get("accepted_by"),
+        notes=payload.get("notes"),
+        buyer_email=payload.get("buyer_email"),
+    ))
+    return {"pi_id": pi_id, "status": result.status}
+
+
+async def _cb_release_escrow_tranche(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Release one staged escrow tranche against its proof refs."""
+    from services.escrow_guard.schemas import ReleaseTrancheRequest  # type: ignore[import]
+    from services.escrow_guard.service import release_tranche  # type: ignore[import]
+
+    escrow_id: str = payload["escrow_id"]
+    result = await release_tranche(escrow_id, ReleaseTrancheRequest(
+        tranche_id=payload["tranche_id"],
+        proof_refs=list(payload.get("proof_refs") or []),
+        idempotency_key=payload.get("idempotency_key"),
+    ))
+    return {
+        "escrow_id": escrow_id,
+        "tranche_id": payload["tranche_id"],
+        "released_total": result.released_total,
+        "status": result.status,
+    }
+
+
+async def _cb_send_deal_notification(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Send a templated counterparty notification (same transport as negotiation emails)."""
+    from agents.negotiation_agent.service import send_approved_email  # type: ignore[import]
+
+    email_id: str = payload["email_id"]
+    await send_approved_email(email_id, payload.get("modified_body"))
+    return {"email_id": email_id, "kind": payload.get("kind"), "status": "sent"}
+
+
+async def _cb_confirm_counterparty_risk(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Operator accepted a REVIEW screening verdict → issue the Proforma Invoice
+    the NEGOTIATION_AGREED leg held back."""
+    from shared.orchestration.continuations import issue_pi_for_deal
+
+    pi = await issue_pi_for_deal(
+        deal_id,
+        agreed_price=float(payload["agreed_price"]),
+        quantity_mt=payload.get("quantity_mt"),
+        market=payload.get("market"),
+    )
+    return {"pi_id": getattr(pi, "pi_id", None), "status": "pi_issued"}
+
+
+async def _cb_confirm_buyer_acceptance(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Buyer's post-delivery e-mail confirmed as acceptance → release the final
+    ACCEPTED-trigger escrow tranche (the buyer's authority, relayed by the operator)."""
+    from services.escrow_guard.schemas import AcceptEscrowRequest  # type: ignore[import]
+    from services.escrow_guard.service import accept_escrow  # type: ignore[import]
+
+    result = await accept_escrow(payload["escrow_id"], AcceptEscrowRequest(
+        accepted_by=payload.get("accepted_by"),
+        notes=payload.get("notes"),
+    ))
+    return {"escrow_id": payload["escrow_id"], "released_total": result.released_total,
+            "status": result.status}
+
+
+async def _cb_parse_inbound_email(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Informational: the operator has read the email. Any resulting action
+    (price, acceptance, reassignment) is submitted through the Email
+    Processor's manual inbound endpoint, not here."""
+    logger.info(
+        "HITL: PARSE_INBOUND_EMAIL acknowledged for deal %s (inbound=%s)",
+        deal_id, payload.get("inbound_id"),
+    )
+    return {"inbound_id": payload.get("inbound_id"), "status": "acknowledged"}
+
+
 # ---------------------------------------------------------------------------
 # Reject handlers (soft-reject actions only)
 # ---------------------------------------------------------------------------
@@ -123,6 +270,14 @@ async def _rcb_confirm_negotiation_agreement(deal_id: str, payload: dict[str, An
     return {"negotiation_id": negotiation_id, "status": "reopened"}
 
 
+async def _rcb_log_only(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Soft reject for routine operator decisions (supplier proposal declined,
+    RFQ not sent, PI-acceptance reading declined, inbound email dismissed):
+    the deal simply stays where it is — no exception, nothing to undo."""
+    logger.info("HITL: soft reject for deal %s — payload: %s", deal_id, payload)
+    return {"deal_id": deal_id, "status": "declined"}
+
+
 # ---------------------------------------------------------------------------
 # Approve dispatcher
 # ---------------------------------------------------------------------------
@@ -135,6 +290,14 @@ _CALLBACK_MAP = {
     "RESOLVE_EXCEPTION": _cb_resolve_exception,
     "SEND_NEGOTIATION_EMAIL": _cb_send_negotiation_email,
     "CONFIRM_NEGOTIATION_AGREEMENT": _cb_confirm_negotiation_agreement,
+    "DISPATCH_RFQ": _cb_dispatch_rfq,
+    "CONFIRM_SUPPLIER_SELECTION": _cb_confirm_supplier_selection,
+    "CONFIRM_PI_ACCEPTANCE": _cb_confirm_pi_acceptance,
+    "RELEASE_ESCROW_TRANCHE": _cb_release_escrow_tranche,
+    "SEND_DEAL_NOTIFICATION": _cb_send_deal_notification,
+    "PARSE_INBOUND_EMAIL": _cb_parse_inbound_email,
+    "CONFIRM_COUNTERPARTY_RISK": _cb_confirm_counterparty_risk,
+    "CONFIRM_BUYER_ACCEPTANCE": _cb_confirm_buyer_acceptance,
 }
 
 
@@ -195,7 +358,20 @@ async def execute_callback(
 _REJECT_CALLBACK_MAP = {
     "SEND_NEGOTIATION_EMAIL": _rcb_send_negotiation_email,
     "CONFIRM_NEGOTIATION_AGREEMENT": _rcb_confirm_negotiation_agreement,
+    "SEND_DEAL_NOTIFICATION": _rcb_send_negotiation_email,  # same draft lifecycle
+    "DISPATCH_RFQ": _rcb_log_only,
+    "CONFIRM_SUPPLIER_SELECTION": _rcb_log_only,
+    "CONFIRM_PI_ACCEPTANCE": _rcb_log_only,
+    "PARSE_INBOUND_EMAIL": _rcb_log_only,
+    # "Not actually an acceptance" — the inspection window keeps running.
+    "CONFIRM_BUYER_ACCEPTANCE": _rcb_log_only,
 }
+
+SOFT_REJECT_ACTIONS: frozenset[str] = frozenset(_REJECT_CALLBACK_MAP)
+"""Actions whose REJECT is a routine operator decision, not a blocked deal
+(no DEAL_EXCEPTION). Money/commitment actions (PO, freight, customs, payout,
+tranche release, exception resolution) and CONFIRM_COUNTERPARTY_RISK ("do not
+trade with this buyer") stay hard rejects."""
 
 
 async def execute_reject_callback(

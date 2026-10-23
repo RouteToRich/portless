@@ -14,6 +14,14 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "service": "trade-min"}
 
 
+@router.get("/sources")
+async def list_sources() -> dict:
+    """Which demand / buyer / seller / enrichment sources the scanner can reach
+    right now (live, stub, mock, open) — including the PortLess-owned Apify
+    actors and whether an APIFY_TOKEN is configured."""
+    return service.describe_sources()
+
+
 @router.post("/scan", response_model=list[EnrichedOpportunity])
 async def scan(payload: ScanRequest) -> list[EnrichedOpportunity]:
     """Trigger a 5-phase opportunity discovery scan.

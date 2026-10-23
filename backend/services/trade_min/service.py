@@ -22,6 +22,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import uuid4
 
 from shared.bus import get_publisher
@@ -108,7 +109,14 @@ _EU_MARKETS = frozenset({
 _P1_WEIGHTS: dict[str, float] = {
     "comtrade": 0.70,
     "census":   0.30,
+    # PortLess's own export-market actor (UN Comtrade data + the market's real
+    # unit value per kg) — see shared/connectors/apify.py.
+    "apify_export_markets": 0.40,
 }
+
+# Phase-2 live buyer sources that are PortLess-owned Apify actors. The US
+# importer actor only knows US customs records, so it runs for the US market.
+_APIFY_BUYER_SOURCES = ("apify_alibaba_rfq", "apify_us_importers")
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +131,9 @@ class _Phase1Result:
     gross_price_gap_pct: float = 0.0
     active_connectors: int = 0
     source: str = "simulated"
+    price_benchmark_usd_per_mt: float | None = None
+    """Market unit value per MT (export-market actor) — the real buyer price anchor."""
+    price_benchmark_source: str | None = None
 
 
 @dataclass
@@ -202,6 +213,11 @@ async def _safe_quote(name: str, req: dict) -> dict | None:
     return result
 
 
+async def _noop() -> None:
+    """Placeholder awaitable for connectors that do not apply to this market."""
+    return None
+
+
 def _new_opportunity_id() -> str:
     return f"OPP-{uuid4().hex[:12].upper()}"
 
@@ -218,7 +234,7 @@ async def _phase1_historical_demand(
     now = datetime.now(timezone.utc)
     prev_year = str(now.year - 1)
 
-    comtrade_r, census_r = await asyncio.gather(
+    comtrade_r, census_r, markets_r = await asyncio.gather(
         _safe_quote("comtrade", {
             "hs_code": hs_code,
             "period": prev_year,
@@ -231,6 +247,13 @@ async def _phase1_historical_demand(
         _safe_quote("census", {
             "hs_code": hs_code,
             "market": market,
+        }),
+        # PortLess's export-market actor: UN Comtrade demand for this HS code
+        # across markets + what each market pays per kg (buyer price benchmark).
+        _safe_quote("apify_export_markets", {
+            "hs_code": hs_code,
+            "exporter_country": "IN",
+            "markets": [market],
         }),
     )
 
@@ -245,6 +268,11 @@ async def _phase1_historical_demand(
         if r is not None and (r.get("records") or r.get("total_records")):
             active_weights[cname] = _P1_WEIGHTS[cname]
             connector_data[cname] = r
+
+    market_row = _pick_market_row(markets_r, market)
+    if market_row is not None:
+        active_weights["apify_export_markets"] = _P1_WEIGHTS["apify_export_markets"]
+        connector_data["apify_export_markets"] = market_row
 
     result.active_connectors = len(active_weights)
 
@@ -276,6 +304,19 @@ async def _phase1_historical_demand(
         if gap and result.gross_price_gap_pct == 0.0:
             result.gross_price_gap_pct = gap
 
+    if "apify_export_markets" in connector_data:
+        score, signals, benchmark, gap = _extract_export_market(
+            connector_data["apify_export_markets"], hs_code, market, now
+        )
+        scores.append(("apify_export_markets", score * norm_weights["apify_export_markets"]))
+        result.demand_signals.extend(signals)
+        result.price_benchmark_usd_per_mt = benchmark
+        result.price_benchmark_source = "apify_export_markets" if benchmark else None
+        # The actor's gap (market unit value vs India's own export unit value) is
+        # the one measured on the real corridor — prefer it over the CIF/FOB ratio.
+        if gap:
+            result.gross_price_gap_pct = gap
+
     result.demand_index = round(sum(s for _, s in scores), 2)
 
     if result.gross_price_gap_pct == 0.0:
@@ -283,6 +324,62 @@ async def _phase1_historical_demand(
 
     result.source = scores[0][0] if scores else "simulated"
     return result
+
+
+def _pick_market_row(markets_r: dict | None, market: str) -> dict | None:
+    """The export-market actor row for *market* (ISO-2), if the call returned one."""
+    if not markets_r:
+        return None
+    for row in markets_r.get("markets", []) or []:
+        if str(row.get("market") or "").upper() == market.upper():
+            return row
+    return None
+
+
+def _extract_export_market(
+    row: dict, hs_code: str, market: str, now: datetime
+) -> tuple[float, list[DemandSignal], float | None, float]:
+    """Demand score + price benchmark from one export-market actor row.
+
+    Score: the actor's own 0-100 opportunity score when present, else a log
+    scale on the market's import value ($100k -> 0 ... $1B -> 100). Gap: market
+    unit value vs India's world export unit value (both per MT), in %.
+    """
+    import math
+
+    score = row.get("score")
+    if score is None:
+        value = float(row.get("import_value_usd") or 0.0)
+        score = min(100.0, max(0.0, 25.0 * math.log10(max(value, 1.0) / 1e5)))
+    score = float(score)
+    benchmark = row.get("unit_value_usd_per_mt")
+    india = row.get("exporter_world_unit_value_usd_per_mt") or row.get("exporter_unit_value_usd_per_mt")
+    gap = 0.0
+    if benchmark and india and float(india) > 0:
+        gap = round((float(benchmark) - float(india)) / float(india) * 100.0, 2)
+    value_txt = f"${float(row.get('import_value_usd') or 0):,.0f}"
+    growth = row.get("growth_1y_pct")
+    share = row.get("exporter_share_pct")
+    summary = (
+        f"{market} imported {value_txt} of HS {hs_code} in {row.get('latest_period') or 'the latest year'}"
+        + (f", {growth:+.1f}% YoY" if growth is not None else "")
+        + (f"; India's share {share:.1f}%" if share is not None else "")
+        + (f"; market pays ${float(benchmark):,.0f}/MT" if benchmark else "")
+    )
+    return (
+        score,
+        [DemandSignal(
+            source="apify_export_markets",
+            signal_type="historical",
+            urgency_tier=1,
+            normalized_value=round(min(score, 100.0), 2),
+            weight=_P1_WEIGHTS["apify_export_markets"],
+            raw_summary=summary,
+            fetched_at=now,
+        )],
+        float(benchmark) if benchmark else None,
+        gap,
+    )
 
 
 def _extract_comtrade(
@@ -462,7 +559,7 @@ def _extract_trademo(
 async def _phase2_live_signals(
     hs_code: str,
     market: str,
-    phase1: _Phase1Result,  # noqa: ARG001 — future: use buyer names for targeted RFQ search
+    phase1: _Phase1Result,
     config: TradeMinConfig,  # noqa: ARG001
 ) -> _Phase2Result:
     now = datetime.now(timezone.utc)
@@ -475,7 +572,20 @@ async def _phase2_live_signals(
     if market in _EU_MARKETS:
         ted_req["country"] = market
 
-    rfq_r, gdelt_r, ted_r = await asyncio.gather(
+    # PortLess-owned Apify actors — the named-buyer sources. The US importer
+    # actor reads US customs records only; the benchmark lets it value each
+    # importer's annual volume.
+    bench_per_kg = (
+        round(phase1.price_benchmark_usd_per_mt / 1000.0, 4)
+        if phase1.price_benchmark_usd_per_mt else None
+    )
+    us_req: dict | None = None
+    if market == "US":
+        us_req = {"hs_code": hs_code, "products": [keyword], "origin_country": "IN",
+                  "unit_value_usd_per_kg": bench_per_kg,
+                  "unit_value_source": f"UN Comtrade via export-market actor, HS {hs_code}"}
+
+    rfq_r, gdelt_r, ted_r, apify_rfq_r, us_r = await asyncio.gather(
         _safe_quote("alibaba_rfq", {"query": keyword, "country": market, "page_size": 20}),
         _safe_quote("gdelt_disruption", {
             "origin_country": competitors[0],
@@ -483,13 +593,83 @@ async def _phase2_live_signals(
             "hours_lookback": 72,
         }),
         _safe_quote("eu_ted", ted_req),
+        _safe_quote("apify_alibaba_rfq", {"products": [keyword], "country": market}),
+        _safe_quote("apify_us_importers", us_req) if us_req else _noop(),
     )
 
     result = _Phase2Result()
 
+    # Apify Alibaba RFQ leads — named buyers, quantities, stated target prices.
+    if apify_rfq_r is not None and apify_rfq_r.get("rfqs"):
+        leads = apify_rfq_r["rfqs"]
+        result.active_rfq_count += len(leads)
+        result.demand_signals.append(DemandSignal(
+            source="apify_alibaba_rfq",
+            signal_type="rfq",
+            urgency_tier=3,
+            normalized_value=min(len(leads) / 20.0 * 100.0, 100.0),
+            weight=0.0,
+            raw_summary=f"{len(leads)} matched Alibaba buying requests for '{keyword}' in {market} (PortLess actor)",
+            fetched_at=now,
+        ))
+        for r in leads[:15]:
+            result.buyer_signals.append(BuyerSignal(
+                buyer_name=r.get("buyer_name") or f"Alibaba buyer ({r.get('buyer_country') or market})",
+                buyer_country=r.get("buyer_country") or market,
+                company_id=r.get("rfq_id"),
+                signal_type="rfq",
+                source="apify_alibaba_rfq",
+                urgency_tier=3,
+                unit_price_usd=r.get("unit_price_usd"),
+                price_unit=r.get("price_unit"),
+                contact_url=r.get("contact_url"),
+                fit_score=r.get("fit_score"),
+                fit_reason=r.get("fit_reason"),
+                pitch_angle=r.get("quote_reply") or None,
+                quantity=r.get("quantity"),
+                quantity_unit=r.get("quantity_unit"),
+                last_import_date=r.get("posted_at"),
+            ))
+
+    # Apify US importers — manifest-grade named buyers with contact + fit.
+    if us_r is not None and us_r.get("buyers"):
+        importers = us_r["buyers"]
+        result.demand_signals.append(DemandSignal(
+            source="apify_us_importers",
+            signal_type="manifest",
+            urgency_tier=2,
+            normalized_value=min(len(importers) / 20.0 * 100.0, 100.0),
+            weight=0.0,
+            raw_summary=f"{len(importers)} active US importers of HS {hs_code} from customs records (PortLess actor)",
+            fetched_at=now,
+        ))
+        for b in importers[:20]:
+            result.buyer_signals.append(BuyerSignal(
+                buyer_name=b["buyer_name"],
+                buyer_country="US",
+                company_id=b.get("company_id"),
+                last_import_date=b.get("last_import_date"),
+                annual_volume_mt=b.get("annual_volume_mt"),
+                signal_type="manifest",
+                source="apify_us_importers",
+                urgency_tier=2 if (b.get("shipments_12m") or 0) >= 3 else 1,
+                estimated_order_value_usd=b.get("estimated_order_value_usd"),
+                unit_price_usd=b.get("unit_price_usd"),
+                price_unit=b.get("price_unit"),
+                contact_url=b.get("contact_url"),
+                website=b.get("website"),
+                phone=b.get("phone"),
+                address=b.get("address"),
+                fit_score=b.get("fit_score"),
+                fit_reason=b.get("fit_reason"),
+                pitch_angle=b.get("pitch_angle"),
+                shipments_12m=b.get("shipments_12m"),
+                hs_codes=list(b.get("hs_codes") or []),
+            ))
+
     if rfq_r is not None:
         rfqs: list[dict] = rfq_r.get("rfqs", [])
-        result.active_rfq_count = rfq_r.get("total", len(rfqs))
+        result.active_rfq_count += int(rfq_r.get("total", len(rfqs)) or 0)
         if result.active_rfq_count > 0:
             result.demand_signals.append(DemandSignal(
                 source="alibaba_rfq",
@@ -683,35 +863,71 @@ async def _phase4_seller_discovery(
     hs_code: str,
     config: TradeMinConfig,  # noqa: ARG001
 ) -> list[SellerCandidate]:
-    im_r, ti_r = await asyncio.gather(
+    from shared.connectors.trade_intel import _HS_TO_KEYWORD as _HS_KW
+    keyword = _HS_KW.get(hs_code[:4], hs_code)
+
+    im_r, ti_r, apify_r = await asyncio.gather(
         _safe_quote("indiamart", {"hs_code": hs_code, "page_size": 20}),
         _safe_quote("tradeindia", {"hs_code": hs_code, "limit": 20}),
+        # PortLess's own India supplier actor (price, MOQ, GSTIN, contact).
+        _safe_quote("apify_india_suppliers", {"hs_code": hs_code, "keyword": keyword}),
     )
 
     candidates: list[SellerCandidate] = []
+    seen: set[str] = set()
+
+    def _add(raw: dict, source: str) -> None:
+        cand = _seller_from_raw(raw, source, hs_code)
+        key = (cand.company_name or cand.candidate_id).strip().lower()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(cand)
+
+    # Actor rows first — they carry contact + credentials the APIs lack.
+    if apify_r is not None:
+        for s in apify_r.get("sellers", [])[:15]:
+            _add(s, "apify_india_suppliers")
 
     if im_r is not None:
         for s in im_r.get("sellers", [])[:15]:
-            candidates.append(_seller_from_raw(s, "indiamart", hs_code))
+            _add(s, "indiamart")
 
     if ti_r is not None:
         for s in ti_r.get("sellers", [])[:10]:
-            candidates.append(_seller_from_raw(s, "tradeindia", hs_code))
+            _add(s, "tradeindia")
 
     return candidates
 
 
+def _normalise_price_per_mt(value: float | None, price_unit: str | None) -> float | None:
+    """Seller prices arrive per kg (IndiaMART/TradeIndia listings, actor rows)
+    or per MT (mock scenarios). The pipeline — Match Engine corridor, PI/PO
+    totals (price x quantity_mt) — is per MT, so convert once, here."""
+    if value is None:
+        return None
+    unit = (price_unit or "").lower().replace(" ", "")
+    if unit.endswith("/kg") or unit.endswith("perkg") or unit == "kg":
+        return round(value * 1000.0, 2)
+    if unit.startswith("inr"):
+        # INR -> USD at a conservative fallback rate when no FX is wired in.
+        usd = value / 84.0
+        return round(usd * 1000.0, 2) if "/kg" in unit else round(usd, 2)
+    return round(value, 4)
+
+
 def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
     state = s.get("state", "")
-    lo = _safe_float(s.get("min_price"))
-    hi = _safe_float(s.get("max_price"))
+    unit = s.get("price_unit")
+    lo = _normalise_price_per_mt(_safe_float(s.get("min_price")), unit)
+    hi = _normalise_price_per_mt(_safe_float(s.get("max_price")), unit)
     if lo is not None and hi is not None:
         mid_price: float | None = round((lo + hi) / 2.0, 4)
     else:
         mid_price = lo
 
     return SellerCandidate(
-        candidate_id=s.get("company_id", f"{source}-{uuid4().hex[:8]}"),
+        candidate_id=s.get("company_id") or f"{source}-{uuid4().hex[:8]}",
         company_name=s.get("company_name", ""),
         location_city=s.get("city", ""),
         location_state=state,
@@ -722,6 +938,13 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         listing_url=s.get("listing_url") or None,
         contact_id=s.get("contact_id") or None,
         supplier_to_port_km=_STATE_TO_PORT_KM.get(state),
+        email=s.get("email") or None,
+        phone=s.get("phone") or None,
+        website=s.get("website") or None,
+        gstin=s.get("gstin") or None,
+        iec=s.get("iec") or None,
+        fit_score=s.get("fit_score"),
+        price_unit="USD/MT",
     )
 
 
@@ -821,6 +1044,8 @@ async def _phase5_assemble_and_persist(
         demand_index=phase1.demand_index,
         price_gap_pct=phase1.gross_price_gap_pct,
         source=phase1.source,  # type: ignore[arg-type]
+        price_benchmark_usd_per_mt=phase1.price_benchmark_usd_per_mt,
+        price_benchmark_source=phase1.price_benchmark_source,
         buyer_signals=phase1.buyer_signals + phase2.buyer_signals,
         active_rfq_count=phase2.active_rfq_count,
         active_tender_count=phase2.active_tender_count,
@@ -949,15 +1174,23 @@ async def get_match_seed(opportunity_id: str) -> MatchEngineSeed | None:
 
 
 def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
-    # Best buyer unit price from Volza manifests (true CIF price buyers paid)
+    # Real buyer-side prices only: signals whose unit is per MT (the Apify
+    # actors always label theirs; legacy manifest sources left it implicit).
     buyer_unit_prices = [
         b.unit_price_usd for b in opp.buyer_signals
-        if b.unit_price_usd and b.unit_price_usd > 0
+        if b.unit_price_usd and b.unit_price_usd > 0 and (b.price_unit in (None, "USD/MT"))
     ]
-    buyer_target_price = (
-        round(sum(buyer_unit_prices) / len(buyer_unit_prices), 4)
-        if buyer_unit_prices else None
-    )
+    buyer_price_source: str | None = None
+    if buyer_unit_prices:
+        buyer_target_price: float | None = round(sum(buyer_unit_prices) / len(buyer_unit_prices), 4)
+        buyer_price_source = "buyer_signals"
+    elif opp.price_benchmark_usd_per_mt:
+        # No named buyer carries a price — anchor on what the market pays per
+        # MT (UN Comtrade unit value via the export-market actor).
+        buyer_target_price = round(float(opp.price_benchmark_usd_per_mt), 4)
+        buyer_price_source = opp.price_benchmark_source or "apify_export_markets"
+    else:
+        buyer_target_price = None
 
     top_sellers = [
         {
@@ -970,8 +1203,39 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
             "source":             s.source,
             "listing_url":        s.listing_url,
             "contact_id":         s.contact_id,
+            "email":              s.email,
+            "phone":              s.phone,
+            "website":            s.website,
+            "gstin":              s.gstin,
+            "iec":                s.iec,
+            "fit_score":          s.fit_score,
         }
         for s in opp.seller_candidates[:5]
+    ]
+
+    def _buyer_rank(b: BuyerSignal) -> tuple:
+        has_contact = bool(b.email or b.website or b.contact_url)
+        return (-(b.fit_score or 0), not has_contact, -(b.urgency_tier or 0))
+
+    top_buyers = [
+        {
+            "buyer_name":   b.buyer_name,
+            "buyer_country": b.buyer_country,
+            "company_id":   b.company_id,
+            "source":       b.source,
+            "signal_type":  b.signal_type,
+            "email":        b.email,
+            "website":      b.website,
+            "phone":        b.phone,
+            "address":      b.address,
+            "contact_url":  b.contact_url,
+            "unit_price_usd": b.unit_price_usd,
+            "price_unit":   b.price_unit,
+            "fit_score":    b.fit_score,
+            "pitch_angle":  b.pitch_angle,
+            "risk_score":   b.risk_score,
+        }
+        for b in sorted(opp.buyer_signals, key=_buyer_rank)[:5]
     ]
 
     return MatchEngineSeed(
@@ -979,6 +1243,8 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
         hs_code=opp.hs_code,
         market=opp.market,
         buyer_target_price_usd=buyer_target_price,
+        buyer_price_source=buyer_price_source,
+        top_buyers=top_buyers,
         top_sellers=top_sellers,
         net_price_gap_pct=opp.net_price_gap_pct,
         urgency_tier=opp.urgency_tier,
@@ -992,6 +1258,86 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
 async def mark_opportunity_converted(opportunity_id: str) -> bool:
     repo = await get_repository()
     return await repo.mark_converted(opportunity_id)
+
+
+def describe_sources() -> dict[str, Any]:
+    """Which buyer / seller / demand sources the scanner can actually reach.
+
+    Powers ``GET /trade-min/sources`` (the Opportunity Radar header and the
+    readiness check). ``mode`` is ``live`` (credentials present), ``stub``
+    (no credentials — the source contributes nothing), ``mock``
+    (``TRADE_MIN_MOCK_MODE``) or ``open`` (no key needed).
+    """
+    import os
+    from shared.connectors.apify import describe_actors
+
+    mock = settings.trade_min_mock_mode
+    apify = describe_actors()
+    actors = {a["actor"].split("~")[-1]: a for a in apify["actors"]}
+
+    def _mode(live: bool) -> str:
+        if mock:
+            return "mock"
+        return "live" if live else "stub"
+
+    def _actor(slug: str, role: str, label: str, detail: str) -> dict[str, Any]:
+        a = actors.get(slug, {})
+        return {
+            "name": a.get("connector", f"apify_{slug}"),
+            "label": label,
+            "role": role,
+            "provider": "apify",
+            "actor": a.get("actor", f"{apify['owner']}~{slug}"),
+            "mode": _mode(bool(a.get("live"))),
+            "detail": detail,
+        }
+
+    sources: list[dict[str, Any]] = [
+        {"name": "comtrade", "label": "UN Comtrade", "role": "demand", "provider": "un_comtrade",
+         "mode": _mode(bool(os.getenv("COMTRADE_SUBSCRIPTION_KEY"))),
+         "detail": "Historical import volumes + CIF/FOB value ratio (Phase 1)."},
+        {"name": "census", "label": "US Census trade", "role": "demand", "provider": "us_census",
+         "mode": _mode(bool(os.getenv("CENSUS_API_KEY"))),
+         "detail": "US import statistics (Phase 1, US market only)."},
+        _actor("export-market-finder-ai", "demand", "Export markets (Comtrade actor)",
+               "Market demand + what each market pays per MT - the buyer price benchmark (Phase 1)."),
+        _actor("us-importer-finder-ai", "buyers", "US importers (customs records)",
+               "Named US buyers with shipments, website/phone, fit score (Phase 2, US market)."),
+        _actor("alibaba-rfq-leads-ai", "buyers", "Alibaba buying requests",
+               "Live RFQs matched to PortLess product lines, buyer country + target price (Phase 2)."),
+        {"name": "alibaba_rfq", "label": "Alibaba Open Platform RFQ", "role": "buyers", "provider": "alibaba_api",
+         "mode": _mode(bool(os.getenv("ALIBABA_APP_KEY") and os.getenv("ALIBABA_APP_SECRET"))),
+         "detail": "Official RFQ feed (Phase 2) - needs an Alibaba developer app."},
+        {"name": "eu_ted", "label": "EU TED tenders", "role": "buyers", "provider": "eu_ted",
+         "mode": "mock" if mock else "open", "detail": "EU institutional tenders (Phase 2, EU markets)."},
+        {"name": "gdelt_disruption", "label": "GDELT disruptions", "role": "demand", "provider": "gdelt",
+         "mode": "mock" if mock else "open", "detail": "Supply disruptions in competitor origins (urgency tier 4)."},
+        {"name": "wits_tariff", "label": "World Bank WITS tariffs", "role": "tariff", "provider": "wits",
+         "mode": "mock" if mock else "open", "detail": "Applied import duty at HS-6 (Phase 3 tariff gate)."},
+        _actor("india-supplier-finder-ai", "sellers", "Indian suppliers (actor)",
+               "Indian manufacturers with price, MOQ, GSTIN and a reachable contact (Phase 4)."),
+        {"name": "indiamart", "label": "IndiaMART", "role": "sellers", "provider": "indiamart_api",
+         "mode": _mode(bool(os.getenv("INDIAMART_API_KEY") and os.getenv("INDIAMART_MOBILE"))),
+         "detail": "Seller catalogue search + RFQ dispatch (Phase 4)."},
+        {"name": "tradeindia", "label": "TradeIndia", "role": "sellers", "provider": "tradeindia_api",
+         "mode": _mode(bool(os.getenv("TRADEINDIA_API_KEY"))),
+         "detail": "Fallback seller directory (Phase 4)."},
+        _actor("company-contact-finder-ai", "enrichment", "Company contact finder",
+               "Buyer/supplier website, checked e-mail, phone, VAT id before the first outbound mail."),
+        _actor("counterparty-check-ai", "screening", "Counterparty screening",
+               "OFAC / UN / EU / UK sanctions, GLEIF LEI, EU VIES - gates the Proforma Invoice."),
+        _actor("email-list-qualifier-ai", "enrichment", "E-mail deliverability",
+               "Verifies a counterparty address before PortLess writes to it."),
+    ]
+    live = sum(1 for src in sources if src["mode"] in ("live", "open"))
+    return {
+        "mock_mode": mock,
+        "apify": {"token_present": apify["token_present"], "owner": apify["owner"],
+                  "ai_tier": apify["ai_tier"], "max_items": apify["max_items"]},
+        "live_count": live,
+        "total": len(sources),
+        "sources": sources,
+    }
 
 
 # ---------------------------------------------------------------------------

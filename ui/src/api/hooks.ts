@@ -16,7 +16,12 @@ import {
   RagApi,
   ShieldApi,
 } from "./endpoints";
-import type { ApprovalRecord, CreateDealRequest, ResolveApprovalRequest } from "./types";
+import type {
+  ApprovalRecord,
+  CreateDealRequest,
+  ResolveApprovalRequest,
+  UpdatePartyRequest,
+} from "./types";
 
 // ── Health ──────────────────────────────────────────────────────────────────
 
@@ -29,6 +34,15 @@ export function useDownstreamHealth() {
     queryKey: ["health", "downstream"],
     queryFn: HealthApi.downstream,
     refetchInterval: 10000,
+  });
+}
+
+// Production readiness report — pure environment inspection, cheap to poll.
+export function useReadiness() {
+  return useQuery({
+    queryKey: ["health", "readiness"],
+    queryFn: HealthApi.readiness,
+    refetchInterval: 30000,
   });
 }
 
@@ -59,6 +73,32 @@ export function useCreateDeal() {
       // The source opportunity flips to CONVERTED server-side — refetch so
       // the radar's "Start Deal" button reflects that without a manual reload.
       qc.invalidateQueries({ queryKey: ["opportunities"] });
+    },
+  });
+}
+
+// Operator correction of a deal party's identity / contact.
+export function useUpdateParty(dealId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ role, payload }: { role: "buyer" | "supplier"; payload: UpdatePartyRequest }) =>
+      DealsApi.updateParty(dealId, role, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["deal", dealId] });
+      qc.invalidateQueries({ queryKey: ["deals"] });
+    },
+  });
+}
+
+// Run the Apify contact finder + sanctions screening on the deal's parties.
+export function useEnrichDeal(dealId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (opts?: { screen?: boolean; contacts?: boolean }) =>
+      DealsApi.enrich(dealId, opts),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["deal", dealId] });
+      qc.invalidateQueries({ queryKey: ["deals"] });
     },
   });
 }
@@ -98,6 +138,15 @@ export function useOpportunity(opportunityId: string | null | undefined) {
     enabled: Boolean(opportunityId),
     retry: false,
     staleTime: 5 * 60 * 1000, // converted opportunities are immutable
+  });
+}
+
+// Data-source status for the Opportunity Radar header (live / stub / mock / open).
+export function useTradeSources() {
+  return useQuery({
+    queryKey: ["trade-sources"],
+    queryFn: OpportunitiesApi.sources,
+    staleTime: 60 * 1000,
   });
 }
 
@@ -272,11 +321,66 @@ export function useRunNegotiationRound(negotiationId: string) {
 
 // ── Escrow ────────────────────────────────────────────────────────────────────
 
-export function useEscrowHolds(dealId: string | undefined) {
+export function useEscrowHold(dealId: string | undefined) {
   return useQuery({
-    queryKey: ["escrow-holds", dealId],
-    queryFn: () => EscrowApi.getHolds(dealId as string),
+    queryKey: ["escrow-hold", dealId],
+    queryFn: () => EscrowApi.getHold(dealId as string),
     enabled: Boolean(dealId),
+    refetchInterval: 15000,
+  });
+}
+
+export function useDealLedger(dealId: string | undefined) {
+  return useQuery({
+    queryKey: ["escrow-ledger", dealId],
+    queryFn: () => EscrowApi.getLedger(dealId as string),
+    enabled: Boolean(dealId),
+    refetchInterval: 15000,
+  });
+}
+
+// Every escrow's ledger — the Money & Margin page's escrow view.
+export function useEscrowLedgers() {
+  return useQuery({
+    queryKey: ["escrow-ledgers"],
+    queryFn: EscrowApi.listLedgers,
+    refetchInterval: 15000,
+  });
+}
+
+export type EscrowActionKind = "accept" | "dispute" | "refund";
+
+// Operator actions on an escrow (buyer acceptance relay, dispute, refund) —
+// every one of them moves money, so the pages confirm before calling this.
+export function useEscrowAction(dealId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      kind,
+      escrowId,
+      reason,
+      actor,
+    }: {
+      kind: EscrowActionKind;
+      escrowId: string;
+      reason?: string;
+      actor?: string;
+    }) => {
+      if (kind === "accept") {
+        return EscrowApi.accept(escrowId, { accepted_by: actor ?? "operator", notes: reason });
+      }
+      if (kind === "dispute") {
+        return EscrowApi.dispute(escrowId, { reason: reason ?? "", raised_by: actor ?? "operator" });
+      }
+      return EscrowApi.refund(escrowId, { reason: reason ?? "" });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["escrow-hold", dealId] });
+      qc.invalidateQueries({ queryKey: ["escrow-ledger", dealId] });
+      qc.invalidateQueries({ queryKey: ["escrow-ledgers"] });
+      qc.invalidateQueries({ queryKey: ["deal", dealId] });
+      qc.invalidateQueries({ queryKey: ["deals"] });
+    },
   });
 }
 

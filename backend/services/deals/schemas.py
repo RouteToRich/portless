@@ -153,3 +153,56 @@ class UpdateFinancialsRequest(BaseModel):
     winning_supplier_id: str | None = None
     winning_cms: float | None = None
     extra: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Party contact / screening (enrichment + operator corrections)
+# ---------------------------------------------------------------------------
+
+class UpdatePartyRequest(BaseModel):
+    """Operator correction of a counterparty's identity / contact (PATCH
+    /deals/{id}/parties/{role}). Only provided fields change; an operator-set
+    contact is marked ``contact_source="operator"`` and is never overwritten by
+    a later actor run."""
+
+    legal_name: str | None = None
+    country: str | None = None
+    email: str | None = None
+    website: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    gstin: str | None = None
+    iec: str | None = None
+    vat_number: str | None = None
+    verification_status: str | None = None
+
+
+class PartyEnrichment(BaseModel):
+    legal_name: str | None = None
+    country: str | None = None
+    email: str | None = None
+    email_status: str | None = None
+    website: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    vat_number: str | None = None
+    vat_valid: bool | None = None
+    lei: str | None = None
+    contact_source: str | None = None
+    contact_confidence: float | None = None
+    sanctions_status: str | None = None
+    sanctions_reason: str | None = None
+    screening: dict[str, Any] | None = None
+
+
+class EnrichmentResult(BaseModel):
+    """Outcome of ``POST /deals/{id}/enrich`` (Apify contact finder + sanctions
+    screening + e-mail deliverability on the deal's parties)."""
+
+    deal_id: str
+    buyer: PartyEnrichment | None = None
+    supplier: PartyEnrichment | None = None
+    actors_used: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    blocked: bool = False
+    deal: DealRecord

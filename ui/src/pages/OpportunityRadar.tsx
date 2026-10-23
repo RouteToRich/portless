@@ -13,9 +13,14 @@ import {
   Users,
   Percent,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { useOpportunities, useScanOpportunities, useCreateDeal } from "@/api/hooks";
-import type { Opportunity, SellerCandidate } from "@/api/types";
+import { cn, fmtUSD } from "@/lib/utils";
+import {
+  useOpportunities,
+  useScanOpportunities,
+  useCreateDeal,
+  useTradeSources,
+} from "@/api/hooks";
+import type { Opportunity, SellerCandidate, TradeSource } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,6 +29,61 @@ import { Progress } from "@/components/ui/progress";
 
 function pct(v: number | null | undefined): string {
   return v == null ? "—" : `${v.toFixed(1)}%`;
+}
+
+// Source chip colours by reachability mode (GET /trade-min/sources).
+function modeVariant(mode: string): "success" | "info" | "secondary" | "warning" {
+  switch (mode) {
+    case "live": return "success";
+    case "open": return "info";
+    case "mock": return "warning";
+    default: return "secondary";
+  }
+}
+
+const ROLE_ORDER = ["demand", "buyers", "sellers", "tariff", "enrichment", "screening"] as const;
+
+function SourceChips({ sources }: { sources: TradeSource[] }) {
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+      {ROLE_ORDER.map((role) => {
+        const items = sources.filter((s) => s.role === role);
+        if (items.length === 0) return null;
+        return (
+          <div key={role} className="flex items-center gap-1 flex-wrap">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground mr-0.5">
+              {role}
+            </span>
+            {items.map((s) => (
+              <Badge
+                key={s.name}
+                variant={modeVariant(s.mode)}
+                className="text-[9px] h-4 px-1.5 font-medium cursor-default"
+                title={`${s.detail}${s.actor ? `\nActor: ${s.actor}` : ""}\nMode: ${s.mode}`}
+              >
+                {s.label}
+                {s.provider === "apify" && <span className="ml-1 opacity-70">⚡</span>}
+              </Badge>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function fitChip(score: number | null | undefined) {
+  if (score == null) return null;
+  const color = score >= 70 ? "#2ec28a" : score >= 45 ? "#f5a623" : "#9aa9c4";
+  return (
+    <span
+      className="text-[9px] px-1.5 py-0.5 rounded-full border font-semibold shrink-0"
+      style={{ color, borderColor: `${color}66`, background: `${color}1a` }}
+      title="Actor fit score (0–100)"
+    >
+      fit {score}
+    </span>
+  );
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "good" | "warn" | "bad" }) {
@@ -70,6 +130,23 @@ function OpportunityDetail({ opp }: { opp: Opportunity }) {
         <Metric label="Urgency Tier" value={opp.urgency_tier != null ? `T${opp.urgency_tier}` : "—"} />
         <Metric label="Active RFQs" value={opp.active_rfq_count != null ? String(opp.active_rfq_count) : "—"} />
       </div>
+
+      {/* Real buyer-side price anchor from the export-market actor */}
+      {opp.price_benchmark_usd_per_mt != null && (
+        <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs flex items-center gap-2 flex-wrap">
+          <span className="font-semibold">Market pays {fmtUSD(opp.price_benchmark_usd_per_mt)}/MT</span>
+          <span className="text-muted-foreground">
+            · UN Comtrade unit value via {opp.price_benchmark_source ?? "export-market actor"} — anchors the
+            negotiation corridor instead of the 1.25× FOB heuristic
+          </span>
+        </div>
+      )}
+      {opp.source === "simulated" && (
+        <div className="rounded-lg border border-[#ff5d6c]/40 bg-[#ff5d6c]/10 px-3 py-2 text-xs text-[#ff5d6c]">
+          Demand index and price gap are <b>simulated</b> (no live Comtrade / Census / actor data for this
+          pair). Never auto-converted; start a deal only after checking the numbers yourself.
+        </div>
+      )}
 
       {/* Tariff */}
       {t && (
@@ -118,14 +195,36 @@ function OpportunityDetail({ opp }: { opp: Opportunity }) {
                   className="flex items-start justify-between gap-3 rounded-lg bg-popover border border-border px-3 py-2"
                 >
                   <div className="min-w-0">
-                    <p className="text-xs font-medium truncate">{s.company_name}</p>
+                    <p className="text-xs font-medium truncate flex items-center gap-1.5">
+                      {s.company_name}
+                      {s.source && (
+                        <Badge variant="outline" className="text-[9px] h-4 px-1.5 font-normal shrink-0">
+                          {s.source.replace("apify_", "⚡ ")}
+                        </Badge>
+                      )}
+                      {fitChip(s.fit_score)}
+                    </p>
                     <p className="text-[10px] text-muted-foreground">
                       {[s.location_city, s.location_state].filter(Boolean).join(", ") || "—"}
                       {s.annual_capacity_mt != null && ` · ${s.annual_capacity_mt.toLocaleString()} MT/yr`}
                       {s.supplier_to_port_km != null && ` · ${s.supplier_to_port_km} km to port`}
                     </p>
+                    {(s.email || s.website || s.gstin) && (
+                      <p className="text-[10px] text-muted-foreground truncate">
+                        {s.email && <span className="font-mono">{s.email}</span>}
+                        {s.website && (
+                          <>
+                            {s.email && " · "}
+                            <a href={s.website} target="_blank" rel="noopener noreferrer" className="text-[#4f8cff] hover:underline">
+                              website
+                            </a>
+                          </>
+                        )}
+                        {s.gstin && ` · GSTIN ${s.gstin}`}
+                      </p>
+                    )}
                   </div>
-                  <span className="text-xs font-semibold shrink-0 text-[#28c2a0]">
+                  <span className="text-xs font-semibold shrink-0 text-[#28c2a0]" title="Estimated FOB, USD per MT">
                     {s.estimated_fob_price_usd != null ? `$${s.estimated_fob_price_usd.toFixed(2)}` : "—"}
                   </span>
                 </div>
@@ -144,31 +243,60 @@ function OpportunityDetail({ opp }: { opp: Opportunity }) {
             <p className="text-xs text-muted-foreground">No buyer signals</p>
           ) : (
             <div className="space-y-1.5">
-              {buyers.map((b, i) => (
-                <div
-                  key={i}
-                  className="flex items-start justify-between gap-3 rounded-lg bg-popover border border-border px-3 py-2"
-                >
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium truncate">{b.buyer_name}</p>
-                    <p className="text-[10px] text-muted-foreground">
-                      {b.buyer_country}
-                      {b.signal_type && ` · ${b.signal_type}`}
-                      {b.risk_score != null && ` · risk ${b.risk_score}`}
-                    </p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    {b.unit_price_usd != null && (
-                      <p className="text-xs font-semibold text-[#4f8cff]">${b.unit_price_usd.toFixed(2)}</p>
-                    )}
-                    {b.estimated_order_value_usd != null && (
-                      <p className="text-[10px] text-muted-foreground">
-                        ${b.estimated_order_value_usd.toLocaleString()} order
+              {buyers.map((b, i) => {
+                const link = b.website ?? b.contact_url ?? null;
+                return (
+                  <div
+                    key={i}
+                    className="flex items-start justify-between gap-3 rounded-lg bg-popover border border-border px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium truncate flex items-center gap-1.5">
+                        {b.buyer_name}
+                        {b.source && (
+                          <Badge variant="outline" className="text-[9px] h-4 px-1.5 font-normal shrink-0">
+                            {b.source.replace("apify_", "⚡ ")}
+                          </Badge>
+                        )}
+                        {fitChip(b.fit_score)}
                       </p>
-                    )}
+                      <p className="text-[10px] text-muted-foreground">
+                        {b.buyer_country}
+                        {b.signal_type && ` · ${b.signal_type}`}
+                        {b.quantity != null && ` · ${b.quantity.toLocaleString()} ${b.quantity_unit ?? ""}`.trimEnd()}
+                        {b.shipments_12m != null && ` · ${b.shipments_12m} shipments/12m`}
+                        {b.risk_score != null && ` · risk ${b.risk_score}`}
+                        {link && (
+                          <>
+                            {" · "}
+                            <a href={link} target="_blank" rel="noopener noreferrer" className="text-[#4f8cff] hover:underline">
+                              {b.website ? "website" : "contact"}
+                            </a>
+                          </>
+                        )}
+                      </p>
+                      {b.pitch_angle && (
+                        <p className="text-[10px] text-muted-foreground/90 italic line-clamp-2" title={b.pitch_angle}>
+                          “{b.pitch_angle}”
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right shrink-0">
+                      {b.unit_price_usd != null && (
+                        <p className="text-xs font-semibold text-[#4f8cff]" title={b.price_unit ?? "unit price"}>
+                          ${b.unit_price_usd.toFixed(2)}
+                          {b.price_unit === "USD/MT" && <span className="text-[9px] font-normal">/MT</span>}
+                        </p>
+                      )}
+                      {b.estimated_order_value_usd != null && (
+                        <p className="text-[10px] text-muted-foreground">
+                          ${b.estimated_order_value_usd.toLocaleString()} order
+                        </p>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -209,6 +337,7 @@ function ArbitrageBar({ rank }: { rank: number }) {
 
 export function OpportunityRadar() {
   const { data, isLoading, isError, refetch } = useOpportunities();
+  const { data: sourcesInfo } = useTradeSources();
   const scan = useScanOpportunities();
   const createDeal = useCreateDeal();
   const [sortBy, setSortBy] = useState<"rank" | "market">("rank");
@@ -235,6 +364,14 @@ export function OpportunityRadar() {
   }
 
   async function handleStartDeal(opp: Opportunity) {
+    if (
+      opp.source === "simulated" &&
+      !window.confirm(
+        `Opportunity ${opp.opportunity_id} rests on SIMULATED demand numbers (no live Comtrade / Census / actor data for HS ${opp.hs_code} → ${opp.market}). The margin corridor will be a guess. Start the deal anyway?`
+      )
+    ) {
+      return;
+    }
     try {
       const deal = await createDeal.mutateAsync({
         operator_id: "OP-901",
@@ -252,10 +389,17 @@ export function OpportunityRadar() {
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-lg font-bold">Opportunity Radar</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Live arbitrage signals from Comtrade, US Census &amp; World Bank WITS
+            {sourcesInfo
+              ? `${sourcesInfo.live_count} of ${sourcesInfo.total} data sources reachable · ` +
+                (sourcesInfo.apify.token_present
+                  ? `Apify actors connected as ${sourcesInfo.apify.owner}` +
+                    (sourcesInfo.apify.ai_tier ? " (AI tier)" : " (rule tier)")
+                  : "APIFY_TOKEN not set — buyer/seller identification actors are skipped")
+              : "Live arbitrage signals from Comtrade, US Census, World Bank WITS and the PortLess Apify actors"}
+            {sourcesInfo?.mock_mode && " · TRADE_MIN_MOCK_MODE"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -329,6 +473,13 @@ export function OpportunityRadar() {
           );
         })}
       </div>
+
+      {/* Data sources — live / open / stub / mock, incl. the PortLess Apify actors (⚡) */}
+      {sourcesInfo && sourcesInfo.sources.length > 0 && (
+        <div className="rounded-xl border border-border bg-popover px-4 py-3">
+          <SourceChips sources={sourcesInfo.sources} />
+        </div>
+      )}
 
       {/* Sort */}
       <div className="flex items-center gap-2">
@@ -446,9 +597,19 @@ export function OpportunityRadar() {
                         </div>
                       </td>
                       <td className="px-4 py-3">
-                        <Badge variant="outline" className="text-[10px]">
-                          {opp.source ?? "trade-min"}
-                        </Badge>
+                        {opp.source === "simulated" ? (
+                          <Badge
+                            variant="destructive"
+                            className="text-[10px]"
+                            title="No live demand data — numbers are a deterministic simulation"
+                          >
+                            simulated
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px]">
+                            {(opp.source ?? "trade-min").replace("apify_", "⚡ ")}
+                          </Badge>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <ArbitrageBar rank={opp.arbitrage_rank} />

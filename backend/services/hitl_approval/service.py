@@ -44,7 +44,7 @@ from shared.bus import get_publisher
 from shared.domain.enums import ApprovalAction
 from shared.domain.events import DomainEvent, EventTopic
 
-from .callbacks import execute_callback, execute_reject_callback
+from .callbacks import SOFT_REJECT_ACTIONS, execute_callback, execute_reject_callback
 from .config import settings
 from .notification import notify
 from .repository import get_repository
@@ -62,11 +62,9 @@ _VALID_ACTIONS = {a.value for a in ApprovalAction}
 # Actions where a REJECT is a deliberate operator decision, not a deal
 # blocker — no DEAL_EXCEPTION event should be emitted for these.
 # CONFIRM_NEGOTIATION_AGREEMENT is soft: rejecting it means "keep negotiating"
-# (the session reopens via its reject callback), not a blocked deal.
-_SOFT_REJECT_ACTIONS = {
-    ApprovalAction.SEND_NEGOTIATION_EMAIL.value,
-    ApprovalAction.CONFIRM_NEGOTIATION_AGREEMENT.value,
-}
+# (the session reopens via its reject callback), not a blocked deal. The set is
+# owned by callbacks.py (every soft action has a reject handler there).
+_SOFT_REJECT_ACTIONS = SOFT_REJECT_ACTIONS
 
 
 # ---------------------------------------------------------------------------

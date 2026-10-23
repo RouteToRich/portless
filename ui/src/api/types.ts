@@ -23,6 +23,9 @@ export type DealStatus =
 
 export type AutonomyLevel = "L0" | "L1" | "L2" | "L3";
 
+export type EmailStatus = "ok" | "risky" | "invalid" | "unverified";
+export type SanctionsStatus = "clear" | "review" | "block" | "unchecked";
+
 export interface Party {
   party_id?: string | null;
   role: "buyer" | "supplier";
@@ -34,6 +37,65 @@ export interface Party {
   verification_status?: string | null;
   credit_status?: string | null;
   risk_score?: number | null;
+  // Contact — filled by the Apify company-contact-finder actor, the opportunity
+  // signal, or an operator edit (contact_source = "operator" is never overwritten).
+  email?: string | null;
+  website?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  contact_source?: string | null;
+  contact_confidence?: number | null;
+  email_status?: EmailStatus | string | null;
+  // Counterparty screening — Apify counterparty-check actor (OFAC/UN/EU/UK, LEI, VIES).
+  sanctions_status?: SanctionsStatus | string | null;
+  sanctions_reason?: string | null;
+  sanctions_checked_at?: string | null;
+  lei?: string | null;
+  vat_valid?: boolean | null;
+  enriched_at?: string | null;
+}
+
+// PATCH /deals/{id}/parties/{role} — operator correction of a counterparty.
+export interface UpdatePartyRequest {
+  legal_name?: string;
+  country?: string;
+  email?: string;
+  website?: string;
+  phone?: string;
+  address?: string;
+  gstin?: string;
+  iec?: string;
+  vat_number?: string;
+  verification_status?: string;
+}
+
+// POST /deals/{id}/enrich — Apify contact finder + sanctions screening result.
+export interface PartyEnrichment {
+  legal_name?: string | null;
+  country?: string | null;
+  email?: string | null;
+  email_status?: string | null;
+  website?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  vat_number?: string | null;
+  vat_valid?: boolean | null;
+  lei?: string | null;
+  contact_source?: string | null;
+  contact_confidence?: number | null;
+  sanctions_status?: string | null;
+  sanctions_reason?: string | null;
+  screening?: Record<string, unknown> | null;
+}
+
+export interface EnrichmentResult {
+  deal_id: string;
+  buyer?: PartyEnrichment | null;
+  supplier?: PartyEnrichment | null;
+  actors_used: string[];
+  warnings: string[];
+  blocked: boolean;
+  deal: Deal;
 }
 
 /** One seller candidate's Composite Match Score breakdown (Match Engine),
@@ -84,18 +146,42 @@ export interface SellerCandidate {
   source?: string | null;
   listing_url?: string | null;
   supplier_to_port_km?: number | null;
+  // Apify india-supplier actor: contact + credentials
+  email?: string | null;
+  phone?: string | null;
+  website?: string | null;
+  gstin?: string | null;
+  iec?: string | null;
+  fit_score?: number | null;
+  price_unit?: string | null;
 }
 
 export interface BuyerSignal {
   buyer_name: string;
   buyer_country: string;
+  company_id?: string | null;
   signal_type?: string | null;
   source?: string | null;
   unit_price_usd?: number | null;
+  price_unit?: string | null;
   estimated_order_value_usd?: number | null;
   annual_volume_mt?: number | null;
   risk_score?: number | null;
   urgency_tier?: number | null;
+  contact_url?: string | null;
+  // Apify buyer actors: contact + fit
+  website?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  fit_score?: number | null;
+  fit_reason?: string | null;
+  pitch_angle?: string | null;
+  quantity?: number | null;
+  quantity_unit?: string | null;
+  shipments_12m?: number | null;
+  hs_codes?: string[];
+  last_import_date?: string | null;
 }
 
 export interface TariffData {
@@ -128,6 +214,54 @@ export interface Opportunity {
   tariff_viable?: boolean | null;
   confidence_score?: number | null;
   expires_at?: string | null;
+  // What the destination market actually pays per MT (UN Comtrade unit value
+  // via the export-market actor) — the real buyer price anchor.
+  price_benchmark_usd_per_mt?: number | null;
+  price_benchmark_source?: string | null;
+}
+
+// GET /trade-min/sources — which demand / buyer / seller / enrichment sources
+// the scanner can reach right now (incl. the PortLess-owned Apify actors).
+export type SourceMode = "live" | "stub" | "mock" | "open";
+export type SourceRole = "demand" | "buyers" | "sellers" | "tariff" | "enrichment" | "screening";
+
+export interface TradeSource {
+  name: string;
+  label: string;
+  role: SourceRole | string;
+  provider: string;
+  actor?: string | null;
+  mode: SourceMode | string;
+  detail: string;
+}
+
+export interface TradeSourcesResponse {
+  mock_mode: boolean;
+  apify: { token_present: boolean; owner: string; ai_tier: boolean; max_items: number };
+  live_count: number;
+  total: number;
+  sources: TradeSource[];
+}
+
+// GET /health/readiness — production readiness gate (shared/readiness.py).
+export type ReadinessStatus = "ok" | "warn" | "fail";
+
+export interface ReadinessCheck {
+  id: string;
+  category: string;
+  label: string;
+  status: ReadinessStatus;
+  detail: string;
+}
+
+export interface ReadinessReport {
+  profile: "dev" | "staging" | "production" | string;
+  enforced: boolean;
+  ready: boolean;
+  fail_count: number;
+  warn_count: number;
+  generated_at: string;
+  checks: ReadinessCheck[];
 }
 
 export interface Approval {
@@ -366,14 +500,100 @@ export interface RunRoundRequest {
   party?: "buyer" | "supplier";
 }
 
-// Escrow, QC, Freight, Docugen
-export interface EscrowHold {
-  hold_id: string;
+// Escrow, QC, Freight, Docugen — mirror services/escrow_guard/schemas.py
+export type EscrowStatus =
+  | "PENDING"
+  | "PARTIALLY_FUNDED"
+  | "FUNDED"
+  | "RELEASED"
+  | "REFUNDED"
+  | "FAILED";
+export type TrancheTrigger = "PO_ISSUED" | "QC_PASSED" | "CLEARED" | "ACCEPTED";
+
+export interface Tranche {
+  tranche_id: string;
+  trigger: TrancheTrigger | string;
+  pct: number;
+  amount?: number | null;
+  status: "PENDING" | "RELEASED";
+  proof_refs: string[];
+  ext_ref?: string | null;
+  released_at?: string | null;
+}
+
+// GET /escrow-guard/deals/{id}/hold — EscrowResponse
+export interface EscrowRecord {
+  escrow_id: string;
   deal_id: string;
-  amount_usd: number;
-  status: "PENDING" | "FUNDED" | "RELEASED" | "REFUNDED";
-  stripe_payment_intent_id: string | null;
-  funded_at: string | null;
+  provider: string;
+  amount: number;
+  currency: string;
+  status: EscrowStatus | string;
+  ext_ref?: string | null;
+  client_secret?: string | null;
+  funded_at?: string | null;
+  funded_amount?: number | null;
+  created_at: string;
+  payment_method?: string | null;
+  checkout_url?: string | null;
+  released_total: number;
+  refunded_total: number;
+  fee_pct?: number | null;
+  fees_total: number;
+  shortfall?: number | null;
+  settled_at?: string | null;
+  tranches: Tranche[];
+  inspection_deadline?: string | null;
+  buyer_accepted_at?: string | null;
+  disputed: boolean;
+  disputed_at?: string | null;
+}
+
+export type PayoutKind = "supplier_payout" | "supplier_balance";
+
+// PayoutResponse
+export interface PayoutRecord {
+  payout_id: string;
+  deal_id: string;
+  payee_id: string;
+  amount: number;
+  currency: string;
+  status: "REQUESTED" | "PROCESSING" | "COMPLETED" | "FAILED" | string;
+  ext_ref?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  kind: PayoutKind | string;
+  total_owed?: number | null;
+}
+
+// GET /escrow-guard/deals/{id}/ledger and GET /escrow-guard/ledgers
+export interface DealLedger {
+  deal_id: string;
+  currency: string;
+  provider?: string | null;
+  escrow_id?: string | null;
+  status?: string | null;
+  principal: number;
+  funded_amount?: number | null;
+  shortfall?: number | null;
+  released_total: number;
+  refunded_total: number;
+  outstanding: number;
+  fees_total: number;
+  net_to_portless: number;
+  payouts_total: number;
+  payouts_pending: number;
+  available_for_payout: number;
+  supplier_owed?: number | null;
+  supplier_balance_due?: number | null;
+  realized_margin?: number | null;
+  tranches: Tranche[];
+  payouts: PayoutRecord[];
+  inspection_deadline?: string | null;
+  disputed: boolean;
+  settled: boolean;
+  reconciled: boolean;
+  issues: string[];
 }
 
 export interface QcRecord {

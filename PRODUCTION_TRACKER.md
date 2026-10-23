@@ -228,6 +228,111 @@ hosting.
 
 ---
 
+## ✅ Recently completed (2026-10-23) — identification on own Apify actors, money chain without gaps
+
+Full analysis: `needed/portless_automation_gap_analysis.md` §4.4 / §5; actor contracts: `needed/portless_apify_actors.md` §8.
+
+- [x] **Buyer / seller identification on PortLess-owned Apify actors**
+  (`shared/connectors/apify.py`, registry group 7): `export-market-finder-ai`
+  (Phase 1 demand + market unit value/MT → `price_benchmark_usd_per_mt`, the
+  real buyer price anchor — closes gap A-2 / P1-D1a for every market the actor
+  covers), `us-importer-finder-ai` + `alibaba-rfq-leads-ai` (Phase 2 named
+  buyers with contact + fit), `india-supplier-finder-ai` slot (Phase 4; actor
+  still to be generated), `company-contact-finder-ai` + `counterparty-check-ai`
+  + `email-list-qualifier-ai` (enrichment). `GET /trade-min/sources` shows what
+  is live. Seller prices normalised to USD/MT. `TRADE_MIN_MOCK_MODE` covers the
+  actors too. Unit tests pin stub mode (`tests/conftest.py`) so no paid run ever
+  starts from CI. → P1-D1 (partial), P1-D2 (per-source mode in the UI).
+- [x] **Counterparty enrichment + screening** (`shared/orchestration/enrichment.py`,
+  `Party.email/website/phone/email_status/sanctions_status/lei/vat_valid`):
+  runs at `deal.created` (before the RFQ gate; a `block` forces L0 + exception),
+  re-screens the buyer before the PI (`clear` → PI, `review` →
+  `CONFIRM_COUNTERPARTY_RISK` gate, `block` → PI withheld + exception), on demand
+  via `POST /deals/{id}/enrich`; operator corrections via
+  `PATCH /deals/{id}/parties/{role}` are never overwritten. → E-9 / E-10 /
+  E-2 / E-3 from the actor list; the negotiation agent's first e-mail now has a
+  real address instead of `@portless.placeholder`.
+- [x] **RFQ by e-mail** (`sourcing._dispatch_by_email`, `[RFQ:<id>]` token,
+  Email Processor `_handle_rfq_reply` → `receive_quote_by_email`): the last
+  manual data-entry stage (gap A-1 / P3-5) is closed for every supplier with an
+  address.
+- [x] **Escrow money chain without gaps** (`escrow_guard`): funding shortfall →
+  `PARTIALLY_FUNDED` (deal stays `ESCROW_PENDING`, buyer gets the balance
+  e-mail, exception raised) instead of a PO against missing money; replay-safe
+  webhooks (`event_id`) + Stripe 5-min signature window (P1-9 partial); tranches
+  release strictly in schedule order and never in `DISPUTE`/`CANCELLED`/
+  `REFUNDED`/`QC_FAILED`; provider fee % recorded and accrued per release;
+  `escrow.tranche_released` + `escrow.settled` events; `refund` refuses when
+  nothing is left. → P1-5 remaining items.
+- [x] **Supplier payout = released money only** (gap A-3): the CLEARED payout
+  gate is capped at `DealLedger.available_for_payout` (net released − payouts),
+  `total_owed` (PO value) travels in the payload, Escrow-Guard enforces the cap
+  again, a staged escrow is never flipped `RELEASED` by a payout, and the deal is
+  `PAID` only once completed payouts reach the PO value — the remainder follows
+  the final tranche as a `supplier_balance` payout gate (`on_payout_completed`,
+  `on_escrow_tranche_released`, `on_escrow_settled`). Realised margin = net
+  received − payouts (patched on every completion + settlement).
+- [x] **T4 handshake** (gap A-4): `inspection_window_open` e-mail when the
+  acceptance window opens; the buyer's "we accept the goods" →
+  `CONFIRM_BUYER_ACCEPTANCE` gate → `accept_escrow`; silence still auto-releases.
+- [x] **Ledger** (towards P1-6): `GET /escrow-guard/deals/{id}/ledger` +
+  `/ledgers` with principal / funded / shortfall / released / fees / net /
+  payouts (completed, pending) / available / supplier owed + balance / realised
+  margin, reconciliation issues incl. `payouts ≤ net received`.
+- [x] **Production readiness gate** (P1-1, `shared/readiness.py`,
+  `GET /health/readiness`, `ENV_PROFILE=production` refuses to boot on a
+  failing check). The monolith now also serves `/health/downstream`.
+- [x] UI: Payments tab (escrow, tranches, ledger, payouts, accept / dispute /
+  refund), party contact + screening on the deal Overview with edit + enrich,
+  Radar source chips + simulated badge + price benchmark, Money page escrow
+  ledgers, System Health readiness panel, money details on HITL cards.
+- [x] Tests: `test_apify_connector.py`, `test_enrichment.py`,
+  `test_escrow_money_chain.py`, `test_money_continuations.py`,
+  `test_readiness.py`.
+
+Still open from this pass: generate `india-supplier-finder-ai` with
+`/actor-pipeline` (spec in `needed/portless_apify_actors.md` §8.4); the Apify
+account plan must be able to run the source Store actors live (the BRONZE plan
+reports "plan cannot run Store Actors" — list/dataset modes work); four-eyes +
+double-entry ledger (P1-6 / P1-11) before raising `AUTONOMY_MONEY_CEILING`.
+
+## ✅ Recently completed (2026-10-19) — end-to-end automation legs
+
+Full analysis + remaining gaps: `needed/portless_automation_gap_analysis.md`.
+
+- [x] **Per-action autonomy policy** (`shared/orchestration/autonomy_policy.py`,
+  `GET/PUT /hitl-approval/autonomy-policy`, Autonomy Settings page now wired):
+  override → `AUTONOMY_<ACTION>` env → deal profile (PO/freight/customs/payout/
+  tranche) → default; `AUTONOMY_MONEY_CEILING` (default L1) caps payout +
+  tranche release. Negotiation email / agreement gates no longer hard-coded L0
+  (degraded drafts + first outbound still forced L0). → P3-9 (first cut).
+- [x] **Missing continuation legs** (`continuations.py`): `DEAL_CREATED`→RFQ
+  dispatch gate; `QUOTE_RECEIVED` (DISCARD/unscored)→`CONFIRM_SUPPLIER_SELECTION`;
+  `NEGOTIATION_FAILED`→exception + re-match gate; `QC_FAILED`→`DISPUTE` +
+  exception; `QC_PASSED`→document pack (P3-1c); `FREIGHT_BOOKED`→`FILE_CUSTOMS`
+  gate; `PO_ISSUED`/`QC_PASSED`/`CLEARED`→`RELEASE_ESCROW_TRANCHE` gates (P1-5
+  tranche automation); `PAYOUT_COMPLETED` close-out (P3-1e, notifications only);
+  `OPPORTUNITY_DETECTED`→deal (opt-in `AUTO_DEAL_FROM_OPPORTUNITY_ENABLED`,
+  simulated-source + duplicate guards — partial P1-D1a/P1-D4). → P3-1b done.
+- [x] **Counterparty notifications** (`notifications.py`): PI to buyer, escrow
+  funding instructions, PO to supplier, QC booking to supplier, shipment +
+  arrival to buyer, completion to both, reminders — templated, recorded in the
+  email history, `SEND_DEAL_NOTIFICATION` gate (default L2).
+- [x] **Buyer PI acceptance by email**: Email Processor maps post-agreement
+  replies (AGREED sessions), conservative acceptance guard →
+  `CONFIRM_PI_ACCEPTANCE` gate → `accept_pi()`; other replies →
+  `PARSE_INBOUND_EMAIL` (which was previously an *invalid* action — inbound
+  emails without a price silently produced no approval; fixed).
+- [x] **Deal SLA watcher** (`deal_watcher.py`): PI/escrow reminders, PI-expiry
+  and unfunded-escrow exceptions, generic stall exception past
+  `DEAL_STALL_SLA_HOURS`.
+- [x] `refund()` now transitions `DISPUTE` → `REFUNDED` (P1-5 refund leg).
+- [x] Tests: `test_autonomy_policy.py`, `test_notifications.py`,
+  `test_automation_continuations.py`, `test_email_processor_post_agreement.py`,
+  `test_deal_watcher.py` (77 new); suite otherwise unchanged.
+
+---
+
 ## ✅ Recently completed (2026-07-16 → 17) — context for what follows
 
 - [x] Top-5 buyer-selectable QC providers (SGS, QIMA, BV, Intertek, TÜV SÜD) in

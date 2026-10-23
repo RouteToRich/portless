@@ -51,6 +51,103 @@ function formatAction(action: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Money / risk actions carry the facts the operator is deciding on in the
+// saga callback payload — show them instead of making them read the summary.
+const DETAIL_ACTIONS = new Set([
+  "RELEASE_ESCROW_TRANCHE",
+  "RELEASE_SUPPLIER_PAYOUT",
+  "CONFIRM_COUNTERPARTY_RISK",
+  "CONFIRM_BUYER_ACCEPTANCE",
+]);
+
+function str(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  return typeof v === "number" ? String(v) : String(v);
+}
+
+function PayloadDetails({ action, payload }: { action: string; payload: Record<string, unknown> }) {
+  if (!DETAIL_ACTIONS.has(action)) return null;
+  const rows: { label: string; value: React.ReactNode }[] = [];
+  const num = (k: string) => (typeof payload[k] === "number" ? (payload[k] as number) : null);
+
+  if (action === "RELEASE_ESCROW_TRANCHE") {
+    rows.push({ label: "Escrow", value: <span className="font-mono">{str(payload.escrow_id) ?? "—"}</span> });
+    rows.push({
+      label: "Tranche",
+      value: `${str(payload.tranche_id) ?? "—"}${payload.trigger ? ` · on ${String(payload.trigger).replace(/_/g, " ")}` : ""}`,
+    });
+    const proofs = Array.isArray(payload.proof_refs) ? (payload.proof_refs as unknown[]).filter(Boolean) : [];
+    rows.push({
+      label: "Proof refs",
+      value: proofs.length ? (
+        <ul className="space-y-0.5">
+          {proofs.map((p, i) => <li key={i} className="font-mono break-all">{String(p)}</li>)}
+        </ul>
+      ) : (
+        <span className="text-[#f5a623]">none attached</span>
+      ),
+    });
+  }
+  if (action === "RELEASE_SUPPLIER_PAYOUT") {
+    const amount = num("amount");
+    const owed = num("total_owed");
+    rows.push({ label: "Payee", value: <span className="font-mono">{str(payload.payee_id) ?? "—"}</span> });
+    rows.push({
+      label: "Amount",
+      value: (
+        <span>
+          <span className="font-semibold">{amount != null ? fmtUSD(amount) : "—"}</span>
+          {owed != null && (
+            <span className="text-muted-foreground"> of {fmtUSD(owed)} owed</span>
+          )}
+          {amount != null && owed != null && amount + 0.01 < owed && (
+            <span className="text-[#f5a623]"> · partial (capped at funds released from escrow)</span>
+          )}
+        </span>
+      ),
+    });
+    rows.push({
+      label: "Kind",
+      value: payload.kind === "supplier_balance" ? "balance after final tranche" : "main supplier payout",
+    });
+  }
+  if (action === "CONFIRM_COUNTERPARTY_RISK") {
+    rows.push({ label: "Buyer", value: str(payload.buyer) ?? "—" });
+    rows.push({
+      label: "Screening",
+      value: <span className="text-[#f5a623]">{str(payload.screening_reason) ?? "review — see deal parties"}</span>,
+    });
+    const price = num("agreed_price");
+    const qty = num("quantity_mt");
+    rows.push({
+      label: "PI to issue",
+      value: price != null ? `${fmtUSD(price)}/MT${qty != null ? ` × ${qty} MT = ${fmtUSD(price * qty)}` : ""}` : "—",
+    });
+  }
+  if (action === "CONFIRM_BUYER_ACCEPTANCE") {
+    rows.push({ label: "Escrow", value: <span className="font-mono">{str(payload.escrow_id) ?? "—"}</span> });
+    rows.push({ label: "Accepted by", value: str(payload.accepted_by) ?? "—" });
+    rows.push({ label: "Effect", value: "releases the final ACCEPTED-trigger tranche to PortLess" });
+  }
+
+  if (rows.length === 0) return null;
+  return (
+    <div className="rounded-lg bg-secondary border border-border p-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
+        Details
+      </p>
+      <dl className="space-y-1 text-xs">
+        {rows.map((r) => (
+          <div key={r.label} className="grid grid-cols-[88px_1fr] gap-2">
+            <dt className="text-muted-foreground">{r.label}</dt>
+            <dd className="min-w-0 break-words">{r.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 interface HitlApprovalCardProps {
   approval: ApprovalRecord;
   onResolved?: () => void;
@@ -190,6 +287,9 @@ export function HitlApprovalCard({
                 </div>
               )}
             </div>
+
+            {/* Money / risk action details from the saga payload */}
+            <PayloadDetails action={approval.action} payload={approval.callback_payload ?? {}} />
 
             {/* Risk flags */}
             {approval.risk_flags.length > 0 && (

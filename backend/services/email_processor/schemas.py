@@ -97,12 +97,20 @@ class InboundRawEmail(BaseModel):
 
 class MappingResult(BaseModel):
     negotiation_id: str | None = None
+    rfq_id: str | None = None
+    """Set when the e-mail is a supplier's reply to an ``[RFQ:<id>]`` request
+    (sourcing stage) rather than a negotiation round."""
     party: str | None = None
     """'buyer' | 'supplier' — derived from which party was addressed in the outbound email."""
     confidence: MappingConfidence
     candidates: list[str] = Field(default_factory=list)
     """Populated when confidence=AMBIGUOUS."""
     reason: str = ""
+    session_status: str | None = None
+    """``"AGREED"`` when the mapped session is already closed, i.e. this is a
+    post-agreement reply (the buyer answering the Proforma Invoice email, the
+    supplier acknowledging the PO) — the processor routes it to the deal-stage
+    handler instead of ``run_round()``. None for a live negotiation."""
 
 
 # ---------------------------------------------------------------------------
