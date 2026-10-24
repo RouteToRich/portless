@@ -7,6 +7,7 @@ from shared.auth.dependencies import AuthUser, get_current_user, require_org_sco
 
 from . import service
 from .schemas import (
+    BuyerCandidate,
     CreateDealRequest,
     DealRecord,
     DealStatus,
@@ -190,6 +191,93 @@ async def enrich_deal(
     except DealNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return EnrichmentResult(**result)
+
+
+# ---------------------------------------------------------------------------
+# Timeline + evidence pack
+# ---------------------------------------------------------------------------
+
+@router.get("/{deal_id}/timeline")
+async def deal_timeline(
+    deal_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> dict:
+    """Every dated fact of the deal from every service, merged and sorted."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration.evidence import build_timeline
+    try:
+        return await build_timeline(deal_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/{deal_id}/evidence-pack")
+async def deal_evidence_pack(
+    deal_id: str,
+    format: str = "json",
+    user: AuthUser = Depends(get_current_user),
+):
+    """Hand-over pack: deal, parties, PI/PO, document hashes, orders, ledger +
+    double-entry journal, approvals, exceptions, correspondence, timeline — with
+    a SHA-256 over the whole pack. ``?format=html`` renders a printable page."""
+    await _org_deal(deal_id, user)
+    from fastapi.responses import HTMLResponse
+    from shared.orchestration.evidence import build_evidence_pack, render_evidence_html
+    try:
+        pack = await build_evidence_pack(deal_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if format == "html":
+        return HTMLResponse(render_evidence_html(pack))
+    return pack
+
+
+# ---------------------------------------------------------------------------
+# Buyer outreach funnel
+# ---------------------------------------------------------------------------
+
+@router.post("/{deal_id}/buyer-candidates", response_model=DealRecord, status_code=status.HTTP_201_CREATED)
+async def add_buyer_candidate(
+    deal_id: str,
+    candidate: BuyerCandidate,
+    user: AuthUser = Depends(get_current_user),
+) -> DealRecord:
+    """Add a buyer to the deal's outreach funnel (operator-sourced lead)."""
+    await _org_deal(deal_id, user)
+    try:
+        return await service.add_buyer_candidate(deal_id, candidate)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/{deal_id}/outreach/start", response_model=dict)
+async def start_outreach(
+    deal_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> dict:
+    """Contact the next pending buyer candidate(s) now (gated by SEND_BUYER_OUTREACH)."""
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import outreach
+    sent = await outreach.start_outreach(deal)
+    return {"deal_id": deal_id, "contacted": sent, "waiting_for_buyer": outreach.waiting_for_buyer(deal)}
+
+
+@router.post("/{deal_id}/buyer-candidates/{candidate_id}/skip", response_model=dict)
+async def skip_buyer_candidate(
+    deal_id: str,
+    candidate_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> dict:
+    """Operator drops a candidate; the funnel moves to the next one."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import outreach
+    try:
+        result = await outreach.skip_candidate(deal_id, candidate_id, "skipped by operator")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return {"deal_id": deal_id, "candidate_id": candidate_id, **result}
 
 
 # ---------------------------------------------------------------------------

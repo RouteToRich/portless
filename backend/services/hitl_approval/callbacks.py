@@ -72,9 +72,38 @@ async def _cb_file_customs(deal_id: str, payload: dict[str, Any]) -> dict | None
 
 
 async def _cb_resolve_exception(deal_id: str, payload: dict[str, Any]) -> dict | None:
-    """Continue: resolve a deal exception after HITL approval."""
+    """Continue: resolve a deal exception after HITL approval.
+
+    When the approval carries a ``playbook`` the operator approved a concrete
+    remediation and it runs here; otherwise the approval is the operator's
+    acknowledgement and the exception resolver's plan is theirs to execute."""
+    playbook = payload.get("playbook")
+    if playbook == "cancel_unfunded":
+        from shared.orchestration.playbooks import cancel_unfunded_deal
+        return await cancel_unfunded_deal(deal_id, reason=payload.get("reason") or "unfunded past grace period")
+    if playbook == "reinspect":
+        from shared.orchestration.playbooks import book_reinspection
+        return await book_reinspection(deal_id, reason=payload.get("reason") or "operator approved re-inspection")
     logger.info("HITL: RESOLVE_EXCEPTION approved for deal %s — payload: %s", deal_id, payload)
     return {"action": "RESOLVE_EXCEPTION", "deal_id": deal_id}
+
+
+async def _cb_send_buyer_outreach(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Send the templated buyer introduction / follow-up (buyer funnel)."""
+    from shared.orchestration.outreach import send_outreach
+
+    return await send_outreach(
+        deal_id, payload["candidate_id"], payload["to_address"],
+        payload.get("modified_body") and payload["subject"] or payload["subject"],
+        payload.get("modified_body") or payload["body"], kind=payload.get("kind", "intro"),
+    )
+
+
+async def _rcb_send_buyer_outreach(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Operator declined to contact this buyer → skip to the next candidate."""
+    from shared.orchestration.outreach import skip_candidate
+
+    return await skip_candidate(deal_id, payload["candidate_id"], "operator declined outreach")
 
 
 async def _cb_send_negotiation_email(deal_id: str, payload: dict[str, Any]) -> dict | None:
@@ -298,6 +327,7 @@ _CALLBACK_MAP = {
     "PARSE_INBOUND_EMAIL": _cb_parse_inbound_email,
     "CONFIRM_COUNTERPARTY_RISK": _cb_confirm_counterparty_risk,
     "CONFIRM_BUYER_ACCEPTANCE": _cb_confirm_buyer_acceptance,
+    "SEND_BUYER_OUTREACH": _cb_send_buyer_outreach,
 }
 
 
@@ -365,6 +395,8 @@ _REJECT_CALLBACK_MAP = {
     "PARSE_INBOUND_EMAIL": _rcb_log_only,
     # "Not actually an acceptance" — the inspection window keeps running.
     "CONFIRM_BUYER_ACCEPTANCE": _rcb_log_only,
+    # Operator does not want this buyer contacted — move to the next candidate.
+    "SEND_BUYER_OUTREACH": _rcb_send_buyer_outreach,
 }
 
 SOFT_REJECT_ACTIONS: frozenset[str] = frozenset(_REJECT_CALLBACK_MAP)

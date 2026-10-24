@@ -302,8 +302,69 @@ def _tpl_deal_settled(ctx: dict[str, Any]) -> tuple[str, str]:
     return subject, body
 
 
+def _tpl_po_reminder(ctx: dict[str, Any]) -> tuple[str, str]:
+    subject = f"Reminder: please confirm Purchase Order — deal {ctx['deal_id']}"
+    body = (
+        f"Dear {ctx.get('supplier_name') or 'Supplier'},\n\n"
+        f"We have not yet received your confirmation of our Purchase Order"
+        + (f" {ctx['po_id']}" if ctx.get("po_id") else "")
+        + f" for deal {ctx['deal_id']}. The escrow for this order is funded, so production can "
+        "start immediately.\n\nPlease reply with your confirmation and the expected ready-for-"
+        "inspection date so we can schedule the pre-shipment inspection."
+        + _signature()
+    )
+    return subject, body
+
+
+def _tpl_qc_readiness_reminder(ctx: dict[str, Any]) -> tuple[str, str]:
+    subject = f"Reminder: pre-shipment inspection pending — deal {ctx['deal_id']}"
+    body = (
+        f"Dear {ctx.get('supplier_name') or 'Supplier'},\n\n"
+        f"The pre-shipment inspection for deal {ctx['deal_id']} has not been completed yet. "
+        "Please confirm the lot is packed, labelled and ready for sampling, or tell us the date "
+        "it will be, so the inspector can attend. The next escrow release depends on a clean "
+        "inspection report."
+        + _signature()
+    )
+    return subject, body
+
+
+def _tpl_qc_rework_notice(ctx: dict[str, Any]) -> tuple[str, str]:
+    subject = f"Inspection failed — rework and re-inspection for deal {ctx['deal_id']}"
+    body = (
+        f"Dear {ctx.get('supplier_name') or 'Supplier'},\n\n"
+        f"The pre-shipment inspection for deal {ctx['deal_id']} did not pass"
+        + (f": {ctx['notes']}" if ctx.get("notes") else "")
+        + ".\n\nPlease rework the lot to the agreed specification. A re-inspection has been booked"
+        + (f" (reference {ctx['ext_ref']})" if ctx.get("ext_ref") else "")
+        + "; confirm the date the reworked lot will be ready. No escrow tranche is released "
+        "until a clean report is issued."
+        + _signature()
+    )
+    return subject, body
+
+
+def _tpl_deal_cancelled(ctx: dict[str, Any]) -> tuple[str, str]:
+    subject = f"Order cancelled — deal {ctx['deal_id']}"
+    body = (
+        f"Dear {ctx.get('name') or 'Partner'},\n\n"
+        f"The order under deal {ctx['deal_id']} has been cancelled"
+        + (f": {ctx['reason']}" if ctx.get("reason") else "")
+        + "."
+        + (f" The {_fmt_money(ctx['refunded'], ctx.get('currency', 'USD'))} held in escrow is being refunded "
+           "to your account." if ctx.get("refunded") else "")
+        + "\n\nWe would be glad to work with you on a future order."
+        + _signature()
+    )
+    return subject, body
+
+
 _TEMPLATES = {
     "pi_issued": _tpl_pi_issued,
+    "qc_rework_notice": _tpl_qc_rework_notice,
+    "deal_cancelled": _tpl_deal_cancelled,
+    "po_reminder": _tpl_po_reminder,
+    "qc_readiness_reminder": _tpl_qc_readiness_reminder,
     "funding_shortfall": _tpl_funding_shortfall,
     "inspection_window_open": _tpl_inspection_window_open,
     "deal_settled": _tpl_deal_settled,
@@ -546,6 +607,51 @@ async def notify_deal_settled(deal: Any, balance_due: float | None, currency: st
         if eid:
             sent.append(eid)
     return sent
+
+
+async def notify_qc_rework(deal: Any, notes: str | None, ext_ref: str | None, attempt: int) -> str | None:
+    return await notify_party(
+        deal.deal_id, "supplier", "qc_rework_notice",
+        {"notes": notes, "ext_ref": ext_ref, "supplier_name": _party_name(deal, "supplier")},
+        suffix=f"a{attempt}", deal=deal,
+    )
+
+
+async def notify_deal_cancelled(deal: Any, reason: str, refunded: float | None, currency: str = "USD") -> list[str]:
+    sent: list[str] = []
+    for party in ("buyer", "supplier"):
+        eid = await notify_party(
+            deal.deal_id, party, "deal_cancelled",
+            {"name": _party_name(deal, party), "reason": reason,
+             "refunded": refunded if party == "buyer" else None, "currency": currency},
+            suffix=party, deal=deal,
+        )
+        if eid:
+            sent.append(eid)
+    return sent
+
+
+async def notify_po_reminder(deal: Any, reminder_no: int) -> str | None:
+    po_id = None
+    try:
+        from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
+        po = await _dm_repo().get_po_by_deal(deal.deal_id)
+        po_id = po.po_id if po else None
+    except Exception:  # noqa: BLE001
+        pass
+    return await notify_party(
+        deal.deal_id, "supplier", "po_reminder",
+        {"po_id": po_id, "supplier_name": _party_name(deal, "supplier")},
+        suffix=f"r{reminder_no}", deal=deal,
+    )
+
+
+async def notify_qc_readiness_reminder(deal: Any, reminder_no: int) -> str | None:
+    return await notify_party(
+        deal.deal_id, "supplier", "qc_readiness_reminder",
+        {"supplier_name": _party_name(deal, "supplier")},
+        suffix=f"r{reminder_no}", deal=deal,
+    )
 
 
 async def notify_pi_reminder(deal: Any, pi: Any, reminder_no: int) -> str | None:

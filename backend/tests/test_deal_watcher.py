@@ -126,12 +126,12 @@ class TestEscrowPending:
 class TestGenericStall:
     @pytest.mark.asyncio
     async def test_stalled_status_past_sla(self, wiring):
-        await wiring.repo.save(_deal("D3", DealStatus.SUPPLIER_DISPATCH_READY, 24 * 8))
+        await wiring.repo.save(_deal("D3", DealStatus.QC_PASSED, 24 * 8))
         await wiring.repo.save(_deal("D4", DealStatus.IN_TRANSIT, 24 * 2))
         counts = await dw.sweep_stalled_deals(NOW)
         assert counts["scanned"] == 2 and counts["exceptions"] == 1
         assert wiring.published[0].deal_id == "D3"
-        assert wiring.published[0].payload["stage"] == "SUPPLIER_DISPATCH_READY:stalled"
+        assert wiring.published[0].payload["stage"] == "QC_PASSED:stalled"
 
     @pytest.mark.asyncio
     async def test_skips_terminal_negotiating_and_draft(self, wiring):

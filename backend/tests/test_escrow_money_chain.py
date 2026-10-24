@@ -154,7 +154,9 @@ class TestTrancheOrderAndSettlement:
                 await release_tranche(esc.escrow_id, ReleaseTrancheRequest(tranche_id="T1"))
 
     @pytest.mark.asyncio
-    async def test_fees_window_and_settlement(self, emitted):
+    async def test_fees_window_and_settlement(self, emitted, monkeypatch):
+        from services.escrow_guard.service import settings as eg_settings
+        monkeypatch.setattr(eg_settings, "inspection_window_trigger", "proof")
         esc = await _open()
         await _fund(esc)
         for tid in ("T1", "T2"):

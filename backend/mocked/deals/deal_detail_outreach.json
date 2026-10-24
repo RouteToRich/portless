@@ -1,0 +1,121 @@
+{
+  "_note": "GET /deals/{id} — a MATCHING deal whose buyer outreach funnel is open (buyer_candidates); the negotiation waits for an interested reply.",
+  "deal_id": "DEAL-20261024-OUT",
+  "operator_id": "system:auto-deal",
+  "org_id": "portless",
+  "hs_code": "090411",
+  "market": "DE",
+  "status": "MATCHING",
+  "autonomy_profile": "L0",
+  "opportunity_id": "OPP-7F3A9C2E1B4D",
+  "buyer_target_price_usd": 6250.0,
+  "buyer_price_source": "comtrade_unit_value",
+  "quantity_mt": 20.0,
+  "margin_floor_pct": 8.0,
+  "est_margin_usd": 9800.0,
+  "realized_margin_usd": null,
+  "winning_supplier_id": null,
+  "winning_cms": null,
+  "match_results": [],
+  "buyer_candidates": [
+    {
+      "candidate_id": "us-imp-0412",
+      "legal_name": "Hansa Gewürzhandel GmbH",
+      "country": "DE",
+      "email": "einkauf@hansa-gewuerz.de",
+      "website": "hansa-gewuerz.de",
+      "phone": "+49 40 555 0192",
+      "source": "apify:alibaba-rfq-leads-ai",
+      "fit_score": 84,
+      "pitch_angle": "Posted an RFQ for 20 MT black pepper 550 g/l last week; currently buying Vietnamese origin.",
+      "quantity_mt": 20.0,
+      "status": "followed_up",
+      "contacted_at": "2026-10-16T08:05:00Z",
+      "followed_up_at": "2026-10-19T08:10:00Z",
+      "replied_at": null,
+      "reply_preview": null,
+      "email_id": "OUTIDEAL20261024OUTUSIMP0412"
+    },
+    {
+      "candidate_id": "rfq-88213",
+      "legal_name": "Nordsee Food Ingredients AG",
+      "country": "DE",
+      "email": "sourcing@nordsee-ingredients.de",
+      "website": "nordsee-ingredients.de",
+      "phone": null,
+      "source": "apify:us-importer-finder-ai",
+      "fit_score": 77,
+      "pitch_angle": "Imports 180 MT/yr of spices from Asia; three shipments of pepper in the last 12 months.",
+      "quantity_mt": 40.0,
+      "status": "contacted",
+      "contacted_at": "2026-10-22T07:30:00Z",
+      "followed_up_at": null,
+      "replied_at": null,
+      "reply_preview": null,
+      "email_id": "OUTIDEAL20261024OUTRFQ88213"
+    },
+    {
+      "candidate_id": "rfq-88402",
+      "legal_name": "Bremer Spice Works",
+      "country": "DE",
+      "email": null,
+      "website": "bremer-spice.de",
+      "phone": null,
+      "source": "apify:alibaba-rfq-leads-ai",
+      "fit_score": 61,
+      "pitch_angle": "Asked for ASTA-grade pepper, FOB Kochi, in an open buying request.",
+      "quantity_mt": 10.0,
+      "status": "pending",
+      "contacted_at": null,
+      "followed_up_at": null,
+      "replied_at": null,
+      "reply_preview": null,
+      "email_id": null
+    },
+    {
+      "candidate_id": "op-mkt-1",
+      "legal_name": "Kölner Feinkost Import",
+      "country": "DE",
+      "email": "buy@koelner-feinkost.de",
+      "website": null,
+      "phone": null,
+      "source": "operator",
+      "fit_score": null,
+      "pitch_angle": null,
+      "quantity_mt": null,
+      "status": "declined",
+      "contacted_at": "2026-10-10T09:00:00Z",
+      "followed_up_at": null,
+      "replied_at": "2026-10-11T14:22:00Z",
+      "reply_preview": "Thanks, but we are not buying pepper this season.",
+      "email_id": "OUTIDEAL20261024OUTOPMKT1"
+    }
+  ],
+  "parties": [
+    {
+      "role": "supplier",
+      "legal_name": "Krishna Spices & Agro",
+      "country": "IN",
+      "gstin": "36AABCK1234F1Z5",
+      "iec": "0514012345",
+      "email": "krishna@krishnaspices.in",
+      "contact_source": "apify:india-supplier-finder-ai",
+      "email_status": "ok",
+      "sanctions_status": "clear"
+    }
+  ],
+  "status_history": [
+    {
+      "status": "DRAFT",
+      "transitioned_at": "2026-10-10T08:00:00Z",
+      "reason": "created from opportunity"
+    },
+    {
+      "status": "MATCHING",
+      "transitioned_at": "2026-10-10T08:00:05Z",
+      "reason": "scored via Match Engine"
+    }
+  ],
+  "created_at": "2026-10-10T08:00:00Z",
+  "updated_at": "2026-10-22T07:30:00Z"
+}

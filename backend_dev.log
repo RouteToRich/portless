@@ -1,296 +1,54 @@
-﻿python : C:\WBG\Python313\Lib\site-packages\langgraph\cache\base\__init__.py:8: LangChainPendingDeprecationWarning: 
-The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., 
-allowed_objects='messages' or allowed_objects='core') to suppress this warning.
-At line:1 char:381
-+ ... portless\backend"; python -m uvicorn app:app --port 8081 2>&1 | Tee-O ...
-+                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (C:\WBG\Python31...s this warning.:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
+INFO:     Will watch for changes in these directories: ['C:\\workArea\\pandian\\RouteToRich\\portless\\backend']
+INFO:     Uvicorn running on http://127.0.0.1:8081 (Press CTRL+C to quit)
+INFO:     Started reloader process [1864] using WatchFiles
+C:\Users\sunda\AppData\Roaming\Python\Python313\site-packages\langgraph\cache\base\__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
   from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-INFO:     Started server process [42136]
+INFO:     Started server process [22600]
 INFO:     Waiting for application startup.
-Trade-Min MongoDB connection failed: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
-connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
-5000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
-5000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms), Timeout: 5.0s, 
-Topology Description: <TopologyDescription id: 6a6b3c7bf6942d9a66e9f13e, topology_type: ReplicaSetNoPrimary, servers: 
-[<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>]> — 
-falling back to in-memory storage
-Cache: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
-connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
-5000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
-5000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms), Timeout: 5.0s, 
-Topology Description: <TopologyDescription id: 6a6b3c82f6942d9a66e9f13f, topology_type: ReplicaSetNoPrimary, servers: 
-[<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>]>) 
-— using in-memory backend.
-Deals MongoDB connection failed — falling back to in-memory store: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: 
-[WinError 10054] An existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 
-20000.0ms, connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing 
-connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-5.0s, Topology Description: <TopologyDescription id: 6a6b3c87f6942d9a66e9f140, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
-Sourcing MongoDB connection failed — falling back to in-memory store: 
-ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly closed by the 
-remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-5.0s, Topology Description: <TopologyDescription id: 6a6b3c8df6942d9a66e9f141, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
-Mongo init failed — falling back to in-memory: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An 
-existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, 
-connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
-was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-30s, Topology Description: <TopologyDescription id: 6a6b3c92f6942d9a66e9f142, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
-Mongo email history init failed — falling back to in-memory: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: 
-[WinError 10054] An existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 
-20000.0ms, connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing 
-connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-30s, Topology Description: <TopologyDescription id: 6a6b3cb1f6942d9a66e9f143, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
+Readiness[dev] FAIL — MongoDB configured: MONGO_URI unset — every service runs on an in-memory store (data lost on restart)
+Readiness[dev] warn — Durable event bus (NATS JetStream): in-process bus — an event published during a crash is lost (deal watcher catches the stall later)
+Readiness[dev] FAIL — Neutral escrow provider (Tazapay / Escrow.com): no escrow credentials — create_escrow returns a stub and the funding link in the buyer e-mail is fake
+Readiness[dev] FAIL — Money webhook signatures enforced: escrow-funded / payout webhooks are accepted unsigned when their *_WEBHOOK_SECRET is unset
+Readiness[dev] FAIL — Supplier payout rail (Payoneer): PAYONEER_CLIENT_ID unset — supplier payouts are stubbed (no money moves)
+Readiness[dev] warn — Apify actors (buyer/seller identification + screening): APIFY_TOKEN unset — no named buyers / supplier contacts / sanctions screening; parties stay unchecked
+Readiness[dev] warn — Carrier tracking (delivery → acceptance window): no carrier-tracking actor — the acceptance window opens by operator entry or 21 days after clearance (INSPECTION_WINDOW_FALLBACK_DAYS)
+Readiness[dev] warn — Apify daily run budget: APIFY_MAX_RUNS_PER_DAY unset — nothing caps actor spend if a schedule misfires
+Readiness[dev] warn — Product catalogue / corridors: catalogue empty — the scanner runs the built-in sample HS codes / markets (PUT /trade-min/catalogue)
+Readiness[dev] FAIL — Live demand data (Comtrade / Census): no Comtrade / Census key and no Apify token — opportunities fall back to simulated demand numbers
+Readiness[dev] FAIL — Outbound e-mail configured: GMAIL_SENDER_ADDRESS/GMAIL_APP_PASSWORD unset — every PI, PO and negotiation e-mail is log-only
+Readiness[dev] warn — Inbound e-mail polling configured: IMAP_USER unset — counterparty replies must be pasted in by hand
+Readiness[dev] warn — Own sending domain: sender is not on PORTLESS_EMAIL_DOMAIN — buyers see a personal mailbox (deliverability / trust)
+Readiness[dev] warn — Google Drive document store: GOOGLE_DRIVE_* unset — documents land on local disk (lost with the container)
+Readiness[dev] FAIL — Exporter identity on PI/PO (IEC + GSTIN): DEALMAKER_PORTLESS_ENTITY_IEC / _GSTIN unset — the PI/PO carry a placeholder exporter identity
+Readiness[dev] warn — QC inspection provider: no inspector API key — QC bookings are stubs; the deal waits at SUPPLIER_DISPATCH_READY for a manual result
+Readiness[dev] warn — Freight forwarder: no Cogoport / Freightos key — bookings are stubs and no ARRIVED milestone ever arrives
+Readiness[dev] warn — Customs filing (ICEGATE): ICEGATE_API_KEY unset — the Shipping Bill / LEO is a stub
+Readiness[dev] warn — LLM gateway key: no LLM key — negotiation e-mails are degraded templates (always L0) and the resolver escalates everything
+Readiness[dev]: NOT production-ready — 7 failing check(s); the pipeline runs on stubs/fallbacks (GET /health/readiness)
+TRADE_MONGO_URI is not set — Trade-Min running with in-memory storage. Opportunities will be lost on process restart. Set TRADE_MONGO_URI in backend/.env for durable persistence.
+DEALS_MONGO_URI not set — Deals service falling back to in-memory store. Data will not survive a process restart.
+SOURCING_MONGO_URI not set — Sourcing service falling back to in-memory store. Data will not survive a process restart.
 Seeding 5 mock negotiation scenarios...
 Mock negotiation seed complete (5 sessions, 15 emails)
-DealMaker: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
-connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-5.0s, Topology Description: <TopologyDescription id: 6a6b3ccff6942d9a66e9f144, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms)')>]>) — falling back to in-memory store.
-DocuGen: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
-connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-5.0s, Topology Description: <TopologyDescription id: 6a6b3cd5f6942d9a66e9f145, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms)')>]>) — falling back to in-memory store.
-ShieldLink: MongoDB failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
-was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-5.0s, Topology Description: <TopologyDescription id: 6a6b3cdaf6942d9a66e9f146, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms)')>]>) — in-memory fallback
-EscrowGuard: MongoDB failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
-was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-5.0s, Topology Description: <TopologyDescription id: 6a6b3ce0f6942d9a66e9f147, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms)')>]>) — in-memory fallback
-HitlApproval: MongoDB failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
-connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-5.0s, Topology Description: <TopologyDescription id: 6a6b3ce5f6942d9a66e9f148, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms)')>]>) — in-memory fallback
-ExceptionResolver: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An 
-existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, 
-connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
-was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-5.0s, Topology Description: <TopologyDescription id: 6a6b3ceaf6942d9a66e9f149, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms)')>]>) — falling back to in-memory store.
-Auth: MongoDB connection failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
-connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-5.0s, Topology Description: <TopologyDescription id: 6a6b3cf0f6942d9a66e9f14a, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms)')>]>) — falling back to in-memory.
-RAG module startup index check failed: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing 
-connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
-5000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
-5000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms), Timeout: 5.0s, 
-Topology Description: <TopologyDescription id: 6a6b3cf6f6942d9a66e9f14b, topology_type: ReplicaSetNoPrimary, servers: 
-[<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>]>
-RAG module graph-store index check failed: ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An 
-existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, 
-connectTimeoutMS: 5000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
-was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 
-5000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms), Timeout: 5.0s, 
-Topology Description: <TopologyDescription id: 6a6b3cfbf6942d9a66e9f14c, topology_type: ReplicaSetNoPrimary, servers: 
-[<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>]>
-EmailProcessor: MongoDB index creation failed (ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An 
-existing connection was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, 
-connectTimeoutMS: 20000.0ms),ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection 
-was forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms),ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was forcibly 
-closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 
-30s, Topology Description: <TopologyDescription id: 6a6b3d01f6942d9a66e9f14d, topology_type: ReplicaSetNoPrimary, 
-servers: [<ServerDescription ('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-00.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-01.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, 
-<ServerDescription ('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net', 27017) server_type: Unknown, rtt: None, 
-error=AutoReconnect('ac-9wgwq6q-shard-00-02.taios8r.mongodb.net:27017: [WinError 10054] An existing connection was 
-forcibly closed by the remote host (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 
-20000.0ms)')>]>) — using in-memory fallback
+DEALMAKER_MONGO_URI not set — DealMaker falling back to in-memory store. Data will not survive a process restart.
+DOCUGEN_MONGO_URI not set — DocuGen falling back to in-memory store. Data will not survive a process restart.
+SHIELD_LINK_MONGO_URI not set — using in-memory fallback
+ESCROW_GUARD_MONGO_URI not set — using in-memory fallback
+HITL_APPROVAL_MONGO_URI not set — using in-memory fallback
+EXCEPTION_RESOLVER_MONGO_URI not set — falling back to in-memory store. Data will not survive a process restart.
+Neither AUTH_MONGO_URI nor MONGO_URI is set — Auth falling back to in-memory user/organization store. Data will not survive a restart.
+C:\Users\sunda\AppData\Roaming\Python\Python313\site-packages\pymongo\client_options.py:36: UserWarning: Failed to use the installed version of PyOpenSSL. Falling back to stdlib ssl, disabling OCSP support. This is likely caused by incompatible versions of PyOpenSSL < 23.2.0 and cryptography >= 42.0.0. Try updating PyOpenSSL >= 23.2.0 to enable OCSP.
+  from pymongo.ssl_support import get_ssl_context
+RAG module startup index check failed: module 'lib' has no attribute 'GEN_EMAIL'
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8081 (Press CTRL+C to quit)
-INFO:     127.0.0.1:50320 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55757 - "OPTIONS /hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
-C:\WBG\Python313\Lib\site-packages\jwt\api_jwt.py:371: InsecureKeyLengthWarning: The HMAC key is 29 bytes long, which 
-is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
-  decoded = self.decode_complete(
-INFO:     127.0.0.1:55757 - "GET /hitl-approval/approvals?status=PENDING HTTP/1.1" 401 Unauthorized
-ImapPoller[shared]: fetch error (attempt 1, retrying in 60s): 
-INFO:     127.0.0.1:60593 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60595 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54318 - "OPTIONS /auth/login HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54318 - "POST /auth/login HTTP/1.1" 401 Unauthorized
-INFO:     127.0.0.1:63223 - "POST /auth/login HTTP/1.1" 401 Unauthorized
-ImapPoller[shared]: fetch error (attempt 2, retrying in 120s): 
+INFO:     127.0.0.1:62222 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62224 - "POST /auth/register HTTP/1.1" 201 Created
+INFO:     127.0.0.1:62227 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62227 - "POST /auth/register HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:62227 - "POST /auth/login HTTP/1.1" 200 OK
+StaleWatcher: negotiation NEG-STEEL-001 (deal DEAL-2024-STEEL-001) marked FAILED after cooling period (round_no=2, idle past threshold)
+Could not sync deal DEAL-2024-STEEL-001 to NEGOTIATION_FAILED from negotiation NEG-STEEL-001: Deal 'DEAL-2024-STEEL-001' not found
+StaleWatcher: negotiation NEG-TEX-002 (deal DEAL-2024-TEX-002) marked FAILED after cooling period (round_no=1, idle past threshold)
+Could not sync deal DEAL-2024-TEX-002 to NEGOTIATION_FAILED from negotiation NEG-TEX-002: Deal 'DEAL-2024-TEX-002' not found
+WARNING:  WatchFiles detected changes in 'services\trade_min\service.py'. Reloading...
+ 

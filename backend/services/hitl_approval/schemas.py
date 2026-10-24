@@ -25,6 +25,13 @@ from pydantic import BaseModel, Field
 # Persisted record
 # ---------------------------------------------------------------------------
 
+class ApprovalSignature(BaseModel):
+    """One operator's APPROVE on a gate that needs several (four-eyes)."""
+    approved_by: str
+    approved_at: datetime
+    note: str | None = None
+
+
 class ApprovalRecord(BaseModel):
     approval_id: str
     deal_id: str
@@ -50,6 +57,11 @@ class ApprovalRecord(BaseModel):
     resolution_note: str | None = None
     modified_body: str | None = None
     """For SEND_NEGOTIATION_EMAIL: operator-supplied replacement email body."""
+
+    # Four-eyes: money gates at/above FOUR_EYES_THRESHOLD_USD need two distinct
+    # approvers; the first APPROVE is recorded here and the gate stays PENDING.
+    required_approvals: int = 1
+    approvals: list[ApprovalSignature] = Field(default_factory=list)
 
     created_at: datetime
     updated_at: datetime
@@ -107,12 +119,20 @@ class ApprovalResponse(BaseModel):
     resolved_at: datetime | None = None
     resolution_note: str | None = None
     modified_body: str | None = None
+    required_approvals: int = 1
+    approvals: list[ApprovalSignature] = Field(default_factory=list)
+    approvals_remaining: int = 0
+    """How many more distinct approvers a PENDING four-eyes gate still needs."""
     created_at: datetime
     updated_at: datetime | None = None
 
     @classmethod
     def from_record(cls, r: ApprovalRecord) -> "ApprovalResponse":
+        remaining = max(0, r.required_approvals - len(r.approvals)) if r.status == "PENDING" else 0
         return cls(
+            required_approvals=r.required_approvals,
+            approvals=r.approvals,
+            approvals_remaining=remaining,
             approval_id=r.approval_id,
             deal_id=r.deal_id,
             action=r.action,

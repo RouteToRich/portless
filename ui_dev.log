@@ -1,9 +1,23 @@
-﻿
+
 > portless-web@0.1.0 dev
 > vite
 
 
-  VITE v5.4.21  ready in 4008 ms
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m3831[22m[2m[0m ms[22m
 
-  ➜  Local:   http://localhost:5173/
-  ➜  Network: use --host to expose
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
+[2m  [32m➜[39m  [1mNetwork[22m[2m: use [22m[1m--host[22m[2m to expose[22m
+[2m10:09:29 am[22m [36m[1m[vite][22m[39m [32mpage reload [39m[2msrc/api/types.ts[22m
+[2m10:11:00 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/index.css, /src/lib/auth.tsx, /src/pages/DealDetail.tsx, /src/pages/AutonomySettings.tsx, /src/pages/OrgDeals.tsx, /src/pages/SystemHealth.tsx, /src/pages/DealBoard.tsx, /src/pages/Exceptions.tsx, /src/pages/MoneyMargin.tsx, /src/components/AppLayout.tsx, /src/pages/OpportunityRadar.tsx, /src/pages/ApprovalsInbox.tsx, /src/pages/KnowledgeBase.tsx, /src/pages/OrganizationsAdmin.tsx, /src/components/HitlApprovalCard.tsx, /src/components/EmailThread.tsx, /src/components/rag/ChatPanel.tsx[22m
+[2m10:11:00 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/index.css, /src/pages/OrgDeals.tsx, /src/pages/SystemHealth.tsx, /src/pages/DealBoard.tsx, /src/pages/Exceptions.tsx, /src/pages/MoneyMargin.tsx, /src/components/AppLayout.tsx, /src/pages/OpportunityRadar.tsx, /src/pages/ApprovalsInbox.tsx, /src/pages/DealDetail.tsx, /src/pages/KnowledgeBase.tsx, /src/pages/OrganizationsAdmin.tsx, /src/components/HitlApprovalCard.tsx, /src/components/EmailThread.tsx, /src/components/rag/ChatPanel.tsx[22m
+[2m10:13:03 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AutonomySettings.tsx, /src/index.css[22m
+[2m10:14:29 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/HitlApprovalCard.tsx, /src/index.css[22m
+[2m10:19:58 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/DealDetail.tsx, /src/index.css[22m
+[2m10:19:58 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.tsx, /src/index.css[22m
+[2m10:19:58 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/AppLayout.tsx, /src/index.css[22m
+[2m10:19:58 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SystemHealth.tsx, /src/index.css[22m
+[2m10:25:00 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/index.css, /src/lib/auth.tsx, /src/pages/OrgDeals.tsx, /src/pages/SystemHealth.tsx, /src/pages/DealBoard.tsx, /src/pages/Exceptions.tsx, /src/pages/MoneyMargin.tsx, /src/components/AppLayout.tsx, /src/pages/OpportunityRadar.tsx, /src/pages/ApprovalsInbox.tsx, /src/pages/DealDetail.tsx, /src/pages/KnowledgeBase.tsx, /src/pages/OrganizationsAdmin.tsx, /src/components/HitlApprovalCard.tsx, /src/components/EmailThread.tsx, /src/components/rag/ChatPanel.tsx, /src/pages/AutonomySettings.tsx[22m
+[2m10:26:08 am[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/index.css, /src/lib/auth.tsx, /src/pages/OrgDeals.tsx, /src/pages/SystemHealth.tsx, /src/pages/DealBoard.tsx, /src/pages/Exceptions.tsx, /src/pages/MoneyMargin.tsx, /src/components/AppLayout.tsx, /src/pages/OpportunityRadar.tsx, /src/pages/ApprovalsInbox.tsx, /src/pages/DealDetail.tsx, /src/pages/KnowledgeBase.tsx, /src/pages/OrganizationsAdmin.tsx, /src/components/HitlApprovalCard.tsx, /src/components/EmailThread.tsx, /src/components/rag/ChatPanel.tsx, /src/pages/AutonomySettings.tsx[22m
+[2m10:26:31 am[22m [36m[1m[vite][22m[39m [32mvite.config.js changed, restarting server...[39m
+[2m10:26:31 am[22m [36m[1m[vite][22m[39m [32mvite.config.js changed, restarting server...[39m
+[2m10:26:31 am[22m [36m[1m[vite][22m[39m server restarted.

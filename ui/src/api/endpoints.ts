@@ -2,10 +2,19 @@ import { api } from "./client";
 import type {
   ApprovalRecord,
   AutonomyLevel,
+  BuyerCandidate,
+  CatalogueView,
   CreateDealRequest,
   Deal,
   DealException,
+  DealJournal,
   DealLedger,
+  DealTimeline,
+  DigestSendResult,
+  OperatorDigest,
+  ProductLine,
+  RecordMilestoneRequest,
+  TrackingPollResult,
   DealmakerDealDocuments,
   DocumentRecord,
   DownstreamHealth,
@@ -88,6 +97,32 @@ export const DealsApi = {
         params: { screen: opts?.screen ?? true, contacts: opts?.contacts ?? true },
       })
       .then((r) => r.data),
+  // Every dated fact of the deal from every service, merged and sorted.
+  timeline: (dealId: string) =>
+    api.get<DealTimeline>(`/deals/${dealId}/timeline`).then((r) => r.data),
+  // Hand-over pack (deal, parties, PI/PO, document hashes, orders, ledger +
+  // journal, approvals, exceptions, correspondence, timeline, SHA-256).
+  evidencePackJson: (dealId: string) =>
+    api
+      .get<Record<string, unknown>>(`/deals/${dealId}/evidence-pack`, { params: { format: "json" } })
+      .then((r) => r.data),
+  evidencePackHtml: (dealId: string) =>
+    fetchFileBlob(`/deals/${dealId}/evidence-pack?format=html`, "text/html"),
+  // Buyer outreach funnel (shared/orchestration/outreach.py).
+  addBuyerCandidate: (dealId: string, candidate: BuyerCandidate) =>
+    api.post<Deal>(`/deals/${dealId}/buyer-candidates`, candidate).then((r) => r.data),
+  startOutreach: (dealId: string) =>
+    api
+      .post<{ deal_id: string; contacted: number; waiting_for_buyer: boolean }>(
+        `/deals/${dealId}/outreach/start`
+      )
+      .then((r) => r.data),
+  skipBuyerCandidate: (dealId: string, candidateId: string) =>
+    api
+      .post<{ deal_id: string; candidate_id: string; advanced?: number; exhausted?: boolean }>(
+        `/deals/${dealId}/buyer-candidates/${candidateId}/skip`
+      )
+      .then((r) => r.data),
 };
 
 export const OpportunitiesApi = {
@@ -103,6 +138,8 @@ export const OpportunitiesApi = {
   sources: () => api.get<TradeSourcesResponse>("/trade-min/sources").then((r) => r.data),
 };
 
+export type OnTimeout = "APPROVE" | "REJECT";
+
 export interface AutonomyActionPolicy {
   action: string;
   label: string;
@@ -111,28 +148,75 @@ export interface AutonomyActionPolicy {
   override: AutonomyLevel | null;
   env: AutonomyLevel | null;
   effective: AutonomyLevel;
-  source: "override" | "env" | "default" | "money_ceiling";
+  source: "override" | "env" | "default" | "money_ceiling" | "value_threshold" | string;
   follows_deal_profile: boolean;
   money_moving: boolean;
+  // v2 gate settings (timeouts, on-timeout default, value threshold)
+  timeout_seconds: number;
+  timeout_override: number | null;
+  default_timeout_seconds: number;
+  default_on_timeout: OnTimeout;
+  on_timeout_override: OnTimeout | null;
+  auto_approve_below_usd: number | null;
+  threshold_override: number | null;
 }
 
 export interface AutonomyPolicyResponse {
   money_ceiling: AutonomyLevel;
+  /** Global value threshold for money gates (null = every money gate waits for a human). */
+  money_auto_approve_below_usd: number | null;
   actions: AutonomyActionPolicy[];
 }
 
+/** Per-action gate override; omit a key to leave it, null to clear it. */
+export interface GateOverride {
+  level?: AutonomyLevel | null;
+  timeout_seconds?: number | null;
+  default_on_timeout?: OnTimeout | null;
+  auto_approve_below_usd?: number | null;
+}
+
+export interface AutonomyPolicyUpdate {
+  levels?: Record<string, AutonomyLevel | null>;
+  gates?: Record<string, GateOverride | null>;
+  money_auto_approve_below_usd?: number | null;
+  set_money_threshold?: boolean;
+  updated_by?: string;
+}
+
 // Per-action autonomy policy (shared/orchestration/autonomy_policy.py) — the
-// Autonomy Settings page reads the effective level per action class and writes
-// overrides; null clears an override so env/default applies again.
+// Autonomy Settings page reads the effective level / timeout / on-timeout
+// default / value threshold per action class and writes overrides; null clears
+// an override so env/default applies again.
 export const AutonomyApi = {
   get: () =>
     api.get<AutonomyPolicyResponse>("/hitl-approval/autonomy-policy").then((r) => r.data),
-  save: (levels: Record<string, AutonomyLevel | null>, updatedBy = "operator") =>
+  save: (update: AutonomyPolicyUpdate) =>
     api
       .put<AutonomyPolicyResponse>("/hitl-approval/autonomy-policy", {
-        levels,
-        updated_by: updatedBy,
+        levels: update.levels ?? {},
+        gates: update.gates ?? {},
+        money_auto_approve_below_usd: update.money_auto_approve_below_usd ?? null,
+        set_money_threshold: update.set_money_threshold ?? false,
+        updated_by: update.updated_by ?? "operator",
       })
+      .then((r) => r.data),
+};
+
+// Daily operator digest (shared/orchestration/digest.py): pending gates, deals
+// per stage, stalls, open exceptions, money, Apify spend.
+export const DigestApi = {
+  get: () => api.get<OperatorDigest>("/hitl-approval/digest").then((r) => r.data),
+  send: () => api.post<DigestSendResult>("/hitl-approval/digest/send").then((r) => r.data),
+};
+
+// Product catalogue / corridors (shared/catalogue.py) — what PortLess sells
+// and where; drives scan defaults, actor inputs and outreach e-mails.
+export const CatalogueApi = {
+  get: () => api.get<CatalogueView>("/trade-min/catalogue").then((r) => r.data),
+  save: (products: ProductLine[], updatedBy = "operator") =>
+    api
+      .put<CatalogueView>("/trade-min/catalogue", { products, updated_by: updatedBy })
       .then((r) => r.data),
 };
 
@@ -232,6 +316,9 @@ function normalizeEscrow(raw: Partial<EscrowRecord> & { escrow_id: string; deal_
     settled_at: raw.settled_at ?? null,
     tranches: raw.tranches ?? [],
     inspection_deadline: raw.inspection_deadline ?? null,
+    delivery_confirmed_at: raw.delivery_confirmed_at ?? null,
+    inspection_opened_at: raw.inspection_opened_at ?? null,
+    inspection_trigger: raw.inspection_trigger ?? null,
     buyer_accepted_at: raw.buyer_accepted_at ?? null,
     disputed: raw.disputed ?? false,
     disputed_at: raw.disputed_at ?? null,
@@ -267,6 +354,26 @@ export const EscrowApi = {
     api
       .post<EscrowRecord>(`/escrow-guard/escrows/${escrowId}/refund`, payload)
       .then((r) => normalizeEscrow(r.data)),
+  // Operator confirms delivery → the buyer's acceptance window starts
+  // (idempotent; waits for pending proof tranches).
+  openWindow: (escrowId: string, payload: { reason: string }) =>
+    api
+      .post<EscrowRecord>(`/escrow-guard/escrows/${escrowId}/open-window`, payload)
+      .then((r) => normalizeEscrow(r.data)),
+  // Lift a buyer dispute (re-inspection agreed / resolved in PortLess's favour).
+  clearDispute: (escrowId: string, payload: { reason: string }) =>
+    api
+      .post<EscrowRecord>(`/escrow-guard/escrows/${escrowId}/clear-dispute`, payload)
+      .then((r) => normalizeEscrow(r.data)),
+  // Double-entry journal for the deal (escrow funding, tranche releases with
+  // fees and revenue, refunds, supplier payouts). 404 when there is no escrow.
+  getJournal: (dealId: string) =>
+    api
+      .get<DealJournal>(`/escrow-guard/deals/${dealId}/journal`)
+      .then((r): DealJournal | null => r.data)
+      .catch(or404<DealJournal | null>(null)),
+  journalCsv: (dealId: string) =>
+    fetchFileBlob(`/escrow-guard/deals/${dealId}/journal?format=csv`, "text/csv"),
 };
 
 interface RawShieldOrder {
@@ -278,6 +385,10 @@ interface RawShieldOrder {
   ext_ref?: string | null;
   eta?: string | null;
   qc_result?: string | null;
+  container_number?: string | null;
+  last_milestone?: string | null;
+  last_milestone_at?: string | null;
+  delivered_at?: string | null;
   created_at: string;
 }
 
@@ -297,10 +408,16 @@ function qcStatus(o: RawShieldOrder): QcRecord["status"] {
   return "BOOKED";
 }
 function freightStatus(o: RawShieldOrder): FreightRecord["status"] {
+  // The carrier milestone is the most precise state when one was recorded.
+  const m = (o.last_milestone ?? "").toUpperCase();
+  if (o.delivered_at || m === "DELIVERED") return "DELIVERED";
+  if (m === "CLEARED") return "CLEARED";
+  if (m === "ARRIVED") return "ARRIVED";
+  if (m === "DEPARTED" || m === "IN_TRANSIT") return "IN_TRANSIT";
   const s = o.status.toUpperCase();
   if (s === "COMPLETED" || s === "CLEARED") return "CLEARED";
   if (s === "ARRIVED") return "ARRIVED";
-  if (s === "IN_TRANSIT") return "IN_TRANSIT";
+  if (s === "IN_TRANSIT" || s === "IN_PROGRESS") return "IN_TRANSIT";
   return "BOOKED";
 }
 
@@ -329,8 +446,24 @@ export const ShieldApi = {
           status: freightStatus(o),
           bl_number: o.ext_ref ?? null,
           eta: o.eta ?? null,
+          container_number: o.container_number ?? null,
+          last_milestone: o.last_milestone ?? null,
+          last_milestone_at: o.last_milestone_at ?? null,
+          delivered_at: o.delivered_at ?? null,
         }))
     ),
+  // Operator / tracking milestone by TPO id (no provider signature). DELIVERED
+  // opens the buyer's acceptance window on the escrow.
+  recordMilestone: (tpoId: string, payload: RecordMilestoneRequest) =>
+    api
+      .post<{ status: string; milestone: string; deal_id: string; last_milestone?: string }>(
+        `/shield-link/freight/${tpoId}/milestone`,
+        { source: "operator", ...payload }
+      )
+      .then((r) => r.data),
+  // Poll the carrier-tracking actor for the deal's container now.
+  pollTracking: (dealId: string) =>
+    api.post<TrackingPollResult>(`/shield-link/deals/${dealId}/track`).then((r) => r.data),
 };
 
 interface RawDocugenDoc {
@@ -372,12 +505,12 @@ export const DealmakerApi = {
 // The stored files live in the platform's private Google Drive; the backend
 // streams them through its own credentials (GET …/file). Fetched as a Blob via
 // the authenticated client because a plain <a href> can't send the bearer token.
-async function fetchFileBlob(path: string): Promise<Blob> {
+async function fetchFileBlob(path: string, fallbackType = "text/html"): Promise<Blob> {
   const r = await api.get(path, { responseType: "blob" });
   if (r.data instanceof Blob) return r.data;
   // Mock adapter returns a plain string — coerce so View/Download still work.
   return new Blob([typeof r.data === "string" ? r.data : JSON.stringify(r.data)], {
-    type: "text/html",
+    type: fallbackType,
   });
 }
 

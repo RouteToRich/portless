@@ -7,10 +7,14 @@ the next pipeline step — instead of depending on a long-lived poller task
   OPPORTUNITY_DETECTED → create the deal (opt-in: AUTO_DEAL_FROM_OPPORTUNITY_ENABLED)
   DEAL_CREATED (MATCHING) → identify + screen the counterparties on the PortLess
                         Apify actors (contact finder, e-mail check, sanctions)
+                        → buyer outreach funnel (SEND_BUYER_OUTREACH introductions
+                          to the identified buyers; shared/orchestration/outreach.py)
                         → DISPATCH_RFQ gate → RFQs to the shortlisted suppliers
   QUOTE_RECEIVED      → if the Match Engine did not auto-SOURCE the quote:
                         CONFIRM_SUPPLIER_SELECTION gate (operator → NEGOTIATING)
-  NEGOTIATION_STARTED → start the negotiation session (round 0 draft, policy-gated)
+  NEGOTIATION_STARTED → start the negotiation session (round 0 draft, policy-gated);
+                        waits while the buyer funnel is still open (no counter-price
+                        to a buyer who has not said they are interested)
   NEGOTIATION_FAILED  → deal.exception + propose the next-best supplier
                         (CONFIRM_SUPPLIER_SELECTION → re-match)
   NEGOTIATION_AGREED  → sanctions screening of the buyer (fresh ≤ 30 days):
@@ -29,13 +33,17 @@ the next pipeline step — instead of depending on a long-lived poller task
                         + create BOOK_FREIGHT HITL gate
   QC_FAILED           → deal → DISPUTE + deal.exception (Exception Resolver)
   FREIGHT_BOOKED      → FILE_CUSTOMS gate (CHA / ICEGATE) + email shipment to buyer
+  FREIGHT_MILESTONE   → DELIVERED (carrier webhook / tracking actor / operator):
+                        open the buyer's acceptance window on the escrow
+  ESCROW_INSPECTION_OPENED → tell the buyer the acceptance window is open (T4)
   CUSTOMS_CLEARED     → RELEASE_ESCROW_TRANCHE gate (T3, CLEARED trigger)
                         + email arrival to buyer
                         + RELEASE_SUPPLIER_PAYOUT gate — amount capped at the
                           funds already released from escrow (never pay out
                           money PortLess has not received)
-  ESCROW_TRANCHE_RELEASED → tell the buyer the inspection window is open (T4),
-                        re-gate the next due tranche, top up the supplier payout
+  ESCROW_TRANCHE_RELEASED → re-gate the next due tranche, top up the supplier
+                        payout (and, in legacy "proof" window mode, tell the
+                        buyer the acceptance window is open)
   ESCROW_SETTLED      → final supplier balance payout gate + settlement notices
   PAYOUT_COMPLETED    → partial: supplier balance gate · fully paid (PAID):
                         completion emails to both parties
@@ -43,11 +51,14 @@ the next pipeline step — instead of depending on a long-lived poller task
                         resolver lifecycle echoes carry an exception_id and
                         are skipped)
 
-Every HITL gate is created at the level the per-action autonomy policy
-resolves (``shared/orchestration/autonomy_policy.py``): L0/L1 wait for an
+Every HITL gate is created from ``resolve_gate`` of the per-action autonomy
+policy (``shared/orchestration/autonomy_policy.py``): level, L1 timeout +
+on-timeout default, and a value threshold that only applies when this
+module's preconditions for the leg hold (``conditions_ok``). L0/L1 wait for an
 operator, L2/L3 auto-approve and run the callback — that policy, not this
 module, decides how autonomous the pipeline is. Money-moving gates (tranche
-release, supplier payout) are additionally capped by ``AUTONOMY_MONEY_CEILING``.
+release, supplier payout) are additionally capped by ``AUTONOMY_MONEY_CEILING``
+and by the four-eyes threshold in the HITL service.
 Buyer actions (accepting the PI, funding the escrow) remain buyer actions —
 no handler fakes them; the counterparty notifications exist so the buyer
 actually knows what to do next.
@@ -136,19 +147,21 @@ async def _get_deal_in_status(deal_id: str | None, required: str, stage: str):
     return deal
 
 
-async def _negotiation_numbers(deal_id: str) -> tuple[float | None, float]:
-    """(final supplier ask, quantity_mt) from the deal's negotiation session."""
+async def _negotiation_numbers(deal_id: str, deal=None) -> tuple[float | None, float]:
+    """(final supplier ask, quantity_mt) from the deal's negotiation session,
+    falling back to the deal's own quantity (RFQ lead) and then the default."""
+    fallback_qty = _deal_quantity(deal) if deal is not None else _DEFAULT_QUANTITY_MT
     try:
         from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
         session = await _neg_repo().get_session_by_deal(deal_id)
         if session is not None:
             return (
                 session.current_ask,
-                float(session.quantity_mt) if session.quantity_mt else _DEFAULT_QUANTITY_MT,
+                float(session.quantity_mt) if session.quantity_mt else fallback_qty,
             )
     except Exception as exc:
         logger.warning("Continuation: could not read negotiation session for %s: %s", deal_id, exc)
-    return None, _DEFAULT_QUANTITY_MT
+    return None, fallback_qty
 
 
 def _gate_level(action: str, deal=None) -> str:
@@ -165,20 +178,69 @@ async def _create_gate(
     deal_id: str, action: str, summary: str,
     financial_impact_usd: float | None,
     callback_payload: dict, idempotency_key: str,
-    autonomy_level: str = "L0",
+    autonomy_level: str | None = None,
     risk_flags: list[str] | None = None,
+    deal=None,
+    conditions_ok: bool = True,
 ) -> None:
-    """Create a HITL approval gate (idempotent on *idempotency_key*)."""
+    """Create a HITL approval gate (idempotent on *idempotency_key*).
+
+    The level, the L1 timeout and the timeout default come from the autonomy
+    policy (``resolve_gate``); money-moving gates at or below the value
+    threshold with ``conditions_ok`` are created at L2. ``autonomy_level``
+    forces the level (the callers use it for hard L0 cases such as a
+    sanctions hit) — the timeout settings still come from the policy.
+    """
     from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
     from services.hitl_approval.service import create_approval  # type: ignore[import]
+
+    spec = None
+    try:
+        from shared.orchestration.autonomy_policy import resolve_gate
+        spec = resolve_gate(action, deal, amount=financial_impact_usd, conditions_ok=conditions_ok)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Continuation: autonomy policy unavailable for %s (%s) — L0", action, exc)
+    level = autonomy_level or (spec.level if spec else "L0")
+    flags = list(risk_flags or [])
+    if spec and spec.threshold_applied and not autonomy_level:
+        flags.append("auto_approved_below_value_threshold")
     await create_approval(CreateApprovalRequest(
         deal_id=deal_id, action=action, summary=summary,
         financial_impact_usd=financial_impact_usd,
-        risk_flags=risk_flags or [],
-        autonomy_level=autonomy_level,
+        risk_flags=flags,
+        autonomy_level=level,
+        expires_at=(spec.expires_at_iso() if (spec and level == "L1") else None),
+        default_on_timeout=(spec.default_on_timeout if spec else "REJECT"),
         callback_payload=callback_payload,
         idempotency_key=idempotency_key,
     ))
+
+
+def _deal_quantity(deal) -> float:
+    """Shipment quantity for the deal: the buyer's stated quantity (RFQ lead /
+    negotiation) when known, else the configured default."""
+    qty = getattr(deal, "quantity_mt", None) if deal is not None else None
+    try:
+        return float(qty) if qty and float(qty) > 0 else _DEFAULT_QUANTITY_MT
+    except (TypeError, ValueError):
+        return _DEFAULT_QUANTITY_MT
+
+
+def payment_terms_for(provider: str | None = None) -> str:
+    """Payment terms the PI / PO state — derived from the staged escrow schedule,
+    so the document never contradicts how the money actually moves."""
+    try:
+        from services.escrow_guard.service import DEFAULT_TRANCHES  # type: ignore[import]
+        from services.escrow_guard.config import settings as _eg  # type: ignore[import]
+        labels = {
+            "PO_ISSUED": "on Purchase Order", "QC_PASSED": "on inspection pass",
+            "CLEARED": "on customs clearance / arrival", "ACCEPTED": "on delivery acceptance",
+        }
+        parts = [f"{int(round(pct * 100))}% {labels.get(trg, trg)}" for _, trg, pct in DEFAULT_TRANCHES]
+        name = (provider or _eg.escrow_default_provider or "escrow").replace("_", ".").title()
+        return f"100% into neutral escrow ({name}) before production; released {', '.join(parts)}"
+    except Exception:  # noqa: BLE001
+        return _DEFAULT_PAYMENT_TERMS
 
 
 async def _emit_exception(deal_id: str | None, stage: str, exc: Exception) -> None:
@@ -478,6 +540,11 @@ async def on_deal_created(event: DomainEvent) -> None:
                 verdict = enrichment.screening_verdict(deal, role)
                 if verdict in ("review", "block"):
                     risk_flags.append(f"{role}_sanctions_{verdict}")
+    # Buyer outreach funnel: introduce PortLess to the identified buyers now,
+    # in parallel with the supplier RFQ — the negotiation waits for a "yes".
+    from shared.orchestration import outreach
+    await _best_effort("DEAL_CREATED→OUTREACH", deal_id, outreach.start_outreach(deal))
+
     try:
         candidates = await _rfq_candidates(deal)
         if not candidates:
@@ -491,7 +558,7 @@ async def on_deal_created(event: DomainEvent) -> None:
         supplier_email = _party_email(deal, "supplier")
         # A sanctions hit anywhere on the deal forces a human onto the first
         # outbound step, whatever the autonomy policy says.
-        level = "L0" if any(f.endswith("_block") for f in risk_flags) else _gate_level("DISPATCH_RFQ", deal)
+        level = "L0" if any(f.endswith("_block") for f in risk_flags) else None
         await _create_gate(
             deal_id, "DISPATCH_RFQ",
             summary=f"Deal {deal_id} ({deal.hs_code} → {deal.market}): send RFQ to {names}"
@@ -508,13 +575,14 @@ async def on_deal_created(event: DomainEvent) -> None:
                      )}
                     for c in candidates
                 ],
-                "quantity_mt": _DEFAULT_QUANTITY_MT,
+                "quantity_mt": _deal_quantity(deal),
                 "target_price_usd": target,
                 "validity_days": 7,
             },
             idempotency_key=f"auto-rfq-{deal_id}",
             autonomy_level=level,
             risk_flags=risk_flags,
+            deal=deal,
         )
         logger.info("Continuation: DISPATCH_RFQ gate created for deal %s (%d supplier(s), event %s)",
                     deal_id, len(candidates), event.event_id)
@@ -568,15 +636,29 @@ async def on_quote_received(event: DomainEvent) -> None:
                 company = company or q.company_name
         except Exception:  # noqa: BLE001
             pass
-        level = "L0" if ("gst_not_verified" in flags or "iec_inactive" in flags) \
-            else _gate_level("CONFIRM_SUPPLIER_SELECTION", deal)
+        hard = "gst_not_verified" in flags or "iec_inactive" in flags
+        # Auto-source rule: a supplier whose GSTIN and IEC were actually checked
+        # and passed, quoting inside the margin corridor, needs no human to
+        # start negotiating — the Match Engine's DISCARD came from the empty
+        # reliability leg, not from a real risk signal.
+        verified = (
+            payload.get("gst_checked") is True and payload.get("gst_verified") is True
+            and payload.get("iec_checked") is True and payload.get("iec_active") is True
+        )
+        in_corridor = _price_in_corridor(price, deal)
+        auto_source = verified and in_corridor and not hard and _auto_source_enabled()
+        if auto_source:
+            flags.append("auto_sourced_verified_in_corridor")
+        level = "L0" if hard else ("L2" if auto_source else None)
         await _create_gate(
             deal_id, "CONFIRM_SUPPLIER_SELECTION",
             summary=(
-                f"Quote {price} USD/MT from {company or supplier_id} was not auto-sourced "
-                f"({', '.join(flags)}) — confirm supplier to start negotiating"
+                f"Quote {price} USD/MT from {company or supplier_id} "
+                + ("verified (GST + IEC) and inside the margin corridor — auto-sourced"
+                   if auto_source else
+                   f"was not auto-sourced ({', '.join(flags)}) — confirm supplier to start negotiating")
             ),
-            financial_impact_usd=(round(float(price) * _DEFAULT_QUANTITY_MT, 2) if price else None),
+            financial_impact_usd=(round(float(price) * _deal_quantity(deal), 2) if price else None),
             callback_payload={
                 "deal_id": deal_id,
                 "supplier_id": supplier_id,
@@ -590,11 +672,28 @@ async def on_quote_received(event: DomainEvent) -> None:
             idempotency_key=f"auto-select-{deal_id}-{supplier_id}",
             autonomy_level=level,
             risk_flags=flags,
+            deal=deal,
         )
         logger.info("Continuation: CONFIRM_SUPPLIER_SELECTION gate for deal %s / %s (%s)",
                     deal_id, supplier_id, ", ".join(flags))
     except Exception as exc:
         await _emit_exception(deal_id, "QUOTE_RECEIVED→CONFIRM_SUPPLIER_SELECTION", exc)
+
+
+def _auto_source_enabled() -> bool:
+    return os.getenv("SOURCING_AUTO_SOURCE_VERIFIED", "true").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _price_in_corridor(price: Any, deal) -> bool:
+    """Supplier ask leaves at least the deal's margin floor under the buyer target."""
+    try:
+        target = float(getattr(deal, "buyer_target_price_usd", None) or 0)
+        floor = float(getattr(deal, "margin_floor_pct", None) or 8.0)
+        return bool(price) and target > 0 and float(price) <= target * (1.0 - floor / 100.0)
+    except (TypeError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +758,17 @@ async def on_negotiation_started(event: DomainEvent) -> None:
             deal_id, exc,
         )
 
+    # Never pitch a counter-price to a buyer who has not said they are
+    # interested: while the outreach funnel is open the session waits; the
+    # funnel re-fires this leg once a buyer replies with interest.
+    from shared.orchestration import outreach
+    if outreach.waiting_for_buyer(deal):
+        logger.info(
+            "Continuation[NEGOTIATING]: deal %s is waiting for an interested buyer "
+            "(outreach funnel open) — negotiation not started yet", deal_id,
+        )
+        return
+
     seed = _negotiation_seed(deal)
     if seed is None:
         logger.warning(
@@ -688,6 +798,7 @@ async def on_negotiation_started(event: DomainEvent) -> None:
             supplier_quote_price=supplier_ask,
             buyer_email=_party_email(deal, "buyer"),
             seller_email=_party_email(deal, "supplier"),
+            quantity_mt=_deal_quantity(deal),
             policy=policy,
         ))
         logger.info(
@@ -743,7 +854,7 @@ async def on_negotiation_failed(event: DomainEvent) -> None:
                 f"FOB {nxt.fob_price_usd})?"
             ),
             financial_impact_usd=(
-                round(float(nxt.fob_price_usd) * _DEFAULT_QUANTITY_MT, 2) if nxt.fob_price_usd else None
+                round(float(nxt.fob_price_usd) * _deal_quantity(deal), 2) if nxt.fob_price_usd else None
             ),
             callback_payload={
                 "deal_id": deal_id,
@@ -755,7 +866,7 @@ async def on_negotiation_failed(event: DomainEvent) -> None:
                 "reason": f"Re-match after failed negotiation with {failed_id}",
             },
             idempotency_key=f"auto-rematch-{deal_id}-{nxt.supplier_id}",
-            autonomy_level=_gate_level("CONFIRM_SUPPLIER_SELECTION", deal),
+            deal=deal,
             risk_flags=["re_match_after_failed_negotiation"],
         )
         logger.info("Continuation: re-match gate for deal %s → %s", deal_id, nxt.supplier_id)
@@ -789,7 +900,7 @@ async def on_negotiation_agreed(event: DomainEvent) -> None:
     deal = await _get_deal_in_status(deal_id, "NEGOTIATION_AGREED", "AGREED→PI")
     if deal is None:
         return
-    _, quantity_mt = await _negotiation_numbers(deal_id)
+    _, quantity_mt = await _negotiation_numbers(deal_id, deal)
 
     # Know who you are invoicing: a Proforma Invoice never goes to a buyer the
     # sanctions / registry screening has not cleared. Re-screen when the last
@@ -833,7 +944,7 @@ async def on_negotiation_agreed(event: DomainEvent) -> None:
                     "screening_reason": getattr(buyer, "sanctions_reason", None),
                 },
                 idempotency_key=f"auto-risk-{deal_id}",
-                autonomy_level=_gate_level("CONFIRM_COUNTERPARTY_RISK", deal),
+                deal=deal,
                 risk_flags=["buyer_sanctions_review"],
             )
             logger.info("Continuation: CONFIRM_COUNTERPARTY_RISK gate for deal %s (review)", deal_id)
@@ -874,7 +985,7 @@ async def issue_pi_for_deal(
         agreed_price=float(agreed_price),
         quantity_mt=float(quantity_mt),
         port_of_destination=f"Destination Port, {market or 'TBD'}",
-        payment_terms=_DEFAULT_PAYMENT_TERMS,
+        payment_terms=payment_terms_for(),
         idempotency_key=f"auto-pi-{deal_id}",
     ))
 
@@ -1007,6 +1118,15 @@ async def _tranche_gate(
                     stage, trigger, hold.escrow_id)
         return
     amount = tranche.amount if tranche.amount is not None else round(hold.amount * tranche.pct, 2)
+    # Preconditions for an unattended release below the value threshold: the
+    # proof refs are there and the escrow ledger reconciles.
+    conditions_ok = bool([p for p in proof_refs if p])
+    if conditions_ok:
+        try:
+            from services.escrow_guard.service import _ledger_issues  # type: ignore[import]
+            conditions_ok = not _ledger_issues(hold)[1]
+        except Exception:  # noqa: BLE001
+            conditions_ok = False
     await _create_gate(
         deal_id, "RELEASE_ESCROW_TRANCHE",
         summary=(
@@ -1023,7 +1143,8 @@ async def _tranche_gate(
             "idempotency_key": f"auto-tranche-{deal_id}-{tranche.tranche_id}",
         },
         idempotency_key=f"auto-tranche-gate-{deal_id}-{tranche.tranche_id}{key_suffix}",
-        autonomy_level=_gate_level("RELEASE_ESCROW_TRANCHE", deal),
+        deal=deal,
+        conditions_ok=conditions_ok,
         risk_flags=["money_movement"],
     )
     logger.info("Continuation[%s]: RELEASE_ESCROW_TRANCHE gate for %s/%s (%.2f)",
@@ -1043,7 +1164,7 @@ async def on_escrow_funded(event: DomainEvent) -> None:
     if deal is None:
         return
     try:
-        supplier_ask, quantity_mt = await _negotiation_numbers(deal_id)
+        supplier_ask, quantity_mt = await _negotiation_numbers(deal_id, deal)
         if not supplier_ask:
             raise RuntimeError(
                 f"no supplier price available for deal {deal_id} — PO gate needs one"
@@ -1058,10 +1179,10 @@ async def on_escrow_funded(event: DomainEvent) -> None:
                 "quantity_mt": quantity_mt, "incoterm": "FOB",
                 "port_of_loading": "Chennai, IN",
                 "delivery_deadline": (date.today() + timedelta(days=21)).isoformat(),
-                "payment_terms": _DEFAULT_PAYMENT_TERMS,
+                "payment_terms": payment_terms_for(),
             },
             idempotency_key=f"auto-po-gate-{deal_id}",
-            autonomy_level=_gate_level("ISSUE_PO", deal),
+            deal=deal,
         )
         logger.info("Continuation: ISSUE_PO gate created for deal %s (event %s)",
                     deal_id, event.event_id)
@@ -1083,7 +1204,7 @@ async def on_po_issued(event: DomainEvent) -> None:
     if deal is None:
         return
     try:
-        _, quantity_mt = await _negotiation_numbers(deal_id)
+        _, quantity_mt = await _negotiation_numbers(deal_id, deal)
         from services.shield_link.schemas import QcBookingRequest  # type: ignore[import]
         from services.shield_link.service import book_qc  # type: ignore[import]
         tpo = await book_qc(QcBookingRequest(
@@ -1203,7 +1324,7 @@ async def on_qc_passed(event: DomainEvent) -> None:
             financial_impact_usd=None,
             callback_payload={"deal_id": deal_id, "provider": "cogoport", "incoterm": "FOB"},
             idempotency_key=f"auto-freight-gate-{deal_id}",
-            autonomy_level=_gate_level("BOOK_FREIGHT", deal),
+            deal=deal,
         )
         logger.info("Continuation: BOOK_FREIGHT gate created for deal %s (event %s)",
                     deal_id, event.event_id)
@@ -1290,7 +1411,7 @@ async def on_freight_booked(event: DomainEvent) -> None:
                 "idempotency_key": f"auto-cha-{deal_id}",
             },
             idempotency_key=f"auto-customs-gate-{deal_id}",
-            autonomy_level=_gate_level("FILE_CUSTOMS", deal),
+            deal=deal,
         )
         logger.info("Continuation: FILE_CUSTOMS gate created for deal %s (event %s)",
                     deal_id, event.event_id)
@@ -1339,8 +1460,8 @@ async def on_customs_cleared(event: DomainEvent) -> None:
         await _emit_exception(deal_id, "CLEARED→PAYOUT_GATE", exc)
 
 
-async def _supplier_owed_and_paid(deal, ask: float | None, qty: float) -> tuple[float | None, float, float, float, float]:
-    """→ (owed, paid, pending, available_for_payout, released_total).
+async def _supplier_owed_and_paid(deal, ask: float | None, qty: float) -> tuple[float | None, float, float, float, float, bool]:
+    """→ (owed, paid, pending, available_for_payout, released_total, ledger_reconciled).
 
     ``owed`` is the Purchase Order value, else supplier ask × quantity.
     ``available`` is what the escrow ledger says PortLess can pay out now;
@@ -1360,12 +1481,14 @@ async def _supplier_owed_and_paid(deal, ask: float | None, qty: float) -> tuple[
         owed = round(float(ask) * qty, 2)
     paid = pending = released = 0.0
     available: float | None = None
+    reconciled = False
     try:
         from services.escrow_guard.service import get_deal_ledger  # type: ignore[import]
         ledger = await get_deal_ledger(deal.deal_id)
         paid, pending = float(ledger.payouts_total), float(ledger.payouts_pending)
         available = float(ledger.available_for_payout)
         released = float(ledger.released_total)
+        reconciled = bool(getattr(ledger, "reconciled", False))
         if ledger.supplier_owed:
             owed = float(ledger.supplier_owed)
     except Exception as exc:  # noqa: BLE001
@@ -1373,7 +1496,7 @@ async def _supplier_owed_and_paid(deal, ask: float | None, qty: float) -> tuple[
                        deal.deal_id, exc)
     if available is None:
         available = owed or 0.0
-    return owed, paid, pending, available, released
+    return owed, paid, pending, available, released, reconciled
 
 
 async def _pending_payout_gate_exists(deal_id: str) -> bool:
@@ -1391,10 +1514,12 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
     created. Used at CLEARED (``first``) and again after every later tranche
     release / settlement until the supplier is paid in full."""
     deal_id = deal.deal_id
-    supplier_ask, quantity_mt = await _negotiation_numbers(deal_id)
+    supplier_ask, quantity_mt = await _negotiation_numbers(deal_id, deal)
     if first and not supplier_ask:
         raise RuntimeError(f"no supplier price available for deal {deal_id} — payout gate needs one")
-    owed, paid, pending, available, released = await _supplier_owed_and_paid(deal, supplier_ask, quantity_mt)
+    owed, paid, pending, available, released, reconciled = await _supplier_owed_and_paid(
+        deal, supplier_ask, quantity_mt,
+    )
     if not owed:
         logger.info("Continuation[%s]: supplier entitlement unknown for %s — no payout gate", stage, deal_id)
         return False
@@ -1433,7 +1558,8 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
             "idempotency_key": f"auto-payout-{deal_id}" if first else f"auto-payout-{deal_id}-{int(round(paid + pending))}-{int(round(released))}",
         },
         idempotency_key=key,
-        autonomy_level=_gate_level("RELEASE_SUPPLIER_PAYOUT", deal),
+        deal=deal,
+        conditions_ok=reconciled,
         risk_flags=["money_movement"] + (["partial_payout_capped_by_escrow"] if partial else []),
     )
     return True
@@ -1518,6 +1644,60 @@ async def on_escrow_tranche_released(event: DomainEvent) -> None:
     if status in ("CLEARED", "PAID"):
         await _best_effort("TRANCHE_RELEASED→PAYOUT_TOPUP", deal_id,
                            _supplier_payout_gate(deal, stage="TRANCHE_RELEASED→PAYOUT_TOPUP"))
+
+
+# ---------------------------------------------------------------------------
+# FREIGHT_MILESTONE (DELIVERED / ARRIVED) → inspection window
+# ---------------------------------------------------------------------------
+
+def _inspection_window_milestones() -> set[str]:
+    raw = os.getenv("INSPECTION_WINDOW_MILESTONES", "DELIVERED")
+    return {m.strip().upper() for m in raw.split(",") if m.strip()}
+
+
+async def on_freight_milestone(event: DomainEvent) -> None:
+    """A carrier milestone arrived (webhook or the tracking actor): once the
+    goods are delivered the buyer's acceptance window for the final tranche
+    opens — not when the proof tranches released weeks earlier at sea."""
+    if not _enabled():
+        return
+    deal_id = event.deal_id
+    payload = event.payload or {}
+    milestone = str(payload.get("milestone") or "").upper()
+    if not deal_id or milestone not in _inspection_window_milestones():
+        return
+    try:
+        from services.escrow_guard.repository import get_repository as _eg_repo  # type: ignore[import]
+        from services.escrow_guard.service import open_inspection_window  # type: ignore[import]
+        hold = await _eg_repo().get_hold_by_deal(deal_id)
+        if hold is None:
+            return
+        await open_inspection_window(hold.escrow_id, reason=f"carrier milestone {milestone}")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Continuation[FREIGHT_MILESTONE]: window open failed for %s: %s", deal_id, exc)
+
+
+async def on_escrow_inspection_opened(event: DomainEvent) -> None:
+    """Tell the buyer the acceptance window is open (final tranche + deadline)."""
+    if not _enabled():
+        return
+    deal_id = event.deal_id
+    payload = event.payload or {}
+    if not deal_id:
+        return
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        from services.escrow_guard.repository import get_repository as _eg_repo  # type: ignore[import]
+        from shared.orchestration import notifications
+        deal = await get_deal(deal_id)
+        hold = await _eg_repo().get_hold_by_deal(deal_id)
+        if hold is None:
+            return
+        await notifications.notify_inspection_window_open(
+            deal, hold, payload.get("final_amount"), payload.get("deadline"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Continuation[INSPECTION_OPENED]: notice failed for %s: %s", deal_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1670,6 +1850,8 @@ def register_continuations(bus) -> None:
     bus.subscribe(EventTopic.QC_FAILED, on_qc_failed)
     bus.subscribe(EventTopic.FREIGHT_BOOKED, on_freight_booked)
     bus.subscribe(EventTopic.CUSTOMS_CLEARED, on_customs_cleared)
+    bus.subscribe(EventTopic.FREIGHT_MILESTONE, on_freight_milestone)
+    bus.subscribe(EventTopic.ESCROW_INSPECTION_OPENED, on_escrow_inspection_opened)
     bus.subscribe(EventTopic.ESCROW_TRANCHE_RELEASED, on_escrow_tranche_released)
     bus.subscribe(EventTopic.ESCROW_SETTLED, on_escrow_settled)
     bus.subscribe(EventTopic.PAYOUT_COMPLETED, on_payout_completed)

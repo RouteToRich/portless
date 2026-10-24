@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 
@@ -42,6 +43,7 @@ class AgentState(TypedDict):
     analysis: AgentAnalysis | None
     execution_result: dict[str, Any]
     error: str | None
+    playbook: dict[str, Any] | None
 
 
 # ---------------------------------------------------------------------------
@@ -133,17 +135,47 @@ async def _auto_fix_connector_error(record: ExceptionRecord) -> dict[str, Any]:
     }
 
 
-async def _escalate_to_hitl(record: ExceptionRecord, analysis: AgentAnalysis) -> dict[str, Any]:
-    """Raise a HITL approval with RESOLVE_EXCEPTION action."""
+async def _auto_fix_payment_failed(record: ExceptionRecord) -> dict[str, Any]:
+    """Funding shortfall → reminder with the missing amount (playbook)."""
+    try:
+        from shared.orchestration.playbooks import remind_funding_shortfall
+        return await remind_funding_shortfall(record.deal_id)
+    except Exception as exc:
+        logger.error("Auto-fix payment_failed failed: %s", exc)
+        return {"success": False, "error": str(exc)}
+
+
+async def _auto_fix_negotiation_failed(record: ExceptionRecord) -> dict[str, Any]:
+    """Buyer walked away → contact the next buyer candidate (playbook)."""
+    try:
+        from shared.orchestration.playbooks import next_buyer
+        return await next_buyer(record.deal_id)
+    except Exception as exc:
+        logger.error("Auto-fix negotiation_failed failed: %s", exc)
+        return {"success": False, "error": str(exc)}
+
+
+async def _escalate_to_hitl(
+    record: ExceptionRecord, analysis: AgentAnalysis, playbook: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Raise a HITL approval with RESOLVE_EXCEPTION action. ``playbook`` names
+    the remediation APPROVE runs (``callbacks._cb_resolve_exception``)."""
     try:
         from services.hitl_approval import service as hitl_service
         from services.hitl_approval.schemas import CreateApprovalRequest
 
+        playbook = playbook or {}
+        name = playbook.get("playbook")
+        summary = analysis.summary
+        if name:
+            summary = f"{summary} — APPROVE runs playbook '{name}'; REJECT leaves the deal as it is."
         req = CreateApprovalRequest(
             deal_id=record.deal_id,
             action="RESOLVE_EXCEPTION",
-            summary=analysis.summary,
+            summary=summary,
             autonomy_level=settings.escalation_autonomy_level,
+            risk_flags=[f"playbook:{name}"] if name else [],
+            financial_impact_usd=playbook.get("financial_impact_usd"),
             callback_payload={
                 "exception_id": record.exception_id,
                 "deal_id": record.deal_id,
@@ -151,10 +183,13 @@ async def _escalate_to_hitl(record: ExceptionRecord, analysis: AgentAnalysis) ->
                 "severity": analysis.severity.value,
                 "root_cause": analysis.root_cause,
                 "remediation_steps": analysis.remediation_steps,
+                **({"playbook": name, "reason": playbook.get("reason")} if name else {}),
             },
+            idempotency_key=f"resolve-{name}-{record.deal_id}-{playbook.get('attempt', 0)}" if name else None,
         )
         approval = await hitl_service.create_approval(req)
-        return {"success": True, "approval_id": approval.approval_id, "action": "hitl_escalated"}
+        return {"success": True, "approval_id": approval.approval_id, "action": "hitl_escalated",
+                **({"playbook": name} if name else {})}
     except Exception as exc:
         logger.error("Failed to create HITL escalation for %s: %s", record.exception_id, exc)
         return {"success": False, "error": str(exc)}
@@ -163,7 +198,147 @@ async def _escalate_to_hitl(record: ExceptionRecord, analysis: AgentAnalysis) ->
 _AUTO_FIX_DISPATCH: dict[ExceptionCategory, Any] = {
     ExceptionCategory.DOCUMENT_ERROR: _auto_fix_document_error,
     ExceptionCategory.CONNECTOR_ERROR: _auto_fix_connector_error,
+    ExceptionCategory.PAYMENT_FAILED: _auto_fix_payment_failed,
+    ExceptionCategory.NEGOTIATION_FAILED: _auto_fix_negotiation_failed,
 }
+
+
+# ---------------------------------------------------------------------------
+# Deterministic playbooks (run before the LLM)
+# ---------------------------------------------------------------------------
+
+def _playbooks_enabled() -> bool:
+    return os.getenv("EXCEPTION_PLAYBOOKS_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _infer_category(record: ExceptionRecord) -> str:
+    ctx = record.context or {}
+    cat = str(ctx.get("category") or "").upper()
+    if cat:
+        return cat
+    stage = str(record.source_event or ctx.get("stage") or "").upper()
+    if stage.startswith(("ESCROW_PENDING:", "PI_SENT:", "PI_ACCEPTED:")) or ctx.get("shortfall") is not None \
+            or ctx.get("action_required") == "fund_shortfall":
+        return "PAYMENT_FAILED"
+    if stage.startswith("OUTREACH:") or stage.startswith("NEGOTIATION"):
+        return "NEGOTIATION_FAILED"
+    if stage.startswith("QC_FAILED"):
+        return "QC_FAILED"
+    return ""
+
+
+def _age_days(record: ExceptionRecord) -> float | None:
+    since = (record.context or {}).get("since")
+    if not since:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+    except ValueError:
+        return None
+
+
+async def _deterministic_analysis(record: ExceptionRecord) -> tuple[AgentAnalysis, dict[str, Any]] | None:
+    """A fixed plan for the recurring failures (no LLM round-trip). Returns
+    ``(analysis, playbook_meta)`` or None when the LLM should look at it."""
+    cat = _infer_category(record)
+    ctx = record.context or {}
+    deal = record.deal_id
+
+    def _mk(category, severity, summary, root_cause, steps, decision, rationale, hours):
+        return AgentAnalysis(
+            category=category, severity=severity, summary=summary, root_cause=root_cause,
+            remediation_steps=steps, decision=decision, decision_rationale=rationale,
+            estimated_resolution_hours=hours, llm_model="playbook",
+        )
+
+    if cat == "QC_FAILED":
+        from shared.orchestration.playbooks import reinspection_allowed, reinspection_max
+        allowed, failed = await reinspection_allowed(deal)
+        if allowed:
+            return _mk(
+                ExceptionCategory.QC_FAILED, ExceptionSeverity.HIGH,
+                f"QC failed on deal {deal} (attempt {failed}) — rework + re-inspection",
+                "The pre-shipment inspection found the lot off-specification. Escrow tranches stay "
+                "frozen while the deal is in DISPUTE.",
+                ["Notify the supplier of the rework (inspection notes attached)",
+                 "Book a fresh inspection with the buyer-opted provider",
+                 "On PASS the pipeline continues (document pack, T2, freight); on FAIL refund / cancel"],
+                RemediationDecision.ESCALATE, "Rework costs the supplier time, not PortLess money — "
+                "one operator click confirms the supplier agreed.", 72,
+            ), {"playbook": "reinspect", "attempt": failed, "reason": ctx.get("error") or record.raw_detail}
+        return _mk(
+            ExceptionCategory.QC_FAILED, ExceptionSeverity.CRITICAL,
+            f"QC failed again on deal {deal} ({failed} failures, limit {reinspection_max()}) — refund or replace supplier",
+            "The supplier could not bring the lot to specification within the allowed re-inspections.",
+            ["Refund the undisbursed escrow balance to the buyer (DISPUTE → REFUNDED)",
+             "Or re-match the deal to the next supplier candidate", "Record the supplier's QC history"],
+            RemediationDecision.CANCEL, "Re-inspection limit reached; money decisions need a human.", 48,
+        ), {"playbook": None, "attempt": failed}
+
+    if cat == "PAYMENT_FAILED":
+        from shared.orchestration.playbooks import funding_grace_days
+        stage = str(record.source_event or ctx.get("stage") or "").upper()
+        if ctx.get("shortfall") or ctx.get("action_required") == "fund_shortfall" or "PARTIAL" in stage:
+            return _mk(
+                ExceptionCategory.PAYMENT_FAILED, ExceptionSeverity.MEDIUM,
+                f"Escrow for deal {deal} is short by {ctx.get('shortfall') or 'an amount'} — buyer reminded",
+                "The provider confirmed less than the Proforma Invoice total.",
+                ["Send the buyer the exact missing amount and the same checkout link",
+                 "The PO is held until the escrow is fully funded"],
+                RemediationDecision.AUTO_FIX, "A reminder moves no money.", 48,
+            ), {"playbook": None}
+        age = _age_days(record)
+        grace = funding_grace_days()
+        if age is not None and age >= grace:
+            return _mk(
+                ExceptionCategory.PAYMENT_FAILED, ExceptionSeverity.HIGH,
+                f"Deal {deal} unfunded for {age:.0f} days (grace {grace}) — cancel and refund any partial funds",
+                "The buyer accepted the terms but never funded the escrow despite reminders.",
+                ["Refund any partially funded amount to the buyer", "Cancel the deal and tell both parties",
+                 "Keep the buyer in the funnel for a future lot"],
+                RemediationDecision.ESCALATE, "Cancelling a deal and refunding money needs a human.", 24,
+            ), {"playbook": "cancel_unfunded", "reason": f"unfunded for {age:.0f} days", "attempt": int(age)}
+        return _mk(
+            ExceptionCategory.PAYMENT_FAILED, ExceptionSeverity.LOW,
+            f"Deal {deal} waiting for buyer funding ({'%.0f' % age if age is not None else '?'} days; grace {grace})",
+            "No funds yet; the deal watcher keeps reminding the buyer.",
+            [f"Reminders continue; cancellation is proposed after {grace} days"],
+            RemediationDecision.MONITOR, "Inside the grace period.", 24 * grace,
+        ), {"playbook": None}
+
+    if cat == "NEGOTIATION_FAILED":
+        exhausted = str(record.source_event or "").upper().startswith("OUTREACH:") or ctx.get("action_required") == "find_new_buyers_or_cancel"
+        if exhausted:
+            return _mk(
+                ExceptionCategory.NEGOTIATION_FAILED, ExceptionSeverity.HIGH,
+                f"No interested buyer left for deal {deal} — add buyers or cancel",
+                "Every identified buyer declined or never replied to the outreach.",
+                ["Run a new buyer scan / add buyers to the funnel", "Or cancel the deal"],
+                RemediationDecision.ESCALATE, "Needs new leads or a cancellation decision.", 72,
+            ), {"playbook": None}
+        return _mk(
+            ExceptionCategory.NEGOTIATION_FAILED, ExceptionSeverity.MEDIUM,
+            f"Negotiation with the buyer of deal {deal} failed — contacting the next buyer candidate",
+            "The buyer walked away or the rounds ran out.",
+            ["Contact the next pending buyer candidate from the outreach funnel",
+             "Re-open the negotiation when a buyer replies with interest"],
+            RemediationDecision.AUTO_FIX, "Contacting the next lead costs nothing.", 72,
+        ), {"playbook": None}
+
+    if cat in ("DOCUMENT_ERROR", "CONNECTOR_ERROR"):
+        category = ExceptionCategory(cat)
+        return _mk(
+            category, ExceptionSeverity.LOW,
+            f"{cat.replace('_', ' ').title()} on deal {deal} — automatic retry",
+            record.raw_detail or "transient failure",
+            ["Regenerate the document" if cat == "DOCUMENT_ERROR" else "Continue on the graceful stub; monitor"],
+            RemediationDecision.AUTO_FIX, "Known transient class.", 1,
+        ), {"playbook": None}
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +348,20 @@ _AUTO_FIX_DISPATCH: dict[ExceptionCategory, Any] = {
 async def _node_analyze(state: AgentState) -> dict[str, Any]:
     """Use LLM to classify the exception and build a remediation plan."""
     record = state["record"]
+
+    if _playbooks_enabled():
+        try:
+            fast = await _deterministic_analysis(record)
+        except Exception as exc:  # noqa: BLE001 — fall back to the LLM
+            logger.warning("ExceptionAgent: playbook lookup failed for %s: %s", record.exception_id, exc)
+            fast = None
+        if fast is not None:
+            analysis, meta = fast
+            logger.info(
+                "ExceptionAgent playbook for %s → category=%s decision=%s playbook=%s",
+                record.exception_id, analysis.category.value, analysis.decision.value, meta.get("playbook"),
+            )
+            return {"analysis": analysis, "error": None, "playbook": meta}
 
     user_msg = (
         f"Deal ID: {record.deal_id}\n"
@@ -272,23 +461,29 @@ async def _node_execute(state: AgentState) -> dict[str, Any]:
         return {"execution_result": {"success": False, "error": "analysis missing"}}
 
     decision = analysis.decision
+    playbook = state.get("playbook") or None
 
     if decision == RemediationDecision.AUTO_FIX:
         handler = _AUTO_FIX_DISPATCH.get(analysis.category)
         if handler:
             result = await handler(record)
+            if not result.get("success") and playbook is not None:
+                # Playbook auto-fix found nothing to do → hand to the operator
+                # (keeps the record ESCALATED with an approval, not UNRESOLVABLE).
+                escalated = await _escalate_to_hitl(record, analysis, playbook)
+                result = {**escalated, "auto_fix_fell_through": True, "auto_fix_error": result.get("error")}
         else:
             # No automated handler for this category → fall through to ESCALATE
             logger.info(
                 "No AUTO_FIX handler for category %s — escalating instead.",
                 analysis.category.value,
             )
-            result = await _escalate_to_hitl(record, analysis)
+            result = await _escalate_to_hitl(record, analysis, playbook)
             result["auto_fix_fell_through"] = True
         return {"execution_result": result}
 
     if decision == RemediationDecision.ESCALATE:
-        result = await _escalate_to_hitl(record, analysis)
+        result = await _escalate_to_hitl(record, analysis, playbook)
         return {"execution_result": result}
 
     if decision == RemediationDecision.CANCEL:
@@ -296,7 +491,7 @@ async def _node_execute(state: AgentState) -> dict[str, Any]:
             "ExceptionAgent recommends CANCEL for deal %s — operator must confirm.",
             record.deal_id,
         )
-        result = await _escalate_to_hitl(record, analysis)
+        result = await _escalate_to_hitl(record, analysis, playbook)
         result["cancel_recommended"] = True
         return {"execution_result": result}
 
@@ -352,6 +547,7 @@ async def run_agent(record: ExceptionRecord) -> tuple[AgentAnalysis | None, dict
         "analysis": None,
         "execution_result": {},
         "error": None,
+        "playbook": None,
     }
     final = await get_agent_graph().ainvoke(initial)
     return final.get("analysis"), final.get("execution_result", {})

@@ -55,6 +55,17 @@ import readinessFixture from "@mocked/health/readiness.json";
 import tradeSourcesFixture from "@mocked/trade_min/sources.json";
 import enrichResultFixture from "@mocked/deals/enrich_result.json";
 
+// Batch A/B/C: outreach funnel, timeline + evidence pack, journal, catalogue,
+// digest, four-eyes approval, autonomy policy v2, carrier milestones.
+import dealOutreach from "@mocked/deals/deal_detail_outreach.json";
+import timelineFixture from "@mocked/deals/timeline.json";
+import evidencePackFixture from "@mocked/deals/evidence_pack.json";
+import journalFixture from "@mocked/escrow_guard/journal.json";
+import catalogueFixture from "@mocked/trade_min/catalogue.json";
+import digestFixture from "@mocked/hitl_approval/digest.json";
+import approvalFourEyes from "@mocked/hitl_approval/approval_four_eyes.json";
+import autonomyPolicyFixture from "@mocked/hitl_approval/autonomy_policy_v2.json";
+
 type RawObj = Record<string, unknown>;
 
 // Set VITE_MOCK_DEGRADED=true to exercise the "Partial Degradation" UI path
@@ -188,7 +199,10 @@ function normalizeApproval(a: RawObj): RawObj {
     updated_at: a.updated_at ?? a.created_at ?? null,
   };
 }
-const approvalListItems = unwrap<RawObj>(approvalList as never).map(normalizeApproval);
+const approvalListItems: RawObj[] = [
+  { ...(approvalFourEyes as RawObj) },
+  ...unwrap<RawObj>(approvalList as never).map(normalizeApproval),
+];
 
 // ── Match score ──────────────────────────────────────────────────────────
 // Fixture exposes cms_score + a weighted `breakdown`; the UI's MatchScore wants
@@ -253,7 +267,7 @@ function normalizeDoc(d: RawObj) {
   };
 }
 
-const dealDetails = [dealNegotiating, dealEscrowFunded, dealInTransit, dealPaid, dealDispute];
+const dealDetails = [dealNegotiating, dealEscrowFunded, dealInTransit, dealPaid, dealDispute, dealOutreach];
 const documents = ((documentsList as { documents?: RawObj[] }).documents ?? []).map(normalizeDoc);
 
 // ── Staged escrow (neutral provider) — mutable so operator actions persist ──
@@ -293,6 +307,9 @@ function seedEscrow(dealId: string): MockEscrow {
     settled_at: null,
     tranches: ((l.tranches as Tranche[]) ?? []).map((t) => ({ ...t, proof_refs: [...t.proof_refs] })),
     inspection_deadline: null,
+    delivery_confirmed_at: null,
+    inspection_opened_at: null,
+    inspection_trigger: null,
     buyer_accepted_at: null,
     disputed: false,
     disputed_at: null,
@@ -383,7 +400,7 @@ const mockUsers = new Map<string, MockUser>([
   ["demo@portless.io", { user_id: DEMO_OWNER, email: "demo@portless.io", name: "Demo Operator", password: "demo123" }],
 ]);
 
-const seedDeals = unwrap<RawObj>(dealList as never)
+const seedDeals = [...unwrap<RawObj>(dealList as never), dealOutreach as RawObj]
   .map(normalizeDeal)
   .map((d) => ({ ...d, operator_id: DEMO_OWNER }));
 const dealsByOwner = new Map<string, RawObj[]>([[DEMO_OWNER, seedDeals]]);
@@ -485,6 +502,119 @@ function ragStartJob(body: RawObj) {
 }
 
 // Route table: "METHOD /path" → handler. `:param` captures a path segment.
+// ── Autonomy policy v2 (mutable so the settings page round-trips) ──────────
+type PolicyAction = RawObj & { action: string };
+const policyState = JSON.parse(JSON.stringify(autonomyPolicyFixture)) as {
+  money_ceiling: string; money_auto_approve_below_usd: number | null; actions: PolicyAction[];
+};
+const LEVEL_RANK: Record<string, number> = { L0: 0, L1: 1, L2: 2, L3: 3 };
+
+function recomputePolicy() {
+  for (const a of policyState.actions) {
+    const override = a.override as string | null;
+    const env = a.env as string | null;
+    let effective = override ?? env ?? (a.default as string);
+    let source = override ? "override" : env ? "env" : "default";
+    if (a.money_moving && LEVEL_RANK[effective] > LEVEL_RANK[policyState.money_ceiling]) {
+      effective = policyState.money_ceiling;
+      source = "money_ceiling";
+    }
+    a.effective = effective;
+    a.source = source;
+    a.timeout_seconds = (a.timeout_override as number | null) ?? a.default_timeout_seconds;
+    a.default_on_timeout = (a.on_timeout_override as string | null) ?? (a.money_moving ? "REJECT" : a.default_on_timeout);
+    const th = a.threshold_override as number | null;
+    a.auto_approve_below_usd = th ?? (a.money_moving ? policyState.money_auto_approve_below_usd : null);
+  }
+}
+
+// ── Freight orders: milestone state per deal ───────────────────────────────
+const freightState = new Map<string, { last_milestone: string | null; last_milestone_at: string | null; delivered_at: string | null; status: string }>();
+const MILESTONE_ORDER = ["DEPARTED", "IN_TRANSIT", "ARRIVED", "CLEARED", "DELIVERED"];
+function freightFor(dealId: string) {
+  const f = normalizeFreight(freightBooking as RawObj);
+  const existing = freightState.get(dealId);
+  if (existing) return existing;
+  const init = { last_milestone: null as string | null, last_milestone_at: null as string | null, delivered_at: null as string | null, status: f.status as string };
+  freightState.set(dealId, init);
+  return init;
+}
+function applyMilestone(dealId: string, milestone: string) {
+  const st = freightFor(dealId);
+  if (st.last_milestone && MILESTONE_ORDER.indexOf(milestone) < MILESTONE_ORDER.indexOf(st.last_milestone)) {
+    return { status: "ignored", milestone, deal_id: dealId, last_milestone: st.last_milestone };
+  }
+  const now = new Date().toISOString();
+  st.last_milestone = milestone;
+  st.last_milestone_at = now;
+  st.status = milestone === "DEPARTED" || milestone === "IN_TRANSIT" ? "IN_PROGRESS" : "COMPLETED";
+  if (milestone === "DELIVERED") {
+    st.delivered_at = now;
+    // DELIVERED → the escrow's acceptance window opens (once proof tranches are released).
+    const e = seedEscrow(dealId);
+    openWindow(e, "delivery");
+  }
+  return { status: "ok", milestone, deal_id: dealId };
+}
+function openWindow(e: MockEscrow, trigger: string): MockEscrow {
+  if (e.inspection_deadline) return e;
+  const pendingFinal = e.tranches.some((t) => t.trigger === "ACCEPTED" && t.status === "PENDING");
+  if (!pendingFinal || (e.status !== "FUNDED" && e.status !== "RELEASED")) return e;
+  const now = new Date();
+  const earlierPending = e.tranches.some((t) => t.trigger !== "ACCEPTED" && t.status === "PENDING");
+  e.delivery_confirmed_at = (e.delivery_confirmed_at as string | null) ?? now.toISOString();
+  if (earlierPending) return e; // recorded; opens when the proof tranche releases
+  e.inspection_deadline = new Date(now.getTime() + 72 * 3600_000).toISOString();
+  e.inspection_opened_at = now.toISOString();
+  e.inspection_trigger = trigger;
+  return e;
+}
+
+// ── Catalogue (mutable) ─────────────────────────────────────────────────────
+const catalogueState = JSON.parse(JSON.stringify(catalogueFixture)) as RawObj & { products: RawObj[]; defaults: { hs_codes: string[]; markets: string[] } };
+function catalogueView() {
+  const active = catalogueState.products.filter((p) => p.active !== false);
+  const corridors = active.flatMap((p) =>
+    ((p.markets as string[]) ?? []).map((m) => ({ hs_code: p.hs_code, name: p.name, market: m }))
+  );
+  return { ...catalogueState, corridors, active: active.length > 0 };
+}
+
+// ── Journal: CSV rendering for ?format=csv ────────────────────────────────
+function journalCsv(j: RawObj): string {
+  const rows = (j.entries as RawObj[]) ?? [];
+  const head = "deal_id,seq,at,event,debit_account,credit_account,amount,currency,ref,memo";
+  const body = rows.map((e) =>
+    [j.deal_id, e.seq, e.at ?? "", e.event, e.debit, e.credit, Number(e.amount).toFixed(2), e.currency, e.ref ?? "", `"${String(e.memo ?? "").replace(/"/g, '""')}"`].join(",")
+  );
+  return [head, ...body].join("\n") + "\n";
+}
+
+function evidenceHtml(dealId: string): string {
+  const pack: RawObj = { ...(evidencePackFixture as RawObj), deal_id: dealId };
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Evidence pack ${dealId}</title></head><body style="font:14px system-ui;margin:32px"><h1>Evidence pack — deal ${dealId}</h1><p>SHA-256 ${String(pack.content_hash)}</p><p>Mock render — the live backend produces the full page (parties, PI/PO, documents, ledger, journal, approvals, exceptions, correspondence, timeline).</p><pre>${JSON.stringify(pack, null, 2).slice(0, 4000)}</pre></body></html>`;
+}
+
+// Find (or seed from a fixture) the owned deal, persisting it on the owner's board.
+function ownedDeal(ownerId: string, id: string): RawObj {
+  const list = dealsByOwner.get(ownerId) ?? [];
+  const existing = list.find((d) => d.deal_id === id);
+  if (existing) return existing;
+  const base = normalizeDeal((dealDetails as RawObj[]).find((d) => d.deal_id === id) ?? (dealNegotiating as RawObj));
+  const deal = { ...base, deal_id: id };
+  dealsByOwner.set(ownerId, [deal, ...list]);
+  return deal;
+}
+function saveOwnedDeal(ownerId: string, deal: RawObj) {
+  const list = dealsByOwner.get(ownerId) ?? [];
+  dealsByOwner.set(ownerId, list.some((d) => d.deal_id === deal.deal_id)
+    ? list.map((d) => (d.deal_id === deal.deal_id ? deal : d))
+    : [deal, ...list]);
+  return deal;
+}
+
+recomputePolicy();
+
 const routes: Record<string, Handler> = {
   "GET /health": () => gatewayOk,
   "GET /health/downstream": () => DOWNSTREAM_FIXTURE,
@@ -592,6 +722,116 @@ const routes: Record<string, Handler> = {
     return { ...(enrichResultFixture as RawObj), deal_id: id, deal: updated };
   },
 
+  // Deal timeline + evidence pack
+  "GET /deals/:id/timeline": ({ id }) => ({ ...(timelineFixture as RawObj), deal_id: id }),
+  "GET /deals/:id/evidence-pack": ({ id, query }) =>
+    query.get("format") === "html"
+      ? evidenceHtml(id)
+      : { ...(evidencePackFixture as RawObj), deal_id: id, generated_at: new Date().toISOString() },
+
+  // Buyer outreach funnel
+  "POST /deals/:id/buyer-candidates": ({ id, body, ownerId }) => {
+    const deal = ownedDeal(ownerId, id);
+    const cands = (Array.isArray(deal.buyer_candidates) ? deal.buyer_candidates : []) as RawObj[];
+    if (cands.some((c) => c.candidate_id === body.candidate_id)) {
+      throw new MockError(422, `buyer candidate '${String(body.candidate_id)}' already on deal ${id}`);
+    }
+    return saveOwnedDeal(ownerId, { ...deal, buyer_candidates: [...cands, { status: "pending", ...body }], updated_at: new Date().toISOString() });
+  },
+  "POST /deals/:id/outreach/start": ({ id, ownerId }) => {
+    const deal = ownedDeal(ownerId, id);
+    const cands = (Array.isArray(deal.buyer_candidates) ? deal.buyer_candidates : []) as RawObj[];
+    const active = cands.filter((c) => c.status === "contacted" || c.status === "followed_up").length;
+    let slots = Math.max(0, 2 - active);
+    let contacted = 0;
+    const now = new Date().toISOString();
+    const next = cands.map((c) => {
+      if (slots > 0 && c.status === "pending" && c.email) {
+        slots -= 1;
+        contacted += 1;
+        return { ...c, status: "contacted", contacted_at: now, email_id: `OUTI${id.replace(/-/g, "").slice(-10)}${String(c.candidate_id).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12)}` };
+      }
+      return c;
+    });
+    saveOwnedDeal(ownerId, { ...deal, buyer_candidates: next, updated_at: now });
+    const waiting = next.length > 0 && !next.some((c) => c.status === "interested" || c.status === "selected");
+    return { deal_id: id, contacted, waiting_for_buyer: waiting };
+  },
+  "POST /deals/:id/buyer-candidates/:cid/skip": ({ params, ownerId }) => {
+    const deal = ownedDeal(ownerId, params.id);
+    const cands = (Array.isArray(deal.buyer_candidates) ? deal.buyer_candidates : []) as RawObj[];
+    if (!cands.some((c) => c.candidate_id === params.cid)) throw new MockError(422, `buyer candidate '${params.cid}' not on deal ${params.id}`);
+    const now = new Date().toISOString();
+    let advanced = 0;
+    const next = cands.map((c) =>
+      c.candidate_id === params.cid ? { ...c, status: "declined", replied_at: now, reply_preview: "skipped by operator" } : c
+    );
+    const active = next.filter((c) => c.status === "contacted" || c.status === "followed_up").length;
+    if (active < 2) {
+      const idx = next.findIndex((c) => c.status === "pending" && c.email);
+      if (idx >= 0) {
+        next[idx] = { ...next[idx], status: "contacted", contacted_at: now };
+        advanced = 1;
+      }
+    }
+    saveOwnedDeal(ownerId, { ...deal, buyer_candidates: next, updated_at: now });
+    const open = next.some((c) => ["pending", "contacted", "followed_up", "interested", "selected"].includes(String(c.status)));
+    return { deal_id: params.id, candidate_id: params.cid, advanced, exhausted: !open && next.length > 0 };
+  },
+
+  // Catalogue / corridors
+  "GET /trade-min/catalogue": () => catalogueView(),
+  "PUT /trade-min/catalogue": ({ body }) => {
+    const products = (Array.isArray(body.products) ? body.products : []) as RawObj[];
+    const seen = new Set<string>();
+    for (const p of products) {
+      const hs = String(p.hs_code ?? "").replace(/\D/g, "");
+      if (hs.length < 4) throw new MockError(422, `HS code ${JSON.stringify(p.hs_code)} must have at least 4 digits`);
+      if (!String(p.name ?? "").trim()) throw new MockError(422, `product line ${String(p.product_id)} needs a name`);
+      if (seen.has(String(p.product_id))) throw new MockError(422, `duplicate product_id ${String(p.product_id)}`);
+      seen.add(String(p.product_id));
+      p.hs_code = hs;
+      p.markets = [...new Set(((p.markets as string[]) ?? []).map((m) => m.trim().toUpperCase().slice(0, 2)).filter(Boolean))].sort();
+      p.active = p.active !== false;
+    }
+    catalogueState.products = products;
+    catalogueState.updated_by = body.updated_by ?? "operator";
+    catalogueState.updated_at = new Date().toISOString();
+    return catalogueView();
+  },
+
+  // Autonomy policy v2
+  "GET /hitl-approval/autonomy-policy": () => policyState,
+  "PUT /hitl-approval/autonomy-policy": ({ body }) => {
+    const levels = (body.levels ?? {}) as Record<string, string | null>;
+    const gates = (body.gates ?? {}) as Record<string, RawObj | null>;
+    for (const a of policyState.actions) {
+      if (a.action in levels) a.override = levels[a.action];
+      const g = gates[a.action];
+      if (g === null) {
+        a.override = null; a.timeout_override = null; a.on_timeout_override = null; a.threshold_override = null;
+      } else if (g) {
+        if ("level" in g) a.override = g.level;
+        if ("timeout_seconds" in g) a.timeout_override = g.timeout_seconds;
+        if ("default_on_timeout" in g) a.on_timeout_override = g.default_on_timeout;
+        if ("auto_approve_below_usd" in g) a.threshold_override = g.auto_approve_below_usd;
+      }
+    }
+    if (body.set_money_threshold) {
+      policyState.money_auto_approve_below_usd = (body.money_auto_approve_below_usd as number | null) ?? null;
+    }
+    recomputePolicy();
+    return policyState;
+  },
+
+  // Operator digest
+  "GET /hitl-approval/digest": () => ({ ...(digestFixture as RawObj), generated_at: new Date().toISOString() }),
+  "POST /hitl-approval/digest/send": () => ({
+    telegram: false,
+    email: [],
+    text: (digestFixture as RawObj).text,
+  }),
+
   // Opportunities — the UI calls the trade-min prefix; the bare paths are kept
   // for the standalone gateway shape.
   "GET /opportunities": () =>
@@ -618,20 +858,51 @@ const routes: Record<string, Handler> = {
     ((scanResult as { opportunities?: RawObj[] }).opportunities ?? []).map(toOpportunity),
   "GET /trade-min/sources": () => tradeSourcesFixture,
 
-  // Approvals
-  "GET /hitl-approval/approvals": () => approvalListItems,
+  // Approvals (four-eyes aware: a gate with required_approvals=2 collects two
+  // distinct approvers before it resolves; the same operator twice → 409).
+  "GET /hitl-approval/approvals": ({ query }) => {
+    const status = query.get("status");
+    return status ? approvalListItems.filter((a) => a.status === status) : approvalListItems;
+  },
+  "GET /hitl-approval/approvals/:id": ({ id }) => {
+    const found = approvalListItems.find((a) => a.approval_id === id);
+    if (!found) throw new MockError(404, `Approval '${id}' not found`);
+    return found;
+  },
   "POST /hitl-approval/approvals/:id/resolve": ({ id, body }) => {
-    const found = approvalListItems.find((a) => a.approval_id === id) ?? approvalListItems[0];
+    const idx = approvalListItems.findIndex((a) => a.approval_id === id);
+    const found = approvalListItems[idx >= 0 ? idx : 0];
+    if (found.status !== "PENDING") throw new MockError(409, `Approval '${id}' is already ${String(found.status)}`);
     const decision = body.decision === "REJECT" ? "REJECT" : "APPROVE";
-    return {
+    const by = String(body.resolved_by ?? "ops@portless.io");
+    const now = new Date().toISOString();
+    const required = Number(found.required_approvals ?? 1);
+    const sigs = [...((found.approvals as RawObj[]) ?? [])];
+    if (decision === "APPROVE" && required > 1) {
+      if (sigs.some((s) => s.approved_by === by)) {
+        throw new MockError(409, `Approval '${id}' already carries '${by}'s approval — a different operator must countersign`);
+      }
+      sigs.push({ approved_by: by, approved_at: now, note: body.note ?? null });
+      if (sigs.length < required) {
+        const pending = { ...found, approvals: sigs, approvals_remaining: required - sigs.length, updated_at: now };
+        if (idx >= 0) approvalListItems[idx] = pending;
+        return pending;
+      }
+    }
+    const resolved = {
       ...found,
       approval_id: id,
       status: decision === "REJECT" ? "REJECTED" : "APPROVED",
       decision,
-      resolved_by: body.resolved_by ?? "ops@portless.io",
-      resolved_at: new Date().toISOString(),
+      resolved_by: by,
+      resolved_at: now,
       resolution_note: body.note ?? null,
+      approvals: sigs,
+      approvals_remaining: 0,
+      updated_at: now,
     };
+    if (idx >= 0) approvalListItems[idx] = resolved;
+    return resolved;
   },
 
   // Exceptions
@@ -704,6 +975,24 @@ const routes: Record<string, Handler> = {
     e.disputed_at = new Date().toISOString();
     return e;
   },
+  "POST /escrow-guard/escrows/:id/open-window": ({ id, body }) => {
+    const e = escrowByEscrowId(id);
+    if (e.status !== "FUNDED" && e.status !== "RELEASED") throw new MockError(422, `Deal ${e.deal_id} is 'escrow=${e.status}'; required 'escrow=FUNDED'`);
+    void body;
+    return openWindow(e, "operator");
+  },
+  "POST /escrow-guard/escrows/:id/clear-dispute": ({ id }) => {
+    const e = escrowByEscrowId(id);
+    e.disputed = false;
+    return e;
+  },
+  "GET /escrow-guard/deals/:id/journal": ({ id, query }) => {
+    const e = seedEscrow(id);
+    const j = { ...(journalFixture as RawObj), deal_id: id, escrow_id: e.escrow_id, generated_at: new Date().toISOString() };
+    return query.get("format") === "csv" ? journalCsv(j) : j;
+  },
+  "GET /escrow-guard/journals": () =>
+    [...escrowsByDeal.values()].map((e) => ({ ...(journalFixture as RawObj), deal_id: e.deal_id, escrow_id: e.escrow_id })),
   "POST /escrow-guard/escrows/:id/refund": ({ id }) => {
     const e = escrowByEscrowId(id);
     const received = e.funded_amount ?? e.amount;
@@ -716,6 +1005,7 @@ const routes: Record<string, Handler> = {
   "GET /shield-link/deals/:id/orders": ({ id }) => {
     const q = normalizeQc(qcBooking as RawObj);
     const f = normalizeFreight(freightBooking as RawObj);
+    const st = freightFor(id);
     return {
       deal_id: id,
       orders: [
@@ -726,11 +1016,30 @@ const routes: Record<string, Handler> = {
         },
         {
           tpo_id: f.tpo_id, deal_id: id, order_type: "FREIGHT", provider: f.provider,
-          status: f.status, ext_ref: f.bl_number, eta: f.eta, qc_result: null,
+          status: st.status, ext_ref: f.bl_number, eta: f.eta, qc_result: null,
+          container_number: `MSKU${id.replace(/\D/g, "").slice(-7).padStart(7, "0")}`,
+          last_milestone: st.last_milestone, last_milestone_at: st.last_milestone_at, delivered_at: st.delivered_at,
           created_at: new Date().toISOString(),
         },
       ],
     };
+  },
+  // Operator-recorded carrier milestone (by TPO id or carrier ref) — the mock
+  // keeps one freight booking per deal, so the ref resolves to every deal that
+  // currently shows that booking.
+  "POST /shield-link/freight/:ref/milestone": ({ params, body }) => {
+    const f = normalizeFreight(freightBooking as RawObj);
+    if (params.ref !== f.tpo_id && params.ref !== f.bl_number) throw new MockError(404, `Third-party order '${params.ref}' not found`);
+    const dealId = [...freightState.keys()][0] ?? String(body.deal_id ?? "DEAL-20240102-002");
+    return applyMilestone(dealId, String(body.milestone ?? "DELIVERED"));
+  },
+  "POST /shield-link/deals/:id/track": ({ id }) => {
+    const st = freightFor(id);
+    // The carrier-tracking actor is an external slot — mock it as "stub" until
+    // a milestone has been recorded, then report the current one unchanged.
+    return st.last_milestone
+      ? { status: "unchanged", deal_id: id, milestone: st.last_milestone }
+      : { status: "stub", deal_id: id, tpo_id: normalizeFreight(freightBooking as RawObj).tpo_id };
   },
   "GET /docugen/deals/:id/documents": ({ id }) => ({
     deal_id: id,

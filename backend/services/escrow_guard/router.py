@@ -41,6 +41,7 @@ from .service import (
     PayoutNotFoundError,
     WebhookVerifyError,
     accept_escrow,
+    clear_dispute,
     create_escrow,
     create_hold,
     dispute_escrow,
@@ -53,6 +54,7 @@ from .service import (
     handle_payout_webhook,
     list_deal_ledgers,
     list_escrow_providers,
+    open_inspection_window,
     refund,
     release_tranche,
     request_payout,
@@ -164,6 +166,29 @@ async def api_dispute_escrow(escrow_id: str, req: DisputeEscrowRequest) -> Escro
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
 
+@router.post("/escrows/{escrow_id}/open-window", response_model=EscrowResponse)
+async def api_open_inspection_window(escrow_id: str, req: DisputeEscrowRequest | None = None) -> EscrowResponse:
+    """Operator confirms delivery → the buyer's acceptance window starts
+    (idempotent; waits for pending proof tranches)."""
+    try:
+        return await open_inspection_window(
+            escrow_id, reason=(req.reason if req else "operator confirmed delivery"), trigger="operator",
+        )
+    except HoldNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
+@router.post("/escrows/{escrow_id}/clear-dispute", response_model=EscrowResponse)
+async def api_clear_dispute(escrow_id: str, req: DisputeEscrowRequest) -> EscrowResponse:
+    """Lift a buyer dispute (re-inspection agreed / resolved in PortLess's favour)."""
+    try:
+        return await clear_dispute(escrow_id, reason=req.reason)
+    except HoldNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
 @router.post("/escrows/{escrow_id}/refund", response_model=EscrowResponse)
 async def api_refund_escrow(escrow_id: str, req: RefundRequest) -> EscrowResponse:
     """Refund the undisbursed balance to the buyer (dispute / failure path)."""
@@ -212,6 +237,40 @@ async def api_deal_ledger(deal_id: str) -> DealLedger:
     """Per-trade money ledger (held / released / refunded / outstanding / fees /
     payouts / supplier balance) with a reconciliation check (`reconciled` + `issues`)."""
     return await get_deal_ledger(deal_id)
+
+
+@router.get("/deals/{deal_id}/journal")
+async def api_deal_journal(deal_id: str, format: str = "json") -> Any:
+    """Double-entry journal for the deal (escrow funding, tranche releases with
+    fees and revenue, refunds, supplier payouts). ``?format=csv`` for the books."""
+    from fastapi.responses import Response
+    from .journal import build_journal, journal_csv
+    try:
+        journal = await build_journal(deal_id)
+    except HoldNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if format == "csv":
+        return Response(
+            content=journal_csv(journal), media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="journal-{deal_id}.csv"'},
+        )
+    return journal.model_dump(mode="json")
+
+
+@router.get("/journals")
+async def api_all_journals(format: str = "json") -> Any:
+    """Every deal's journal (``?format=csv`` concatenates them for the accountant)."""
+    from fastapi.responses import Response
+    from .journal import build_all_journals, journal_csv
+    journals = await build_all_journals()
+    if format == "csv":
+        body = ""
+        for i, j in enumerate(journals):
+            csv_text = journal_csv(j)
+            body += csv_text if i == 0 else "\n".join(csv_text.splitlines()[1:]) + ("\n" if csv_text.strip() else "")
+        return Response(content=body, media_type="text/csv",
+                        headers={"Content-Disposition": 'attachment; filename="journals.csv"'})
+    return [j.model_dump(mode="json") for j in journals]
 
 
 @router.get("/ledgers", response_model=list[DealLedger])

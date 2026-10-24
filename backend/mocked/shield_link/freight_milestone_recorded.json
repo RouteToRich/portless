@@ -1,0 +1,27 @@
+{
+  "_note": "POST /shield-link/freight/{tpo_id}/milestone — operator / tracking milestone (no provider signature); DELIVERED opens the buyer's acceptance window on the escrow. Also the shape returned by POST /shield-link/deals/{deal_id}/track when status=ok.",
+  "request": {
+    "milestone": "DELIVERED",
+    "location": "Jebel Ali — buyer warehouse",
+    "timestamp": "2026-10-24T07:45:00Z",
+    "notes": "POD signed by R. Mehta",
+    "source": "operator"
+  },
+  "response": {
+    "status": "ok",
+    "milestone": "DELIVERED",
+    "deal_id": "DEAL-20240102-002",
+    "tpo_id": "TPO-FREIGHT-8C1D2E3F4A"
+  },
+  "ignored_response": {
+    "status": "ignored",
+    "milestone": "ARRIVED",
+    "deal_id": "DEAL-20240102-002",
+    "last_milestone": "DELIVERED"
+  },
+  "tracking_poll_stub": {
+    "status": "stub",
+    "deal_id": "DEAL-20240102-002",
+    "tpo_id": "TPO-FREIGHT-8C1D2E3F4A"
+  }
+}

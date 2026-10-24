@@ -219,6 +219,10 @@ async def process_inbound(
         party_override=party_override,
     )
 
+    # ── Buyer answering an outreach introduction (buyer funnel) ────────────
+    if getattr(mapping, "outreach_deal_id", None) and not mapping.negotiation_id:
+        return await _handle_outreach_reply(record, raw, mapping)
+
     # ── Supplier quote replying to an RFQ e-mail (sourcing stage) ──────────
     if getattr(mapping, "rfq_id", None) and not mapping.negotiation_id:
         return await _handle_rfq_reply(record, raw, mapping, counter_price_override)
@@ -364,6 +368,55 @@ async def process_inbound(
             negotiation_id=mapping.negotiation_id,
             message=f"run_round() failed: {exc}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Outreach replies (buyer funnel)
+# ---------------------------------------------------------------------------
+
+async def _handle_outreach_reply(record: InboundEmailRecord, raw: InboundRawEmail, mapping) -> ProcessingResult:
+    repo = get_repository()
+    deal_id, candidate_id = mapping.outreach_deal_id, mapping.outreach_candidate_id
+    record = record.model_copy(update={
+        "status": InboundEmailStatus.MAPPED, "deal_id": deal_id, "party": "buyer",
+        "mapping_confidence": mapping.confidence, "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(record)
+    try:
+        from shared.orchestration import outreach
+        verdict = await outreach.handle_reply(deal_id, candidate_id, raw.from_address, raw.body_text)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Outreach reply %s: handling failed: %s", record.inbound_id, exc)
+        verdict = {"verdict": "unclear", "error": str(exc)}
+
+    if verdict.get("verdict") in ("interested", "declined") and verdict.get("matched", True):
+        record = record.model_copy(update={
+            "status": InboundEmailStatus.PROCESSED, "processed_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        })
+        await repo.save(record)
+        return ProcessingResult(
+            inbound_id=record.inbound_id, status=InboundEmailStatus.PROCESSED,
+            message=f"Buyer reply classified as {verdict['verdict']} for deal {deal_id}"
+                    + (" — buyer set, negotiation opens" if verdict.get("buyer_set") else "")
+                    + (" — no interested buyer left" if verdict.get("exhausted") else ""),
+        )
+
+    hitl_id = await _create_price_hitl(
+        record,
+        summary=(f"Buyer {record.from_address} replied to the outreach for deal {deal_id} but the "
+                 f"intent is unclear — read it and mark the buyer interested / skip. Preview: {record.body_text[:200]}"),
+        risk_flags=["outreach_reply", "intent_unclear"],
+    )
+    record = record.model_copy(update={
+        "status": InboundEmailStatus.NEEDS_OPERATOR, "hitl_approval_id": hitl_id,
+        "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(record)
+    return ProcessingResult(
+        inbound_id=record.inbound_id, status=InboundEmailStatus.NEEDS_OPERATOR,
+        message=f"Outreach reply stored for operator review (approval {hitl_id}).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +586,14 @@ async def _handle_post_agreement_reply(
             message=f"Buyer acceptance of PI {pi.pi_id} detected; approval {hitl_id} created.",
         )
 
+    # After delivery: the buyer's acceptance of the goods releases the final
+    # escrow tranche (via the CONFIRM_BUYER_ACCEPTANCE gate); a complaint
+    # blocks the auto-release immediately and goes to a human.
+    if mapping.party == "buyer" and deal_status in ("CLEARED", "PAID") and record.deal_id:
+        outcome = await _handle_delivery_reply(record, raw, accepted)
+        if outcome is not None:
+            return outcome
+
     hitl_id = await _create_price_hitl(
         record,
         summary=(
@@ -553,6 +614,100 @@ async def _handle_post_agreement_reply(
         status=InboundEmailStatus.NEEDS_OPERATOR,
         negotiation_id=record.negotiation_id,
         message=f"Post-agreement reply stored for operator review (approval {hitl_id}).",
+    )
+
+
+_DISPUTE_PATTERN = re.compile(
+    r"\b(damaged|dispute|reject(?:ed|ing)? the (?:goods|shipment|cargo)|short[- ]?shipment|"
+    r"quality (?:issue|problem|complaint)|not (?:acceptable|as per|according to)|"
+    r"wrong (?:goods|product|grade)|claim)\b",
+    re.IGNORECASE,
+)
+
+
+async def _handle_delivery_reply(record: InboundEmailRecord, raw: InboundRawEmail, accepted: bool):
+    """Buyer reply after CLEARED: acceptance → CONFIRM_BUYER_ACCEPTANCE gate;
+    complaint → escrow dispute (blocks the inspection-window auto-release) +
+    operator review. Returns None when neither applies (caller falls back)."""
+    repo = get_repository()
+    try:
+        from services.escrow_guard.repository import get_repository as _eg_repo  # type: ignore[import]
+        hold = await _eg_repo().get_hold_by_deal(record.deal_id or "")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Delivery reply: escrow lookup failed for %s: %s", record.deal_id, exc)
+        return None
+    if hold is None:
+        return None
+    pending_final = [t for t in (hold.tranches or []) if t.trigger == "ACCEPTED" and t.status == "PENDING"]
+    if not pending_final or hold.disputed:
+        return None
+    final_amount = round(sum((t.amount or 0.0) for t in pending_final), 2)
+
+    if _DISPUTE_PATTERN.search(raw.body_text or ""):
+        try:
+            from services.escrow_guard.schemas import DisputeEscrowRequest  # type: ignore[import]
+            from services.escrow_guard.service import dispute_escrow  # type: ignore[import]
+            await dispute_escrow(hold.escrow_id, DisputeEscrowRequest(
+                reason=f"Buyer e-mail: {raw.body_text[:300]}", raised_by=record.from_address,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Delivery reply: could not raise dispute on %s: %s", hold.escrow_id, exc)
+        hitl_id = await _create_price_hitl(
+            record,
+            summary=(f"Buyer {record.from_address} reports a problem with the delivered goods — "
+                     f"final tranche {final_amount:,.2f} {hold.currency} is on hold. Preview: {record.body_text[:200]}"),
+            risk_flags=["buyer_complaint", "escrow_disputed"],
+        )
+        record = record.model_copy(update={
+            "status": InboundEmailStatus.NEEDS_OPERATOR, "hitl_approval_id": hitl_id,
+            "updated_at": datetime.now(timezone.utc),
+        })
+        await repo.save(record)
+        return ProcessingResult(
+            inbound_id=record.inbound_id, status=InboundEmailStatus.NEEDS_OPERATOR,
+            negotiation_id=record.negotiation_id,
+            message=f"Buyer complaint — escrow {hold.escrow_id} disputed, approval {hitl_id} created.",
+        )
+
+    if not accepted:
+        return None
+    try:
+        from services.hitl_approval.service import create_approval  # type: ignore[import]
+        from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
+        from shared.orchestration.autonomy_policy import resolve_gate
+        spec = resolve_gate("CONFIRM_BUYER_ACCEPTANCE", amount=final_amount, conditions_ok=True)
+        approval = await create_approval(CreateApprovalRequest(
+            deal_id=record.deal_id or "",
+            action="CONFIRM_BUYER_ACCEPTANCE",
+            summary=(f"Buyer {record.from_address} accepts the delivered goods — release the final "
+                     f"tranche {final_amount:,.2f} {hold.currency} of escrow {hold.escrow_id}. "
+                     f"Preview: {record.body_text[:200]}"),
+            financial_impact_usd=final_amount,
+            risk_flags=["money_movement", "buyer_acceptance_detected"],
+            autonomy_level=spec.level,
+            expires_at=spec.expires_at_iso(),
+            default_on_timeout=spec.default_on_timeout,
+            callback_payload={
+                "deal_id": record.deal_id, "escrow_id": hold.escrow_id,
+                "accepted_by": record.from_address, "notes": raw.body_text[:500],
+                "inbound_id": record.inbound_id,
+            },
+            idempotency_key=f"buyer-accept-{hold.escrow_id}",
+        ))
+        hitl_id = approval.approval_id
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Delivery reply: CONFIRM_BUYER_ACCEPTANCE creation failed: %s", exc)
+        return None
+    record = record.model_copy(update={
+        "status": InboundEmailStatus.PROCESSED, "hitl_approval_id": hitl_id,
+        "processed_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(record)
+    logger.info("Inbound %s reads as buyer goods acceptance — CONFIRM_BUYER_ACCEPTANCE %s", record.inbound_id, hitl_id)
+    return ProcessingResult(
+        inbound_id=record.inbound_id, status=InboundEmailStatus.PROCESSED,
+        negotiation_id=record.negotiation_id,
+        message=f"Buyer acceptance of the goods detected; approval {hitl_id} created.",
     )
 
 

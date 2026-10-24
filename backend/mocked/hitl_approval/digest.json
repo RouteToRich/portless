@@ -1,0 +1,104 @@
+{
+  "_note": "GET /hitl-approval/digest — daily operator digest (shared/orchestration/digest.py); POST /hitl-approval/digest/send delivers it on Telegram / e-mail.",
+  "generated_at": "2026-10-24T09:00:00Z",
+  "text": "PortLess daily digest — 2026-10-24 09:00 UTC\n\nGATES WAITING: 3 (oldest 41h)\n  • RELEASE_SUPPLIER_PAYOUT: 1 (oldest 41h, 23,000 USD, 1 need a 2nd approver)\n  • BOOK_FREIGHT: 1 (oldest 18h)\n  • SEND_NEGOTIATION_EMAIL: 1 (oldest 2h)\n\nDEALS: 5 active, 1 waiting for an interested buyer\n  • ESCROW_FUNDED: 1\n  • MATCHING: 1\n  • NEGOTIATING: 1\n  • PAID: 1\n  • DISPUTE: 1\n  STALLED (1): DEAL-20240104-004 DISPUTE 9d\n\nEXCEPTIONS OPEN: 2 ESCALATED=2\n  • DEAL-20240104-004 QC_FAILED (ESCALATED, 210h)\n  • DEAL-20240102-002 PAYMENT_FAILED (ESCALATED, 30h)\n\nMONEY (USD): in escrow 10,266 · released 23,954 · net to PortLess 23,714 · paid to suppliers 23,000 · still owed to suppliers 7,870\n  1 acceptance window(s) running\nAPIFY: 14/60 actor runs today",
+  "approvals": {
+    "pending_total": 3,
+    "by_action": {
+      "RELEASE_SUPPLIER_PAYOUT": {
+        "count": 1,
+        "oldest_hours": 41.0,
+        "money_usd": 23000.0,
+        "countersign": 1
+      },
+      "BOOK_FREIGHT": {
+        "count": 1,
+        "oldest_hours": 18.0,
+        "money_usd": 0.0,
+        "countersign": 0
+      },
+      "SEND_NEGOTIATION_EMAIL": {
+        "count": 1,
+        "oldest_hours": 2.0,
+        "money_usd": 0.0,
+        "countersign": 0
+      }
+    },
+    "oldest_hours": 41.0,
+    "items": [
+      {
+        "approval_id": "APPR-PAY-20261022-4E",
+        "deal_id": "DEAL-20240102-002",
+        "action": "RELEASE_SUPPLIER_PAYOUT",
+        "age_hours": 41.0,
+        "financial_impact_usd": 23000.0,
+        "deep_link": "http://localhost:5173/approvals"
+      },
+      {
+        "approval_id": "APPR-FRT-20240128-002",
+        "deal_id": "DEAL-20240102-002",
+        "action": "BOOK_FREIGHT",
+        "age_hours": 18.0,
+        "financial_impact_usd": null,
+        "deep_link": "http://localhost:5173/approvals"
+      }
+    ]
+  },
+  "deals": {
+    "active": 5,
+    "by_status": {
+      "DISPUTE": 1,
+      "ESCROW_FUNDED": 1,
+      "MATCHING": 1,
+      "NEGOTIATING": 1,
+      "PAID": 1
+    },
+    "stalled": [
+      {
+        "deal_id": "DEAL-20240104-004",
+        "status": "DISPUTE",
+        "hours": 216.0
+      }
+    ],
+    "waiting_for_buyer": 1
+  },
+  "exceptions": {
+    "open_total": 2,
+    "by_status": {
+      "ESCALATED": 2
+    },
+    "items": [
+      {
+        "exception_id": "EXC-QC-001",
+        "deal_id": "DEAL-20240104-004",
+        "status": "ESCALATED",
+        "category": "QC_FAILED",
+        "age_hours": 210.0
+      },
+      {
+        "exception_id": "EXC-PAY-002",
+        "deal_id": "DEAL-20240102-002",
+        "status": "ESCALATED",
+        "category": "PAYMENT_FAILED",
+        "age_hours": 30.0
+      }
+    ]
+  },
+  "money": {
+    "escrows": 2,
+    "in_escrow": 10266.0,
+    "released_total": 23954.0,
+    "net_to_portless": 23714.46,
+    "payouts_total": 23000.0,
+    "supplier_balance_due": 7870.0,
+    "unreconciled": [],
+    "disputed": 0,
+    "windows_open": 1,
+    "currency": "USD"
+  },
+  "apify": {
+    "runs_today": 14,
+    "max_runs_per_day": 60
+  },
+  "warnings": []
+}

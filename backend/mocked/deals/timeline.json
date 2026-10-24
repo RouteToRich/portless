@@ -1,0 +1,153 @@
+{
+  "_note": "GET /deals/{id}/timeline — every dated fact from every service, merged and sorted (shared/orchestration/evidence.py).",
+  "deal_id": "DEAL-20240102-002",
+  "status": "ESCROW_FUNDED",
+  "count": 16,
+  "warnings": [],
+  "events": [
+    {
+      "at": "2026-09-30T08:00:00Z",
+      "kind": "deal",
+      "title": "Deal created",
+      "detail": "HS 090411 → DE",
+      "ref": null,
+      "actor": "system:auto-deal",
+      "source": "deals"
+    },
+    {
+      "at": "2026-09-30T08:00:05Z",
+      "kind": "status",
+      "title": "→ MATCHING",
+      "detail": "scored via Match Engine",
+      "ref": null,
+      "actor": null,
+      "source": "deals"
+    },
+    {
+      "at": "2026-09-30T08:01:00Z",
+      "kind": "outreach",
+      "title": "Buyer outreach: Ratan Exports Pvt Ltd",
+      "detail": "ratan@ratanexports.ae",
+      "ref": "us-imp-0412",
+      "actor": null,
+      "source": "outreach"
+    },
+    {
+      "at": "2026-09-30T08:02:00Z",
+      "kind": "gate",
+      "title": "Gate DISPATCH_RFQ (L2)",
+      "detail": "RFQ to 3 verified suppliers",
+      "ref": "APPR-RFQ-001",
+      "actor": null,
+      "source": "hitl"
+    },
+    {
+      "at": "2026-09-30T08:02:01Z",
+      "kind": "gate",
+      "title": "Gate DISPATCH_RFQ: AUTO_APPROVED",
+      "detail": "Auto-approved by autonomy level L2",
+      "ref": "APPR-RFQ-001",
+      "actor": "system:auto_l2",
+      "source": "hitl"
+    },
+    {
+      "at": "2026-09-30T08:02:10Z",
+      "kind": "sourcing",
+      "title": "RFQ sent to 3 supplier(s)",
+      "detail": "COMPLETE",
+      "ref": "RFQ-A1B2C3",
+      "actor": null,
+      "source": "sourcing"
+    },
+    {
+      "at": "2026-10-01T10:15:00Z",
+      "kind": "sourcing",
+      "title": "Quote 5450.00 USD/MT from Krishna Spices & Agro",
+      "detail": null,
+      "ref": "QUO-9D8E7F",
+      "actor": null,
+      "source": "sourcing"
+    },
+    {
+      "at": "2026-10-01T10:16:00Z",
+      "kind": "status",
+      "title": "→ NEGOTIATING",
+      "detail": "verified supplier inside corridor (auto-sourced)",
+      "ref": null,
+      "actor": null,
+      "source": "deals"
+    },
+    {
+      "at": "2026-10-02T09:40:00Z",
+      "kind": "outreach",
+      "title": "Buyer replied (selected): Ratan Exports Pvt Ltd",
+      "detail": "Interested — please send your best CIF Jebel Ali price for 20 MT.",
+      "ref": "us-imp-0412",
+      "actor": null,
+      "source": "outreach"
+    },
+    {
+      "at": "2026-10-02T09:45:00Z",
+      "kind": "negotiation",
+      "title": "Negotiation round 1 (init)",
+      "detail": "Opening offer at USD 6,480/MT CIF Jebel Ali, SGS pre-shipment inspection, 30/40/20/10 escrow.",
+      "ref": "RND-1",
+      "actor": null,
+      "source": "negotiation"
+    },
+    {
+      "at": "2026-10-02T09:46:00Z",
+      "kind": "email",
+      "title": "E-mail outbound (sent): PortLess offer — Black pepper 20 MT CIF Jebel Ali",
+      "detail": "ops@portless.io → ratan@ratanexports.ae",
+      "ref": "EMAIL-7A1B2C",
+      "actor": null,
+      "source": "email"
+    },
+    {
+      "at": "2026-10-05T11:00:00Z",
+      "kind": "gate",
+      "title": "Gate CONFIRM_NEGOTIATION_AGREEMENT: APPROVED",
+      "detail": "agreed at 6,350/MT",
+      "ref": "APPR-AGR-002",
+      "actor": "ops@portless.io",
+      "source": "hitl"
+    },
+    {
+      "at": "2026-10-05T11:02:00Z",
+      "kind": "document",
+      "title": "Proforma Invoice issued (127,000.00 USD)",
+      "detail": "valid until 2026-10-19T11:02:00+00:00",
+      "ref": "PI-20261005-002",
+      "actor": null,
+      "source": "dealmaker"
+    },
+    {
+      "at": "2026-10-07T15:30:00Z",
+      "kind": "money",
+      "title": "Escrow opened with tazapay (34,220.00 USD)",
+      "detail": null,
+      "ref": "ESC-002",
+      "actor": null,
+      "source": "escrow"
+    },
+    {
+      "at": "2026-10-09T08:12:00Z",
+      "kind": "money",
+      "title": "Escrow funded (34,220.00 USD)",
+      "detail": null,
+      "ref": "ESC-002",
+      "actor": null,
+      "source": "escrow"
+    },
+    {
+      "at": "2026-10-09T08:12:30Z",
+      "kind": "exception",
+      "title": "Exception DOCUMENT_ERROR: PI render retry",
+      "detail": null,
+      "ref": "EXC-4F2A1B",
+      "actor": null,
+      "source": "exception_resolver"
+    }
+  ]
+}

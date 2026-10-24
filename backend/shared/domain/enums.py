@@ -95,6 +95,10 @@ class ApprovalAction(str, Enum):
     deal exception. A ``block`` verdict never reaches this gate — it stops the
     deal outright."""
     CONFIRM_BUYER_ACCEPTANCE = "CONFIRM_BUYER_ACCEPTANCE"
+    SEND_BUYER_OUTREACH = "SEND_BUYER_OUTREACH"
+    """Templated first introduction to a buyer the scan identified (the
+    outreach funnel, shared/orchestration/outreach.py). Soft REJECT skips
+    that buyer."""
     """The buyer's email after delivery reads as acceptance of the goods →
     confirm it (callback: Escrow-Guard ``accept_escrow`` releases the final
     ACCEPTED-trigger tranche). Money-moving; soft REJECT keeps the inspection

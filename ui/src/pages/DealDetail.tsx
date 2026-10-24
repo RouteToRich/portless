@@ -55,6 +55,11 @@ import { DealPipeline } from "@/components/DealPipeline";
 import { ScoreRing } from "@/components/ScoreRing";
 import { EmailThread } from "@/components/EmailThread";
 import { HitlApprovalCard } from "@/components/HitlApprovalCard";
+import { OutreachPanel } from "@/components/deal/OutreachPanel";
+import { TimelineTab } from "@/components/deal/TimelineTab";
+import { JournalCard } from "@/components/deal/JournalCard";
+import { EvidencePackButtons } from "@/components/deal/EvidencePackButtons";
+import { FreightMilestoneControls } from "@/components/deal/FreightMilestoneControls";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -774,7 +779,7 @@ function OverviewTab({ dealId }: { dealId: string }) {
       )}
 
       {/* Metric cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
         {[
           {
             label: "Est. Margin",
@@ -796,6 +801,22 @@ function OverviewTab({ dealId }: { dealId: string }) {
             value: deal.autonomy_profile,
             color: "#4f8cff",
           },
+          {
+            label: "Quantity",
+            value: deal.quantity_mt != null ? `${deal.quantity_mt} MT` : "—",
+            color: "#28c2a0",
+            hint: deal.quantity_mt != null ? "from the buyer lead / negotiation" : "pipeline default applies",
+          },
+          {
+            label: "Buyer price",
+            value: fmtUSD(deal.buyer_target_price_usd),
+            color: "#4f8cff",
+            hint: deal.buyer_price_source
+              ? `per MT · ${deal.buyer_price_source.replace(/_/g, " ")}`
+              : deal.buyer_target_price_usd != null
+                ? "per MT"
+                : "not known yet",
+          },
         ].map((m) => (
           <Card key={m.label}>
             <CardHeader className="pb-1">
@@ -805,10 +826,17 @@ function OverviewTab({ dealId }: { dealId: string }) {
               <p className="text-xl font-bold" style={{ color: m.color }}>
                 {m.value}
               </p>
+              {"hint" in m && m.hint && (
+                <p className="text-[10px] text-muted-foreground mt-0.5">{m.hint}</p>
+              )}
             </CardContent>
           </Card>
         ))}
       </div>
+
+      {/* Buyer outreach funnel — every identified buyer, contacted in order
+          until one says yes; the negotiation waits for that reply. */}
+      <OutreachPanel deal={deal} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Parties — identity, contact and screening from the Apify actors */}
@@ -1207,10 +1235,11 @@ function qcStatusColor(status: QcRecord["status"]) {
 
 function freightProgress(status: FreightRecord["status"]): number {
   switch (status) {
-    case "BOOKED": return 25;
-    case "IN_TRANSIT": return 60;
-    case "ARRIVED": return 85;
-    case "CLEARED": return 100;
+    case "BOOKED": return 20;
+    case "IN_TRANSIT": return 45;
+    case "ARRIVED": return 65;
+    case "CLEARED": return 85;
+    case "DELIVERED": return 100;
     default: return 0;
   }
 }
@@ -1298,9 +1327,9 @@ function LogisticsTab({ dealId }: { dealId: string }) {
                     <div className="text-right">
                       <Badge
                         variant={
-                          fr.status === "CLEARED"
+                          fr.status === "CLEARED" || fr.status === "DELIVERED"
                             ? "success"
-                            : fr.status === "IN_TRANSIT"
+                            : fr.status === "IN_TRANSIT" || fr.status === "ARRIVED"
                             ? "info"
                             : "secondary"
                         }
@@ -1319,10 +1348,11 @@ function LogisticsTab({ dealId }: { dealId: string }) {
                     indicatorClassName="bg-[#4f8cff]"
                   />
                   <div className="flex justify-between text-[10px] text-muted-foreground">
-                    {["Booked", "In Transit", "Arrived", "Cleared"].map((s) => (
+                    {["Booked", "In Transit", "Arrived", "Cleared", "Delivered"].map((s) => (
                       <span key={s}>{s}</span>
                     ))}
                   </div>
+                  <FreightMilestoneControls dealId={dealId} freight={fr} />
                 </div>
               ))}
             </div>
@@ -1715,6 +1745,8 @@ function EscrowCard({ escrow, dealId }: { escrow: EscrowRecord; dealId: string }
 
   const canAccept = status === "FUNDED" && pendingFinal && !escrow.disputed;
   const canDispute = funded && !escrow.disputed;
+  const canOpenWindow = funded && pendingFinal && !escrow.inspection_deadline && !escrow.disputed;
+  const canClearDispute = escrow.disputed;
   const canRefund =
     (status === "FUNDED" || status === "PARTIALLY_FUNDED" || status === "RELEASED") &&
     undisbursed > 0.01;
@@ -1781,7 +1813,7 @@ function EscrowCard({ escrow, dealId }: { escrow: EscrowRecord; dealId: string }
             </p>
           </div>
           <div className="rounded-lg bg-secondary border border-border p-3">
-            <p className="text-[10px] text-muted-foreground">Inspection window</p>
+            <p className="text-[10px] text-muted-foreground">Acceptance window</p>
             {windowOpen ? (
               <>
                 <p className="text-sm font-semibold mt-1 text-[#f5a623]">
@@ -1789,6 +1821,7 @@ function EscrowCard({ escrow, dealId }: { escrow: EscrowRecord; dealId: string }
                 </p>
                 <p className="text-[10px] text-muted-foreground">
                   auto-release {fmtDateTime(escrow.inspection_deadline)}
+                  {escrow.inspection_trigger && ` · opened by ${escrow.inspection_trigger}`}
                 </p>
               </>
             ) : escrow.buyer_accepted_at ? (
@@ -1796,8 +1829,18 @@ function EscrowCard({ escrow, dealId }: { escrow: EscrowRecord; dealId: string }
                 <p className="text-sm font-semibold mt-1 text-[#2ec28a]">accepted</p>
                 <p className="text-[10px] text-muted-foreground">{timeAgo(escrow.buyer_accepted_at)}</p>
               </>
+            ) : escrow.delivery_confirmed_at ? (
+              <>
+                <p className="text-sm font-semibold mt-1 text-[#4f8cff]">delivered</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {timeAgo(escrow.delivery_confirmed_at)} · opens once proof tranches release
+                </p>
+              </>
             ) : (
-              <p className="text-sm font-semibold mt-1 text-muted-foreground">not open</p>
+              <>
+                <p className="text-sm font-semibold mt-1 text-muted-foreground">not open</p>
+                <p className="text-[10px] text-muted-foreground">waits for the DELIVERED milestone</p>
+              </>
             )}
           </div>
         </div>
@@ -1935,6 +1978,52 @@ function EscrowCard({ escrow, dealId }: { escrow: EscrowRecord; dealId: string }
           >
             <XCircle className="w-3.5 h-3.5" /> Refund undisbursed
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            disabled={!canOpenWindow}
+            title={
+              canOpenWindow
+                ? "Goods reached the buyer — start the acceptance window for the final tranche"
+                : escrow.inspection_deadline
+                  ? "The window is already open"
+                  : "Enabled once the escrow is funded and the final tranche is pending"
+            }
+            onClick={() =>
+              setDialog({
+                kind: "open_window",
+                title: "Confirm delivery — open the acceptance window",
+                description:
+                  "Starts the buyer's acceptance window for the final ACCEPTED-trigger tranche (auto-release on lapse, silence = consent). If a proof tranche is still pending the delivery is recorded and the window opens when it releases. Normally the carrier's DELIVERED milestone does this.",
+                confirmLabel: "Confirm delivery",
+                needsReason: false,
+                variant: "default",
+              })
+            }
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" /> Confirm delivery
+          </Button>
+          {canClearDispute && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs gap-1.5"
+              onClick={() =>
+                setDialog({
+                  kind: "clear_dispute",
+                  title: "Clear the dispute",
+                  description:
+                    "Lifts the buyer's dispute (re-inspection agreed / resolved in PortLess's favour). Releases and the acceptance window resume.",
+                  confirmLabel: "Clear dispute",
+                  needsReason: true,
+                  variant: "default",
+                })
+              }
+            >
+              <ShieldCheck className="w-3.5 h-3.5" /> Clear dispute
+            </Button>
+          )}
         </div>
       </CardContent>
       <EscrowActionDialog spec={dialog} escrow={escrow} dealId={dealId} onClose={() => setDialog(null)} />
@@ -2134,6 +2223,9 @@ function PaymentsTab({ dealId }: { dealId: string }) {
           <PayoutsCard ledger={ledger} />
         </div>
       ) : null}
+
+      {/* Double-entry journal (null until an escrow exists) */}
+      <JournalCard dealId={dealId} />
     </div>
   );
 }
@@ -2172,6 +2264,7 @@ export function DealDetail() {
             </div>
           ) : null}
         </div>
+        {deal && dealId && <EvidencePackButtons dealId={dealId} />}
       </div>
 
       {/* Error */}
@@ -2200,6 +2293,7 @@ export function DealDetail() {
             <TabsTrigger value="logistics">Logistics</TabsTrigger>
             <TabsTrigger value="documents">Documents</TabsTrigger>
             <TabsTrigger value="payments">Payments</TabsTrigger>
+            <TabsTrigger value="timeline">Timeline</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview">
@@ -2216,6 +2310,9 @@ export function DealDetail() {
           </TabsContent>
           <TabsContent value="payments">
             <PaymentsTab dealId={dealId} />
+          </TabsContent>
+          <TabsContent value="timeline">
+            <TimelineTab dealId={dealId} />
           </TabsContent>
         </Tabs>
       )}

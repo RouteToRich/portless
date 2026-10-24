@@ -49,6 +49,7 @@ from .config import settings
 from .notification import notify
 from .repository import get_repository
 from .schemas import (
+    ApprovalSignature,
     ApprovalRecord,
     ApprovalResponse,
     CreateApprovalRequest,
@@ -79,6 +80,41 @@ class ApprovalNotFoundError(Exception):
 class ApprovalAlreadyResolved(Exception):
     def __init__(self, approval_id: str, status: str) -> None:
         super().__init__(f"Approval {approval_id!r} is already {status!r}")
+
+
+class SameApproverError(Exception):
+    """Four-eyes: the second APPROVE must come from a different operator."""
+
+    def __init__(self, approval_id: str, approver: str) -> None:
+        super().__init__(f"Approval {approval_id!r} already carries {approver!r}'s approval — a different operator must countersign")
+        self.approval_id = approval_id
+        self.approver = approver
+
+
+def four_eyes_threshold_usd() -> float | None:
+    """``FOUR_EYES_THRESHOLD_USD``: money gates at/above it need two approvers."""
+    import os
+    raw = os.getenv("FOUR_EYES_THRESHOLD_USD", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def four_eyes_required(action: str, financial_impact_usd: float | None) -> bool:
+    threshold = four_eyes_threshold_usd()
+    if threshold is None or financial_impact_usd is None:
+        return False
+    try:
+        from shared.orchestration.autonomy_policy import ACTION_CLASSES
+        cls = next((c for c in ACTION_CLASSES if c.action == action), None)
+        money = bool(cls and getattr(cls, "money_moving", False))
+    except Exception:  # noqa: BLE001
+        money = action in ("RELEASE_ESCROW_TRANCHE", "RELEASE_SUPPLIER_PAYOUT", "CONFIRM_BUYER_ACCEPTANCE")
+    return money and float(financial_impact_usd) >= threshold
 
 
 class InvalidAction(Exception):
@@ -141,10 +177,27 @@ async def create_approval(req: CreateApprovalRequest) -> ApprovalResponse:
     elif req.autonomy_level == "L1":
         expires_at = now + timedelta(seconds=settings.l1_default_timeout_seconds)
 
+    # Four-eyes: a money gate at/above the threshold is never auto-approved and
+    # needs two distinct operators, whatever the policy resolved.
+    required_approvals = 1
+    autonomy_level = req.autonomy_level
+    risk_flags = list(req.risk_flags)
+    if four_eyes_required(req.action, req.financial_impact_usd):
+        required_approvals = 2
+        if "four_eyes_required" not in risk_flags:
+            risk_flags.append("four_eyes_required")
+        if autonomy_level in ("L2", "L3"):
+            logger.info(
+                "HitlApproval: %s for deal %s (%.2f USD) needs two approvers — %s auto-approval overridden to L0",
+                req.action, req.deal_id, req.financial_impact_usd or 0.0, autonomy_level,
+            )
+            autonomy_level = "L0"
+            expires_at = None
+
     # ---------------------------------------------------------------------------
     # L2 / L3: auto-approve immediately, skip human gate
     # ---------------------------------------------------------------------------
-    if req.autonomy_level in ("L2", "L3"):
+    if autonomy_level in ("L2", "L3"):
         if req.autonomy_level == "L3":
             logger.warning(
                 "HitlApproval: L3 approval request for action=%s deal=%s — "
@@ -201,13 +254,14 @@ async def create_approval(req: CreateApprovalRequest) -> ApprovalResponse:
         action=req.action,
         summary=req.summary,
         financial_impact_usd=req.financial_impact_usd,
-        risk_flags=req.risk_flags,
-        autonomy_level=req.autonomy_level,
+        risk_flags=risk_flags,
+        autonomy_level=autonomy_level,
         status="PENDING",
         expires_at=expires_at,
         default_on_timeout=req.default_on_timeout,
         deep_link=_deep_link(approval_id),
         callback_payload=req.callback_payload,
+        required_approvals=required_approvals,
         created_at=now,
         updated_at=now,
         idempotency_key=req.idempotency_key,
@@ -221,14 +275,15 @@ async def create_approval(req: CreateApprovalRequest) -> ApprovalResponse:
     await _emit(EventTopic.APPROVAL_REQUESTED, req.deal_id, {
         "approval_id": approval_id,
         "action": req.action,
-        "autonomy_level": req.autonomy_level,
+        "autonomy_level": autonomy_level,
         "deep_link": record.deep_link,
         "expires_at": expires_at.isoformat() if expires_at else None,
+        "required_approvals": required_approvals,
     })
 
     logger.info(
-        "HitlApproval: approval %s created (action=%s deal=%s autonomy=%s)",
-        approval_id, req.action, req.deal_id, req.autonomy_level,
+        "HitlApproval: approval %s created (action=%s deal=%s autonomy=%s approvers=%d)",
+        approval_id, req.action, req.deal_id, autonomy_level, required_approvals,
     )
     return response
 
@@ -256,13 +311,45 @@ async def resolve_approval(
     now = datetime.now(timezone.utc)
     new_status = "APPROVED" if req.decision == "APPROVE" else "REJECTED"
 
+    # Four-eyes: collect distinct approvers; the gate resolves on the last one.
+    signatures = list(record.approvals)
+    if req.decision == "APPROVE" and record.required_approvals > 1:
+        if any(s.approved_by == req.resolved_by for s in signatures):
+            raise SameApproverError(approval_id, req.resolved_by)
+        signatures.append(ApprovalSignature(approved_by=req.resolved_by, approved_at=now, note=req.note))
+        if len(signatures) < record.required_approvals:
+            countersign = record.model_copy(update={
+                "approvals": signatures,
+                "modified_body": req.modified_body or record.modified_body,
+                "updated_at": now,
+            })
+            await repo.save(countersign)
+            response = ApprovalResponse.from_record(countersign)
+            await notify("approval_countersign_needed", response.model_dump(mode="json"))
+            await _emit(EventTopic.APPROVAL_REQUESTED, record.deal_id, {
+                "approval_id": approval_id,
+                "action": record.action,
+                "autonomy_level": record.autonomy_level,
+                "deep_link": record.deep_link,
+                "countersign": True,
+                "approvals": len(signatures),
+                "required_approvals": record.required_approvals,
+                "approved_by": req.resolved_by,
+            })
+            logger.info(
+                "HitlApproval: approval %s approved by %s (%d/%d) — waiting for a second approver",
+                approval_id, req.resolved_by, len(signatures), record.required_approvals,
+            )
+            return response
+
     updated = record.model_copy(update={
         "status": new_status,
         "decision": req.decision,
         "resolved_by": req.resolved_by,
         "resolved_at": now,
         "resolution_note": req.note,
-        "modified_body": req.modified_body,
+        "modified_body": req.modified_body or record.modified_body,
+        "approvals": signatures,
         "updated_at": now,
     })
     await repo.save(updated)

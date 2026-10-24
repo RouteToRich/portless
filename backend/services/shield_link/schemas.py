@@ -41,6 +41,10 @@ class ThirdPartyOrderRecord(BaseModel):
     voyage: str | None = None
     etd: str | None = None
     eta: str | None = None
+    last_milestone: str | None = None
+    last_milestone_at: datetime | None = None
+    last_milestone_source: str | None = None
+    delivered_at: datetime | None = None
 
     # QC result (populated by webhook)
     qc_result: Literal["PASS", "FAIL", "PENDING"] | None = None
@@ -179,13 +183,25 @@ class QcWebhookPayload(BaseModel):
     notes: str | None = None
 
 
+FreightMilestone = Literal["DEPARTED", "IN_TRANSIT", "ARRIVED", "CLEARED", "DELIVERED"]
+
+
 class FreightMilestonePayload(BaseModel):
     """Inbound webhook from freight provider with shipment milestone."""
     ext_ref: str
-    milestone: Literal["DEPARTED", "IN_TRANSIT", "ARRIVED", "CLEARED"]
+    milestone: FreightMilestone
     location: str | None = None
     timestamp: str | None = None
     notes: str | None = None
+
+
+class RecordMilestoneRequest(BaseModel):
+    """Operator / tracking-poll milestone (no provider signature)."""
+    milestone: FreightMilestone
+    location: str | None = None
+    timestamp: str | None = None
+    notes: str | None = None
+    source: str = "operator"
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +219,10 @@ class ThirdPartyOrderResponse(BaseModel):
     destination_port: str | None = None
     eta: str | None = None
     qc_result: str | None = None
+    container_number: str | None = None
+    last_milestone: str | None = None
+    last_milestone_at: datetime | None = None
+    delivered_at: datetime | None = None
     created_at: datetime
 
     @classmethod
@@ -218,6 +238,10 @@ class ThirdPartyOrderResponse(BaseModel):
             destination_port=r.destination_port,
             eta=r.eta,
             qc_result=r.qc_result,
+            container_number=r.container_number,
+            last_milestone=r.last_milestone,
+            last_milestone_at=r.last_milestone_at,
+            delivered_at=r.delivered_at,
             created_at=r.created_at,
         )
 

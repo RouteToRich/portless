@@ -156,6 +156,9 @@ class SellerCandidate(BaseModel):
     website: str | None = None
     gstin: str | None = None
     iec: str | None = None
+    udyam: str | None = None
+    export_shipments_12m: int | None = None
+    """Export shipments in the last 12 months (customs records) — reliability input."""
     fit_score: int | None = None
     price_unit: str | None = "USD/MT"
     """``estimated_fob_price_usd`` is normalised to USD per MT (kg prices × 1000)."""

@@ -249,15 +249,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("DealWatcher start failed (parked deals get no reminders): %s", exc)
 
+    # ── Daily operator digest (Telegram / e-mail at DIGEST_HOUR_UTC) ────────
+    _digest: _asyncio.Task | None = None
+    try:
+        from shared.orchestration.digest import run_digest_scheduler
+        _digest = _asyncio.create_task(run_digest_scheduler())
+    except Exception as exc:
+        logger.error("Digest scheduler start failed: %s", exc)
+
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
-    if _deal_watcher and not _deal_watcher.done():
-        _deal_watcher.cancel()
-        try:
-            await _deal_watcher
-        except _asyncio.CancelledError:
-            pass
+    for task in (_digest, _deal_watcher):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except _asyncio.CancelledError:
+                pass
 
     try:
         from shared.bus import close_event_bus

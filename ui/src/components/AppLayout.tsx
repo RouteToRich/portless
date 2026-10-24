@@ -4,6 +4,7 @@ import {
   Activity,
   AlertTriangle,
   Bell,
+  BookMarked,
   BrainCircuit,
   Building2,
   LayoutGrid,
@@ -35,6 +36,7 @@ const NAV = [
   { to: "/approvals",    label: "Approvals Inbox",     icon: Bell },
   { to: "/money",        label: "Money & Margin",      icon: TrendingUp },
   { to: "/exceptions",   label: "Exceptions",          icon: AlertTriangle },
+  { to: "/catalogue",    label: "Catalogue",           icon: BookMarked },
   { to: "/autonomy",     label: "Autonomy Settings",   icon: Settings2 },
   { to: "/health",       label: "System Health",       icon: Activity },
 ];
@@ -58,6 +60,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/approvals":          "Approvals Inbox",
   "/money":              "Money & Margin",
   "/exceptions":         "Exceptions",
+  "/catalogue":          "Catalogue",
   "/autonomy":           "Autonomy Settings",
   "/health":             "System Health",
   "/knowledge":          "Knowledge Base",

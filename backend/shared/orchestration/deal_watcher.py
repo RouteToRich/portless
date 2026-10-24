@@ -14,6 +14,20 @@ happens. This sweep handles the opposite case — *nothing* happens:
                   → same reminder cadence (``DEAL_ESCROW_REMINDER_AFTER_HOURS``)
                   → after the last reminder window: ``deal.exception``
                     (stage ``ESCROW_PENDING:unfunded``)
+  PO_ISSUED       the supplier never acknowledged the Purchase Order / QC was
+                  never booked → supplier reminder every
+                  ``DEAL_PO_ACK_REMINDER_AFTER_HOURS`` (max ``DEAL_REMINDER_MAX``)
+  SUPPLIER_DISPATCH_READY  the inspection never produced a result → supplier
+                  readiness reminder every ``DEAL_QC_READINESS_REMINDER_AFTER_HOURS``
+                  (max ``DEAL_REMINDER_MAX``), then ``deal.exception``
+  IN_TRANSIT      carrier-tracking poll every ``TRACKING_POLL_HOURS`` (the
+                  ``apify_carrier_tracking`` actor; no-op while it is a stub)
+  CLEARED         no delivery confirmation ``INSPECTION_WINDOW_FALLBACK_DAYS``
+                  after clearance → the buyer's acceptance window is opened
+                  anyway (the money chain must not wait forever)
+  MATCHING /      buyer outreach follow-ups (``shared/orchestration/outreach``):
+  NEGOTIATING     one follow-up after ``OUTREACH_FOLLOWUP_DAYS``, next candidate
+                  after ``OUTREACH_NO_REPLY_DAYS`` more
   any other       no status change for ``DEAL_STALL_SLA_HOURS`` (default 7 days)
   non-terminal    → ``deal.exception`` (stage ``<STATUS>:stalled``), once per
                     (deal, status)
@@ -43,6 +57,9 @@ _SKIP = _TERMINAL | _NEGOTIATION_OWNED | {"DRAFT"}
 
 _raised: set[tuple[str, str]] = set()
 """(deal_id, kind) exceptions already emitted by this process."""
+
+_last_tracking_poll: dict[str, datetime] = {}
+"""deal_id → last carrier-tracking poll (in-process)."""
 
 
 def _flag(name: str, default: str) -> str:
@@ -159,6 +176,76 @@ async def _sweep_escrow_pending(deal: Any, now: datetime, counts: dict[str, int]
             counts["exceptions"] += 1
 
 
+async def _sweep_supplier_wait(
+    deal: Any, status: str, now: datetime, counts: dict[str, int],
+    *, every_var: str, every_default: float, kind: str, notify,
+) -> None:
+    """Supplier-side waits: remind the supplier on a cadence, then raise."""
+    since = _aware(deal.updated_at) or now
+    every = _hours(every_var, every_default)
+    due = int((now - since).total_seconds() // (every * 3600)) if every > 0 else 0
+    if 1 <= due <= _reminder_max():
+        if await notify(deal, due):
+            counts["reminders"] += 1
+    elif due > _reminder_max():
+        if await _emit_exception(
+            deal.deal_id, f"{status}:{kind}",
+            f"supplier silent in {status} for {(now - since).days} day(s) after {_reminder_max()} reminder(s)",
+            {"status": status, "since": since.isoformat()},
+        ):
+            counts["exceptions"] += 1
+
+
+async def _sweep_in_transit(deal: Any, now: datetime, counts: dict[str, int]) -> None:
+    """Poll the carrier for the container; the generic stall SLA still applies."""
+    every = _hours("TRACKING_POLL_HOURS", 12.0)
+    last = _last_tracking_poll.get(deal.deal_id)
+    if last is None or now - last >= timedelta(hours=every):
+        _last_tracking_poll[deal.deal_id] = now
+        try:
+            from services.shield_link.service import poll_tracking  # type: ignore[import]
+            result = await poll_tracking(deal.deal_id)
+            if result.get("status") == "ok":
+                counts["tracking_updates"] = counts.get("tracking_updates", 0) + 1
+                logger.info("DealWatcher: tracking → %s for deal %s", result.get("milestone"), deal.deal_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DealWatcher: tracking poll failed for %s: %s", deal.deal_id, exc)
+    await _sweep_generic(deal, "IN_TRANSIT", now, counts)
+
+
+async def _sweep_cleared(deal: Any, now: datetime, counts: dict[str, int]) -> None:
+    """Delivery never confirmed: open the acceptance window after the fallback
+    period so the final tranche and the supplier's balance are not stuck."""
+    try:
+        from services.escrow_guard.repository import get_repository as _eg_repo  # type: ignore[import]
+        hold = await _eg_repo().get_hold_by_deal(deal.deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("DealWatcher: escrow lookup failed for %s: %s", deal.deal_id, exc)
+        hold = None
+    if hold is None or hold.status not in ("FUNDED", "RELEASED"):
+        await _sweep_generic(deal, "CLEARED", now, counts)
+        return
+    pending_final = [t for t in (hold.tranches or []) if t.trigger == "ACCEPTED" and t.status == "PENDING"]
+    if hold.inspection_deadline is None and pending_final:
+        since = _aware(deal.updated_at)
+        days = _hours("INSPECTION_WINDOW_FALLBACK_DAYS", 21.0)
+        if since is not None and now - since >= timedelta(days=days):
+            try:
+                from services.escrow_guard.service import open_inspection_window  # type: ignore[import]
+                await open_inspection_window(
+                    hold.escrow_id, trigger="fallback",
+                    reason=f"no delivery confirmation {int(days)} days after customs clearance", now=now,
+                )
+                counts["window_fallbacks"] = counts.get("window_fallbacks", 0) + 1
+                logger.warning("DealWatcher: inspection window opened by fallback for deal %s", deal.deal_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("DealWatcher: window fallback failed for %s: %s", deal.deal_id, exc)
+        return  # the escrow timeline owns this deal until the window closes
+    if hold.inspection_deadline is not None and pending_final:
+        return  # window running — the escrow watcher auto-releases on lapse
+    await _sweep_generic(deal, "CLEARED", now, counts)
+
+
 async def _sweep_generic(deal: Any, status: str, now: datetime, counts: dict[str, int]) -> None:
     since = _aware(deal.updated_at)
     if since is None:
@@ -196,13 +283,51 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
                 await _sweep_pi_sent(deal, now, counts)
             elif status == "ESCROW_PENDING":
                 await _sweep_escrow_pending(deal, now, counts)
+            elif status == "PO_ISSUED":
+                from shared.orchestration import notifications
+                await _sweep_supplier_wait(
+                    deal, status, now, counts, every_var="DEAL_PO_ACK_REMINDER_AFTER_HOURS",
+                    every_default=48.0, kind="po_unacknowledged", notify=notifications.notify_po_reminder,
+                )
+            elif status == "SUPPLIER_DISPATCH_READY":
+                from shared.orchestration import notifications
+                await _sweep_supplier_wait(
+                    deal, status, now, counts, every_var="DEAL_QC_READINESS_REMINDER_AFTER_HOURS",
+                    every_default=72.0, kind="inspection_overdue",
+                    notify=notifications.notify_qc_readiness_reminder,
+                )
+            elif status == "IN_TRANSIT":
+                await _sweep_in_transit(deal, now, counts)
+            elif status == "CLEARED":
+                await _sweep_cleared(deal, now, counts)
+            elif status == "MATCHING" and _outreach_owns(deal):
+                continue  # the buyer funnel's own follow-up cadence applies
             else:
                 await _sweep_generic(deal, status, now, counts)
         except Exception as exc:  # noqa: BLE001 — one bad deal must not stop the sweep
             logger.error("DealWatcher: sweep failed for deal %s (%s): %s", deal.deal_id, status, exc)
-    if counts["reminders"] or counts["exceptions"]:
+
+    # Buyer outreach follow-ups (MATCHING / NEGOTIATING deals waiting for a buyer).
+    try:
+        from shared.orchestration import outreach
+        oc = await outreach.sweep_followups(now)
+        for key in ("followups", "no_reply", "advanced"):
+            if oc.get(key):
+                counts[f"outreach_{key}"] = oc[key]
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: outreach follow-ups failed: %s", exc)
+
+    if any(v for k, v in counts.items() if k != "scanned"):
         logger.info("DealWatcher: %s", counts)
     return counts
+
+
+def _outreach_owns(deal: Any) -> bool:
+    try:
+        from shared.orchestration import outreach
+        return outreach.waiting_for_buyer(deal)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 async def run_deal_watcher() -> None:
@@ -224,3 +349,4 @@ async def run_deal_watcher() -> None:
 
 def reset_for_tests() -> None:
     _raised.clear()
+    _last_tracking_poll.clear()

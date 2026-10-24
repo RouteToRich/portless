@@ -1,0 +1,131 @@
+{
+  "_note": "GET /escrow-guard/deals/{id}/journal — double-entry journal derived from the escrow hold + payouts (services/escrow_guard/journal.py); ?format=csv for the books.",
+  "deal_id": "DEAL-20240102-002",
+  "currency": "USD",
+  "escrow_id": "ESC-002",
+  "provider": "tazapay",
+  "entries": [
+    {
+      "seq": 1,
+      "at": "2026-10-09T08:12:00Z",
+      "event": "escrow_funded",
+      "debit": "escrow_trust",
+      "credit": "buyer_deposits",
+      "amount": 34220.0,
+      "currency": "USD",
+      "ref": "tzp_ord_8f2a",
+      "memo": "tazapay escrow funded"
+    },
+    {
+      "seq": 2,
+      "at": "2026-10-10T09:00:00Z",
+      "event": "po_issued",
+      "debit": "cogs",
+      "credit": "supplier_payable",
+      "amount": 30870.0,
+      "currency": "USD",
+      "ref": null,
+      "memo": "Purchase Order value owed to the supplier"
+    },
+    {
+      "seq": 3,
+      "at": "2026-10-10T09:30:00Z",
+      "event": "tranche_released:T1",
+      "debit": "portless_cash",
+      "credit": "escrow_trust",
+      "amount": 10163.34,
+      "currency": "USD",
+      "ref": "tzp_rel_t1",
+      "memo": "T1 (PO_ISSUED) net of fees"
+    },
+    {
+      "seq": 4,
+      "at": "2026-10-10T09:30:00Z",
+      "event": "provider_fee:T1",
+      "debit": "provider_fees",
+      "credit": "escrow_trust",
+      "amount": 102.66,
+      "currency": "USD",
+      "ref": "tzp_rel_t1",
+      "memo": "tazapay fee on T1"
+    },
+    {
+      "seq": 5,
+      "at": "2026-10-10T09:30:00Z",
+      "event": "revenue_recognised:T1",
+      "debit": "buyer_deposits",
+      "credit": "sales_revenue",
+      "amount": 10266.0,
+      "currency": "USD",
+      "ref": "tzp_rel_t1",
+      "memo": "T1 earned"
+    },
+    {
+      "seq": 6,
+      "at": "2026-10-15T16:20:00Z",
+      "event": "tranche_released:T2",
+      "debit": "portless_cash",
+      "credit": "escrow_trust",
+      "amount": 13551.12,
+      "currency": "USD",
+      "ref": "tzp_rel_t2",
+      "memo": "T2 (QC_PASSED) net of fees"
+    },
+    {
+      "seq": 7,
+      "at": "2026-10-15T16:20:00Z",
+      "event": "provider_fee:T2",
+      "debit": "provider_fees",
+      "credit": "escrow_trust",
+      "amount": 136.88,
+      "currency": "USD",
+      "ref": "tzp_rel_t2",
+      "memo": "tazapay fee on T2"
+    },
+    {
+      "seq": 8,
+      "at": "2026-10-15T16:20:00Z",
+      "event": "revenue_recognised:T2",
+      "debit": "buyer_deposits",
+      "credit": "sales_revenue",
+      "amount": 13688.0,
+      "currency": "USD",
+      "ref": "tzp_rel_t2",
+      "memo": "T2 earned"
+    },
+    {
+      "seq": 9,
+      "at": "2026-10-16T11:05:00Z",
+      "event": "supplier_payout:supplier_payout",
+      "debit": "supplier_payable",
+      "credit": "portless_cash",
+      "amount": 23000.0,
+      "currency": "USD",
+      "ref": "pn_pay_5d2e",
+      "memo": "Payout PAY-5D2E8A11C0 to SUP-01"
+    }
+  ],
+  "balances": {
+    "escrow_trust": 10266.0,
+    "buyer_deposits": -10266.0,
+    "portless_cash": 714.46,
+    "provider_fees": 239.54,
+    "sales_revenue": -23954.0,
+    "cogs": 30870.0,
+    "supplier_payable": -7870.0
+  },
+  "debits_total": 135998.0,
+  "credits_total": 135998.0,
+  "balanced": true,
+  "issues": [],
+  "accounts": {
+    "escrow_trust": "Escrow (provider trust account)",
+    "buyer_deposits": "Buyer deposits (liability)",
+    "portless_cash": "PortLess cash",
+    "provider_fees": "Escrow provider fees (expense)",
+    "sales_revenue": "Sales revenue",
+    "cogs": "Cost of goods (supplier)",
+    "supplier_payable": "Supplier payable (liability)"
+  },
+  "generated_at": "2026-10-24T09:00:00Z"
+}

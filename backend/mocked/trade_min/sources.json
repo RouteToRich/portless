@@ -1,24 +1,153 @@
 {
   "_note": "GET /trade-min/sources — which demand / buyer / seller / enrichment sources the scanner can reach (live / stub / mock / open), incl. the PortLess-owned Apify actors.",
   "mock_mode": false,
-  "apify": { "token_present": true, "owner": "rich_minds", "ai_tier": true, "max_items": 25 },
+  "apify": {
+    "token_present": true,
+    "owner": "rich_minds",
+    "ai_tier": true,
+    "max_items": 25,
+    "max_runs_per_day": 60,
+    "runs_today": 14
+  },
   "live_count": 11,
-  "total": 15,
+  "total": 16,
   "sources": [
-    { "name": "comtrade", "label": "UN Comtrade", "role": "demand", "provider": "un_comtrade", "mode": "live", "detail": "Historical import volumes + CIF/FOB value ratio (Phase 1)." },
-    { "name": "census", "label": "US Census trade", "role": "demand", "provider": "us_census", "mode": "stub", "detail": "US import statistics (Phase 1, US market only)." },
-    { "name": "apify_export_markets", "label": "Export markets (Comtrade actor)", "role": "demand", "provider": "apify", "actor": "rich_minds~export-market-finder-ai", "mode": "live", "detail": "Market demand + what each market pays per MT - the buyer price benchmark (Phase 1)." },
-    { "name": "apify_us_importers", "label": "US importers (customs records)", "role": "buyers", "provider": "apify", "actor": "rich_minds~us-importer-finder-ai", "mode": "live", "detail": "Named US buyers with shipments, website/phone, fit score (Phase 2, US market)." },
-    { "name": "apify_alibaba_rfq", "label": "Alibaba buying requests", "role": "buyers", "provider": "apify", "actor": "rich_minds~alibaba-rfq-leads-ai", "mode": "live", "detail": "Live RFQs matched to PortLess product lines, buyer country + target price (Phase 2)." },
-    { "name": "alibaba_rfq", "label": "Alibaba Open Platform RFQ", "role": "buyers", "provider": "alibaba_api", "mode": "stub", "detail": "Official RFQ feed (Phase 2) - needs an Alibaba developer app." },
-    { "name": "eu_ted", "label": "EU TED tenders", "role": "buyers", "provider": "eu_ted", "mode": "open", "detail": "EU institutional tenders (Phase 2, EU markets)." },
-    { "name": "gdelt_disruption", "label": "GDELT disruptions", "role": "demand", "provider": "gdelt", "mode": "open", "detail": "Supply disruptions in competitor origins (urgency tier 4)." },
-    { "name": "wits_tariff", "label": "World Bank WITS tariffs", "role": "tariff", "provider": "wits", "mode": "open", "detail": "Applied import duty at HS-6 (Phase 3 tariff gate)." },
-    { "name": "apify_india_suppliers", "label": "Indian suppliers (actor)", "role": "sellers", "provider": "apify", "actor": "rich_minds~india-supplier-finder-ai", "mode": "live", "detail": "Indian manufacturers with price, MOQ, GSTIN and a reachable contact (Phase 4)." },
-    { "name": "indiamart", "label": "IndiaMART", "role": "sellers", "provider": "indiamart_api", "mode": "stub", "detail": "Seller catalogue search + RFQ dispatch (Phase 4)." },
-    { "name": "tradeindia", "label": "TradeIndia", "role": "sellers", "provider": "tradeindia_api", "mode": "stub", "detail": "Fallback seller directory (Phase 4)." },
-    { "name": "apify_contact_finder", "label": "Company contact finder", "role": "enrichment", "provider": "apify", "actor": "rich_minds~company-contact-finder-ai", "mode": "live", "detail": "Buyer/supplier website, checked e-mail, phone, VAT id before the first outbound mail." },
-    { "name": "apify_counterparty_check", "label": "Counterparty screening", "role": "screening", "provider": "apify", "actor": "rich_minds~counterparty-check-ai", "mode": "live", "detail": "OFAC / UN / EU / UK sanctions, GLEIF LEI, EU VIES - gates the Proforma Invoice." },
-    { "name": "apify_email_qualifier", "label": "E-mail deliverability", "role": "enrichment", "provider": "apify", "actor": "rich_minds~email-list-qualifier-ai", "mode": "live", "detail": "Verifies a counterparty address before PortLess writes to it." }
+    {
+      "name": "comtrade",
+      "label": "UN Comtrade",
+      "role": "demand",
+      "provider": "un_comtrade",
+      "mode": "live",
+      "detail": "Historical import volumes + CIF/FOB value ratio (Phase 1)."
+    },
+    {
+      "name": "census",
+      "label": "US Census trade",
+      "role": "demand",
+      "provider": "us_census",
+      "mode": "stub",
+      "detail": "US import statistics (Phase 1, US market only)."
+    },
+    {
+      "name": "apify_export_markets",
+      "label": "Export markets (Comtrade actor)",
+      "role": "demand",
+      "provider": "apify",
+      "actor": "rich_minds~export-market-finder-ai",
+      "mode": "live",
+      "detail": "Market demand + what each market pays per MT - the buyer price benchmark (Phase 1)."
+    },
+    {
+      "name": "apify_us_importers",
+      "label": "US importers (customs records)",
+      "role": "buyers",
+      "provider": "apify",
+      "actor": "rich_minds~us-importer-finder-ai",
+      "mode": "live",
+      "detail": "Named US buyers with shipments, website/phone, fit score (Phase 2, US market)."
+    },
+    {
+      "name": "apify_alibaba_rfq",
+      "label": "Alibaba buying requests",
+      "role": "buyers",
+      "provider": "apify",
+      "actor": "rich_minds~alibaba-rfq-leads-ai",
+      "mode": "live",
+      "detail": "Live RFQs matched to PortLess product lines, buyer country + target price (Phase 2)."
+    },
+    {
+      "name": "alibaba_rfq",
+      "label": "Alibaba Open Platform RFQ",
+      "role": "buyers",
+      "provider": "alibaba_api",
+      "mode": "stub",
+      "detail": "Official RFQ feed (Phase 2) - needs an Alibaba developer app."
+    },
+    {
+      "name": "eu_ted",
+      "label": "EU TED tenders",
+      "role": "buyers",
+      "provider": "eu_ted",
+      "mode": "open",
+      "detail": "EU institutional tenders (Phase 2, EU markets)."
+    },
+    {
+      "name": "gdelt_disruption",
+      "label": "GDELT disruptions",
+      "role": "demand",
+      "provider": "gdelt",
+      "mode": "open",
+      "detail": "Supply disruptions in competitor origins (urgency tier 4)."
+    },
+    {
+      "name": "wits_tariff",
+      "label": "World Bank WITS tariffs",
+      "role": "tariff",
+      "provider": "wits",
+      "mode": "open",
+      "detail": "Applied import duty at HS-6 (Phase 3 tariff gate)."
+    },
+    {
+      "name": "apify_india_suppliers",
+      "label": "Indian suppliers (actor)",
+      "role": "sellers",
+      "provider": "apify",
+      "actor": "rich_minds~india-supplier-finder-ai",
+      "mode": "live",
+      "detail": "Indian manufacturers with price, MOQ, GSTIN and a reachable contact (Phase 4)."
+    },
+    {
+      "name": "indiamart",
+      "label": "IndiaMART",
+      "role": "sellers",
+      "provider": "indiamart_api",
+      "mode": "stub",
+      "detail": "Seller catalogue search + RFQ dispatch (Phase 4)."
+    },
+    {
+      "name": "tradeindia",
+      "label": "TradeIndia",
+      "role": "sellers",
+      "provider": "tradeindia_api",
+      "mode": "stub",
+      "detail": "Fallback seller directory (Phase 4)."
+    },
+    {
+      "name": "apify_contact_finder",
+      "label": "Company contact finder",
+      "role": "enrichment",
+      "provider": "apify",
+      "actor": "rich_minds~company-contact-finder-ai",
+      "mode": "live",
+      "detail": "Buyer/supplier website, checked e-mail, phone, VAT id before the first outbound mail."
+    },
+    {
+      "name": "apify_counterparty_check",
+      "label": "Counterparty screening",
+      "role": "screening",
+      "provider": "apify",
+      "actor": "rich_minds~counterparty-check-ai",
+      "mode": "live",
+      "detail": "OFAC / UN / EU / UK sanctions, GLEIF LEI, EU VIES - gates the Proforma Invoice."
+    },
+    {
+      "name": "apify_email_qualifier",
+      "label": "E-mail deliverability",
+      "role": "enrichment",
+      "provider": "apify",
+      "actor": "rich_minds~email-list-qualifier-ai",
+      "mode": "live",
+      "detail": "Verifies a counterparty address before PortLess writes to it."
+    },
+    {
+      "name": "apify_carrier_tracking",
+      "label": "Carrier / container tracking",
+      "role": "logistics",
+      "provider": "apify",
+      "actor": "rich_minds~container-tracking-ai",
+      "mode": "stub",
+      "external": true,
+      "detail": "Carrier milestones for a booked shipment - DELIVERED opens the buyer's acceptance window. External slot: built outside /actor-pipeline; stub until it exists."
+    }
   ]
 }

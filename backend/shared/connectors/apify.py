@@ -75,6 +75,42 @@ _WAIT_CHUNK_SECONDS = 60  # Apify caps waitForFinish at 60s per poll (300s on ru
 
 _warned_no_token = False
 
+# ── Daily run budget (APIFY_MAX_RUNS_PER_DAY; 0 = unlimited) ──────────────
+# Every actor run costs money. A scan over a large catalogue, the enrichment
+# of every new deal and the carrier-tracking poll all start runs; the cap is a
+# process-wide circuit breaker so a mis-configured schedule cannot burn the
+# account in a night. Counted per UTC day in this process (reset at midnight).
+_runs_by_day: dict[str, int] = {}
+_warned_run_cap: str | None = None
+
+
+def max_runs_per_day() -> int:
+    return max(0, _int("APIFY_MAX_RUNS_PER_DAY", 0))
+
+
+def runs_today() -> int:
+    from datetime import datetime, timezone
+    return _runs_by_day.get(datetime.now(timezone.utc).date().isoformat(), 0)
+
+
+def run_budget_left() -> bool:
+    cap = max_runs_per_day()
+    return cap <= 0 or runs_today() < cap
+
+
+def _count_run() -> None:
+    from datetime import datetime, timezone
+    key = datetime.now(timezone.utc).date().isoformat()
+    for stale in [k for k in _runs_by_day if k != key]:
+        _runs_by_day.pop(stale, None)
+    _runs_by_day[key] = _runs_by_day.get(key, 0) + 1
+
+
+def reset_run_budget_for_tests() -> None:
+    global _warned_run_cap
+    _runs_by_day.clear()
+    _warned_run_cap = None
+
 
 class ApifyError(Exception):
     """Raised when an actor run cannot be started, fails, or its dataset cannot be read."""
@@ -255,7 +291,12 @@ class ApifyActorConnector(Connector):
             "live": self.configured,
             "ai_tier": self._enable_ai,
             "max_items": self._max_items,
+            "external": self.external,
         }
+
+    external = False
+    """True for the slots whose actor is built outside /actor-pipeline (not run
+    automatically by the pool); the connector stubs until it exists."""
 
     def _empty(self, **extra: Any) -> dict[str, Any]:
         return {self.empty_key: [], "total": 0, "actor": self.actor_ref, "stub": True, **extra}
@@ -295,6 +336,18 @@ class ApifyActorConnector(Connector):
                 _warned_no_token = True
             return []
 
+        if not run_budget_left():
+            global _warned_run_cap
+            from datetime import datetime, timezone
+            today = datetime.now(timezone.utc).date().isoformat()
+            if _warned_run_cap != today:
+                logger.warning(
+                    "Apify: daily run budget exhausted (%d/%d runs today, APIFY_MAX_RUNS_PER_DAY) — "
+                    "actor %s skipped until tomorrow", runs_today(), max_runs_per_day(), self.actor_ref,
+                )
+                _warned_run_cap = today
+            return []
+
         limit = min(self._max_items, max_items or self._max_items)
         first_wait = int(min(self._timeout, 300))
         params: dict[str, Any] = {"waitForFinish": first_wait}
@@ -311,6 +364,7 @@ class ApifyActorConnector(Connector):
                 raise ApifyError(
                     f"Apify run start failed for {self.actor_ref}: HTTP {resp.status_code} — {resp.text[:300]}"
                 )
+            _count_run()
             run = resp.json().get("data") or {}
             run_id = run.get("id")
             status = run.get("status")
@@ -734,6 +788,7 @@ class ApifyIndiaSupplierConnector(ApifyActorConnector):
             "gstin": _first(r.get("gstin"), r.get("gstNumber")),
             "iec": _first(r.get("iec"), r.get("iecNumber")),
             "udyam": r.get("udyam"),
+            "export_shipments_12m": _safe_int(_first(r.get("exportShipments12m"), r.get("shipments12m"))),
             "fit_score": _safe_int(r.get("score")),
             "fit_reason": r.get("fitReason") or "",
             "rfq_draft": r.get("generatedText") or "",
@@ -987,6 +1042,100 @@ class ApifyEmailQualifierConnector(ApifyActorConnector):
 
 
 # ---------------------------------------------------------------------------
+# Logistics: carrier / container tracking
+# ---------------------------------------------------------------------------
+
+_MILESTONE_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("DELIVERED", ("delivered", "proof of delivery", "pod ", "empty return", "empty container returned",
+                   "received by consignee", "delivery complete")),
+    ("CLEARED", ("customs cleared", "customs release", "released by customs", "cleared customs",
+                 "import cleared", "clearance complete")),
+    ("ARRIVED", ("arrived", "discharged", "unloaded", "at destination", "gate out", "available for pickup",
+                 "vessel arrival", "berthed")),
+    ("DEPARTED", ("departed", "sailed", "loaded on vessel", "on board", "vessel departure", "gate in",
+                  "loaded")),
+    ("IN_TRANSIT", ("in transit", "transhipment", "transshipment", "on the way", "en route", "at sea")),
+)
+
+
+def carrier_milestone(raw_status: Any) -> str | None:
+    """Normalise a carrier's free-text event into the shield-link milestone
+    vocabulary (DEPARTED / IN_TRANSIT / ARRIVED / CLEARED / DELIVERED)."""
+    text = str(raw_status or "").strip().lower()
+    if not text:
+        return None
+    upper = text.upper().replace(" ", "_")
+    if upper in ("DEPARTED", "IN_TRANSIT", "ARRIVED", "CLEARED", "DELIVERED"):
+        return upper
+    for milestone, words in _MILESTONE_WORDS:
+        if any(w in text for w in words):
+            return milestone
+    return None
+
+
+class ApifyCarrierTrackingConnector(ApifyActorConnector):
+    """``container-tracking-ai`` — carrier milestones for a booked shipment.
+
+    quote(request): ``container_number`` / ``bl_number`` / ``booking_ref`` (at
+    least one), ``carrier`` (SCAC or name, optional). Returns
+    ``{"shipments": [{"ref", "carrier", "milestone", "raw_status", "location",
+    "timestamp", "eta", "delivered", "events"}]}`` with ``milestone`` normalised
+    through ``carrier_milestone``.
+
+    This is the pipeline's external slot: the actor is built and published
+    outside ``/actor-pipeline`` (it is not part of the pool's automatic
+    research → implement → deploy loop). Until it exists on the account the
+    call returns the stub, the watcher's tracking poll is a no-op and the
+    delivery-triggered inspection window falls back to
+    ``INSPECTION_WINDOW_FALLBACK_DAYS`` after customs clearance.
+    """
+
+    name = "apify_carrier_tracking"
+    actor_key = "CARRIER_TRACKING"
+    default_slug = "container-tracking-ai"
+    empty_key = "shipments"
+    external = True
+
+    async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
+        refs = {k: str(request.get(k) or "").strip() for k in ("container_number", "bl_number", "booking_ref")}
+        refs = {k: v for k, v in refs.items() if v}
+        if not refs:
+            raise ValueError("apify_carrier_tracking: container_number, bl_number or booking_ref required")
+        actor_input: dict[str, Any] = {
+            **self._common_input(len(refs)),
+            "sourceMode": "actor",
+            "containerNumbers": [refs["container_number"]] if "container_number" in refs else [],
+            "blNumbers": [refs["bl_number"]] if "bl_number" in refs else [],
+            "bookingRefs": [refs["booking_ref"]] if "booking_ref" in refs else [],
+            "carrier": str(request.get("carrier") or ""),
+            "includeEvents": True,
+        }
+        actor_input["enableAi"] = False  # tracking is deterministic — no scoring tier
+        rows = await self.run(actor_input, max_items=len(refs))
+        if not rows and not self.configured:
+            return self._empty()
+        shipments = []
+        for r in rows:
+            raw_status = _first(r.get("status"), r.get("latestEvent"), r.get("lastEvent"), r.get("milestone"))
+            if isinstance(raw_status, dict):
+                raw_status = _first(raw_status.get("status"), raw_status.get("description"), raw_status.get("event"))
+            milestone = carrier_milestone(raw_status)
+            delivered = bool(r.get("delivered")) or milestone == "DELIVERED"
+            shipments.append({
+                "ref": _first(r.get("containerNumber"), r.get("blNumber"), r.get("bookingRef"), r.get("ref")),
+                "carrier": _first(r.get("carrier"), r.get("carrierName"), r.get("scac")),
+                "milestone": "DELIVERED" if delivered else milestone,
+                "raw_status": raw_status,
+                "location": _first(r.get("location"), r.get("lastLocation"), r.get("currentLocation")),
+                "timestamp": _first(r.get("eventAt"), r.get("lastEventAt"), r.get("timestamp"), r.get("updatedAt")),
+                "eta": _first(r.get("eta"), r.get("estimatedArrival")),
+                "delivered": delivered,
+                "events": r.get("events") if isinstance(r.get("events"), list) else [],
+            })
+        return {"shipments": shipments, "total": len(shipments), "actor": self.actor_ref}
+
+
+# ---------------------------------------------------------------------------
 # Registry helpers
 # ---------------------------------------------------------------------------
 
@@ -998,6 +1147,7 @@ APIFY_CONNECTORS: tuple[type[ApifyActorConnector], ...] = (
     ApifyContactFinderConnector,
     ApifyCounterpartyCheckConnector,
     ApifyEmailQualifierConnector,
+    ApifyCarrierTrackingConnector,
 )
 
 
@@ -1008,5 +1158,7 @@ def describe_actors() -> dict[str, Any]:
         "owner": apify_owner(),
         "ai_tier": _flag("APIFY_ENABLE_AI", True),
         "max_items": _int("APIFY_MAX_ITEMS", 25),
+        "max_runs_per_day": max_runs_per_day(),
+        "runs_today": runs_today(),
         "actors": [cls().describe() for cls in APIFY_CONNECTORS],
     }

@@ -20,9 +20,11 @@ DEAL_TRANSITIONS: dict[DealStatus, set[DealStatus]] = {
     },
     DealStatus.NEGOTIATION_FAILED: {DealStatus.MATCHING, DealStatus.CANCELLED},
     DealStatus.NEGOTIATION_AGREED: {DealStatus.PI_SENT},
-    DealStatus.PI_SENT: {DealStatus.PI_ACCEPTED},
-    DealStatus.PI_ACCEPTED: {DealStatus.ESCROW_PENDING},
-    DealStatus.ESCROW_PENDING: {DealStatus.ESCROW_FUNDED},
+    # A buyer who never accepts / never funds can be cancelled by the
+    # unfunded-deal playbook (operator-gated) instead of stalling forever.
+    DealStatus.PI_SENT: {DealStatus.PI_ACCEPTED, DealStatus.CANCELLED},
+    DealStatus.PI_ACCEPTED: {DealStatus.ESCROW_PENDING, DealStatus.CANCELLED},
+    DealStatus.ESCROW_PENDING: {DealStatus.ESCROW_FUNDED, DealStatus.CANCELLED},
     DealStatus.ESCROW_FUNDED: {DealStatus.PO_ISSUED},
     DealStatus.PO_ISSUED: {DealStatus.SUPPLIER_DISPATCH_READY},
     DealStatus.SUPPLIER_DISPATCH_READY: {DealStatus.QC_PASSED, DealStatus.QC_FAILED},
@@ -30,7 +32,9 @@ DEAL_TRANSITIONS: dict[DealStatus, set[DealStatus]] = {
     DealStatus.IN_TRANSIT: {DealStatus.CLEARED},
     DealStatus.CLEARED: {DealStatus.PAID},
     DealStatus.QC_FAILED: {DealStatus.DISPUTE},
-    DealStatus.DISPUTE: {DealStatus.CANCELLED, DealStatus.REFUNDED},
+    # DISPUTE → SUPPLIER_DISPATCH_READY: the re-inspection playbook (supplier
+    # reworks the lot, a fresh inspection is booked).
+    DealStatus.DISPUTE: {DealStatus.CANCELLED, DealStatus.REFUNDED, DealStatus.SUPPLIER_DISPATCH_READY},
     DealStatus.PAID: set(),
     DealStatus.CANCELLED: set(),
     DealStatus.REFUNDED: set(),

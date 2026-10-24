@@ -1,0 +1,106 @@
+{
+  "_note": "GET/PUT /trade-min/catalogue — product lines + corridors that drive the scanner, the Apify actor inputs and the outreach e-mails (shared/catalogue.py).",
+  "products": [
+    {
+      "product_id": "black-pepper",
+      "hs_code": "090411",
+      "name": "black pepper",
+      "products": [
+        "black pepper",
+        "piper nigrum",
+        "pepper whole 550 g/l"
+      ],
+      "markets": [
+        "DE",
+        "US",
+        "AE"
+      ],
+      "seller_profile": "Indian merchant exporter (PortLess): Kerala / Karnataka growers, SGS/QIMA pre-shipment inspection, neutral escrow, FOB Kochi or CIF, 20–40 MT lots.",
+      "default_quantity_mt": 20.0,
+      "min_order_mt": 10.0,
+      "active": true,
+      "notes": null
+    },
+    {
+      "product_id": "turmeric",
+      "hs_code": "091030",
+      "name": "turmeric",
+      "products": [
+        "turmeric powder",
+        "turmeric fingers",
+        "curcuma longa"
+      ],
+      "markets": [
+        "US",
+        "GB"
+      ],
+      "seller_profile": null,
+      "default_quantity_mt": 18.0,
+      "min_order_mt": 9.0,
+      "active": true,
+      "notes": "Nizamabad / Erode origin"
+    },
+    {
+      "product_id": "basmati",
+      "hs_code": "100630",
+      "name": "basmati rice",
+      "products": [
+        "basmati rice 1121",
+        "sella basmati"
+      ],
+      "markets": [
+        "AE",
+        "SA"
+      ],
+      "seller_profile": null,
+      "default_quantity_mt": 25.0,
+      "min_order_mt": null,
+      "active": false,
+      "notes": "paused until FSSAI re-registration"
+    }
+  ],
+  "updated_by": "ops@portless.io",
+  "updated_at": "2026-10-23T17:40:00Z",
+  "corridors": [
+    {
+      "hs_code": "090411",
+      "name": "black pepper",
+      "market": "DE"
+    },
+    {
+      "hs_code": "090411",
+      "name": "black pepper",
+      "market": "US"
+    },
+    {
+      "hs_code": "090411",
+      "name": "black pepper",
+      "market": "AE"
+    },
+    {
+      "hs_code": "091030",
+      "name": "turmeric",
+      "market": "US"
+    },
+    {
+      "hs_code": "091030",
+      "name": "turmeric",
+      "market": "GB"
+    }
+  ],
+  "defaults": {
+    "hs_codes": [
+      "090422",
+      "100190",
+      "290543"
+    ],
+    "markets": [
+      "ES",
+      "DE",
+      "US",
+      "AE",
+      "GB"
+    ]
+  },
+  "active": true
+}

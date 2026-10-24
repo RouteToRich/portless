@@ -201,6 +201,21 @@ async def map_email(
                 session_status=status,
             )
 
+    # ── Step 2a: Subject [BUY:...] token — buyer answering an outreach e-mail ──
+    try:
+        from shared.orchestration.outreach import parse_token as _parse_outreach
+        hit = _parse_outreach(subject)
+    except Exception:  # noqa: BLE001
+        hit = None
+    if hit:
+        return MappingResult(
+            outreach_deal_id=hit[0],
+            outreach_candidate_id=hit[1],
+            party="buyer",
+            confidence=MappingConfidence.SUBJECT_TOKEN,
+            reason=f"Matched via subject token [BUY:{hit[0]}:{hit[1]}]",
+        )
+
     # ── Step 2b: Subject [RFQ:...] token — supplier quote, sourcing stage ──
     rfq_id = rfq_id_from_subject(subject)
     if rfq_id:

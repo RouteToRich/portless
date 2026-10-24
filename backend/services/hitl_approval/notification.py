@@ -125,3 +125,39 @@ async def notify(event_type: str, approval_dict: dict[str, Any]) -> None:
     if url:
         secret = settings.notify_webhook_secret
         asyncio.create_task(_post_webhook(url, secret, event))
+
+    # Telegram push for the operator (gates that wait for a human only)
+    try:
+        from shared import telegram
+        if telegram.configured() and _telegram_worthy(event_type, approval_dict):
+            asyncio.create_task(telegram.send_message(_telegram_text(event_type, approval_dict)))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("HITL telegram push skipped: %s", exc)
+
+
+def _telegram_worthy(event_type: str, a: dict[str, Any]) -> bool:
+    if event_type == "approval_countersign_needed":
+        return True
+    if event_type == "approval_created":
+        return a.get("status") == "PENDING"
+    return False
+
+
+def _telegram_text(event_type: str, a: dict[str, Any]) -> str:
+    money = a.get("financial_impact_usd")
+    head = "Second approver needed" if event_type == "approval_countersign_needed" else "Approval needed"
+    lines = [
+        f"PortLess · {head}",
+        f"{a.get('action')} · deal {a.get('deal_id')} · {a.get('autonomy_level')}",
+    ]
+    if money:
+        lines.append(f"Amount: {float(money):,.2f} USD")
+    if a.get("summary"):
+        lines.append(str(a["summary"])[:300])
+    if a.get("approvals"):
+        lines.append("Approved so far by: " + ", ".join(s.get("approved_by", "?") for s in a["approvals"]))
+    if a.get("expires_at"):
+        lines.append(f"Auto-{str(a.get('default_on_timeout', 'REJECT')).lower()} at {a['expires_at']}")
+    if a.get("deep_link"):
+        lines.append(a["deep_link"])
+    return "\n".join(lines)

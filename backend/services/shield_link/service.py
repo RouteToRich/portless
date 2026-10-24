@@ -72,11 +72,14 @@ from .schemas import (
     QcQuoteRequest,
     QcQuoteResponse,
     QcWebhookPayload,
+    RecordMilestoneRequest,
     ThirdPartyOrderRecord,
     ThirdPartyOrderResponse,
 )
 
 logger = logging.getLogger(__name__)
+
+_MILESTONE_ORDER = ["DEPARTED", "IN_TRANSIT", "ARRIVED", "CLEARED", "DELIVERED"]
 
 
 # ---------------------------------------------------------------------------
@@ -227,11 +230,15 @@ async def _buyer_opted_qc_provider(deal_id: str) -> str | None:
 # QC booking
 # ---------------------------------------------------------------------------
 
-async def book_qc(req: QcBookingRequest) -> ThirdPartyOrderResponse:
+async def book_qc(req: QcBookingRequest, *, reinspection: bool = False) -> ThirdPartyOrderResponse:
     """Book a QC inspection with the configured provider.
 
     Pre-condition: deal must be in ``PO_ISSUED`` state.
     Post: deal → ``SUPPLIER_DISPATCH_READY``, emits ``qc.booked``.
+
+    ``reinspection=True`` (QC_FAILED playbook): the deal already sits in
+    ``SUPPLIER_DISPATCH_READY`` after the rework — a fresh booking is made
+    without a deal transition.
     """
     repo = get_repository()
 
@@ -242,12 +249,15 @@ async def book_qc(req: QcBookingRequest) -> ThirdPartyOrderResponse:
 
     deal = await _fetch_deal(req.deal_id)
     deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
-    if deal_status != "PO_ISSUED":
-        raise InvalidDealState(req.deal_id, deal_status, "PO_ISSUED")
-
     from shared.domain.enums import DealStatus
-    if not can_transition(DealStatus(deal_status), DealStatus.SUPPLIER_DISPATCH_READY):
-        raise InvalidDealState(req.deal_id, deal_status, "PO_ISSUED")
+    if reinspection:
+        if deal_status != "SUPPLIER_DISPATCH_READY":
+            raise InvalidDealState(req.deal_id, deal_status, "SUPPLIER_DISPATCH_READY")
+    else:
+        if deal_status != "PO_ISSUED":
+            raise InvalidDealState(req.deal_id, deal_status, "PO_ISSUED")
+        if not can_transition(DealStatus(deal_status), DealStatus.SUPPLIER_DISPATCH_READY):
+            raise InvalidDealState(req.deal_id, deal_status, "PO_ISSUED")
 
     # Provider resolution: explicit request → buyer-opted (from the deal's
     # negotiation session) → fallback strategy ("cheapest" catalog provider by
@@ -305,13 +315,15 @@ async def book_qc(req: QcBookingRequest) -> ThirdPartyOrderResponse:
     })
     await repo.save(updated)
 
-    await _transition_deal(req.deal_id, "SUPPLIER_DISPATCH_READY", f"QC booked — ref {result.get('ext_ref')}")
+    if not reinspection:
+        await _transition_deal(req.deal_id, "SUPPLIER_DISPATCH_READY", f"QC booked — ref {result.get('ext_ref')}")
     await _emit(EventTopic.QC_BOOKED, req.deal_id, {
         "tpo_id": tpo_id,
         "provider": provider,
         "ext_ref": result.get("ext_ref"),
         "inspection_date": result.get("inspection_date"),
         "stub": result.get("stub", False),
+        "reinspection": reinspection,
     })
 
     logger.info("ShieldLink: QC booked %s for deal %s (ref=%s)", tpo_id, req.deal_id, result.get("ext_ref"))
@@ -541,10 +553,12 @@ async def handle_freight_milestone(
     raw_headers: dict[str, str],
     raw_body: bytes,
 ) -> dict[str, str]:
-    """Process freight milestone webhook (DEPARTED / IN_TRANSIT / ARRIVED / CLEARED).
+    """Process freight milestone webhook (DEPARTED / IN_TRANSIT / ARRIVED /
+    CLEARED / DELIVERED).
 
-    Transitions deal → CLEARED when milestone is ARRIVED or CLEARED.
-    Emits freight.milestone for all milestones.
+    Transitions deal → CLEARED when milestone is ARRIVED or CLEARED (or
+    DELIVERED while the deal is still IN_TRANSIT). Emits freight.milestone for
+    all milestones; DELIVERED opens the buyer's acceptance window (escrow).
     """
     repo = get_repository()
 
@@ -560,34 +574,134 @@ async def handle_freight_milestone(
     if not valid:
         raise WebhookVerifyError(f"Freight webhook signature invalid for ext_ref={ext_ref}")
 
-    new_status = "IN_PROGRESS" if payload.milestone in ("DEPARTED", "IN_TRANSIT") else "COMPLETED"
+    return await _apply_milestone(
+        tpo, payload.milestone, location=payload.location, timestamp=payload.timestamp,
+        notes=payload.notes, source="webhook",
+    )
+
+
+async def _apply_milestone(
+    tpo: ThirdPartyOrderRecord,
+    milestone: str,
+    *,
+    location: str | None = None,
+    timestamp: str | None = None,
+    notes: str | None = None,
+    source: str = "webhook",
+) -> dict[str, str]:
+    """Record one carrier milestone on the freight order (webhook, tracking
+    poll or operator) and move the deal: ARRIVED/CLEARED → CLEARED; DELIVERED
+    → CLEARED if still at sea, then ``freight.milestone`` lets the escrow open
+    the buyer's acceptance window."""
+    repo = get_repository()
+    now = datetime.now(timezone.utc)
+    ext_ref = tpo.ext_ref or tpo.tpo_id
+    prev = tpo.last_milestone
+    advance = prev is None or _MILESTONE_ORDER.index(milestone) >= _MILESTONE_ORDER.index(prev)
+    if not advance:
+        logger.info("ShieldLink: milestone %s for deal %s ignored (already at %s)", milestone, tpo.deal_id, prev)
+        return {"status": "ignored", "milestone": milestone, "deal_id": tpo.deal_id, "last_milestone": prev or ""}
+
+    new_status = "IN_PROGRESS" if milestone in ("DEPARTED", "IN_TRANSIT") else "COMPLETED"
     updated = tpo.model_copy(update={
         "status": new_status,
-        "updated_at": datetime.now(timezone.utc),
+        "last_milestone": milestone,
+        "last_milestone_at": now,
+        "last_milestone_source": source,
+        "delivered_at": now if milestone == "DELIVERED" and tpo.delivered_at is None else tpo.delivered_at,
+        "updated_at": now,
     })
     await repo.save(updated)
 
     await _emit(EventTopic.FREIGHT_MILESTONE, tpo.deal_id, {
         "tpo_id": tpo.tpo_id,
         "ext_ref": ext_ref,
-        "milestone": payload.milestone,
-        "location": payload.location,
-        "timestamp": payload.timestamp,
+        "milestone": milestone,
+        "location": location,
+        "timestamp": timestamp,
+        "notes": notes,
+        "source": source,
+        "delivered_at": updated.delivered_at.isoformat() if updated.delivered_at else None,
     })
 
-    if payload.milestone in ("ARRIVED", "CLEARED"):
+    if milestone in ("ARRIVED", "CLEARED"):
         try:
-            await _transition_deal(tpo.deal_id, "CLEARED", f"Cargo {payload.milestone} — ref {ext_ref}")
+            await _transition_deal(tpo.deal_id, "CLEARED", f"Cargo {milestone} — ref {ext_ref}")
             await _emit(EventTopic.CUSTOMS_CLEARED, tpo.deal_id, {
                 "tpo_id": tpo.tpo_id,
                 "ext_ref": ext_ref,
-                "milestone": payload.milestone,
+                "milestone": milestone,
             })
         except Exception as exc:
             logger.error("ShieldLink: CLEARED transition failed for deal %s: %s", tpo.deal_id, exc)
+    elif milestone == "DELIVERED":
+        # Delivery without an earlier ARRIVED/CLEARED event (tracking actors
+        # often report only the latest state): clear the deal first.
+        try:
+            deal = await _fetch_deal(tpo.deal_id)
+            deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+            if deal_status == "IN_TRANSIT":
+                await _transition_deal(tpo.deal_id, "CLEARED", f"Cargo DELIVERED — ref {ext_ref}")
+                await _emit(EventTopic.CUSTOMS_CLEARED, tpo.deal_id, {
+                    "tpo_id": tpo.tpo_id, "ext_ref": ext_ref, "milestone": milestone,
+                })
+        except Exception as exc:
+            logger.error("ShieldLink: CLEARED-on-delivery transition failed for deal %s: %s", tpo.deal_id, exc)
 
-    logger.info("ShieldLink: milestone %s for deal %s", payload.milestone, tpo.deal_id)
-    return {"status": "ok", "milestone": payload.milestone, "deal_id": tpo.deal_id}
+    logger.info("ShieldLink: milestone %s (%s) for deal %s", milestone, source, tpo.deal_id)
+    return {"status": "ok", "milestone": milestone, "deal_id": tpo.deal_id}
+
+
+async def record_milestone(ref: str, req: RecordMilestoneRequest) -> dict[str, str]:
+    """Operator / tracking-poll milestone by TPO id or carrier reference (no
+    provider signature — the caller is already authenticated)."""
+    repo = get_repository()
+    tpo = await repo.get(ref)
+    if tpo is None:
+        tpo = await repo.get_by_ext_ref(ref)
+    if tpo is None or tpo.order_type != "FREIGHT":
+        raise TpoNotFoundError(ref)
+    return await _apply_milestone(
+        tpo, req.milestone, location=req.location, timestamp=req.timestamp, notes=req.notes, source=req.source,
+    )
+
+
+async def poll_tracking(deal_id: str) -> dict[str, Any]:
+    """Ask the carrier-tracking actor where the deal's container is and record
+    the latest milestone. Returns ``{"status": ...}`` — ``no_booking`` /
+    ``no_reference`` / ``stub`` (actor not configured) / ``unchanged`` / ``ok``.
+    Never raises: a tracking failure must not break the watcher sweep."""
+    repo = get_repository()
+    orders = await repo.list_by_deal(deal_id)
+    tpo = next((o for o in orders if o.order_type == "FREIGHT" and o.status != "FAILED"), None)
+    if tpo is None:
+        return {"status": "no_booking", "deal_id": deal_id}
+    if not (tpo.container_number or tpo.ext_ref):
+        return {"status": "no_reference", "deal_id": deal_id, "tpo_id": tpo.tpo_id}
+    try:
+        from shared.connectors.registry import get_connector
+        connector = get_connector("apify_carrier_tracking")
+        result = await connector.quote({
+            "container_number": tpo.container_number,
+            "booking_ref": tpo.ext_ref,
+            "carrier": tpo.provider_payload.get("carrier") or tpo.provider,
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ShieldLink: tracking poll failed for deal %s: %s", deal_id, exc)
+        return {"status": "error", "deal_id": deal_id, "error": str(exc)}
+    if result.get("stub"):
+        return {"status": "stub", "deal_id": deal_id, "tpo_id": tpo.tpo_id}
+    shipment = next((s for s in result.get("shipments") or [] if s.get("milestone")), None)
+    if shipment is None:
+        return {"status": "no_event", "deal_id": deal_id, "tpo_id": tpo.tpo_id}
+    milestone = shipment["milestone"]
+    if tpo.last_milestone == milestone:
+        return {"status": "unchanged", "deal_id": deal_id, "milestone": milestone}
+    applied = await _apply_milestone(
+        tpo, milestone, location=shipment.get("location"), timestamp=shipment.get("timestamp"),
+        notes=shipment.get("raw_status"), source="tracking",
+    )
+    return {**applied, "tpo_id": tpo.tpo_id}
 
 
 # ---------------------------------------------------------------------------

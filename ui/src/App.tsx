@@ -9,6 +9,7 @@ import { ApprovalsInbox } from "./pages/ApprovalsInbox";
 import { MoneyMargin } from "./pages/MoneyMargin";
 import { Exceptions } from "./pages/Exceptions";
 import { AutonomySettings } from "./pages/AutonomySettings";
+import { Catalogue } from "./pages/Catalogue";
 import { SystemHealth } from "./pages/SystemHealth";
 import { KnowledgeBase } from "./pages/KnowledgeBase";
 import { OrganizationsAdmin } from "./pages/OrganizationsAdmin";
@@ -95,6 +96,14 @@ export default function App() {
             element={
               <RequirePortless>
                 <Exceptions />
+              </RequirePortless>
+            }
+          />
+          <Route
+            path="/catalogue"
+            element={
+              <RequirePortless>
+                <Catalogue />
               </RequirePortless>
             }
           />

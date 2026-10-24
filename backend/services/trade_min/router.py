@@ -2,11 +2,52 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel, Field
+
+from shared import catalogue as _catalogue
+from shared.catalogue import ProductLine
 
 from . import service
+from .config import DEFAULT_CONFIG
 from .schemas import EnrichedOpportunity, MatchEngineSeed, ScanRequest
 
 router = APIRouter(prefix="/trade-min", tags=["trade-min"])
+
+
+class CatalogueUpdate(BaseModel):
+    products: list[ProductLine] = Field(default_factory=list)
+    updated_by: str = "operator"
+
+
+def _catalogue_view() -> dict:
+    cat = _catalogue.get_catalogue()
+    return {
+        **cat.model_dump(mode="json"),
+        "corridors": _catalogue.corridors(),
+        "defaults": {
+            "hs_codes": list(DEFAULT_CONFIG.default_hs_codes),
+            "markets": list(DEFAULT_CONFIG.default_markets),
+        },
+        "active": bool(_catalogue.active_lines()),
+    }
+
+
+@router.get("/catalogue")
+async def get_catalogue() -> dict:
+    """What PortLess sells and where: product lines (HS code, search words,
+    markets, seller profile) that drive the scanner, the Apify actor inputs
+    and the outreach e-mails. Empty → the built-in defaults are used."""
+    return _catalogue_view()
+
+
+@router.put("/catalogue")
+async def put_catalogue(payload: CatalogueUpdate) -> dict:
+    """Replace the catalogue (Mongo-persisted; in-memory without MONGO_URI)."""
+    try:
+        await _catalogue.set_catalogue(payload.products, updated_by=payload.updated_by)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    return _catalogue_view()
 
 
 @router.get("/health")

@@ -218,6 +218,40 @@ async def _noop() -> None:
     return None
 
 
+def _keyword_for(hs_code: str) -> str:
+    """Search keyword for an HS code: the catalogue's product name when the
+    operator defined one, else the static HS → keyword map."""
+    try:
+        from shared import catalogue
+        name = catalogue.product_name_for(hs_code)
+        if name:
+            return name
+    except Exception:  # noqa: BLE001
+        pass
+    from shared.connectors.trade_intel import _HS_TO_KEYWORD as _HS_KW
+    return _HS_KW.get(hs_code[:4], hs_code)
+
+
+def _products_for(hs_code: str) -> list[str]:
+    """Bill-of-lading / RFQ words the PortLess actors search for."""
+    try:
+        from shared import catalogue
+        words = catalogue.products_for(hs_code)
+        if words:
+            return words
+    except Exception:  # noqa: BLE001
+        pass
+    return [_keyword_for(hs_code)]
+
+
+def _seller_profile_for(hs_code: str) -> str | None:
+    try:
+        from shared import catalogue
+        return catalogue.seller_profile_for(hs_code)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _new_opportunity_id() -> str:
     return f"OPP-{uuid4().hex[:12].upper()}"
 
@@ -564,8 +598,8 @@ async def _phase2_live_signals(
 ) -> _Phase2Result:
     now = datetime.now(timezone.utc)
 
-    from shared.connectors.trade_intel import _HS_TO_KEYWORD as _HS_KW
-    keyword = _HS_KW.get(hs_code[:4], hs_code)
+    keyword = _keyword_for(hs_code)
+    products = _products_for(hs_code)
     competitors = _HS_COMPETITOR_ORIGINS.get(hs_code[:4], ["China", "Vietnam"])
 
     ted_req: dict = {"query": keyword, "limit": 25}
@@ -581,7 +615,7 @@ async def _phase2_live_signals(
     )
     us_req: dict | None = None
     if market == "US":
-        us_req = {"hs_code": hs_code, "products": [keyword], "origin_country": "IN",
+        us_req = {"hs_code": hs_code, "products": products, "origin_country": "IN",
                   "unit_value_usd_per_kg": bench_per_kg,
                   "unit_value_source": f"UN Comtrade via export-market actor, HS {hs_code}"}
 
@@ -593,7 +627,9 @@ async def _phase2_live_signals(
             "hours_lookback": 72,
         }),
         _safe_quote("eu_ted", ted_req),
-        _safe_quote("apify_alibaba_rfq", {"products": [keyword], "country": market}),
+        _safe_quote("apify_alibaba_rfq", {
+            "products": products, "country": market, "seller_profile": _seller_profile_for(hs_code),
+        }),
         _safe_quote("apify_us_importers", us_req) if us_req else _noop(),
     )
 
@@ -863,8 +899,7 @@ async def _phase4_seller_discovery(
     hs_code: str,
     config: TradeMinConfig,  # noqa: ARG001
 ) -> list[SellerCandidate]:
-    from shared.connectors.trade_intel import _HS_TO_KEYWORD as _HS_KW
-    keyword = _HS_KW.get(hs_code[:4], hs_code)
+    keyword = _keyword_for(hs_code)
 
     im_r, ti_r, apify_r = await asyncio.gather(
         _safe_quote("indiamart", {"hs_code": hs_code, "page_size": 20}),
@@ -943,6 +978,8 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         website=s.get("website") or None,
         gstin=s.get("gstin") or None,
         iec=s.get("iec") or None,
+        udyam=s.get("udyam") or None,
+        export_shipments_12m=(int(s["export_shipments_12m"]) if s.get("export_shipments_12m") else None),
         fit_score=s.get("fit_score"),
         price_unit="USD/MT",
     )
@@ -1096,15 +1133,10 @@ async def _phase5_assemble_and_persist(
 async def scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
     """Run the 5-phase pipeline for every HS-code × market combination."""
     config = DEFAULT_CONFIG
-    hs_codes = payload.hs_codes or list(config.default_hs_codes)
-    markets = payload.target_markets or list(config.default_markets)
     min_rank = max(payload.min_arbitrage_rank, config.min_arbitrage_rank)
+    pairs = _scan_pairs(payload, config)
 
-    tasks = [
-        _scan_one(hs, mkt, config)
-        for hs in hs_codes
-        for mkt in markets
-    ]
+    tasks = [_scan_one(hs, mkt, config) for hs, mkt in pairs]
     raw = await asyncio.gather(*tasks, return_exceptions=True)
 
     results: list[EnrichedOpportunity] = []
@@ -1119,6 +1151,31 @@ async def scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
 
     results.sort(key=lambda o: (o.urgency_tier, o.arbitrage_rank), reverse=True)
     return results[: config.max_per_scan]
+
+
+def _scan_pairs(payload: ScanRequest, config: TradeMinConfig) -> list[tuple[str, str]]:
+    """(hs_code, market) corridors for one scan: explicit request values win;
+    otherwise the operator's catalogue (each product line × its own markets);
+    otherwise the built-in defaults."""
+    try:
+        from shared import catalogue
+        lines = catalogue.active_lines()
+    except Exception:  # noqa: BLE001
+        lines = []
+    if payload.hs_codes or payload.target_markets:
+        hs_codes = payload.hs_codes or sorted({p.hs_code for p in lines}) or list(config.default_hs_codes)
+        markets = payload.target_markets or sorted({m for p in lines for m in p.markets}) or list(config.default_markets)
+        return [(hs, mkt) for hs in hs_codes for mkt in markets]
+    if lines:
+        seen: set[tuple[str, str]] = set()
+        pairs: list[tuple[str, str]] = []
+        for line in lines:
+            for mkt in (line.markets or list(config.default_markets)):
+                if (line.hs_code, mkt) not in seen:
+                    seen.add((line.hs_code, mkt))
+                    pairs.append((line.hs_code, mkt))
+        return pairs
+    return [(hs, mkt) for hs in config.default_hs_codes for mkt in config.default_markets]
 
 
 async def _scan_one(
@@ -1208,6 +1265,8 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
             "website":            s.website,
             "gstin":              s.gstin,
             "iec":                s.iec,
+            "udyam":              s.udyam,
+            "export_shipments_12m": s.export_shipments_12m,
             "fit_score":          s.fit_score,
         }
         for s in opp.seller_candidates[:5]
@@ -1233,7 +1292,10 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
             "price_unit":   b.price_unit,
             "fit_score":    b.fit_score,
             "pitch_angle":  b.pitch_angle,
+            "fit_reason":   b.fit_reason,
             "risk_score":   b.risk_score,
+            "quantity":     b.quantity,
+            "quantity_unit": b.quantity_unit,
         }
         for b in sorted(opp.buyer_signals, key=_buyer_rank)[:5]
     ]
@@ -1290,6 +1352,7 @@ def describe_sources() -> dict[str, Any]:
             "actor": a.get("actor", f"{apify['owner']}~{slug}"),
             "mode": _mode(bool(a.get("live"))),
             "detail": detail,
+            "external": bool(a.get("external")),
         }
 
     sources: list[dict[str, Any]] = [
@@ -1328,12 +1391,17 @@ def describe_sources() -> dict[str, Any]:
                "OFAC / UN / EU / UK sanctions, GLEIF LEI, EU VIES - gates the Proforma Invoice."),
         _actor("email-list-qualifier-ai", "enrichment", "E-mail deliverability",
                "Verifies a counterparty address before PortLess writes to it."),
+        _actor("container-tracking-ai", "logistics", "Carrier tracking (external actor)",
+               "Container / BL milestones for shipments in transit; DELIVERED opens the buyer's "
+               "acceptance window. Built outside /actor-pipeline; stubs until it exists."),
     ]
     live = sum(1 for src in sources if src["mode"] in ("live", "open"))
     return {
         "mock_mode": mock,
         "apify": {"token_present": apify["token_present"], "owner": apify["owner"],
-                  "ai_tier": apify["ai_tier"], "max_items": apify["max_items"]},
+                  "ai_tier": apify["ai_tier"], "max_items": apify["max_items"],
+                  "max_runs_per_day": apify.get("max_runs_per_day", 0),
+                  "runs_today": apify.get("runs_today", 0)},
         "live_count": live,
         "total": len(sources),
         "sources": sources,

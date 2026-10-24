@@ -31,6 +31,7 @@ from .schemas import (
     QcQuoteRequest,
     QcQuoteResponse,
     QcWebhookPayload,
+    RecordMilestoneRequest,
     ThirdPartyOrderResponse,
 )
 from .service import (
@@ -48,8 +49,10 @@ from .service import (
     handle_qc_result,
     list_deal_orders,
     list_qc_providers,
+    poll_tracking,
     quote_freight,
     quote_qc,
+    record_milestone,
 )
 
 logger = logging.getLogger(__name__)
@@ -148,6 +151,23 @@ async def api_book_freight(req: FreightBookingRequest) -> ThirdPartyOrderRespons
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+
+@router.post("/freight/{ref}/milestone")
+async def api_record_milestone(ref: str, req: RecordMilestoneRequest) -> dict[str, Any]:
+    """Record a carrier milestone by TPO id or carrier reference (operator /
+    tracking integration without a signed webhook). DELIVERED opens the
+    buyer's acceptance window on the escrow."""
+    try:
+        return await record_milestone(ref, req)
+    except TpoNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post("/deals/{deal_id}/track")
+async def api_poll_tracking(deal_id: str) -> dict[str, Any]:
+    """Poll the carrier-tracking actor for the deal's container now."""
+    return await poll_tracking(deal_id)
 
 
 @router.post("/freight/webhook")

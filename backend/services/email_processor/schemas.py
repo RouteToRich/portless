@@ -100,6 +100,10 @@ class MappingResult(BaseModel):
     rfq_id: str | None = None
     """Set when the e-mail is a supplier's reply to an ``[RFQ:<id>]`` request
     (sourcing stage) rather than a negotiation round."""
+    outreach_deal_id: str | None = None
+    outreach_candidate_id: str | None = None
+    """Set when the e-mail is a buyer's reply to a ``[BUY:<deal>:<candidate>]``
+    outreach introduction (buyer funnel)."""
     party: str | None = None
     """'buyer' | 'supplier' — derived from which party was addressed in the outbound email."""
     confidence: MappingConfidence

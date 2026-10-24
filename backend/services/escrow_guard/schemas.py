@@ -92,6 +92,12 @@ class EscrowHoldRecord(BaseModel):
 
     # -- final-tranche release authority (buyer acceptance / inspection window) --
     inspection_deadline: datetime | None = None
+    delivery_confirmed_at: datetime | None = None
+    """Goods delivered (carrier milestone / operator); the window opens as soon
+    as every proof-gated tranche has released."""
+    inspection_opened_at: datetime | None = None
+    inspection_trigger: str | None = None
+    """What opened the window: ``delivery`` / ``proof`` / ``fallback`` / ``operator``."""
     buyer_accepted_at: datetime | None = None
     disputed: bool = False
     disputed_at: datetime | None = None
@@ -253,6 +259,9 @@ class EscrowResponse(BaseModel):
     settled_at: datetime | None = None
     tranches: list[TrancheSpec] = Field(default_factory=list)
     inspection_deadline: datetime | None = None
+    delivery_confirmed_at: datetime | None = None
+    inspection_opened_at: datetime | None = None
+    inspection_trigger: str | None = None
     buyer_accepted_at: datetime | None = None
     disputed: bool = False
     disputed_at: datetime | None = None
@@ -281,6 +290,9 @@ class EscrowResponse(BaseModel):
             settled_at=r.settled_at,
             tranches=r.tranches,
             inspection_deadline=r.inspection_deadline,
+            delivery_confirmed_at=r.delivery_confirmed_at,
+            inspection_opened_at=r.inspection_opened_at,
+            inspection_trigger=r.inspection_trigger,
             buyer_accepted_at=r.buyer_accepted_at,
             disputed=r.disputed,
             disputed_at=r.disputed_at,

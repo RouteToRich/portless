@@ -569,10 +569,13 @@ from services.escrow_guard.service import (  # noqa: E402
 
 
 async def _release_proof_tranches(escrow_id: str) -> None:
-    """Release the three proof-gated tranches (T1/T2/T3), opening the window."""
+    """Release the three proof-gated tranches (T1/T2/T3), then confirm delivery
+    (the default ``inspection_window_trigger="delivery"``) to open the window."""
+    from services.escrow_guard.service import open_inspection_window
     with patch("services.escrow_guard.service._emit", new=AsyncMock()):
         for tid in ("T1", "T2", "T3"):
             await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id=tid))
+        await open_inspection_window(escrow_id, reason="test delivery")
 
 
 class TestReleaseAuthority:
@@ -594,13 +597,47 @@ class TestReleaseAuthority:
         assert r.buyer_accepted_at is not None
 
     @pytest.mark.asyncio
-    async def test_window_opens_after_proof_tranches(self):
+    async def test_window_opens_on_delivery_not_on_proof(self):
+        """Default trigger: the window waits for the DELIVERED milestone, not
+        for the last proof tranche (goods are still at sea then)."""
+        from services.escrow_guard.service import open_inspection_window
         escrow_id = await _funded_escrow("DEAL-AUTH-3")
+        emit = AsyncMock()
+        with patch("services.escrow_guard.service._emit", new=emit):
+            await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id="T1"))
+            await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id="T2"))
+            r = await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id="T3"))
+            assert r.inspection_deadline is None
+            opened = await open_inspection_window(escrow_id, reason="carrier DELIVERED")
+            again = await open_inspection_window(escrow_id, reason="duplicate")
+        assert opened.inspection_deadline is not None and opened.inspection_trigger == "delivery"
+        assert again.inspection_deadline == opened.inspection_deadline
+        from shared.domain.events import EventTopic
+        topics = [c.args[0] for c in emit.await_args_list]
+        assert topics.count(EventTopic.ESCROW_INSPECTION_OPENED) == 1
+
+    @pytest.mark.asyncio
+    async def test_delivery_before_last_proof_tranche_defers_window(self):
+        from services.escrow_guard.service import open_inspection_window
+        escrow_id = await _funded_escrow("DEAL-AUTH-3B")
+        with patch("services.escrow_guard.service._emit", new=AsyncMock()):
+            await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id="T1"))
+            await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id="T2"))
+            d = await open_inspection_window(escrow_id, reason="delivered early")
+            assert d.inspection_deadline is None and d.delivery_confirmed_at is not None
+            r = await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id="T3"))
+        assert r.inspection_deadline is not None and r.inspection_trigger == "delivery"
+
+    @pytest.mark.asyncio
+    async def test_window_opens_after_proof_tranches_in_proof_mode(self, monkeypatch):
+        from services.escrow_guard.service import settings as eg_settings
+        monkeypatch.setattr(eg_settings, "inspection_window_trigger", "proof")
+        escrow_id = await _funded_escrow("DEAL-AUTH-3C")
         with patch("services.escrow_guard.service._emit", new=AsyncMock()):
             await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id="T1"))
             await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id="T2"))
             r = await release_tranche(escrow_id, ReleaseTrancheRequest(tranche_id="T3"))
-        assert r.inspection_deadline is not None
+        assert r.inspection_deadline is not None and r.inspection_trigger == "proof"
 
     @pytest.mark.asyncio
     async def test_inspection_window_autorelease(self):

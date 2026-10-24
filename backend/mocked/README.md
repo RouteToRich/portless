@@ -31,11 +31,15 @@ mocked/
 │   ├── deal_detail_in_transit.json  (includes vessel tracking)
 │   ├── deal_detail_paid.json        (includes all documents + customs)
 │   ├── deal_detail_dispute.json     (QC failure → DISPUTE)
-│   └── enrich_result.json     POST /deals/{id}/enrich — Apify contact finder + sanctions screening result
+│   ├── enrich_result.json     POST /deals/{id}/enrich — Apify contact finder + sanctions screening result
+│   ├── deal_detail_outreach.json  MATCHING deal with an open buyer outreach funnel (buyer_candidates, quantity_mt, buyer_price_source)
+│   ├── timeline.json          GET /deals/{id}/timeline — every dated fact from every service, merged + sorted
+│   └── evidence_pack.json     GET /deals/{id}/evidence-pack?format=json — hand-over pack with SHA-256 (format=html renders a page)
 │
 ├── trade_min/
 │   ├── scan_result.json       GET /trade-min/opportunities — 3 opportunities
-│   └── sources.json           GET /trade-min/sources — data-source reachability incl. the PortLess Apify actors
+│   ├── sources.json           GET /trade-min/sources — data-source reachability incl. the PortLess Apify actors, run budget, external slots
+│   └── catalogue.json         GET/PUT /trade-min/catalogue — product lines + corridors driving the scanner / actors / outreach
 │
 ├── match_engine/
 │   └── score_result.json      GET /match-engine/score/{deal_id} — CMS breakdown
@@ -76,7 +80,8 @@ mocked/
 │   ├── qc_webhook_passed.json       POST /shield-link/webhooks/qc — PASSED
 │   ├── qc_webhook_failed.json       POST /shield-link/webhooks/qc — FAILED
 │   ├── freight_booking.json         POST /shield-link/freight — Cogoport confirmed
-│   └── freight_milestone_cleared.json  POST /shield-link/webhooks/freight — ARRIVED
+│   ├── freight_milestone_cleared.json  POST /shield-link/webhooks/freight — ARRIVED
+│   └── freight_milestone_recorded.json POST /shield-link/freight/{tpo_id}/milestone (operator) + POST /shield-link/deals/{id}/track
 │
 ├── escrow_guard/
 │   ├── hold_created.json            POST /escrow-guard/holds — Stripe PaymentIntent
@@ -85,7 +90,8 @@ mocked/
 │   ├── payout_failed_webhook.json   Payoneer failure → exception raised
 │   ├── deal_escrow_summary.json     GET /escrow-guard/deals/{id}/summary
 │   ├── ledger.json                  GET /escrow-guard/deals/{id}/ledger — staged escrow ledger (tranches, payouts, balance)
-│   └── ledgers_list.json            GET /escrow-guard/ledgers — one ledger per escrow (Money & Margin view)
+│   ├── ledgers_list.json            GET /escrow-guard/ledgers — one ledger per escrow (Money & Margin view)
+│   └── journal.json                 GET /escrow-guard/deals/{id}/journal — double-entry journal (?format=csv for the books)
 │
 ├── hitl_approval/
 │   ├── approval_pending_l0.json     L0 — manual approval required, no timeout
@@ -93,6 +99,9 @@ mocked/
 │   ├── approval_auto_approved_l2.json  L2 — auto-approved, operator notified
 │   ├── approval_rejected.json       Operator REJECT → exception raised
 │   ├── approval_list.json           GET /hitl-approval/approvals — 3 items
+│   ├── approval_four_eyes.json      Money gate above FOUR_EYES_THRESHOLD_USD — 1 of 2 approvals, countersign pending
+│   ├── autonomy_policy_v2.json      GET/PUT /hitl-approval/autonomy-policy — level + timeout + on-timeout + value threshold per action
+│   ├── digest.json                  GET /hitl-approval/digest — daily operator digest (POST …/digest/send delivers it)
 │   └── sse_events.json              SSE stream examples + resolve request shapes
 │
 ├── exception_resolver/

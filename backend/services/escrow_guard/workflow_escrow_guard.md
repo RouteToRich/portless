@@ -275,6 +275,18 @@ patterns, depending on provider capability:
   CRF / shipping-bill reference (and their hashes) to the escrow as the milestone
   evidence, and calls `release_tranche()`. The escrow records the evidence and
   releases.
+- **Window trigger = delivery (2026-10-24):** the buyer's acceptance window for
+  the final tranche opens on the carrier's `DELIVERED` milestone (freight
+  webhook, the `container-tracking-ai` poll for IN_TRANSIT deals, or an
+  operator's `POST /shield-link/freight/{ref}/milestone`) → `freight.milestone`
+  → `open_inspection_window()` (`escrow.inspection_opened` → buyer e-mail). A
+  delivery recorded before the last proof tranche released opens the window on
+  that release; the deal watcher opens it anyway `INSPECTION_WINDOW_FALLBACK_DAYS`
+  after clearance; `INSPECTION_WINDOW_TRIGGER=proof` restores the old
+  behaviour (window on the last proof tranche, goods still at sea). Operator
+  endpoints: `POST /escrows/{id}/open-window`, `POST /escrows/{id}/clear-dispute`.
+  The double-entry view of the same money is `GET /deals/{id}/journal`
+  (`?format=csv`).
 - **Inspection-window model (fallback / Escrow.com-style):** the escrow opens an
   inspection period on "shipped"; if the buyer does not dispute within the window,
   funds auto-release. PortLess's SGS/customs proofs are what make the buyer

@@ -173,7 +173,14 @@ def run(api: Api) -> dict[str, Any]:
     approve(api, deal_id, "RELEASE_ESCROW_TRANCHE", "T3")
     wait_for("T3 released", lambda: tranche(hold(api, deal_id), "T3")["status"] == "RELEASED")
     h = hold(api, deal_id)
-    ok(f"Cleared -> T3 released, inspection window until {h['inspection_deadline']}")
+    if h["inspection_deadline"] is not None:
+        raise FlowError("inspection window opened on the proof tranche — it must wait for delivery")
+    ok("Cleared -> T3 released, acceptance window NOT open yet (goods not delivered)")
+    api.call("POST", f"/shield-link/freight/{freight['tpo_id']}/milestone",
+             {"milestone": "DELIVERED", "location": "Hamburg warehouse", "source": "operator"})
+    wait_for("inspection window", lambda: hold(api, deal_id)["inspection_deadline"] is not None)
+    h = hold(api, deal_id)
+    ok(f"DELIVERED -> inspection window ({h['inspection_trigger']}) until {h['inspection_deadline']}")
 
     led = ledger(api, deal_id)
     gate = wait_for("payout gate", lambda: (pending_gates(api, deal_id, "RELEASE_SUPPLIER_PAYOUT") or [None])[0])

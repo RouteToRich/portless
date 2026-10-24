@@ -115,6 +115,20 @@ def evaluate() -> dict[str, Any]:
         ok_detail=f"AUTONOMY_MONEY_CEILING={ceiling} — a human confirms every tranche release and payout",
         fail_detail=f"AUTONOMY_MONEY_CEILING={ceiling} — money moves without a human; only raise after the ledger + four-eyes controls exist",
     ))
+    try:
+        from shared.orchestration.autonomy_policy import money_auto_approve_below_usd
+        threshold = money_auto_approve_below_usd()
+    except Exception:  # noqa: BLE001
+        threshold = None
+    four_eyes = os.getenv("FOUR_EYES_THRESHOLD_USD", "").strip()
+    checks.append(_check(
+        "money_threshold", "money", "Unattended money threshold", threshold is None or bool(four_eyes),
+        warn_only=True,
+        ok_detail=("no value threshold — every money gate waits for a human"
+                   if threshold is None else
+                   f"tranche releases / payouts up to {threshold:,.0f} USD auto-approve; four-eyes above {four_eyes} USD"),
+        fail_detail=f"money gates up to {threshold or 0:,.0f} USD auto-approve while FOUR_EYES_THRESHOLD_USD is unset — set it so larger amounts need two approvers",
+    ))
 
     # ── Counterparty identification (PortLess Apify actors) ────────────────
     try:
@@ -127,6 +141,30 @@ def evaluate() -> dict[str, Any]:
         bool(apify.get("token_present")), warn_only=not prod,
         ok_detail=f"{len(apify.get('actors', []))} PortLess actors reachable as {apify.get('owner')}",
         fail_detail="APIFY_TOKEN unset — no named buyers / supplier contacts / sanctions screening; parties stay unchecked",
+    ))
+    tracking = next((a for a in apify.get("actors", []) if a.get("connector") == "apify_carrier_tracking"), {})
+    checks.append(_check(
+        "carrier_tracking", "operations", "Carrier tracking (delivery → acceptance window)",
+        bool(apify.get("token_present")) and bool(tracking), warn_only=True,
+        ok_detail=f"{tracking.get('actor', 'container-tracking-ai')} polled every TRACKING_POLL_HOURS; DELIVERED opens the buyer's window",
+        fail_detail=(f"no carrier-tracking actor — the acceptance window opens by operator entry or "
+                     f"{os.getenv('INSPECTION_WINDOW_FALLBACK_DAYS', '21')} days after clearance (INSPECTION_WINDOW_FALLBACK_DAYS)"),
+    ))
+    cap = os.getenv("APIFY_MAX_RUNS_PER_DAY", "").strip()
+    checks.append(_check(
+        "apify_run_cap", "data", "Apify daily run budget", bool(cap) and cap != "0", warn_only=True,
+        ok_detail=f"APIFY_MAX_RUNS_PER_DAY={cap} — scans, enrichment and tracking stop at the cap",
+        fail_detail="APIFY_MAX_RUNS_PER_DAY unset — nothing caps actor spend if a schedule misfires",
+    ))
+    try:
+        from shared import catalogue as _cat
+        lines = _cat.active_lines()
+    except Exception:  # noqa: BLE001
+        lines = []
+    checks.append(_check(
+        "catalogue", "data", "Product catalogue / corridors", bool(lines), warn_only=True,
+        ok_detail=f"{len(lines)} product line(s), {len(_cat.corridors()) if lines else 0} corridor(s) drive the scanner",
+        fail_detail="catalogue empty — the scanner runs the built-in sample HS codes / markets (PUT /trade-min/catalogue)",
     ))
     checks.append(_check(
         "trade_data", "data", "Live demand data (Comtrade / Census)",

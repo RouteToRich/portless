@@ -73,6 +73,11 @@ async def on_startup() -> None:
 
     await init_repository()  # logs WARNING if falling back to in-memory
     await init_cache()       # raw API response cache (Mongo TTL / in-memory)
+    try:
+        from shared.catalogue import load_catalogue
+        await load_catalogue()  # operator's product lines / corridors (scan defaults)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Trade-Min: catalogue not loaded: %s", exc)
 
     _scheduler = AsyncIOScheduler(timezone="UTC")
     _scheduler.add_job(

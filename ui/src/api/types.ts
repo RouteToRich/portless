@@ -115,6 +115,37 @@ export interface MatchResult {
   supplier_to_port_km?: number | null;
 }
 
+export type BuyerCandidateStatus =
+  | "pending"
+  | "contacted"
+  | "followed_up"
+  | "interested"
+  | "declined"
+  | "no_reply"
+  | "selected";
+
+/** One buyer the scan identified for the deal — the outreach funnel works
+ *  through them in order until one replies with interest
+ *  (shared/orchestration/outreach.py). */
+export interface BuyerCandidate {
+  candidate_id: string;
+  legal_name: string;
+  country: string;
+  email?: string | null;
+  website?: string | null;
+  phone?: string | null;
+  source?: string | null;
+  fit_score?: number | null;
+  pitch_angle?: string | null;
+  quantity_mt?: number | null;
+  status: BuyerCandidateStatus | string;
+  contacted_at?: string | null;
+  followed_up_at?: string | null;
+  replied_at?: string | null;
+  reply_preview?: string | null;
+  email_id?: string | null;
+}
+
 export interface Deal {
   deal_id: string;
   operator_id: string;
@@ -132,8 +163,45 @@ export interface Deal {
   winning_supplier_id?: string | null;
   winning_cms?: number | null;
   buyer_target_price_usd?: number | null;
+  buyer_price_source?: string | null;
+  /** Shipment quantity the buyer asked for (RFQ lead / negotiation). */
+  quantity_mt?: number | null;
+  /** Buyer outreach funnel — every identified buyer, in contact order. */
+  buyer_candidates?: BuyerCandidate[];
   created_at?: string | null;
   updated_at?: string | null;
+}
+
+// GET /deals/{id}/timeline — shared/orchestration/evidence.py::build_timeline
+export type TimelineKind =
+  | "deal"
+  | "status"
+  | "outreach"
+  | "sourcing"
+  | "negotiation"
+  | "email"
+  | "gate"
+  | "document"
+  | "operations"
+  | "money"
+  | "exception";
+
+export interface TimelineEvent {
+  at: string;
+  kind: TimelineKind | string;
+  title: string;
+  detail?: string | null;
+  ref?: string | null;
+  actor?: string | null;
+  source?: string | null;
+}
+
+export interface DealTimeline {
+  deal_id: string;
+  status: string;
+  events: TimelineEvent[];
+  count: number;
+  warnings: string[];
 }
 
 export interface SellerCandidate {
@@ -233,14 +301,110 @@ export interface TradeSource {
   actor?: string | null;
   mode: SourceMode | string;
   detail: string;
+  /** External slot: the actor is built outside /actor-pipeline (e.g. carrier tracking). */
+  external?: boolean;
 }
 
 export interface TradeSourcesResponse {
   mock_mode: boolean;
-  apify: { token_present: boolean; owner: string; ai_tier: boolean; max_items: number };
+  apify: {
+    token_present: boolean;
+    owner: string;
+    ai_tier: boolean;
+    max_items: number;
+    /** APIFY_MAX_RUNS_PER_DAY (0 / absent = unlimited) and runs started today. */
+    max_runs_per_day?: number | null;
+    runs_today?: number | null;
+  };
   live_count: number;
   total: number;
   sources: TradeSource[];
+}
+
+// GET/PUT /trade-min/catalogue — shared/catalogue.py
+export interface ProductLine {
+  product_id: string;
+  hs_code: string;
+  name: string;
+  products: string[];
+  markets: string[];
+  seller_profile?: string | null;
+  default_quantity_mt?: number | null;
+  min_order_mt?: number | null;
+  active: boolean;
+  notes?: string | null;
+}
+
+export interface CatalogueCorridor {
+  hs_code: string;
+  name: string;
+  market: string;
+}
+
+export interface CatalogueView {
+  products: ProductLine[];
+  updated_by?: string | null;
+  updated_at?: string | null;
+  corridors: CatalogueCorridor[];
+  defaults: { hs_codes: string[]; markets: string[] };
+  active: boolean;
+}
+
+// GET /hitl-approval/digest — shared/orchestration/digest.py
+export interface DigestApprovalRow {
+  count: number;
+  oldest_hours: number;
+  money_usd: number;
+  countersign: number;
+}
+
+export interface OperatorDigest {
+  generated_at: string;
+  text?: string;
+  approvals: {
+    pending_total?: number;
+    by_action?: Record<string, DigestApprovalRow>;
+    oldest_hours?: number;
+    items?: {
+      approval_id: string;
+      deal_id: string;
+      action: string;
+      age_hours?: number | null;
+      financial_impact_usd?: number | null;
+      deep_link?: string | null;
+    }[];
+  };
+  deals: {
+    active?: number;
+    by_status?: Record<string, number>;
+    stalled?: { deal_id: string; status: string; hours: number }[];
+    waiting_for_buyer?: number;
+  };
+  exceptions: {
+    open_total?: number;
+    by_status?: Record<string, number>;
+    items?: { exception_id: string; deal_id: string; status: string; category?: string | null; age_hours?: number | null }[];
+  };
+  money: {
+    escrows?: number;
+    in_escrow?: number;
+    released_total?: number;
+    net_to_portless?: number;
+    payouts_total?: number;
+    supplier_balance_due?: number;
+    unreconciled?: string[];
+    disputed?: number;
+    windows_open?: number;
+    currency?: string;
+  };
+  apify: { runs_today?: number; max_runs_per_day?: number };
+  warnings: string[];
+}
+
+export interface DigestSendResult {
+  telegram: boolean;
+  email: { to: string; outcome: string }[];
+  text: string;
 }
 
 // GET /health/readiness — production readiness gate (shared/readiness.py).
@@ -277,6 +441,13 @@ export interface Approval {
   deep_link?: string | null;
 }
 
+/** One operator's APPROVE on a four-eyes gate (FOUR_EYES_THRESHOLD_USD). */
+export interface ApprovalSignature {
+  approved_by: string;
+  approved_at: string;
+  note?: string | null;
+}
+
 export interface ApprovalRecord {
   approval_id: string;
   deal_id: string;
@@ -295,6 +466,10 @@ export interface ApprovalRecord {
   resolved_at: string | null;
   resolution_note: string | null;
   modified_body: string | null;
+  // Four-eyes: money gates at/above the threshold need two distinct approvers.
+  required_approvals?: number;
+  approvals?: ApprovalSignature[];
+  approvals_remaining?: number;
   created_at: string;
   updated_at: string;
 }
@@ -544,9 +719,42 @@ export interface EscrowRecord {
   settled_at?: string | null;
   tranches: Tranche[];
   inspection_deadline?: string | null;
+  /** Goods delivered (carrier milestone / operator); window opens once proof tranches released. */
+  delivery_confirmed_at?: string | null;
+  inspection_opened_at?: string | null;
+  /** What opened the window: delivery / proof / fallback / operator. */
+  inspection_trigger?: string | null;
   buyer_accepted_at?: string | null;
   disputed: boolean;
   disputed_at?: string | null;
+}
+
+// GET /escrow-guard/deals/{id}/journal — services/escrow_guard/journal.py
+export interface JournalEntry {
+  seq: number;
+  at?: string | null;
+  event: string;
+  debit: string;
+  credit: string;
+  amount: number;
+  currency: string;
+  ref?: string | null;
+  memo?: string | null;
+}
+
+export interface DealJournal {
+  deal_id: string;
+  currency: string;
+  escrow_id?: string | null;
+  provider?: string | null;
+  entries: JournalEntry[];
+  balances: Record<string, number>;
+  debits_total: number;
+  credits_total: number;
+  balanced: boolean;
+  issues: string[];
+  accounts: Record<string, string>;
+  generated_at: string;
 }
 
 export type PayoutKind = "supplier_payout" | "supplier_balance";
@@ -605,13 +813,37 @@ export interface QcRecord {
   booked_at: string;
 }
 
+export type FreightMilestone = "DEPARTED" | "IN_TRANSIT" | "ARRIVED" | "CLEARED" | "DELIVERED";
+
 export interface FreightRecord {
   tpo_id: string;
   deal_id: string;
   provider: string;
-  status: "BOOKED" | "IN_TRANSIT" | "ARRIVED" | "CLEARED";
+  status: "BOOKED" | "IN_TRANSIT" | "ARRIVED" | "CLEARED" | "DELIVERED";
   bl_number: string | null;
   eta: string | null;
+  container_number?: string | null;
+  last_milestone?: FreightMilestone | string | null;
+  last_milestone_at?: string | null;
+  delivered_at?: string | null;
+}
+
+// POST /shield-link/freight/{ref}/milestone
+export interface RecordMilestoneRequest {
+  milestone: FreightMilestone;
+  location?: string | null;
+  timestamp?: string | null;
+  notes?: string | null;
+  source?: string;
+}
+
+// POST /shield-link/deals/{id}/track
+export interface TrackingPollResult {
+  status: "no_booking" | "no_reference" | "stub" | "unchanged" | "ok" | "no_event" | "error" | "ignored" | string;
+  deal_id: string;
+  tpo_id?: string;
+  milestone?: string;
+  error?: string;
 }
 
 export interface DocumentRecord {

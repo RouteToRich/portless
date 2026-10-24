@@ -47,6 +47,10 @@ class EventTopic(str, Enum):
     """The provider confirmed less than the Proforma Invoice total — the deal
     stays ESCROW_PENDING until the balance arrives."""
     COUNTERPARTY_SCREENED = "counterparty.screened"
+    ESCROW_INSPECTION_OPENED = "escrow.inspection_opened"
+    """The buyer's acceptance window for the final tranche started (goods delivered)."""
+    BUYER_INTERESTED = "buyer.interested"
+    """Outreach funnel: a buyer candidate replied with interest and became the deal's buyer."""
     """Sanctions / registry screening finished for a deal party (verdict in payload)."""
     APPROVAL_REQUESTED = "approval.requested"
     APPROVAL_RESOLVED = "approval.resolved"

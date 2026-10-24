@@ -3,8 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { TOKEN_KEY } from "./client";
 import {
   ApprovalsApi,
+  AutonomyApi,
+  CatalogueApi,
   DealmakerApi,
   DealsApi,
+  DigestApi,
   DocugenApi,
   EscrowApi,
   ExceptionsApi,
@@ -15,10 +18,14 @@ import {
   OrganizationsApi,
   RagApi,
   ShieldApi,
+  type AutonomyPolicyUpdate,
 } from "./endpoints";
 import type {
   ApprovalRecord,
+  BuyerCandidate,
   CreateDealRequest,
+  ProductLine,
+  RecordMilestoneRequest,
   ResolveApprovalRequest,
   UpdatePartyRequest,
 } from "./types";
@@ -101,6 +108,41 @@ export function useEnrichDeal(dealId: string) {
       qc.invalidateQueries({ queryKey: ["deals"] });
     },
   });
+}
+
+// Every dated fact of the deal (status changes, gates, e-mails, documents,
+// orders, money, exceptions, outreach) — the Timeline tab.
+export function useDealTimeline(dealId: string | undefined, options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ["deal-timeline", dealId],
+    queryFn: () => DealsApi.timeline(dealId as string),
+    enabled: Boolean(dealId) && (options?.enabled ?? true),
+    refetchInterval: 20000,
+  });
+}
+
+// Buyer outreach funnel actions: contact the next candidates / skip one / add one.
+export function useOutreach(dealId: string) {
+  const qc = useQueryClient();
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["deal", dealId] });
+    qc.invalidateQueries({ queryKey: ["deals"] });
+    qc.invalidateQueries({ queryKey: ["approvals"] });
+    qc.invalidateQueries({ queryKey: ["deal-timeline", dealId] });
+  };
+  const start = useMutation({
+    mutationFn: () => DealsApi.startOutreach(dealId),
+    onSuccess: invalidate,
+  });
+  const skip = useMutation({
+    mutationFn: (candidateId: string) => DealsApi.skipBuyerCandidate(dealId, candidateId),
+    onSuccess: invalidate,
+  });
+  const add = useMutation({
+    mutationFn: (candidate: BuyerCandidate) => DealsApi.addBuyerCandidate(dealId, candidate),
+    onSuccess: invalidate,
+  });
+  return { start, skip, add };
 }
 
 export function useUpdateDealStatus() {
@@ -348,7 +390,17 @@ export function useEscrowLedgers() {
   });
 }
 
-export type EscrowActionKind = "accept" | "dispute" | "refund";
+// Double-entry journal of the deal (null when there is no escrow yet).
+export function useDealJournal(dealId: string | undefined) {
+  return useQuery({
+    queryKey: ["escrow-journal", dealId],
+    queryFn: () => EscrowApi.getJournal(dealId as string),
+    enabled: Boolean(dealId),
+    refetchInterval: 30000,
+  });
+}
+
+export type EscrowActionKind = "accept" | "dispute" | "refund" | "open_window" | "clear_dispute";
 
 // Operator actions on an escrow (buyer acceptance relay, dispute, refund) —
 // every one of them moves money, so the pages confirm before calling this.
@@ -372,14 +424,22 @@ export function useEscrowAction(dealId: string | undefined) {
       if (kind === "dispute") {
         return EscrowApi.dispute(escrowId, { reason: reason ?? "", raised_by: actor ?? "operator" });
       }
+      if (kind === "open_window") {
+        return EscrowApi.openWindow(escrowId, { reason: reason || "operator confirmed delivery" });
+      }
+      if (kind === "clear_dispute") {
+        return EscrowApi.clearDispute(escrowId, { reason: reason || "resolved" });
+      }
       return EscrowApi.refund(escrowId, { reason: reason ?? "" });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["escrow-hold", dealId] });
       qc.invalidateQueries({ queryKey: ["escrow-ledger", dealId] });
+      qc.invalidateQueries({ queryKey: ["escrow-journal", dealId] });
       qc.invalidateQueries({ queryKey: ["escrow-ledgers"] });
       qc.invalidateQueries({ queryKey: ["deal", dealId] });
       qc.invalidateQueries({ queryKey: ["deals"] });
+      qc.invalidateQueries({ queryKey: ["deal-timeline", dealId] });
     },
   });
 }
@@ -400,6 +460,29 @@ export function useFreightRecords(dealId: string | undefined) {
     queryFn: () => ShieldApi.getFreight(dealId as string),
     enabled: Boolean(dealId),
   });
+}
+
+// Operator-recorded carrier milestone (DELIVERED opens the acceptance window)
+// and the on-demand carrier-tracking poll.
+export function useFreightMilestones(dealId: string) {
+  const qc = useQueryClient();
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["freight-records", dealId] });
+    qc.invalidateQueries({ queryKey: ["escrow-hold", dealId] });
+    qc.invalidateQueries({ queryKey: ["deal", dealId] });
+    qc.invalidateQueries({ queryKey: ["deals"] });
+    qc.invalidateQueries({ queryKey: ["deal-timeline", dealId] });
+  };
+  const record = useMutation({
+    mutationFn: ({ tpoId, payload }: { tpoId: string; payload: RecordMilestoneRequest }) =>
+      ShieldApi.recordMilestone(tpoId, payload),
+    onSuccess: invalidate,
+  });
+  const poll = useMutation({
+    mutationFn: () => ShieldApi.pollTracking(dealId),
+    onSuccess: invalidate,
+  });
+  return { record, poll };
 }
 
 // ── Docugen ─────────────────────────────────────────────────────────────────────
@@ -429,6 +512,54 @@ export function useMatchScore(dealId: string | undefined) {
     queryKey: ["match-score", dealId],
     queryFn: () => MatchApi.getScore(dealId as string),
     enabled: Boolean(dealId),
+  });
+}
+
+// ── Autonomy policy v2 ─────────────────────────────────────────────────────────
+
+export function useAutonomyPolicy() {
+  return useQuery({ queryKey: ["autonomy-policy"], queryFn: AutonomyApi.get });
+}
+
+export function useSaveAutonomyPolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (update: AutonomyPolicyUpdate) => AutonomyApi.save(update),
+    onSuccess: (data) => {
+      qc.setQueryData(["autonomy-policy"], data);
+    },
+  });
+}
+
+// ── Catalogue / corridors ──────────────────────────────────────────────────────
+
+export function useCatalogue() {
+  return useQuery({ queryKey: ["catalogue"], queryFn: CatalogueApi.get });
+}
+
+export function useSaveCatalogue() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ products, updatedBy }: { products: ProductLine[]; updatedBy?: string }) =>
+      CatalogueApi.save(products, updatedBy),
+    onSuccess: (data) => {
+      qc.setQueryData(["catalogue"], data);
+      qc.invalidateQueries({ queryKey: ["health", "readiness"] });
+    },
+  });
+}
+
+// ── Operator digest ───────────────────────────────────────────────────────────
+
+export function useDigest() {
+  return useQuery({ queryKey: ["digest"], queryFn: DigestApi.get, refetchInterval: 60000 });
+}
+
+export function useSendDigest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => DigestApi.send(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["digest"] }),
   });
 }
 

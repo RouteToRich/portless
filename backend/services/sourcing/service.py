@@ -623,6 +623,15 @@ async def receive_quote(payload: QuoteIntakeRequest) -> QuoteRecord:
         logger.error("Deal fetch error for quote %s: %s", quote_id, deal)
         deal = None
 
+    # Reliability inputs the Match Engine otherwise scores as zero: the
+    # supplier's export history (Indian customs records via the supplier
+    # actor / Zauba) captured on the deal's match result at creation.
+    if deal and verification:
+        for mr in deal.get("match_results", []) or []:
+            if mr.get("supplier_id") == payload.supplier_id and mr.get("export_shipments_12m"):
+                verification.annual_shipment_count = int(mr["export_shipments_12m"])
+                break
+
     # ── Step 3: re-score with real verification data ──────────────────────
     re_scored_match_id: str | None = None
     re_scored_cms: float | None = None
@@ -696,6 +705,11 @@ async def receive_quote(payload: QuoteIntakeRequest) -> QuoteRecord:
             "re_scored_decision": re_scored_decision,
             "gst_verified": verification.gst_verified if verification else None,
             "iec_active": verification.iec_active if verification else None,
+            # Whether the registry checks actually ran (the booleans above
+            # default to True when a check is skipped).
+            "gst_checked": bool(verification and "gstn" in verification.raw),
+            "iec_checked": bool(verification and "dgft_iec" in verification.raw),
+            "company_name": payload.company_name,
         },
     )
 

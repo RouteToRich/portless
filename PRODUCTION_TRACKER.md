@@ -228,6 +228,62 @@ hosting.
 
 ---
 
+## ✅ Recently completed (2026-10-24) — product-owner review: less manual intervention end to end
+
+Backend + UI for every recommendation of the 2026-10-24 flow review (P0 → P2).
+Tests: `tests/test_gate_policy_v2.py`, `tests/test_batch_b.py`, `tests/test_batch_c.py`.
+
+**P0 — gates that resolve themselves safely**
+- [x] **Gate policy v2** (`shared/orchestration/autonomy_policy.py`): per-action L1
+  timeout + on-timeout default (negotiation e-mails 4 h → APPROVE, money → REJECT),
+  value thresholds (`AUTONOMY_<ACTION>_AUTO_APPROVE_BELOW_USD`,
+  `AUTONOMY_MONEY_AUTO_APPROVE_BELOW_USD`) that drop a gate to L2 only when the
+  leg's preconditions hold (proof refs present, ledger reconciled); Autonomy
+  Settings page edits all of it (`PUT /hitl-approval/autonomy-policy` v2 body).
+- [x] **Supplier auto-source**: GST + IEC checked and passed + quote inside the buyer's
+  price corridor → `CONFIRM_SUPPLIER_SELECTION` at L2 (`SOURCING_AUTO_SOURCE_VERIFIED`).
+- [x] **Quantity and payment terms from data**: `deal.quantity_mt` from the buyer
+  lead / RFQ; PI/PO terms built from the escrow tranche schedule.
+- [x] **Buyer goods acceptance by e-mail** after delivery: acceptance →
+  `CONFIRM_BUYER_ACCEPTANCE` (money gate), complaint → `dispute_escrow` +
+  operator review.
+- [x] **Supplier reminders** in the deal watcher (`PO_ISSUED`, `SUPPLIER_DISPATCH_READY`).
+
+**P1 — fill the flow gaps**
+- [x] **Buyer outreach funnel** (`shared/orchestration/outreach.py`): templated
+  introductions to the identified buyers (`SEND_BUYER_OUTREACH`, `[BUY:…]` token),
+  reply classification, follow-ups, next candidate, exhausted → exception; the
+  negotiation waits for an interested buyer. Deal Detail shows the funnel.
+- [x] **Catalogue / corridors** (`shared/catalogue.py`, `GET/PUT /trade-min/catalogue`,
+  Catalogue page): what PortLess sells and where drives scan defaults, keywords,
+  actor inputs and outreach copy. `APIFY_MAX_RUNS_PER_DAY` caps actor spend.
+- [x] **Delivery-triggered acceptance window**: `DELIVERED` milestone (webhook /
+  operator / `container-tracking-ai` poll) → `open_inspection_window`; fallback
+  after `INSPECTION_WINDOW_FALLBACK_DAYS`; `inspection_window_trigger=proof` keeps
+  the old behaviour. Operator endpoints `/open-window`, `/clear-dispute`,
+  `/shield-link/freight/{ref}/milestone`, `/shield-link/deals/{id}/track`.
+- [x] **Resolver playbooks** (`shared/orchestration/playbooks.py`): QC re-inspection
+  (`DISPUTE → SUPPLIER_DISPATCH_READY`, `QC_REINSPECTION_MAX`), funding shortfall
+  reminder, cancel-unfunded after `ESCROW_FUNDING_GRACE_DAYS` (refund + notices),
+  next buyer on negotiation failure — all before the LLM, money steps gated.
+
+**P2 — controls and visibility**
+- [x] **Four-eyes** on money gates above `FOUR_EYES_THRESHOLD_USD` (two distinct
+  approvers, never auto-approved).
+- [x] **Double-entry journal** per deal + CSV (`/escrow-guard/deals/{id}/journal`,
+  `/journals`); **timeline** (`/deals/{id}/timeline`); **evidence pack**
+  (`/deals/{id}/evidence-pack?format=json|html`, SHA-256).
+- [x] **Telegram push** for waiting gates + countersigns; **daily digest**
+  (`shared/orchestration/digest.py`, `GET /hitl-approval/digest`).
+- [ ] **External actors still to generate** with the pipeline skills (not part of
+  `/actor-pipeline`'s automatic research loop): `india-supplier-finder-ai`
+  (supplier identification) and `container-tracking-ai` (carrier milestones). Row
+  schemas live on the connector classes in `shared/connectors/apify.py`; until
+  they exist both slots stub and the acceptance window relies on the operator /
+  the fallback days.
+
+---
+
 ## ✅ Recently completed (2026-10-23) — identification on own Apify actors, money chain without gaps
 
 Full analysis: `needed/portless_automation_gap_analysis.md` §4.4 / §5; actor contracts: `needed/portless_apify_actors.md` §8.

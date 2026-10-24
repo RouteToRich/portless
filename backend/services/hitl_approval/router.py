@@ -40,6 +40,7 @@ from .schemas import (
 )
 from .service import (
     ApprovalAlreadyResolved,
+    SameApproverError,
     ApprovalNotFoundError,
     InvalidAction,
     create_approval,
@@ -57,33 +58,64 @@ router = APIRouter(prefix="/hitl-approval", tags=["hitl-approval"])
 # Autonomy policy (per-action L0–L3) — backs the Autonomy Settings page
 # ---------------------------------------------------------------------------
 
+class GateOverride(BaseModel):
+    """Per-action gate settings; omit a key to leave it, null to clear it."""
+    level: str | None = None
+    timeout_seconds: int | None = None
+    default_on_timeout: str | None = None
+    auto_approve_below_usd: float | None = None
+
+
 class AutonomyPolicyUpdate(BaseModel):
     levels: dict[str, str | None] = Field(default_factory=dict)
-    """action → L0|L1|L2|L3; null clears the override for that action."""
+    """action → L0|L1|L2|L3; null clears the level override for that action."""
+    gates: dict[str, GateOverride | None] = Field(default_factory=dict)
+    """action → timeout / on-timeout / value-threshold overrides; null clears all of them."""
+    money_auto_approve_below_usd: float | None = None
+    """Global value threshold for money-moving gates; only applied when
+    ``set_money_threshold`` is true (so a plain level save never touches it)."""
+    set_money_threshold: bool = False
     updated_by: str = "operator"
+
+
+def _policy_view() -> dict[str, Any]:
+    from shared.orchestration.autonomy_policy import (
+        effective_policy, money_auto_approve_below_usd, money_ceiling,
+    )
+    return {
+        "money_ceiling": money_ceiling(),
+        "money_auto_approve_below_usd": money_auto_approve_below_usd(),
+        "actions": list(effective_policy().values()),
+    }
 
 
 @router.get("/autonomy-policy")
 async def api_get_autonomy_policy() -> dict[str, Any]:
-    """Effective autonomy level per action class and where each one comes from
-    (override / env / default / money ceiling)."""
-    from shared.orchestration.autonomy_policy import effective_policy, money_ceiling
-
-    return {"money_ceiling": money_ceiling(), "actions": list(effective_policy().values())}
+    """Effective autonomy level, L1 timeout, timeout default and value threshold
+    per action class, and where each one comes from (override / env / default /
+    money ceiling / value threshold)."""
+    return _policy_view()
 
 
 @router.put("/autonomy-policy")
 async def api_put_autonomy_policy(req: AutonomyPolicyUpdate) -> dict[str, Any]:
     """Set per-action overrides (persisted in Mongo when configured)."""
-    from shared.orchestration.autonomy_policy import (
-        effective_policy, money_ceiling, set_policy,
-    )
+    from shared.orchestration.autonomy_policy import set_policy
 
+    gates = {
+        a: (g.model_dump(exclude_unset=True) if g is not None else None)
+        for a, g in req.gates.items()
+    }
     try:
-        await set_policy(req.levels, updated_by=req.updated_by)
+        await set_policy(
+            req.levels, updated_by=req.updated_by, gates=gates,
+            money_auto_approve_below_usd=(
+                req.money_auto_approve_below_usd if req.set_money_threshold else "__unchanged__"
+            ),
+        )
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    return {"money_ceiling": money_ceiling(), "actions": list(effective_policy().values())}
+    return _policy_view()
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +172,31 @@ async def api_resolve_approval(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except ApprovalAlreadyResolved as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+    except SameApproverError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Daily operator digest
+# ---------------------------------------------------------------------------
+
+@router.get("/digest")
+async def api_digest(format: str = "json") -> Any:
+    """Preview today's operator digest (pending gates, deals per stage, stalls,
+    open exceptions, money, Apify spend). ``?format=text`` renders the message."""
+    from fastapi.responses import PlainTextResponse
+    from shared.orchestration.digest import build_digest, render_digest_text
+    d = await build_digest()
+    if format == "text":
+        return PlainTextResponse(render_digest_text(d))
+    return {**d, "text": render_digest_text(d)}
+
+
+@router.post("/digest/send")
+async def api_digest_send() -> dict[str, Any]:
+    """Send the digest now on every configured channel (Telegram / e-mail)."""
+    from shared.orchestration.digest import send_daily_digest
+    return await send_daily_digest()
 
 
 # ---------------------------------------------------------------------------

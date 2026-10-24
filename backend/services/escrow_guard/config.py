@@ -40,6 +40,11 @@ class EscrowGuardSettings(BaseSettings):
     # tranche auto-releases (silence = consent).
     inspection_window_hours: int = 72
     inspection_watcher_interval_seconds: int = 60
+    # What starts the window: "delivery" (default — the carrier's DELIVERED
+    # milestone, an operator's milestone entry, or the watcher fallback after
+    # INSPECTION_WINDOW_FALLBACK_DAYS) or "proof" (legacy: the moment the last
+    # proof-gated tranche releases, i.e. while the goods are still at sea).
+    inspection_window_trigger: str = "delivery"
 
     # ── Portless entity (for ledger) ──────────────────────────────────────
     portless_entity_name: str = "PortLess Trade Solutions Pvt Ltd"

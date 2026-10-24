@@ -43,6 +43,7 @@ from shared.domain.models import Party
 
 from .repository import get_repository, init_repository
 from .schemas import (
+    BuyerCandidate,
     CreateDealRequest,
     DealRecord,
     DealStatus,
@@ -162,8 +163,8 @@ async def _score_seller(
             ),
             supplier_to_port_km=float(seller.get("supplier_to_port_km") or 300.0),
             business_age_years=0.0,
-            udyam_registered=False,
-            annual_shipment_count=0,
+            udyam_registered=bool(seller.get("udyam")),
+            annual_shipment_count=int(seller.get("export_shipments_12m") or 0),
         )
         resp = await score_match(req)
         return MatchResult(
@@ -178,6 +179,7 @@ async def _score_seller(
             decision=resp.decision,
             fob_price_usd=float(fob),
             supplier_to_port_km=seller.get("supplier_to_port_km"),
+            export_shipments_12m=(int(seller["export_shipments_12m"]) if seller.get("export_shipments_12m") else None),
         )
     except Exception as exc:
         logger.warning(
@@ -278,6 +280,51 @@ def _seed_parties_from_opportunity(
     return parties
 
 
+def _quantity_to_mt(quantity: Any, unit: Any) -> float | None:
+    """Buyer-stated quantity → metric tons (None when the unit is not a weight)."""
+    try:
+        q = float(quantity)
+    except (TypeError, ValueError):
+        return None
+    if q <= 0:
+        return None
+    u = str(unit or "").strip().lower()
+    if u in ("mt", "ton", "tons", "tonne", "tonnes", "metric ton", "metric tons", "t"):
+        return round(q, 3)
+    if u in ("kg", "kgs", "kilogram", "kilograms"):
+        return round(q / 1000.0, 3)
+    if u in ("lb", "lbs", "pound", "pounds"):
+        return round(q * 0.000453592, 3)
+    return None
+
+
+def _buyer_candidates_from_seed(seed: dict[str, Any]) -> list[BuyerCandidate]:
+    """The outreach funnel's starting list: the seed's top buyers, best fit first."""
+    out: list[BuyerCandidate] = []
+    seen: set[str] = set()
+    for i, b in enumerate(seed.get("top_buyers") or []):
+        name = (b.get("buyer_name") or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(BuyerCandidate(
+            candidate_id=str(b.get("company_id") or f"BUYER-{i + 1}"),
+            legal_name=name,
+            country=b.get("buyer_country") or seed.get("market") or "",
+            email=b.get("email"),
+            website=b.get("website"),
+            phone=b.get("phone"),
+            source=b.get("source"),
+            fit_score=b.get("fit_score"),
+            pitch_angle=b.get("pitch_angle"),
+            quantity_mt=_quantity_to_mt(b.get("quantity"), b.get("quantity_unit")),
+        ))
+    return out
+
+
 async def _fetch_opportunity(opportunity_id: str) -> Any | None:
     """Best-effort fetch of the full EnrichedOpportunity (for party seeding)."""
     try:
@@ -311,12 +358,18 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
     winning_supplier_id: str | None = None
     winning_cms: float | None = None
     buyer_target_price: float | None = None
+    buyer_price_source: str | None = None
+    quantity_mt: float | None = None
+    buyer_candidates: list[BuyerCandidate] = []
     initial_status = DealStatus.DRAFT
 
     if payload.opportunity_id:
         seed = await _fetch_match_seed(payload.opportunity_id)
         if seed is not None:
             buyer_target_price = seed.get("buyer_target_price_usd")
+            buyer_price_source = seed.get("buyer_price_source")
+            buyer_candidates = _buyer_candidates_from_seed(seed)
+            quantity_mt = next((c.quantity_mt for c in buyer_candidates if c.quantity_mt), None)
             initial_status = DealStatus.MATCHING  # always move to MATCHING once seeded
 
             if buyer_target_price:
@@ -363,6 +416,9 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
         winning_supplier_id=winning_supplier_id,
         winning_cms=winning_cms,
         buyer_target_price_usd=buyer_target_price,
+        buyer_price_source=buyer_price_source,
+        quantity_mt=quantity_mt,
+        buyer_candidates=buyer_candidates,
         margin_floor_pct=(
             payload.margin_floor_pct
             if payload.margin_floor_pct is not None
@@ -621,6 +677,38 @@ async def update_party(
     updated = deal.model_copy(update={"parties": parties, "updated_at": datetime.now(timezone.utc)})
     await repo.save(updated)
     logger.info("Deal %s: %s party updated (%s)", deal_id, role, ", ".join(sorted(clean)))
+    return updated
+
+
+async def update_buyer_candidate(deal_id: str, candidate_id: str, updates: dict[str, Any]) -> DealRecord:
+    """Patch one buyer candidate of the outreach funnel (status, timestamps, reply)."""
+    repo = get_repository()
+    deal = await repo.get(deal_id)
+    if deal is None:
+        raise DealNotFoundError(deal_id)
+    cands = list(deal.buyer_candidates)
+    idx = next((i for i, c in enumerate(cands) if c.candidate_id == candidate_id), None)
+    if idx is None:
+        raise ValueError(f"buyer candidate {candidate_id!r} not on deal {deal_id}")
+    cands[idx] = cands[idx].model_copy(update={k: v for k, v in updates.items() if v is not None or k == "reply_preview"})
+    updated = deal.model_copy(update={"buyer_candidates": cands, "updated_at": datetime.now(timezone.utc)})
+    await repo.save(updated)
+    return updated
+
+
+async def add_buyer_candidate(deal_id: str, candidate: BuyerCandidate) -> DealRecord:
+    """Operator adds a buyer to the funnel (e.g. from their own list)."""
+    repo = get_repository()
+    deal = await repo.get(deal_id)
+    if deal is None:
+        raise DealNotFoundError(deal_id)
+    if any(c.candidate_id == candidate.candidate_id for c in deal.buyer_candidates):
+        raise ValueError(f"buyer candidate {candidate.candidate_id!r} already on deal {deal_id}")
+    updated = deal.model_copy(update={
+        "buyer_candidates": list(deal.buyer_candidates) + [candidate],
+        "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(updated)
     return updated
 
 

@@ -8,8 +8,12 @@ import {
   DollarSign,
   Shield,
   Zap,
+  Users,
+  Mail,
+  Wrench,
 } from "lucide-react";
 import { cn, fmtUSD, countdown, timeAgo } from "@/lib/utils";
+import { useAuth } from "@/lib/auth";
 import type { ApprovalRecord } from "@/api/types";
 import { useResolveApproval } from "@/api/hooks";
 import { Button } from "@/components/ui/button";
@@ -58,7 +62,51 @@ const DETAIL_ACTIONS = new Set([
   "RELEASE_SUPPLIER_PAYOUT",
   "CONFIRM_COUNTERPARTY_RISK",
   "CONFIRM_BUYER_ACCEPTANCE",
+  "SEND_BUYER_OUTREACH",
+  "RESOLVE_EXCEPTION",
 ]);
+
+// What APPROVE actually runs for a RESOLVE_EXCEPTION playbook
+// (services/hitl_approval/callbacks.py::_cb_resolve_exception).
+const PLAYBOOK_EFFECT: Record<string, { label: string; effect: string; tone: "warn" | "bad" }> = {
+  reinspect: {
+    label: "Re-inspection",
+    effect:
+      "APPROVE moves the deal DISPUTE → SUPPLIER_DISPATCH_READY, clears any buyer dispute on the escrow, books a fresh QC inspection and sends the supplier a rework notice. No escrow tranche releases until a clean report.",
+    tone: "warn",
+  },
+  cancel_unfunded: {
+    label: "Cancel unfunded deal",
+    effect:
+      "APPROVE refunds any partially funded escrow amount to the buyer, moves the deal to CANCELLED and e-mails both parties. REJECT leaves the deal waiting.",
+    tone: "bad",
+  },
+};
+
+// Risk flags with a specific meaning get their own wording / colour.
+const FLAG_INFO: Record<string, { label: string; hint: string; tone: "warn" | "info" | "ok" | "bad" }> = {
+  four_eyes_required: {
+    label: "four-eyes",
+    hint: "Two different operators must approve (FOUR_EYES_THRESHOLD_USD)",
+    tone: "bad",
+  },
+  auto_approved_below_value_threshold: {
+    label: "auto-approved (below threshold)",
+    hint: "Amount under the value threshold and every precondition held",
+    tone: "ok",
+  },
+  templated_outreach: {
+    label: "templated outreach",
+    hint: "Introduction e-mail from the outreach template (no LLM)",
+    tone: "info",
+  },
+  followup: { label: "follow-up", hint: "Second touch after silence", tone: "info" },
+  auto_sourced_verified_in_corridor: {
+    label: "auto-sourced",
+    hint: "GST + IEC verified supplier inside the price corridor",
+    tone: "ok",
+  },
+};
 
 function str(v: unknown): string | null {
   if (v == null || v === "") return null;
@@ -129,6 +177,67 @@ function PayloadDetails({ action, payload }: { action: string; payload: Record<s
     rows.push({ label: "Accepted by", value: str(payload.accepted_by) ?? "—" });
     rows.push({ label: "Effect", value: "releases the final ACCEPTED-trigger tranche to PortLess" });
   }
+  if (action === "SEND_BUYER_OUTREACH") {
+    const body = str(payload.body) ?? "";
+    rows.push({ label: "To", value: <span className="font-mono">{str(payload.to_address) ?? "—"}</span> });
+    rows.push({ label: "Subject", value: str(payload.subject) ?? "—" });
+    rows.push({
+      label: "Kind",
+      value: payload.kind === "followup" ? "follow-up after silence" : "first introduction",
+    });
+    rows.push({ label: "Candidate", value: <span className="font-mono">{str(payload.candidate_id) ?? "—"}</span> });
+    if (body) {
+      rows.push({
+        label: "Body",
+        value: (
+          <pre className="whitespace-pre-wrap font-sans text-[11px] text-muted-foreground max-h-40 overflow-auto">
+            {body.length > 900 ? `${body.slice(0, 900)}…` : body}
+          </pre>
+        ),
+      });
+    }
+    rows.push({ label: "Effect", value: "APPROVE sends the e-mail; REJECT skips this buyer and contacts the next candidate" });
+  }
+  if (action === "RESOLVE_EXCEPTION") {
+    const playbook = str(payload.playbook);
+    rows.push({ label: "Category", value: str(payload.category) ?? "—" });
+    if (payload.severity) rows.push({ label: "Severity", value: str(payload.severity) ?? "—" });
+    if (payload.root_cause) rows.push({ label: "Root cause", value: str(payload.root_cause) ?? "—" });
+    const steps = Array.isArray(payload.remediation_steps) ? (payload.remediation_steps as unknown[]) : [];
+    if (steps.length) {
+      rows.push({
+        label: "Plan",
+        value: (
+          <ol className="list-decimal ml-4 space-y-0.5">
+            {steps.map((s, i) => <li key={i}>{String(s)}</li>)}
+          </ol>
+        ),
+      });
+    }
+    if (playbook) {
+      const info = PLAYBOOK_EFFECT[playbook];
+      rows.push({
+        label: "Playbook",
+        value: (
+          <span>
+            <span className={cn("font-semibold", info?.tone === "bad" ? "text-[#ff5d6c]" : "text-[#f5a623]")}>
+              <Wrench className="inline w-3 h-3 mr-1" />
+              {info?.label ?? playbook}
+            </span>
+            {payload.reason ? <span className="text-muted-foreground"> — {str(payload.reason)}</span> : null}
+            <p className="text-muted-foreground mt-0.5">
+              {info?.effect ?? `APPROVE runs the '${playbook}' playbook; REJECT leaves the deal as it is.`}
+            </p>
+          </span>
+        ),
+      });
+    } else {
+      rows.push({
+        label: "Effect",
+        value: "APPROVE acknowledges the plan (no automatic action); REJECT raises a deal exception",
+      });
+    }
+  }
 
   if (rows.length === 0) return null;
   return (
@@ -148,6 +257,26 @@ function PayloadDetails({ action, payload }: { action: string; payload: Record<s
   );
 }
 
+function RiskFlag({ flag }: { flag: string }) {
+  const playbook = flag.startsWith("playbook:") ? flag.slice("playbook:".length) : null;
+  const info = playbook
+    ? { label: `playbook: ${PLAYBOOK_EFFECT[playbook]?.label ?? playbook}`, hint: PLAYBOOK_EFFECT[playbook]?.effect ?? "", tone: "warn" as const }
+    : FLAG_INFO[flag];
+  const tone = info?.tone ?? "warn";
+  const color =
+    tone === "bad" ? "#ff5d6c" : tone === "ok" ? "#2ec28a" : tone === "info" ? "#4f8cff" : "#f5a623";
+  return (
+    <span
+      title={info?.hint}
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border"
+      style={{ color, borderColor: `${color}4d`, background: `${color}1a` }}
+    >
+      {playbook ? <Wrench className="w-2.5 h-2.5" /> : tone === "bad" ? <Users className="w-2.5 h-2.5" /> : <Shield className="w-2.5 h-2.5" />}
+      {info?.label ?? flag}
+    </span>
+  );
+}
+
 interface HitlApprovalCardProps {
   approval: ApprovalRecord;
   onResolved?: () => void;
@@ -161,39 +290,56 @@ export function HitlApprovalCard({
 }: HitlApprovalCardProps) {
   const [note, setNote] = useState("");
   const resolve = useResolveApproval();
+  const { user } = useAuth();
+  const operator = user?.email ?? user?.name ?? "operator";
 
   const isPending = approval.status === "PENDING";
   const isExpiring =
     approval.expires_at &&
     new Date(approval.expires_at).getTime() - Date.now() < 10 * 60 * 1000; // < 10min
 
+  const required = approval.required_approvals ?? 1;
+  const signatures = approval.approvals ?? [];
+  const remaining = approval.approvals_remaining ?? (isPending ? Math.max(0, required - signatures.length) : 0);
+  const fourEyes = required > 1;
+  const alreadySigned = signatures.some((s) => s.approved_by === operator);
+
   async function handleDecision(decision: "APPROVE" | "REJECT") {
     try {
-      await resolve.mutateAsync({
+      const res = await resolve.mutateAsync({
         approvalId: approval.approval_id,
         payload: {
           decision,
-          resolved_by: "operator",
+          resolved_by: operator,
           note: note || undefined,
         },
       });
-      toast.success(
-        decision === "APPROVE"
-          ? `Approved: ${formatAction(approval.action)}`
-          : `Rejected: ${formatAction(approval.action)}`
-      );
+      if (decision === "APPROVE" && res.status === "PENDING" && (res.approvals_remaining ?? 0) > 0) {
+        toast.info(`Recorded your approval — ${res.approvals_remaining} more operator must countersign`, {
+          description: `${formatAction(approval.action)} stays pending until a different operator approves.`,
+        });
+      } else {
+        toast.success(
+          decision === "APPROVE"
+            ? `Approved: ${formatAction(approval.action)}`
+            : `Rejected: ${formatAction(approval.action)}`
+        );
+      }
       onResolved();
     } catch (err) {
-      // 409 = already resolved (e.g. a double-click, or another operator/tab
-      // got there first) — the request was correctly rejected, not failed.
-      // Refresh instead of showing an error for state the UI just hasn't
-      // caught up to yet.
-      const status = (err as { response?: { status?: number } })?.response?.status;
-      if (status === 409) {
+      // 409 = already resolved (double-click / another operator) — or, on a
+      // four-eyes gate, the same operator trying to approve twice. The backend
+      // says which in `detail`.
+      const e = err as { response?: { status?: number; data?: { detail?: string } } };
+      const status = e?.response?.status;
+      const detail = e?.response?.data?.detail;
+      if (status === 409 && detail && /different operator|countersign|already carries/i.test(detail)) {
+        toast.error("Second approver must be a different operator", { description: detail });
+      } else if (status === 409) {
         toast.info("Already resolved — refreshing");
         onResolved();
       } else {
-        toast.error("Failed to resolve approval");
+        toast.error("Failed to resolve approval", { description: detail });
       }
     }
   }
@@ -217,7 +363,7 @@ export function HitlApprovalCard({
               isPending ? "bg-[#f5a623]/15 text-[#f5a623]" : "bg-secondary text-muted-foreground"
             )}
           >
-            <Zap className="w-4 h-4" />
+            {approval.action === "SEND_BUYER_OUTREACH" ? <Mail className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
           </div>
           <div>
             <p className="text-sm font-semibold">{formatAction(approval.action)}</p>
@@ -226,7 +372,15 @@ export function HitlApprovalCard({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+          {fourEyes && (
+            <Badge variant={remaining > 0 && isPending ? "destructive" : "secondary"} className="gap-1">
+              <Users className="w-3 h-3" />
+              {isPending
+                ? `${signatures.length} of ${required} approvals`
+                : `${required} approvers`}
+            </Badge>
+          )}
           {autonomyBadge(approval.autonomy_level)}
           {statusBadge(approval.status)}
         </div>
@@ -242,6 +396,39 @@ export function HitlApprovalCard({
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {approval.summary}
               </p>
+            )}
+
+            {/* Four-eyes state */}
+            {fourEyes && (
+              <div
+                className={cn(
+                  "rounded-lg border p-3 text-xs space-y-1",
+                  isPending && remaining > 0 ? "border-[#ff5d6c]/40 bg-[#ff5d6c]/5" : "border-border bg-secondary"
+                )}
+              >
+                <p className="font-semibold flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5" />
+                  {isPending
+                    ? signatures.length === 0
+                      ? `Four-eyes gate — needs ${required} different operators`
+                      : `${signatures.length} of ${required} approvals — needs ${remaining === 1 ? "a second, different operator" : `${remaining} more different operators`}`
+                    : `Approved by ${required} operators`}
+                </p>
+                {signatures.length > 0 && (
+                  <ul className="space-y-0.5 text-muted-foreground">
+                    {signatures.map((s) => (
+                      <li key={`${s.approved_by}-${s.approved_at}`}>
+                        <span className="font-medium text-foreground">{s.approved_by}</span> signed{" "}
+                        {timeAgo(s.approved_at)}
+                        {s.note && <span className="italic"> — "{s.note}"</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {isPending && alreadySigned && (
+                  <p className="text-[#f5a623]">You already approved this gate — another operator has to countersign.</p>
+                )}
+              </div>
             )}
 
             {/* Metrics row */}
@@ -300,13 +487,7 @@ export function HitlApprovalCard({
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {approval.risk_flags.map((flag, i) => (
-                    <span
-                      key={i}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-[#f5a623]/10 border border-[#f5a623]/30 text-[#f5a623] font-medium"
-                    >
-                      <Shield className="w-2.5 h-2.5" />
-                      {flag}
-                    </span>
+                    <RiskFlag key={`${flag}-${i}`} flag={flag} />
                   ))}
                 </div>
               </div>
@@ -360,9 +541,11 @@ export function HitlApprovalCard({
                     size="sm"
                     className="flex-1 gap-1.5"
                     onClick={() => handleDecision("APPROVE")}
-                    disabled={resolve.isPending}
+                    disabled={resolve.isPending || alreadySigned}
+                    title={alreadySigned ? "You already approved — a different operator must countersign" : undefined}
                   >
-                    <CheckCircle2 className="w-4 h-4" /> Approve
+                    <CheckCircle2 className="w-4 h-4" />
+                    {fourEyes && signatures.length > 0 ? "Countersign" : "Approve"}
                   </Button>
                   <Button
                     variant="destructive"
@@ -374,6 +557,7 @@ export function HitlApprovalCard({
                     <XCircle className="w-4 h-4" /> Reject
                   </Button>
                 </div>
+                <p className="text-[10px] text-muted-foreground">Deciding as {operator}</p>
               </div>
             )}
           </div>

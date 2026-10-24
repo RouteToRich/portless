@@ -918,11 +918,16 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
     all_released = all(t.status == "RELEASED" for t in new_tranches)
 
     # Open the buyer-acceptance window once the only remaining tranches are the
-    # final ACCEPTED-trigger ones (i.e. all proof-gated tranches are released).
+    # final ACCEPTED-trigger ones (all proof-gated tranches released) AND the
+    # trigger is met: legacy "proof" mode opens it here; "delivery" mode only
+    # when the goods were already confirmed delivered (otherwise
+    # open_inspection_window opens it on the DELIVERED milestone).
     inspection_deadline = hold.inspection_deadline
     remaining_pending = [t for t in new_tranches if t.status == "PENDING"]
     window_opened = False
-    if remaining_pending and all(t.trigger == "ACCEPTED" for t in remaining_pending) and inspection_deadline is None:
+    trigger_met = _window_trigger() == "proof" or hold.delivery_confirmed_at is not None
+    if (remaining_pending and all(t.trigger == "ACCEPTED" for t in remaining_pending)
+            and inspection_deadline is None and trigger_met):
         inspection_deadline = now + timedelta(hours=settings.inspection_window_hours)
         window_opened = True
 
@@ -933,6 +938,8 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
         "status": "RELEASED" if all_released else hold.status,
         "released_at": now if all_released else hold.released_at,
         "inspection_deadline": inspection_deadline,
+        "inspection_opened_at": now if window_opened else hold.inspection_opened_at,
+        "inspection_trigger": ("delivery" if hold.delivery_confirmed_at else "proof") if window_opened else hold.inspection_trigger,
         "updated_at": now,
     })
     await repo.save_hold(updated)
@@ -1028,6 +1035,96 @@ async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
         "EscrowGuard: refunded %.2f (undisbursed) for deal %s (escrow=%s)",
         undisbursed, hold.deal_id, escrow_id,
     )
+    return EscrowResponse.from_record(updated)
+
+
+# ---------------------------------------------------------------------------
+# Inspection window trigger (delivery) + dispute clearing
+# ---------------------------------------------------------------------------
+
+def _window_trigger() -> str:
+    raw = (getattr(settings, "inspection_window_trigger", "delivery") or "delivery").strip().lower()
+    return "proof" if raw == "proof" else "delivery"
+
+
+def _final_amount(hold: EscrowHoldRecord) -> float:
+    return round(sum(
+        (t.amount if t.amount is not None else hold.amount * t.pct)
+        for t in hold.tranches if t.trigger == "ACCEPTED" and t.status == "PENDING"
+    ), 2)
+
+
+async def open_inspection_window(
+    escrow_id: str, *, reason: str = "delivery confirmed", trigger: str = "delivery",
+    now: datetime | None = None,
+) -> EscrowResponse:
+    """The goods reached the buyer: start the acceptance window for the final
+    tranche(s). Idempotent. If a proof-gated tranche is still PENDING the
+    delivery is recorded and the window opens when that tranche releases
+    (``release_tranche``)."""
+    repo = get_repository()
+    hold = await repo.get_hold(escrow_id)
+    if hold is None:
+        raise HoldNotFoundError(escrow_id)
+    now = now or datetime.now(timezone.utc)
+    if hold.inspection_deadline is not None:
+        return EscrowResponse.from_record(hold)
+    if hold.status not in ("FUNDED", "RELEASED"):
+        raise InvalidDealState(hold.deal_id, f"escrow={hold.status}", "escrow=FUNDED")
+    pending_final = [t for t in hold.tranches if t.trigger == "ACCEPTED" and t.status == "PENDING"]
+    if not pending_final:
+        return EscrowResponse.from_record(hold)  # nothing left to accept
+
+    earlier_pending = [t.tranche_id for t in hold.tranches if t.trigger != "ACCEPTED" and t.status == "PENDING"]
+    if earlier_pending:
+        updated = hold.model_copy(update={
+            "delivery_confirmed_at": hold.delivery_confirmed_at or now, "updated_at": now,
+        })
+        await repo.save_hold(updated)
+        logger.info(
+            "EscrowGuard: delivery recorded for %s (deal %s) — window opens once %s release(s)",
+            escrow_id, hold.deal_id, ", ".join(earlier_pending),
+        )
+        return EscrowResponse.from_record(updated)
+
+    deadline = now + timedelta(hours=settings.inspection_window_hours)
+    updated = hold.model_copy(update={
+        "delivery_confirmed_at": hold.delivery_confirmed_at or (now if trigger == "delivery" else None),
+        "inspection_deadline": deadline,
+        "inspection_opened_at": now,
+        "inspection_trigger": trigger,
+        "updated_at": now,
+    })
+    await repo.save_hold(updated)
+    await _emit(EventTopic.ESCROW_INSPECTION_OPENED, hold.deal_id, {
+        "escrow_id": escrow_id,
+        "trigger": trigger,
+        "reason": reason,
+        "deadline": deadline.isoformat(),
+        "final_amount": _final_amount(hold),
+        "currency": hold.currency,
+        "provider": hold.provider,
+    })
+    logger.info("EscrowGuard: inspection window opened for %s (deal %s, %s) until %s",
+                escrow_id, hold.deal_id, trigger, deadline.isoformat())
+    return EscrowResponse.from_record(updated)
+
+
+async def clear_dispute(escrow_id: str, *, reason: str = "resolved") -> EscrowResponse:
+    """Operator / playbook lifts a buyer dispute (e.g. a re-inspection was agreed)."""
+    repo = get_repository()
+    hold = await repo.get_hold(escrow_id)
+    if hold is None:
+        raise HoldNotFoundError(escrow_id)
+    if not hold.disputed:
+        return EscrowResponse.from_record(hold)
+    now = datetime.now(timezone.utc)
+    updated = hold.model_copy(update={
+        "disputed": False, "updated_at": now,
+        "provider_payload": {**hold.provider_payload, "dispute_cleared": {"at": now.isoformat(), "reason": reason}},
+    })
+    await repo.save_hold(updated)
+    logger.info("EscrowGuard: dispute cleared on %s (deal %s): %s", escrow_id, hold.deal_id, reason)
     return EscrowResponse.from_record(updated)
 
 

@@ -43,6 +43,32 @@ class MatchResult(BaseModel):
     decision: Literal["SOURCE", "DISCARD"]
     fob_price_usd: float | None = None
     supplier_to_port_km: float | None = None
+    export_shipments_12m: int | None = None
+    """Supplier's export shipments in the last 12 months (customs records via
+    the supplier actor) — the reliability input the Match Engine lacked."""
+
+
+class BuyerCandidate(BaseModel):
+    """One buyer the scan identified for this deal — the outreach funnel works
+    through them in order until one is interested (see
+    shared/orchestration/outreach.py)."""
+
+    candidate_id: str
+    legal_name: str
+    country: str
+    email: str | None = None
+    website: str | None = None
+    phone: str | None = None
+    source: str | None = None
+    fit_score: int | None = None
+    pitch_angle: str | None = None
+    quantity_mt: float | None = None
+    status: Literal["pending", "contacted", "followed_up", "interested", "declined", "no_reply", "selected"] = "pending"
+    contacted_at: datetime | None = None
+    followed_up_at: datetime | None = None
+    replied_at: datetime | None = None
+    reply_preview: str | None = None
+    email_id: str | None = None
 
 
 class StatusHistoryEntry(BaseModel):
@@ -98,7 +124,13 @@ class DealRecord(BaseModel):
     winning_supplier_id: str | None = None
     winning_cms: float | None = None
     buyer_target_price_usd: float | None = None
-    """Average CIF unit price from Volza manifests (via MatchEngineSeed)."""
+    """Buyer-side unit price (USD/MT) from the buyer signals or the market benchmark."""
+    buyer_price_source: str | None = None
+    quantity_mt: float | None = None
+    """Shipment quantity the buyer asked for (RFQ lead / negotiation); the
+    pipeline default applies when None."""
+    buyer_candidates: list[BuyerCandidate] = Field(default_factory=list)
+    """Buyer outreach funnel: every buyer the scan identified, in contact order."""
 
     # ── Financial ─────────────────────────────────────────────────────────
     margin_floor_pct: float | None = None
