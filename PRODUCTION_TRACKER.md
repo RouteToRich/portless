@@ -441,7 +441,7 @@ Full analysis + remaining gaps: `needed/portless_automation_gap_analysis.md`.
 - [ ] **P1-2 Durable Mongo everywhere** — single production cluster + per-service
   collections verified for all 13 stateful modules (auth, deals, trade_min,
   sourcing, negotiation_agent, email_processor, dealmaker, shield_link, docugen,
-  escrow_guard, hitl_approval, exception_resolver, RAG); in-memory fallback
+  escrow_guard, hitl_approval, exception_resolver); in-memory fallback
   allowed only in dev/CI. Fix the known **Motor/event-loop fragility** seen when
   tests run against live Mongo (client bound to a dead loop) — create clients
   per-loop or at app lifespan.
@@ -457,8 +457,8 @@ Full analysis + remaining gaps: `needed/portless_automation_gap_analysis.md`.
     than `phase1_min_connectors` (currently 1) live responses from
     Comtrade/Census, `_phase1_historical_demand()` falls back to
     `ranking.simulated_demand_index()` / `simulated_price_gap_pct()`
-    (`backend/services/trade_min/service.py:251-259`,
-    `backend/services/trade_min/ranking.py:17-29`) — a deterministic SHA-256
+    (`services/trade_min/service.py:251-259`,
+    `services/trade_min/ranking.py:17-29`) — a deterministic SHA-256
     hash of `(hs_code, market)` that produces plausible-looking but entirely
     fake `demand_index`/`price_gap_pct` numbers. This runs in **production**,
     not just `TRADE_MIN_MOCK_MODE`, any time Comtrade/Census both fail or
@@ -471,7 +471,7 @@ Full analysis + remaining gaps: `needed/portless_automation_gap_analysis.md`.
     the P1-1 boot gate above.
   - [ ] **P1-D1b Paid connectors coded but excluded from the pipeline** — Volza,
     Trademo, ImportGenius, and MacMap have full connector classes and registry
-    entries (`backend/shared/connectors/registry.py:64-85`) with extractors
+    entries (`shared/connectors/registry.py:64-85`) with extractors
     already written (`_extract_volza`, `_extract_importgenius`,
     `_extract_trademo` in `service.py`), but Phase 1/3/4 only call
     `comtrade`/`census`/`wits_tariff`/`access2markets` — the paid ones are
@@ -686,7 +686,7 @@ playbook (owner, SLA, safe default) → compensating action → test.
   access, cross-document mismatch, missing product-specific certificates (CoO,
   phyto, fumigation).
 - [ ] **X-9 Security/fraud** — replayed webhooks, prompt injection via inbound
-  email into RAG/drafting context, stolen operator token, org-scoping leaks.
+  email into negotiation/drafting context, stolen operator token, org-scoping leaks.
 - [ ] **X-10 Concurrency/integrity** — crash between provider call and DB write
   (both orders), double approval, concurrent transitions,
   Mongo-write-ok-event-publish-fail. Deliver: outbox pattern (P3-1a) +
@@ -752,9 +752,9 @@ Cross-cutting deliverables for all workstreams:
 
 ## PHASE 6 — UI / product gaps
 
-Current pages (`ui/src/pages/`): Login, OpportunityRadar, DealBoard, DealDetail,
+Current pages (`portless-ui/src/pages/`): Login, OpportunityRadar, DealBoard, DealDetail,
 ApprovalsInbox, Exceptions, MoneyMargin, AutonomySettings, OrgDeals,
-OrganizationsAdmin, SystemHealth, KnowledgeBase. So the Money dashboard (UI-5)
+OrganizationsAdmin, SystemHealth. So the Money dashboard (UI-5)
 and an Exceptions view (folded into X-13) already exist as pages — the gaps
 below are about **depth and finish on existing pages**, buyer/supplier-facing
 surfaces that don't exist yet, and overall product polish.
@@ -812,7 +812,7 @@ surfaces that don't exist yet, and overall product polish.
 - [ ] **UI-12 Global search** — jump to a deal/opportunity/exception by ID or
   buyer/supplier name from anywhere; today each list is its own silo.
 - [ ] **UI-13 Design-system consistency pass** — the shadcn-style primitives
-  exist (`ui/src/components/ui/*`); audit that every page actually uses them
+  exist (`portless-ui/src/components/ui/*`); audit that every page actually uses them
   consistently (spacing, typography, color for status badges) rather than
   one-off styling per page — do this once real usage has surfaced the rough
   edges, not before.
@@ -829,7 +829,7 @@ surfaces that don't exist yet, and overall product polish.
 
 Connector code + env placeholders exist for everything below; each row needs a
 commercial step before it turns real. Indicative costs from the 2026 research in
-`backend/services/shield_link/workflow_shield_link.md` §10.
+`services/shield_link/workflow_shield_link.md` §10.
 
 | Provider | For | Commercial step | Approx cost | Env keys |
 |---|---|---|---|---|
@@ -845,7 +845,7 @@ commercial step before it turns real. Indicative costs from the 2026 research in
 | API Setu | GSTN/DGFT/MCA/Udyam verification | Developer account + product approval | free/nominal | `API_SETU_KEY` |
 | Comtrade/Census/WITS, IndiaMART, Alibaba RFQ | Opportunity data | Free/paid API keys | free tiers exist | various |
 | Transactional email (SES/SendGrid) | Deliverable outreach | Domain + account | ~$0–100/mo | SMTP/webhook keys |
-| Synadia Cloud (NATS) | Durable event bus | Free tier active (creds in `backend/`) | free; paid for R3 HA | `NATS_*` (auto-discovers `*.creds`) |
+| Synadia Cloud (NATS) | Durable event bus | Free tier active (creds in repository root) | free; paid for R3 HA | `NATS_*` (auto-discovers `*.creds`) |
 | Cargo insurance provider | Transit risk | Broker relationship | ~0.3–0.5% of cargo value | (new) |
 
 ---
@@ -874,7 +874,7 @@ commercial step before it turns real. Indicative costs from the 2026 research in
   local currency across the negotiation so PortLess can trade worldwide, keeping
   **USD as the internal source-of-truth unit** (only the outbound supplier quote
   is localized — escrow/PI/margin contracts stay USD). Full design spec:
-  `backend/agents/negotiation_agent/workflow_negotiation_agent.md` §17.
+  `agents/negotiation_agent/workflow_negotiation_agent.md` §17.
 
 ---
 
@@ -1122,7 +1122,7 @@ detection + freeze + playbook + compensating action + test land.
 
 - [ ] Webhook secret is unset and production accepts unsigned provider callbacks.
 - [ ] Replay attack repeats a valid `funded`, `qc.passed`, or `release` webhook.
-- [ ] Malicious email injects prompt instructions into negotiation/RAG context.
+- [ ] Malicious email injects prompt instructions into negotiation context.
 - [ ] Buyer/supplier account is assigned to the wrong organization.
 - [ ] Non-PortLess user gains access to another organization's deal/document.
 - [ ] PortLess staff token is stolen and used to approve payout/refund.
@@ -1150,7 +1150,7 @@ detection + freeze + playbook + compensating action + test land.
 - [ ] Background watcher auto-resolves while operator is manually resolving.
 - [ ] State machine rejects valid recovery path after a partial failure.
 - [ ] Clock skew causes token expiry, webhook replay window, or SLA timers to behave incorrectly.
-- [ ] RAG/LLM provider outage causes fallback content that is too generic for a regulated product.
+- [ ] LLM Gateway outage causes fallback content that is too generic for a regulated product.
 - [ ] Health check passes while critical downstream connector is degraded.
 
 ## Regulatory, legal, and business failures (→ X-1/X-4/O-6…O-9)
@@ -1177,9 +1177,9 @@ When a deal is created from an opportunity, the Deals service stores
 `opportunity_id`, `match_results` (full Match-Engine score breakdown for every
 candidate), `winning_supplier_id`, `winning_cms`, `buyer_target_price_usd`, and
 seeded buyer/supplier parties on the `DealRecord` (`services/deals/schemas.py`).
-The UI Deal Board (`ui/src/pages/DealBoard.tsx`) shows the CMS chip +
+The UI Deal Board (`portless-ui/src/pages/DealBoard.tsx`) shows the CMS chip +
 matched-supplier count per deal card and a Match (CMS) column in the table view;
-Deal Detail (`ui/src/pages/DealDetail.tsx`) shows the origin opportunity plus the
+Deal Detail (`portless-ui/src/pages/DealDetail.tsx`) shows the origin opportunity plus the
 sourcing match table. Converted opportunities correctly leave the active radar
 while their matching data survives on the deal.
 

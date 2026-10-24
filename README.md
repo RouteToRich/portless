@@ -39,13 +39,13 @@ payout rail, inspectors, forwarder, e-mail, Apify) and the two external Apify ac
 
 | Path | What |
 |---|---|
-| [`backend/`](backend/) | FastAPI modular monolith: 15 service/agent modules, shared orchestration, connectors, tests. [backend/README.md](backend/README.md) is the module map. |
-| [`ui/`](ui/) | React + Vite operator console (Opportunity Radar, Deal Board/Detail, Approvals Inbox, Money & Margin, Exceptions, Autonomy Settings, Catalogue, System Health, Knowledge Base). [ui/README.md](ui/README.md). |
-| [`backend/workflow.md`](backend/workflow.md) | **The end-to-end workflow as built** — every stage, event, gate, API call and the money chain. Start here to understand the system. |
+| Repository root | FastAPI modular monolith: 15 service/agent modules, shared orchestration, connectors, tests. [BACKEND_README.md](BACKEND_README.md) is the module map. |
+| [RouteToRich/portless-ui](https://github.com/RouteToRich/portless-ui) | **Separate repo** — React + Vite operator console (Opportunity Radar, Deal Board/Detail, Approvals Inbox, Money & Margin, Exceptions, Autonomy Settings, Catalogue, System Health). Check it out next to this repo as `../portless-ui`; its mock mode reads `mocked/` from here. |
+| [`workflow.md`](workflow.md) | **The end-to-end workflow as built** — every stage, event, gate, API call and the money chain. Start here to understand the system. |
 | [`CLAUDE.md`](CLAUDE.md) | Engineering reference: commands, architecture, every module and env var, cross-module flows. |
 | [`PRODUCTION_TRACKER.md`](PRODUCTION_TRACKER.md) | What is done, what is open before real money, company setup, deployment, marketing. |
 | [`needed/`](needed/) | Specifications and analysis: master spec, Apify actor contracts, automation gap analysis, and `portless_complete_automation_flow.excalidraw` (the flow diagram). |
-| `backend/workflow-implementation.md`, `backend/technical_doc.md`, `backend/layman_workflow.md` | Implementation/reference guide (third-party API registry, build order), zero-cost setup, plain-English guide. |
+| `workflow-implementation.md`, `technical_doc.md`, `layman_workflow.md` | Implementation/reference guide (third-party API registry, build order), zero-cost setup, plain-English guide. |
 
 ---
 
@@ -54,25 +54,25 @@ payout rail, inspectors, forwarder, e-mail, Apify) and the two external Apify ac
 Backend (Python 3.11+):
 
 ```bash
-cd backend
 pip install -r requirements.txt -r requirements-dev.txt
 cp .env.example .env            # optional — everything degrades gracefully without it
 uvicorn app:app --reload --port 8081     # all services on one port; Swagger at /docs
 ```
 
-UI (Node 18+):
+UI (Node 18+) — separate repo, cloned next to this one:
 
 ```bash
-cd ui
+cd ..
+git clone https://github.com/RouteToRich/portless-ui.git
+cd portless-ui
 npm install
 npm run dev                     # http://localhost:5173, talks to the backend on 8081
-npm run dev:mock                # the same UI on fixtures from backend/mocked/, no backend
+npm run dev:mock                # the same UI on fixtures from ../portless/mocked/, no backend
 ```
 
 Tests and the end-to-end money chain:
 
 ```bash
-cd backend
 python -m pytest tests --rootdir=.             # ~7 min; 885 pass, 9 need live LLM/Mongo keys
 python scripts/e2e_money_chain.py              # drives one deal to PAID against a running server
 ```
@@ -135,7 +135,7 @@ system and real money (`ENV_PROFILE=production` refuses to boot while one fails)
 
 ## Configuration
 
-Copy `backend/.env.example`; it documents every variable. The groups that matter most:
+Copy `.env.example`; it documents every variable. The groups that matter most:
 
 - **Persistence / bus:** `MONGO_URI`, `MONGO_DB_NAME`, `NATS_CREDS_FILE`.
 - **Identification:** `APIFY_TOKEN` (own actors on the `rich_minds` account), `APIFY_MAX_RUNS_PER_DAY`, the product catalogue (`PUT /trade-min/catalogue`).
@@ -143,7 +143,7 @@ Copy `backend/.env.example`; it documents every variable. The groups that matter
 - **Operations:** inspector API keys (SGS, QIMA, BV, Intertek, TÜV), Cogoport / Freightos, ICEGATE, `INSPECTION_WINDOW_TRIGGER`, `INSPECTION_WINDOW_FALLBACK_DAYS`.
 - **Communication:** Gmail SMTP + IMAP, `PORTLESS_EMAIL_DOMAIN`, `HITL_TELEGRAM_*`, `DIGEST_*`.
 - **Automation:** `AUTONOMY_<ACTION>` (+ `_TIMEOUT_SECONDS`, `_ON_TIMEOUT`, `_AUTO_APPROVE_BELOW_USD`), `OUTREACH_*`, `SOURCING_AUTO_SOURCE_VERIFIED`, `AUTO_DEAL_FROM_OPPORTUNITY_ENABLED`, `EXCEPTION_PLAYBOOKS_ENABLED`, `QC_REINSPECTION_MAX`, `ESCROW_FUNDING_GRACE_DAYS`.
-- **LLM / RAG:** `LLM_GROQ_API_KEY` or a primary model key, `LLM_EMBEDDING_API_KEY`, `TAVILY_API_KEY`.
+- **Live market intelligence (optional):** `TAVILY_API_KEY`.
 
-Secrets never go in the repo: `backend/.env` and `*.creds` are gitignored and the Apify
+Secrets never go in the repo: `.env` and `*.creds` are gitignored and the Apify
 token is read from `~/.apify/auth.json` in development.

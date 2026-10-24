@@ -1,9 +1,0 @@
-{
-  "job_id": "rag-job-2c4f8a10",
-  "status": "completed",
-  "inserted_count": 42,
-  "graph_inserted_count": 18,
-  "error": null,
-  "started_at": "2026-06-25T10:00:00Z",
-  "completed_at": "2026-06-25T10:00:06Z"
-}

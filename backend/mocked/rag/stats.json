@@ -1,9 +1,0 @@
-{
-  "total_chunks": 1284,
-  "collection": "chunks",
-  "db": "portless",
-  "embedding_provider": "openai",
-  "embedding_model": "text-embedding-3-small",
-  "file_store_backend": "mongodb",
-  "graph_retrieval_enabled": false
-}

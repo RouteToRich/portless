@@ -601,7 +601,7 @@ CYCLE 3: CONVERGENCE & SIGN-OFF
 
 ## Appendix A: Implementation Roadmap
 
-> Module path: `backend/agents/negotiation_agent/`
+> Module path: `agents/negotiation_agent/`
 
 ```
   [Phase 1: DB & State Setup] ──► [Phase 2: pgvector RAG Index] ──► [Phase 3: LangGraph Agent Wiring] ──► [Phase 4: Guards & Inbox]

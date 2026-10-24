@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-All commands run from `backend/`:
+All commands run from the repository root:
 
 ```bash
 # Install
@@ -95,7 +95,6 @@ In the combined monolith (`app.py`) services call each other's `service.py` dire
 | `shared/readiness.py` | Production readiness gate: every stub / fallback as a named ok/warn/fail check (`GET /health/readiness`); `ENV_PROFILE=production` refuses to boot while a check fails |
 | `shared/orchestration/enrichment.py` | Counterparty identification: contact finder → e-mail check → sanctions / LEI / VIES screening on the Apify actors; results land on the deal `Party` (`email`, `email_status`, `sanctions_status` …). Runs at `DEAL_CREATED`, re-screens the buyer before the PI, and on demand via `POST /deals/{id}/enrich` |
 | `shared/llm_gateway/` | Resilient LLM client with Groq fallback chain + MongoDB call tracking |
-| `shared/rag/` | MongoDB Atlas vector store + RAG chunking pipeline |
 | `shared/auth/` | `AuthMiddleware` (JWT bearer enforcement + non-Portless allowlist), `dependencies.py` (`require_org_scope`, `require_portless`), `blacklist.py` (logout/token revocation), `security.py` (hash/verify/`create_access_token`) |
 | `shared/orchestration/continuations.py` | **Production automation backbone** — event subscribers that move a deal to its next step (opportunity → deal, RFQ, negotiation start, PI, escrow, PO/QC/freight/customs/tranche/payout gates, document pack, counterparty notifications, failure triage). Registered on the bus in the monolith only |
 | `shared/orchestration/autonomy_policy.py` | Per-action gate policy **v2**: level L0–L3 (override store → env → deal profile → default; money ceiling) **plus** per-action L1 timeout + on-timeout default (negotiation e-mails 4 h → APPROVE, money → REJECT) and a value threshold (`auto_approve_below_usd` per action or `money_auto_approve_below_usd` for all money gates) that drops a gate to L2 only when the amount is under it **and** the caller's preconditions hold (`resolve_gate(action, deal, amount=, conditions_ok=)`). Backs `GET/PUT /hitl-approval/autonomy-policy` |
@@ -249,26 +248,22 @@ Every gate above is created from `resolve_gate(action, deal, amount=, conditions
 - `UNRESOLVABLE` means the agent crashed OR HITL creation failed — always requires manual intervention.
 - The LLM prompt returns strict JSON; markdown fences are stripped automatically before parsing.
 
-### Mocked responses (`backend/mocked/`)
+### Mocked responses (`mocked/`)
 
-Complete realistic JSON fixtures for every service, all deal states, and all error scenarios. See `backend/mocked/README.md` for the full index. Use with MSW, json-server, or Storybook to build the UI without the backend running.
+Complete realistic JSON fixtures for every service, all deal states, and all error scenarios. See `mocked/README.md` for the full index. Use with MSW, json-server, or Storybook to build the UI without the backend running.
 
 ### Event publishing
 
 Services call `get_publisher().publish(DomainEvent(...))` after committing state. The backing bus is selected at startup by `shared/bus/factory.init_event_bus()` (`EVENT_BUS_BACKEND`: `auto`/`nats`/`inprocess`/`noop`):
 
-- **NATS JetStream** (`shared/bus/nats_bus.py`) — used when a Synadia `*.creds` file is present (auto-discovered in `backend/`, or `NATS_CREDS_FILE`). One stream (`PORTLESS_EVENTS`, subjects `portless.<topic>`), one durable pull consumer per subscribed topic, so events survive restarts and replay. At-least-once delivery: handler failure → NAK with backoff; after `NATS_MAX_DELIVER` attempts → TERM + dead-letter `deal.exception`. Poison (unparseable) messages are TERMed. `publish()` never raises — broker outage degrades to in-process delivery with a loud log.
+- **NATS JetStream** (`shared/bus/nats_bus.py`) — used when a Synadia `*.creds` file is present (auto-discovered in the repository root, or `NATS_CREDS_FILE`). One stream (`PORTLESS_EVENTS`, subjects `portless.<topic>`), one durable pull consumer per subscribed topic, so events survive restarts and replay. At-least-once delivery: handler failure → NAK with backoff; after `NATS_MAX_DELIVER` attempts → TERM + dead-letter `deal.exception`. Poison (unparseable) messages are TERMed. `publish()` never raises — broker outage degrades to in-process delivery with a loud log.
 - **InProcessEventBus** — fallback when no creds; fire-and-forget async fan-out inside one process.
 
 Pipeline continuations (`shared/orchestration/continuations.py`) subscribe in the **monolith only** (`init_event_bus(consume=True)` in `app.py`) — they call peer services via in-process imports. Standalone service mode inits publish-only (`consume=False`); published events persist in JetStream until the monolith's durable consumers replay them. `DEAL_EXCEPTION` routes to the Exception Resolver via `on_deal_exception` (resolver's own lifecycle echoes carry `exception_id` and are skipped to prevent loops).
 
 ### LLM gateway
 
-`shared/llm_gateway/` wraps the Negotiation Agent's LLM calls. Primary model via `LLM_PRIMARY_CONNECTOR` / `LLM_PRIMARY_API_KEY`; falls through Groq chain (`qwen/qwen3-32b` → `qwen/qwen3.6-27b` → `openai/gpt-oss-safeguard-20b`) if absent.
-
-### RAG pipeline
-
-`shared/rag/` uses MongoDB Atlas `$vectorSearch`. Embeddings use `text-embedding-3-small` (OpenAI) when `LLM_EMBEDDING_API_KEY` is set; falls back to `LocalHashEmbeddings`. The vector index is created by `ensure_indexes()` (run at startup from `shared.rag.src.router.startup()`) or manually in the Atlas UI — it must exist before RAG queries return anything. Only `metadata.authorized_users`, `metadata.source`, and `metadata.content_hash` are Atlas pre-filterable; filtering on any other field silently voids the semantic leg. Retrieval is hybrid: vector + keyword (BM25) + optional graph (`RAG_GRAPH_RETRIEVAL_ENABLED`; backends `mongo` — recommended — or `neo4j`, config default `neo4j`) + optional live web search (Tavily, `RAG_WEB_SEARCH_ENABLED`) — all merged via reciprocal rank fusion before reranking and the prompt-injection safety filter. Full reference: `backend/shared/rag/RAG_IMPLEMENTATION_FLOWS.md`. The Negotiation Agent's `market_intel.py` reuses this same web-search adapter and safety filter for its own per-round market-context fetch (see `agents/negotiation_agent/workflow_negotiation_agent.md` §9).
+`shared/llm_gateway/` wraps every LLM call — PortLess holds **no model provider key** (no Groq / OpenAI / Anthropic / Gemini, and no provider SDK in requirements). `LLMClient.chat()` goes to the shared RouteToRich LLM Gateway through the API gateway's `/api/llm` route (`POST /v1/llm`) using the vendored SDK (`remote_sdk.py`, same file as makemerich-backend, built in `remote.py`); the gateway owns model routing, the fallback chain, retries, provider keys and cost metering; `category=` pins its routing category. PortLess's LLM calls run in background handlers with no user request, so instead of forwarding a caller token it signs in as its own auth-service service account (`LLM_GATEWAY_EMAIL` / `_PASSWORD` / `_ACCOUNT_ID` → `POST /auth/login`, bearer cached, refreshed before the 1 h expiry and once on a 401; or a pre-minted `LLM_GATEWAY_TOKEN`). Caller tag `portless.<caller>`. A failed gateway call raises `LLMExhaustedException`; no URL / credential raises `LLMConfigurationError` (callers degrade: template negotiation drafts, resolver escalates). Calls are still tracked in `llm_requests` and the opt-in response cache. `tests/conftest.py` pins `MONGO_URI=""` and `LLM_GATEWAY_URL=""` so the suite never touches the live database or gateway from `.env`.
 
 ---
 
@@ -282,7 +277,7 @@ Pipeline continuations (`shared/orchestration/continuations.py`) subscribe in th
 | `match_engine` | ✅ Full | Deterministic CMS formula |
 | `deals` | ✅ Full | State machine, MongoDB, orchestration; optional dev/test `AUTO_FLOW_ENABLED` auto-continuation (`shared/orchestration/auto_flow.py`) |
 | `sourcing` | ✅ Full | RFQ dispatch + GSTN/DGFT/MCA/Udyam verification |
-| `negotiation_agent` | ✅ Full | LangGraph 3-node, RAG (with `NEGOTIATION_RAG_ENABLED` escape hatch + timeout); drafts + HITL-gates emails, delegates SMTP to `email_gateway`; optional live web-search market intel (`NEGOTIATION_MARKET_SEARCH_ENABLED`); inbound-reply intent via LLM classifier + price-consistency guard; `AGREED` reachable only via the `CONFIRM_NEGOTIATION_AGREEMENT` HITL gate |
+| `negotiation_agent` | ✅ Full | LangGraph 3-node with static product trade context; drafts + HITL-gates emails, delegates SMTP to `email_gateway`; optional live web-search market intel (`NEGOTIATION_MARKET_SEARCH_ENABLED`); inbound-reply intent via LLM classifier + price-consistency guard; `AGREED` reachable only via the `CONFIRM_NEGOTIATION_AGREEMENT` HITL gate |
 | `dealmaker` | ✅ Full | PI/PO, Jinja2 HTML, SHA-256, margin guard, idempotency |
 | `docugen` | ✅ Full | CI/PL/CoO/SDF/Shipping Bill templates, ICEGATE stub |
 | `shield_link` | ✅ Full | QC + freight + CHA; HMAC webhooks; graceful stubs; carrier milestones incl. `DELIVERED` by webhook, operator (`POST /shield-link/freight/{ref}/milestone`) or the tracking-actor poll (`POST /shield-link/deals/{id}/track`); re-inspection bookings |
@@ -315,13 +310,10 @@ Copy `.env.example` to `.env`. All services degrade gracefully (in-memory store,
 
 ```
 # MongoDB — ONE connection string + ONE database for the whole app.
-# Set MONGO_URI and MONGO_DB_NAME once; every service/module (all 11 backend
-# services + RAG + LLM Gateway + the shared cache) persists into that SAME
+# Set MONGO_URI and MONGO_DB_NAME once; every service/module + LLM Gateway +
+# shared cache persists into that SAME
 # database via its own collection(s) — a genuinely single-database deployment,
-# not one database per service. The RAG vector store ($vectorSearch) and GridFS
-# file storage (uploaded documents) also live in this same database — MongoDB
-# is the only persistence/vector/blob-storage backend in the app; no S3 or other
-# object store is used. Leave everything blank → all services fall back to
+# not one database per service. Leave everything blank → services fall back to
 # in-memory stores (dev/CI only).
 MONGO_URI                 # single cluster URL used by every service/module
 MONGO_DB_NAME              # single database name (default: portless)
@@ -331,12 +323,13 @@ MONGO_DB_NAME              # single database name (default: portless)
 #   TRADE_MONGO_URI, DEALS_MONGO_URI, SOURCING_MONGO_URI, NEGOTIATION_MONGO_URI,
 #   DEALMAKER_MONGO_URI, DOCUGEN_MONGO_URI, SHIELD_LINK_MONGO_URI,
 #   ESCROW_GUARD_MONGO_URI, HITL_APPROVAL_MONGO_URI, EXCEPTION_RESOLVER_MONGO_URI,
-#   EMAIL_PROCESSOR_MONGO_URI, RAG_MONGO_URI, LLM_MONGO_URI, CACHE_MONGO_URI
+#   EMAIL_PROCESSOR_MONGO_URI, LLM_MONGO_URI, CACHE_MONGO_URI
 #   (…and the matching <SERVICE>_MONGO_DB_NAME for each)
 
 # LLM (all LLM calls go through shared/llm_gateway; no keys are hardcoded)
-LLM_GROQ_API_KEY         # Groq fallback-chain key — required unless a primary model is set
-LLM_PRIMARY_API_KEY      # Claude/OpenAI primary (optional; Groq chain used if absent)
+LLM_GATEWAY_URL          # shared LLM Gateway via the API gateway (https://api-gateway-two-nu.vercel.app); set → every chat call goes there
+LLM_GATEWAY_EMAIL / LLM_GATEWAY_PASSWORD / LLM_GATEWAY_ACCOUNT_ID   # PortLess's auth-service service account (or LLM_GATEWAY_TOKEN)
+# No LLM_GROQ_API_KEY / LLM_PRIMARY_* — provider keys live in the gateway
 
 # Regulatory (trade-min verification pipeline)
 API_SETU_KEY             # GSTN + MCA + Udyam
@@ -424,7 +417,7 @@ AUTH_MONGO_URI               # optional override; falls back to shared MONGO_URI
 
 # Event bus — NATS JetStream (Synadia Cloud); falls back to in-process bus
 EVENT_BUS_BACKEND            # auto (default) | nats | inprocess | noop
-NATS_CREDS_FILE              # Synadia .creds file; auto-discovers backend/*.creds if unset
+NATS_CREDS_FILE              # Synadia .creds file; auto-discovers *.creds in the repository root if unset
 NATS_URL                     # default tls://connect.ngs.global:4222
 NATS_STREAM_NAME / NATS_SUBJECT_PREFIX / NATS_ACK_WAIT_SECONDS / NATS_MAX_DELIVER
 
@@ -443,11 +436,9 @@ AUTO_DEAL_FROM_OPPORTUNITY_ENABLED  # default false — convert qualifying oppor
 TRADE_MIN_MOCK_MODE          # bypass every live trade-intelligence connector with curated scenario data
 AUTO_FLOW_ENABLED            # auto-continue an opportunity-seeded deal through sourcing/negotiation/PI/escrow (still HITL-gated at PO/freight/payout)
 
-# Negotiation Agent — RAG resilience + live market intelligence
-NEGOTIATION_RAG_ENABLED      # default true; false = always use the static playbook stub, skipping shared RAG entirely
-RAG_TIMEOUT_SECONDS          # default 15.0 — wall-clock budget for the RAG call before falling back to the stub
+# Negotiation Agent — optional live market intelligence
 NEGOTIATION_MARKET_SEARCH_ENABLED  # default false — fetch live Tavily web-search market color before each drafted email
-TAVILY_API_KEY               # shared by RAG's own web-search leg (RAG_WEB_SEARCH_ENABLED) and negotiation market intel above
+TAVILY_API_KEY               # used by negotiation market intel above
 ```
 
 Run `python scripts/check_trade_api_connections.py` to test all third-party API connections.

@@ -51,4 +51,129 @@ Could not sync deal DEAL-2024-STEEL-001 to NEGOTIATION_FAILED from negotiation N
 StaleWatcher: negotiation NEG-TEX-002 (deal DEAL-2024-TEX-002) marked FAILED after cooling period (round_no=1, idle past threshold)
 Could not sync deal DEAL-2024-TEX-002 to NEGOTIATION_FAILED from negotiation NEG-TEX-002: Deal 'DEAL-2024-TEX-002' not found
 WARNING:  WatchFiles detected changes in 'services\trade_min\service.py'. Reloading...
- 
+ Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Apify: APIFY_TOKEN not set (and no ~/.apify/auth.json) — actor rich_minds~export-market-finder-ai skipped; buyer/seller identification runs on the remaining sources
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
+Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063000&enddatetime=20261024063000&sort=DateDesc'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063001&enddatetime=20261024063001&sort=DateDesc'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: All connection attempts failed
+Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063005&enddatetime=20261024063005&sort=DateDesc'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063002&enddatetime=20261024063002&sort=DateDesc'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
+Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063003&enddatetime=20261024063003&sort=DateDesc'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+Connector 'wits_tariff' quote() failed: 
+Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
+Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.

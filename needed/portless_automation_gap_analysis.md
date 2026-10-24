@@ -1,7 +1,7 @@
 # PortLess — "Completely Automatic Merchant Trading" Gap Analysis
 
-Date: 2026-10-19 · Updated: 2026-10-23 (§4.4 — identification on own Apify actors, money chain) · Scope: `backend/` (all services + `shared/orchestration/`), `ui/`
-Companion docs: `PRODUCTION_TRACKER.md` (execution backlog), `CLAUDE.md` (architecture), `backend/workflow.md`
+Date: 2026-10-19 · Updated: 2026-10-23 (§4.4 — identification on own Apify actors, money chain) · Scope: repository root (all services + `shared/orchestration/`), `ui/`
+Companion docs: `PRODUCTION_TRACKER.md` (execution backlog), `CLAUDE.md` (architecture), `workflow.md`
 
 ---
 
@@ -100,7 +100,7 @@ and four-eyes work in `PRODUCTION_TRACKER.md` P1-6 / P1-11 exists.
 
 ## 4. What was built (2026-10-19)
 
-### 4.1 New modules (`backend/shared/orchestration/`)
+### 4.1 New modules (`shared/orchestration/`)
 
 | File | Responsibility |
 |---|---|
@@ -123,8 +123,8 @@ and four-eyes work in `PRODUCTION_TRACKER.md` P1-6 / P1-11 exists.
 | `services/escrow_guard/service.py` | `refund()` → `DISPUTE → REFUNDED` |
 | `shared/config.py` | `auto_deal_*` settings |
 | `app.py` | loads the policy at startup; starts/stops the deal watcher |
-| `ui/src/pages/AutonomySettings.tsx`, `ui/src/api/endpoints.ts` | page wired to the backend; shows effective level + source, money badge, per-deal-profile badge, unsaved-change state |
-| `CLAUDE.md`, `PRODUCTION_TRACKER.md`, `backend/.env.example` | documentation of all of the above |
+| `portless-ui/src/pages/AutonomySettings.tsx`, `portless-ui/src/api/endpoints.ts` | page wired to the backend; shows effective level + source, money badge, per-deal-profile badge, unsaved-change state |
+| `CLAUDE.md`, `PRODUCTION_TRACKER.md`, `.env.example` | documentation of all of the above |
 
 ### 4.3 Tests
 
@@ -228,7 +228,7 @@ the questions for the actor generator. Verified on the Apify Store 2026-10-22.
 ## 6. Operating recipe — run one deal hands-off (dev, stubs)
 
 ```
-# backend/.env
+# .env
 EVENT_CONTINUATION_ENABLED=true
 DEAL_NOTIFICATIONS_ENABLED=true
 DEAL_WATCHER_ENABLED=true
@@ -301,4 +301,4 @@ a `deal.exception` instead of silence.
 `DEAL_ESCROW_REMINDER_AFTER_HOURS`, `DEAL_REMINDER_MAX`, `DEAL_STALL_SLA_HOURS`,
 `AUTO_DEAL_FROM_OPPORTUNITY_ENABLED`, `AUTO_DEAL_MIN_ARBITRAGE_RANK`,
 `AUTO_DEAL_MIN_CONFIDENCE`, `AUTO_DEAL_OPERATOR_ID`, `AUTO_DEAL_ORG_ID`,
-`AUTO_DEAL_AUTONOMY_PROFILE`. All documented with defaults in `backend/.env.example`.
+`AUTO_DEAL_AUTONOMY_PROFILE`. All documented with defaults in `.env.example`.

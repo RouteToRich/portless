@@ -1167,7 +1167,7 @@ This section replaces the skeletal Trade-Min design in §4.5 with a complete, pr
 
 ### 10.1 Current State & Known Bugs
 
-The existing `backend/services/trade_min/` implementation has four critical defects that must be fixed before any live connector work proceeds.
+The existing `services/trade_min/` implementation has four critical defects that must be fixed before any live connector work proceeds.
 
 | # | Location | Bug | Impact |
 |---|---|---|---|

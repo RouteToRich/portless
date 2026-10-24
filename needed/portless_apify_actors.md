@@ -86,7 +86,7 @@ trucking); PortLess keeps Freightos for rates.
 ## 6. How PortLess will connect them
 
 1. **One connector, not one per actor.** A single `ApifyActorConnector` in
-   `backend/shared/connectors/apify.py` with the standard
+   `shared/connectors/apify.py` with the standard
    `quote / book / status / webhook_verify` interface, running actors through Apify's
    `run-sync-get-dataset-items` endpoint with an `APIFY_TOKEN`; empty result when the
    token is absent (graceful stub), registered in `registry.py`.
@@ -127,10 +127,10 @@ For each ID in §2 and §3:
 The actor generator (`/actor-pipeline`, `C:/workArea/pandian/apify-actors`, Apify
 account **`rich_minds`**) produced PortLess-owned actors for the needs in §2–§3.
 The backend talks to all of them through **one connector**,
-`backend/shared/connectors/apify.py` (base `ApifyActorConnector`: start run →
+`shared/connectors/apify.py` (base `ApifyActorConnector`: start run →
 wait → read dataset; one thin subclass per actor that maps the dataset rows
 onto the pipeline's own shapes). Registry group 7 in
-`backend/shared/connectors/registry.py`.
+`shared/connectors/registry.py`.
 
 ### 8.1 Verdict per need
 

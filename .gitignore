@@ -7,6 +7,8 @@
 # documentation templates. In production, real values live in a keyvault.
 .env
 **/.env
+*.creds
+**/*.creds
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
