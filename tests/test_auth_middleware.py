@@ -260,16 +260,17 @@ def test_identity_headers_are_believed_when_trust_is_on(client):
 # ---------------------------------------------------------------------------
 
 def test_legacy_record_is_not_adopted_by_email(client, repos):
-    import asyncio
-
-    asyncio.run(repos["users"].create(UserRecord(
+    # Seed the in-memory store directly: asyncio.run() here would clear the
+    # current event loop for every test that runs after this module.
+    legacy = UserRecord(
         user_id="USR-OLDLOCAL",
         email="legacy@example.com",
         name="Legacy Person",
         password_hash="pbkdf2_sha256$1$salt$hash",
         org_id="ORG-SECRET",
         created_at=datetime.now(timezone.utc),
-    )))
+    )
+    repos["users"]._by_id[legacy.user_id] = legacy
     me = client.get("/identity/me", headers=_auth("tok-legacy")).json()
     assert me["user_id"] == "USR-NEWID" and me["org_id"] is None and me["legacy"] is False
 
