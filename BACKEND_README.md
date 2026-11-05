@@ -94,15 +94,6 @@ never start a paid Apify run (`tests/conftest.py` pins stub mode).
 
 | Script | Purpose |
 |---|---|
-| `scripts/e2e_mock_flow.py` | Scenario runs (strong / marginal / disrupted opportunities) through sourcing, negotiation, PI, escrow |
-| `scripts/e2e_money_chain.py` | One deal to `PAID`: shortfall, replay, ordered tranches, delivery-triggered window, capped payout, settlement |
 | `scripts/check_trade_api_connections.py` | Connectivity check of every third-party API with the configured keys |
 | `scripts/google_drive_authorize.py` | One-time OAuth consent for the Google Drive document store |
 
-Both e2e scripts log in as `e2e-test@portless.local` (put it in `AUTH_PORTLESS_EMAILS`)
-and expect `TRADE_MIN_MOCK_MODE=true`.
-
-## Fixtures
-
-`mocked/` holds realistic JSON for every endpoint and deal state; the UI's
-`npm run dev:mock` runs entirely on them. See `mocked/README.md` for the index.

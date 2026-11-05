@@ -40,7 +40,7 @@ payout rail, inspectors, forwarder, e-mail, Apify) and the two external Apify ac
 | Path | What |
 |---|---|
 | Repository root | FastAPI modular monolith: 15 service/agent modules, shared orchestration, connectors, tests. [BACKEND_README.md](BACKEND_README.md) is the module map. |
-| [RouteToRich/portless-ui](https://github.com/RouteToRich/portless-ui) | **Separate repo** — React + Vite operator console (Opportunity Radar, Deal Board/Detail, Approvals Inbox, Money & Margin, Exceptions, Autonomy Settings, Catalogue, System Health). Check it out next to this repo as `../portless-ui`; its mock mode reads `mocked/` from here. |
+| [RouteToRich/portless-ui](https://github.com/RouteToRich/portless-ui) | **Separate repo** — React + Vite operator console (Opportunity Radar, Deal Board/Detail, Approvals Inbox, Money & Margin, Exceptions, Autonomy Settings, Catalogue, System Health). Check it out next to this repo as `../portless-ui`; it talks to this backend. |
 | [`workflow.md`](workflow.md) | **The end-to-end workflow as built** — every stage, event, gate, API call and the money chain. Start here to understand the system. |
 | [`CLAUDE.md`](CLAUDE.md) | Engineering reference: commands, architecture, every module and env var, cross-module flows. |
 | [`PRODUCTION_TRACKER.md`](PRODUCTION_TRACKER.md) | What is done, what is open before real money, company setup, deployment, marketing. |
@@ -67,18 +67,14 @@ git clone https://github.com/RouteToRich/portless-ui.git
 cd portless-ui
 npm install
 npm run dev                     # http://localhost:5173, talks to the backend on 8081
-npm run dev:mock                # the same UI on fixtures from ../portless/mocked/, no backend
 ```
 
-Tests and the end-to-end money chain:
+Tests:
 
 ```bash
-python -m pytest tests --rootdir=.             # ~7 min; 885 pass, 9 need live LLM/Mongo keys
-python scripts/e2e_money_chain.py              # drives one deal to PAID against a running server
+python -m pytest tests --rootdir=.             # ~7 min
 ```
 
-The e2e scripts log in as `e2e-test@portless.local`; that address must be in
-`AUTH_PORTLESS_EMAILS` and `TRADE_MIN_MOCK_MODE=true` gives them deterministic opportunities.
 Without `MONGO_URI` every store is in-memory and lost on restart.
 
 ---

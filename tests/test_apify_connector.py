@@ -308,26 +308,6 @@ class TestTradeMinWiring:
         seed2 = _build_match_seed(opp2)
         assert seed2.buyer_target_price_usd == 4200.0 and seed2.buyer_price_source == "apify_export_markets"
 
-    @pytest.mark.asyncio
-    async def test_mock_mode_scan_uses_actor_sources(self, monkeypatch):
-        from services.trade_min import service as tm
-        from services.trade_min.config import DEFAULT_CONFIG
-        from services.trade_min.repository import repository
-        monkeypatch.setattr(tm.settings, "trade_min_mock_mode", True)
-        repository.clear()
-        with patch("services.trade_min.service.get_publisher") as pub:
-            pub.return_value.publish = AsyncMock()
-            opp = await tm._scan_one("090930", "US", DEFAULT_CONFIG)
-        assert opp is not None
-        assert opp.price_benchmark_usd_per_mt == 1500.0 and opp.price_benchmark_source == "apify_export_markets"
-        sources = {b.source for b in opp.buyer_signals}
-        assert {"apify_alibaba_rfq", "apify_us_importers"} <= sources
-        assert any(s.source == "apify_india_suppliers" and s.email for s in opp.seller_candidates)
-        assert any(d.source == "apify_export_markets" for d in opp.demand_signals)
-        seed = tm._build_match_seed(opp)
-        assert seed.buyer_target_price_usd == 1500.0 and seed.top_buyers
-        repository.clear()
-
     def test_sources_endpoint_shape(self):
         from services.trade_min.service import describe_sources
         d = describe_sources()
@@ -335,4 +315,4 @@ class TestTradeMinWiring:
         assert {"apify_us_importers", "apify_alibaba_rfq", "apify_export_markets", "apify_india_suppliers",
                 "apify_contact_finder", "apify_counterparty_check", "apify_email_qualifier"} <= names
         assert d["apify"]["token_present"] is False
-        assert all(s["mode"] in ("live", "stub", "mock", "open") for s in d["sources"])
+        assert all(s["mode"] in ("live", "stub", "open") for s in d["sources"])

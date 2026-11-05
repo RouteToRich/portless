@@ -1,7 +1,6 @@
 """Auto-continuation orchestrator — drives an opportunity-seeded deal through
 the real pipeline after "Start Deal", using the actual service-layer
-functions (no HTTP, no mocking of business logic — only trade-min's
-opportunity data is ever mocked, via TRADE_MIN_MOCK_MODE).
+functions (no HTTP, no mocking of business logic).
 
 Enabled via AUTO_FLOW_ENABLED (shared/config.py); off by default.
 
@@ -15,8 +14,8 @@ whatever IDs it needs straight off that call's response, since several steps
 (PI -> escrow, QC/freight -> their webhooks) need an id/ext_ref that isn't
 cheaply rediscoverable from deal_id alone afterward.
 
-Two pre-existing pipeline gaps (present before this file existed — see
-scripts/e2e_mock_flow.py's module docstring) are worked around the same way
+Two pre-existing pipeline gaps (present before this file existed) are
+worked around the same way
 an operator would in the UI, and are called out inline below:
   1. buyer_target_price_usd is never populated by opportunity->deal seeding,
      because none of the currently-active trade-min connectors (Comtrade,
@@ -48,8 +47,8 @@ Stub webhooks
 Escrow-funded, QC-pass, and freight-cleared are normally reported by real
 third-party webhooks (Stripe/SGS/Cogoport). Those connectors are stubbed (no
 API keys configured), so nothing will ever call them — this module simulates
-each a few seconds after its booking call, using the payload shapes already
-proven working in scripts/e2e_mock_flow.py.
+each a few seconds after its booking call, using the providers' webhook
+payload shapes.
 
 Caveat: this is an in-memory asyncio task, not a durable job — a server
 restart (including a --reload pickup of an unrelated code change) silently

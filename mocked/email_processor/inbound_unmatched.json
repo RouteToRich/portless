@@ -1,9 +1,0 @@
-{
-  "_endpoint": "POST /email-processor/inbound (201)",
-  "_note": "ProcessingResult — no [NEG:...] token / threading header and no live negotiation match. Persisted for audit; an operator can re-map it via POST /email-processor/inbound/manual.",
-  "inbound_id": "IN-9B1D44AA02",
-  "status": "unmatched",
-  "negotiation_id": null,
-  "round_no": null,
-  "message": "No negotiation_id found in In-Reply-To, References, or subject. from=marketing@backlinks.example  subject=Boost your export website ranking"
-}

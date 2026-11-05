@@ -173,11 +173,6 @@ def evaluate() -> dict[str, Any]:
         fail_detail="no Comtrade / Census key and no Apify token — opportunities fall back to simulated demand numbers",
     ))
     checks.append(_check(
-        "mock_mode_off", "data", "Trade-Min mock mode off", not _flag("TRADE_MIN_MOCK_MODE"),
-        ok_detail="scanner uses live connectors",
-        fail_detail="TRADE_MIN_MOCK_MODE=true — every opportunity is canned scenario data",
-    ))
-    checks.append(_check(
         "auto_flow_off", "automation", "Dev auto-flow off", not _flag("AUTO_FLOW_ENABLED"),
         ok_detail="production legs run on the event bus only",
         fail_detail="AUTO_FLOW_ENABLED=true — the dev poller fakes buyer actions (PI acceptance, escrow funding)",

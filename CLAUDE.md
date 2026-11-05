@@ -248,10 +248,6 @@ Every gate above is created from `resolve_gate(action, deal, amount=, conditions
 - `UNRESOLVABLE` means the agent crashed OR HITL creation failed — always requires manual intervention.
 - The LLM prompt returns strict JSON; markdown fences are stripped automatically before parsing.
 
-### Mocked responses (`mocked/`)
-
-Complete realistic JSON fixtures for every service, all deal states, and all error scenarios. See `mocked/README.md` for the full index. Use with MSW, json-server, or Storybook to build the UI without the backend running.
-
 ### Event publishing
 
 Services call `get_publisher().publish(DomainEvent(...))` after committing state. The backing bus is selected at startup by `shared/bus/factory.init_event_bus()` (`EVENT_BUS_BACKEND`: `auto`/`nats`/`inprocess`/`noop`):
@@ -273,7 +269,7 @@ Pipeline continuations (`shared/orchestration/continuations.py`) subscribe in th
 |---|---|---|
 | `auth` | ✅ Full | JWT register/login/me/logout; organizations + Portless-staff allowlist; `shared/auth/middleware.py` gates the whole app |
 | `api_gateway` | ✅ Full | Edge proxy — auth, validation, webhook ingest, idempotency, request fan-out to every other module |
-| `trade_min` | ✅ Full | 5-phase concurrent pipeline; MongoDB + APScheduler; operator catalogue / corridors (`GET/PUT /trade-min/catalogue`) drive scan defaults, keywords and actor inputs; `TRADE_MIN_MOCK_MODE` for network-free dev/CI scans |
+| `trade_min` | ✅ Full | 5-phase concurrent pipeline; MongoDB + APScheduler; operator catalogue / corridors (`GET/PUT /trade-min/catalogue`) drive scan defaults, keywords and actor inputs |
 | `match_engine` | ✅ Full | Deterministic CMS formula |
 | `deals` | ✅ Full | State machine, MongoDB, orchestration; optional dev/test `AUTO_FLOW_ENABLED` auto-continuation (`shared/orchestration/auto_flow.py`) |
 | `sourcing` | ✅ Full | RFQ dispatch + GSTN/DGFT/MCA/Udyam verification |
@@ -433,7 +429,6 @@ DEAL_WATCHER_ENABLED         # default true — reminders + stall exceptions (DE
 AUTO_DEAL_FROM_OPPORTUNITY_ENABLED  # default false — convert qualifying opportunity.detected events into deals (AUTO_DEAL_MIN_ARBITRAGE_RANK, AUTO_DEAL_MIN_CONFIDENCE, AUTO_DEAL_ORG_ID, AUTO_DEAL_OPERATOR_ID, AUTO_DEAL_AUTONOMY_PROFILE)
 
 # Dev/test-only conveniences (default off; do not enable in production)
-TRADE_MIN_MOCK_MODE          # bypass every live trade-intelligence connector with curated scenario data
 AUTO_FLOW_ENABLED            # auto-continue an opportunity-seeded deal through sourcing/negotiation/PI/escrow (still HITL-gated at PO/freight/payout)
 
 # Negotiation Agent — optional live market intelligence

@@ -19,12 +19,6 @@ async def on_startup() -> None:
     await init_repository()
     await init_email_repository()
 
-    # Seed demo data when the in-memory fallback is active (no MongoDB or unreachable)
-    from .repository import InMemoryNegotiationRepository, get_repository
-    if isinstance(get_repository(), InMemoryNegotiationRepository):
-        from ._mock_seed import seed_mock_negotiation_data
-        await seed_mock_negotiation_data()
-
     logger.info("NegotiationAgent startup complete")
 
 

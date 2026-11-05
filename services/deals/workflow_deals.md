@@ -56,8 +56,7 @@ Gated by `AUTO_FLOW_ENABLED` (`shared/config.py`, default `False`). When on,
 `create_deal()` fires a background `asyncio.create_task` for any deal that
 reaches `MATCHING` via an opportunity — it drives the deal through
 sourcing → negotiation → PI → escrow funding using the **real service-layer
-functions** (no HTTP, no business-logic mocking; only Trade-Min's
-opportunity data is ever mocked, via `TRADE_MIN_MOCK_MODE`). It stops and
+functions** (no HTTP, no business-logic mocking). It stops and
 creates a normal HITL approval (at the deal's own `autonomy_profile`, usually
 L0) before `ISSUE_PO`, `BOOK_FREIGHT`, and `RELEASE_SUPPLIER_PAYOUT` — an
 operator resolves these the same way as any real HITL deployment. It polls

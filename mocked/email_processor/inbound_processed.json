@@ -1,9 +1,0 @@
-{
-  "_endpoint": "POST /email-processor/inbound (201)",
-  "_note": "ProcessingResult — supplier reply matched to live negotiation NEG-001-2024 (via In-Reply-To header), price 1640 extracted, run_round() advanced the negotiation to AGREED.",
-  "inbound_id": "IN-7F3A9C2E10",
-  "status": "processed",
-  "negotiation_id": "NEG-001-2024",
-  "round_no": 2,
-  "message": "Round 2 advanced. Negotiation status: AGREED"
-}

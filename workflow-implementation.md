@@ -29,7 +29,6 @@
   - [Test-coverage gaps (worth closing during Stage 2–4)](#test-coverage-gaps-worth-closing-during-stage-24)
 - [Complete Data-Flow Summary (All Phases)](#complete-data-flow-summary-all-phases)
 - [Developer Quick-Start](#developer-quick-start)
-  - [Mocked responses (`mocked/`)](#mocked-responses-mocked)
   - [Key file locations](#key-file-locations)
 - [Third-Party API Registry & Connection Status](#third-party-api-registry--connection-status)
   - [Summary Table (Last checked: 2026-06-27)](#summary-table-last-checked-2026-06-27)
@@ -509,28 +508,6 @@ curl -s -X POST http://localhost:8081/negotiation-agent/negotiations \
     "buyer_target_price":3.20,"supplier_quote_price":2.10
   }' | python -m json.tool
 ```
-
-### Mocked responses (`mocked/`)
-
-Complete set of realistic JSON fixtures for every service and every deal state. Use these to build UI screens without running the backend.
-
-```
-mocked/
-├── deals/              6 files — deal detail at key states (NEGOTIATING, ESCROW_FUNDED, IN_TRANSIT, PAID, DISPUTE)
-├── trade_min/          scan result with 3 opportunities
-├── match_engine/       CMS score breakdown
-├── sourcing/           quote submit response
-├── negotiation_agent/  agreed + failed negotiation
-├── dealmaker/          PI issued, PO issued, margin breach error
-├── docugen/            document list, customs filed, render failure
-├── shield_link/        QC booking, QC passed/failed webhooks, freight booking, cleared milestone
-├── escrow_guard/       hold created, funded webhook, payout completed, payout failed, deal summary
-├── hitl_approval/      L0/L1/L2 pending, rejected, list, SSE events
-├── exception_resolver/ 8 exception categories + list
-└── flows/              happy_path_full_flow.json (17 steps), qc_failure_exception_flow.json, payment_failure_flow.json
-```
-
-See `mocked/README.md` for the full index, deal status reference, HITL action table, and SSE integration example.
 
 ### Key file locations
 

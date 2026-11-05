@@ -10,7 +10,7 @@ _ALL_VARS = [
     "ESCROW_COM_API_KEY", "ESCROW_COM_EMAIL", "TAZAPAY_WEBHOOK_SECRET", "ESCROW_COM_WEBHOOK_SECRET",
     "STRIPE_WEBHOOK_SECRET", "PAYONEER_WEBHOOK_SECRET", "PAYONEER_CLIENT_ID", "PAYONEER_CLIENT_SECRET",
     "AUTONOMY_MONEY_CEILING", "APIFY_TOKEN", "COMTRADE_SUBSCRIPTION_KEY", "CENSUS_API_KEY",
-    "TRADE_MIN_MOCK_MODE", "AUTO_FLOW_ENABLED", "GMAIL_SENDER_ADDRESS", "GMAIL_APP_PASSWORD", "IMAP_USER",
+    "AUTO_FLOW_ENABLED", "GMAIL_SENDER_ADDRESS", "GMAIL_APP_PASSWORD", "IMAP_USER",
     "IMAP_PASSWORD", "PORTLESS_EMAIL_DOMAIN", "GOOGLE_DRIVE_CLIENT_ID", "GOOGLE_DRIVE_CLIENT_SECRET",
     "GOOGLE_DRIVE_REFRESH_TOKEN", "SGS_API_KEY", "QIMA_API_KEY", "COGOPORT_API_KEY", "FREIGHTOS_API_KEY",
     "ICEGATE_API_KEY", "LLM_GATEWAY_URL", "LLM_GATEWAY_TOKEN", "LLM_GATEWAY_EMAIL",
@@ -88,10 +88,9 @@ def test_money_ceiling_warns_when_raised(bare_env):
     assert ids["money_ceiling"] == "warn"
 
 
-def test_mock_mode_and_auto_flow_fail(bare_env):
+def test_auto_flow_fails(bare_env):
     _fill(bare_env)
-    bare_env.setenv("TRADE_MIN_MOCK_MODE", "true")
     bare_env.setenv("AUTO_FLOW_ENABLED", "true")
     report = readiness.evaluate()
     ids = {c["id"]: c["status"] for c in report["checks"]}
-    assert ids["mock_mode_off"] == "fail" and ids["auto_flow_off"] == "fail" and report["ready"] is False
+    assert "mock_mode_off" not in ids and ids["auto_flow_off"] == "fail" and report["ready"] is False

@@ -182,14 +182,7 @@ async def _safe_quote(name: str, req: dict) -> dict | None:
         conserve API quota — a cache hit short-circuits the live call.
       - Missing credentials (KeyError in connector __init__)
       - Network timeouts, API errors, unexpected exceptions
-
-    In TRADE_MIN_MOCK_MODE this never touches a live connector at all — see
-    mock_data.mock_quote().
     """
-    if settings.trade_min_mock_mode:
-        from .mock_data import mock_quote
-        return mock_quote(name, req)
-
     ttl = DEFAULT_CONFIG.cache_ttl_seconds.get(name)
     cache_key: str | None = None
     if ttl and settings.trade_cache_enabled:
@@ -1327,19 +1320,16 @@ def describe_sources() -> dict[str, Any]:
 
     Powers ``GET /trade-min/sources`` (the Opportunity Radar header and the
     readiness check). ``mode`` is ``live`` (credentials present), ``stub``
-    (no credentials — the source contributes nothing), ``mock``
-    (``TRADE_MIN_MOCK_MODE``) or ``open`` (no key needed).
+    (no credentials — the source contributes nothing) or ``open`` (no key
+    needed).
     """
     import os
     from shared.connectors.apify import describe_actors
 
-    mock = settings.trade_min_mock_mode
     apify = describe_actors()
     actors = {a["actor"].split("~")[-1]: a for a in apify["actors"]}
 
     def _mode(live: bool) -> str:
-        if mock:
-            return "mock"
         return "live" if live else "stub"
 
     def _actor(slug: str, role: str, label: str, detail: str) -> dict[str, Any]:
@@ -1372,11 +1362,11 @@ def describe_sources() -> dict[str, Any]:
          "mode": _mode(bool(os.getenv("ALIBABA_APP_KEY") and os.getenv("ALIBABA_APP_SECRET"))),
          "detail": "Official RFQ feed (Phase 2) - needs an Alibaba developer app."},
         {"name": "eu_ted", "label": "EU TED tenders", "role": "buyers", "provider": "eu_ted",
-         "mode": "mock" if mock else "open", "detail": "EU institutional tenders (Phase 2, EU markets)."},
+         "mode": "open", "detail": "EU institutional tenders (Phase 2, EU markets)."},
         {"name": "gdelt_disruption", "label": "GDELT disruptions", "role": "demand", "provider": "gdelt",
-         "mode": "mock" if mock else "open", "detail": "Supply disruptions in competitor origins (urgency tier 4)."},
+         "mode": "open", "detail": "Supply disruptions in competitor origins (urgency tier 4)."},
         {"name": "wits_tariff", "label": "World Bank WITS tariffs", "role": "tariff", "provider": "wits",
-         "mode": "mock" if mock else "open", "detail": "Applied import duty at HS-6 (Phase 3 tariff gate)."},
+         "mode": "open", "detail": "Applied import duty at HS-6 (Phase 3 tariff gate)."},
         _actor("india-supplier-finder-ai", "sellers", "Indian suppliers (actor)",
                "Indian manufacturers with price, MOQ, GSTIN and a reachable contact (Phase 4)."),
         {"name": "indiamart", "label": "IndiaMART", "role": "sellers", "provider": "indiamart_api",
@@ -1397,7 +1387,6 @@ def describe_sources() -> dict[str, Any]:
     ]
     live = sum(1 for src in sources if src["mode"] in ("live", "open"))
     return {
-        "mock_mode": mock,
         "apify": {"token_present": apify["token_present"], "owner": apify["owner"],
                   "ai_tier": apify["ai_tier"], "max_items": apify["max_items"],
                   "max_runs_per_day": apify.get("max_runs_per_day", 0),

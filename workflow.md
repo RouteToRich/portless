@@ -35,8 +35,7 @@
 18. [When something breaks — exceptions and playbooks](#18-when-something-breaks--exceptions-and-playbooks)
 19. [What the operator sees](#19-what-the-operator-sees)
 20. [Books, timeline, evidence](#20-books-timeline-evidence)
-21. [Running the whole loop locally](#21-running-the-whole-loop-locally)
-22. [Configuration cheat-sheet](#22-configuration-cheat-sheet)
+21. [Configuration cheat-sheet](#21-configuration-cheat-sheet)
 
 ---
 
@@ -144,9 +143,8 @@ when known, fit score, pitch angle, quantity) and `top_sellers` (price per MT, M
 contact), ranked by arbitrage and urgency.
 
 **Guards.** Without a catalogue the built-in sample codes and markets run.
-`APIFY_MAX_RUNS_PER_DAY` caps actor runs across scans, enrichment and tracking;
-`TRADE_MIN_MOCK_MODE=true` replaces every live source with curated scenarios.
-`GET /trade-min/sources` shows what is live, stub or mock.
+`APIFY_MAX_RUNS_PER_DAY` caps actor runs across scans, enrichment and tracking.
+`GET /trade-min/sources` shows what is live, stub or open.
 
 **Event.** `opportunity.detected`.
 
@@ -452,25 +450,7 @@ Status lifecycle: `OPEN → ANALYZING → REMEDIATING → RESOLVED | ESCALATED |
   timeline — and a SHA-256 over the whole pack. What a bank, insurer, auditor or dispute
   resolver asks for.
 
-## 21. Running the whole loop locally
-
-```bash
-AUTH_PORTLESS_EMAILS=e2e-test@portless.local TRADE_MIN_MOCK_MODE=true \
-  uvicorn app:app --port 8081
-python scripts/e2e_money_chain.py
-```
-
-The script scans a mocked corridor, creates the deal, checks enrichment and the RFQ
-gate, forces the negotiation to agreement, issues the PI, opens the escrow, funds it short
-and then in full (replaying a webhook on the way), approves the PO and T1, passes QC,
-approves T2 and freight, files customs, clears the cargo, approves T3, confirms the
-window is still closed, records `DELIVERED`, sees the window open, takes the capped
-supplier payout, accepts the goods as the buyer, settles the escrow, pays the balance and
-finishes with the deal `PAID` and a reconciled ledger. `scripts/e2e_mock_flow.py` runs the
-three scenario opportunities (strong, marginal, disrupted) through sourcing and
-negotiation.
-
-## 22. Configuration cheat-sheet
+## 21. Configuration cheat-sheet
 
 | Area | Variables |
 |---|---|

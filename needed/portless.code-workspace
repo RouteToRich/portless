@@ -5,6 +5,12 @@
 		},
 		{
 			"path": "../../portless-ui"
+		},
+		{
+			"path": "../../makemerich-backend"
+		},
+		{
+			"path": "../../makemerich-frontend"
 		}
 	],
 	"settings": {}

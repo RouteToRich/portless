@@ -43,27 +43,6 @@ Scheduler:
   scheduler_reorder_cron   → buying-cycle "due to reorder" pass
 ```
 
-### Mock mode (`TRADE_MIN_MOCK_MODE`, dev/CI)
-
-When `TRADE_MIN_MOCK_MODE=true`, `_safe_quote()` in `service.py` short-circuits
-*every* connector call (`mock_data.mock_quote(name, req)`) before it ever
-reaches a live connector or the response cache — no outbound HTTP at all,
-not even the usual stub-on-missing-key path. The real 5-phase pipeline
-(ranking, tariff gating, confidence scoring) still runs unmodified, just
-against curated data. Three HS codes have hand-authored scenarios designed
-to land in different branches of the deal state machine end-to-end:
-
-| HS code | Product / market | Intended outcome |
-|---|---|---|
-| `090930` | Cumin Seeds (US) | Strong ACTIVE opportunity, high confidence, urgency tier 3 → sails to `PAID` |
-| `100630` | Basmati Rice (DE) | Thin post-tariff margin → `MARGINAL`, low confidence → negotiation never converges → `NEGOTIATION_FAILED` |
-| `121190` | Botanical Extracts (AE) | `ACTIVE` + live supply disruption → urgency tier 4 → reaches `QC_FAILED`, exercises the Exception Resolver |
-
-Any other HS code falls back to `_generic_scenario()` — a deterministic
-hash of `hs_code:market` (same technique as `ranking.simulated_demand_index`)
-so a given code always reproduces the same mock sellers/pricing rather than
-erroring or returning nothing.
-
 ## 4. API endpoints
 
 | Method | Path | Purpose |
@@ -98,7 +77,6 @@ Everything degrades gracefully; set keys to go live:
 | `API_SETU_KEY` | Regulatory enrichment |
 | `TRADE_MONGO_URI` | Durable storage |
 | `SCHEDULER_NIGHTLY_CRON`, `SCHEDULER_REORDER_CRON` | Cron cadence |
-| `TRADE_MIN_MOCK_MODE` | Bypass every live connector with curated scenario data (`mock_data.py`) — instant, network-free scans for dev/CI/demos |
 
 ## 7. Nice-to-have / pending
 
@@ -110,6 +88,6 @@ Everything degrades gracefully; set keys to go live:
 ## 8. Files
 
 `schemas.py` (EnrichedOpportunity, MatchEngineSeed) · `service.py` (pipeline +
-scheduler jobs) · `mock_data.py` (`TRADE_MIN_MOCK_MODE` curated scenarios) ·
+scheduler jobs) ·
 `repository.py` · `router.py` · `client.py` (`TradeMinClient`) ·
 `config.py` · `main.py` (APScheduler lifespan).

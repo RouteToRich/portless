@@ -1,7 +1,0 @@
-{
-  "_endpoint": "POST /email-gateway/send (200)",
-  "_note": "SendEmailResult when Gmail SMTP is configured — delivered.",
-  "outcome": "sent",
-  "message_id": "<EMAIL-A1B2C3D4.NEG-001-2024@portless.io>",
-  "detail": ""
-}
