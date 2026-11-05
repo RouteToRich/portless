@@ -15,11 +15,15 @@ _ALL_VARS = [
     "GOOGLE_DRIVE_REFRESH_TOKEN", "SGS_API_KEY", "QIMA_API_KEY", "COGOPORT_API_KEY", "FREIGHTOS_API_KEY",
     "ICEGATE_API_KEY", "LLM_GATEWAY_URL", "LLM_GATEWAY_TOKEN", "LLM_GATEWAY_EMAIL",
     "LLM_GATEWAY_PASSWORD", "ENV_PROFILE", "READINESS_ENFORCE",
+    "AUTH_GATEWAY_URL", "PORTLESS_ACCOUNT_ID", "LLM_GATEWAY_ACCOUNT_ID", "AUTH_TRUST_GATEWAY_HEADERS",
 ]
 
 
 @pytest.fixture
 def bare_env(monkeypatch):
+    # Import first: shared.config's load_dotenv would otherwise re-fill the
+    # variables deleted below from the developer's .env.
+    import shared.config  # noqa: F401
     for v in _ALL_VARS:
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("APIFY_TOKEN", "")
@@ -45,6 +49,7 @@ def _fill(monkeypatch):
     monkeypatch.setenv("GMAIL_SENDER_ADDRESS", "ops@portless.io")
     monkeypatch.setenv("GMAIL_APP_PASSWORD", "pw")
     monkeypatch.setenv("PORTLESS_EMAIL_DOMAIN", "portless.io")
+    monkeypatch.setenv("AUTH_GATEWAY_URL", "https://gateway.example")
     from services.dealmaker.config import settings as dm
     monkeypatch.setattr(dm, "portless_entity_iec", "AAAPL1234A")
     monkeypatch.setattr(dm, "portless_entity_gstin", "27AAAPL1234A1Z5")
@@ -57,6 +62,7 @@ def test_dev_profile_reports_but_is_not_enforced(bare_env):
     assert ids["escrow_provider"] == "fail" and ids["money_webhook_secrets"] == "fail"
     assert ids["apify_token"] == "warn" and ids["qc_provider"] == "warn"  # warn-only outside production
     assert ids["money_ceiling"] == "ok" and ids["auto_flow_off"] == "ok"
+    assert ids["auth_gateway"] == "fail" and ids["auth_account"] == "warn" and ids["auth_header_trust"] == "ok"
     readiness.assert_ready_or_log()  # logs only
 
 
@@ -65,6 +71,7 @@ def test_production_profile_escalates_and_enforces(bare_env):
     report = readiness.evaluate()
     ids = {c["id"]: c["status"] for c in report["checks"]}
     assert ids["apify_token"] == "fail" and ids["qc_provider"] == "fail" and ids["event_bus"] == "fail"
+    assert ids["auth_account"] == "fail"
     assert report["enforced"] is True
     with pytest.raises(readiness.NotProductionReady):
         readiness.assert_ready_or_log()
@@ -94,3 +101,14 @@ def test_auto_flow_fails(bare_env):
     report = readiness.evaluate()
     ids = {c["id"]: c["status"] for c in report["checks"]}
     assert "mock_mode_off" not in ids and ids["auto_flow_off"] == "fail" and report["ready"] is False
+
+
+def test_auth_checks(bare_env):
+    _fill(bare_env)
+    bare_env.delenv("AUTH_GATEWAY_URL")
+    bare_env.setenv("LLM_GATEWAY_URL", "https://gateway.example")  # the same gateway, as fallback
+    bare_env.setenv("LLM_GATEWAY_ACCOUNT_ID", "acc-1")
+    bare_env.setenv("AUTH_TRUST_GATEWAY_HEADERS", "true")
+    ids = {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}
+    assert ids["auth_gateway"] == "ok" and ids["auth_account"] == "ok"
+    assert ids["auth_header_trust"] == "warn"

@@ -1,4 +1,5 @@
-"""Request/response models for the Auth service."""
+"""Models for PortLess's local identity records — users (as seen from
+auth-service) and organizations."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,7 +10,17 @@ from .organization import is_portless_user
 
 
 class UserRecord(BaseModel):
-    """Stored user document (password is hashed, never returned).
+    """PortLess's local record of an auth-service user.
+
+    ``user_id`` is auth-service's own id (``USR-<hex>``). The record is created
+    the first time that identity reaches PortLess (see
+    service.py::user_for_identity) and holds only what auth-service has no
+    notion of — the organization. Passwords live in auth-service.
+
+    ``password_hash`` is set only on LEGACY records, from before sign-in moved
+    to auth-service. They are kept so an admin can see who belonged to which
+    organization, but no one can sign in as them; the person signs up again
+    at auth-service and gets a new record that an admin assigns.
 
     org_id ties the user to their organization. It starts unset (None) at
     signup — a Portless admin assigns it via the Organizations admin UI
@@ -22,13 +33,14 @@ class UserRecord(BaseModel):
     user_id: str
     email: str
     name: str
-    password_hash: str
+    password_hash: str | None = None
+    account_id: str | None = None
     org_id: str | None = None
     created_at: datetime
 
 
 class UserPublic(BaseModel):
-    """User info safe to return to clients / embed in tokens."""
+    """User info safe to return to clients."""
 
     user_id: str
     email: str
@@ -36,6 +48,8 @@ class UserPublic(BaseModel):
     org_id: str | None = None
     is_portless: bool = False
     created_at: datetime | None = None
+    legacy: bool = False
+    """A pre-auth-service record: nobody can sign in as it any more."""
 
     @classmethod
     def from_record(cls, r: UserRecord) -> "UserPublic":
@@ -46,24 +60,8 @@ class UserPublic(BaseModel):
             org_id=r.org_id,
             is_portless=is_portless_user(r.email),
             created_at=r.created_at,
+            legacy=bool(r.password_hash),
         )
-
-
-class RegisterRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=200)
-    name: str = Field(min_length=1, max_length=120)
-    password: str = Field(min_length=6, max_length=200)
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: UserPublic
 
 
 # ---------------------------------------------------------------------------

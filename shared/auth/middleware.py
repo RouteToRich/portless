@@ -1,10 +1,13 @@
-"""Global JWT validation + Portless-vs-org-user access middleware.
+"""Global authentication + Portless-vs-org-user access middleware.
 
-Validates the bearer token on *every* request except a small public allowlist
-(auth endpoints, health, API docs, CORS preflight). Also rejects a token whose
-``jti`` was revoked via ``POST /auth/logout`` (see blacklist.py) — logout is
-otherwise meaningless for a stateless JWT. On success the decoded user is
-attached to ``request.state.user`` so downstream dependencies skip re-decoding.
+Every request except a small public allowlist (health, API docs, CORS
+preflight) must carry an auth-service identity — a bearer token checked with
+the shared API gateway, or the gateway's identity headers when
+``AUTH_TRUST_GATEWAY_HEADERS`` is on (see shared/auth/identity.py). There is
+no /auth/login or /auth/register here any more: those are auth-service's, at
+the gateway's ``/auth/*``. On success the caller (identity + PortLess's local
+record: organization, staff flag) is attached to ``request.state.user`` so
+downstream dependencies don't resolve it again.
 
 Access model:
   - Portless platform staff (``is_portless``) reach every endpoint — no
@@ -13,7 +16,7 @@ Access model:
   - Everyone else (regular org users) is restricted to a small allowlist —
     today just ``GET /deals`` (their own organization's deals + status,
     filtered by ``require_org_scope`` inside the Deals router) plus
-    ``GET /auth/me`` (needed by the UI shell to read its own session).
+    ``GET /identity/me`` (needed by the UI shell to read its own session).
     Every other endpoint 403s for them, regardless of org membership — this
     mirrors the UI, where non-Portless users only ever see a read-only deals
     list (see portless-ui/src/pages/OrgDeals.tsx), not the full Ops Console.
@@ -29,14 +32,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .blacklist import is_token_revoked
-from .dependencies import _user_from_claims
-from .security import decode_token
+from .dependencies import resolve_user
+from .identity import IdentityError
 
 # Paths reachable without a token. Prefixes are matched with startswith.
 _PUBLIC_PREFIXES = (
-    "/auth/login",
-    "/auth/register",
     "/docs",
     "/redoc",
     "/openapi.json",
@@ -45,15 +45,14 @@ _PUBLIC_PREFIXES = (
 # (method, exact path) pairs reachable by an authenticated but non-Portless
 # user. Everything else 403s for them — see module docstring.
 _NON_PORTLESS_ALLOWED = frozenset({
-    ("GET", "/auth/me"),
+    ("GET", "/identity/me"),
     ("GET", "/deals"),
-    ("POST", "/auth/logout"),
 })
 
 # Paths where the browser's native EventSource API is the only client (SSE) —
 # it cannot set an Authorization header, so these accept a ?token= query
 # param as a narrow, path-scoped exception rather than weakening auth
-# elsewhere. Suffix-matched since this runs the same behind /api/hitl-approval
+# elsewhere. Suffix-matched since this runs the same behind a gateway prefix
 # and directly at /hitl-approval depending on deployment.
 _QUERY_TOKEN_PATH_SUFFIXES = ("/hitl-approval/stream",)
 
@@ -73,37 +72,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS" or _is_public(request.url.path):
             return await call_next(request)
 
-        auth = request.headers.get("Authorization", "")
-        if auth.lower().startswith("bearer "):
-            token = auth.split(" ", 1)[1].strip()
-        elif any(request.url.path.endswith(s) for s in _QUERY_TOKEN_PATH_SUFFIXES):
-            token = request.query_params.get("token", "")
-        else:
-            token = ""
-
-        if not token:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Authentication required"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        allow_query = any(request.url.path.endswith(s) for s in _QUERY_TOKEN_PATH_SUFFIXES)
         try:
-            claims = decode_token(token)
-        except Exception:  # noqa: BLE001 — any decode/expiry failure → 401
+            user = await resolve_user(request, allow_query_token=allow_query)
+        except IdentityError as exc:
             return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid or expired token"},
-                headers={"WWW-Authenticate": "Bearer"},
+                status_code=exc.status,
+                content={"detail": exc.detail},
+                headers={"WWW-Authenticate": "Bearer"} if exc.status == 401 else None,
             )
-
-        if await is_token_revoked(claims.get("jti")):
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Token has been revoked — please log in again"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-        user = _user_from_claims(claims)
         request.state.user = user
 
         if not user.is_portless and (request.method, request.url.path) not in _NON_PORTLESS_ALLOWED:

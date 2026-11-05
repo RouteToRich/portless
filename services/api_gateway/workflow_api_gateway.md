@@ -84,7 +84,7 @@ POST /webhooks/{provider} → idempotency + signature verification → forward t
 - Proxy routes for `email-gateway` / `email-processor` if the UI needs them.
 
 > AuthN/AuthZ is already enforced app-wide by `shared/auth/middleware.py`
-> (JWT bearer check + non-Portless allowlist on every non-public route) — see
+> (auth-service token check + non-Portless allowlist on every non-public route) — see
 > `services/auth/workflow_auth.md`. It was previously listed here as pending;
 > it isn't specific to this module, but is applied wherever this app runs.
 

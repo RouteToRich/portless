@@ -366,15 +366,15 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # JWT validation runs on every request except the public allowlist
-    # (/auth/login, /auth/register, *​/health, docs). Added BEFORE CORS so that
+    # Every request except the public allowlist (*/health, docs) must carry an
+    # auth-service identity (shared/auth/identity.py). Added BEFORE CORS so that
     # CORS remains the outermost middleware and 401 responses still carry CORS
     # headers (Starlette wraps last-added outermost).
     app.add_middleware(AuthMiddleware)
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_allow_origins,
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -398,7 +398,7 @@ def create_app() -> FastAPI:
         names = [
             "deals", "trade-min", "match-engine", "sourcing", "negotiation-agent", "dealmaker",
             "shield-link", "docugen", "escrow-guard", "hitl-approval", "exception-resolver",
-            "email-gateway", "email-processor", "auth",
+            "email-gateway", "email-processor", "identity",
         ]
         return {n: "ok" for n in names}
 

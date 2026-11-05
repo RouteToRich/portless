@@ -98,7 +98,7 @@ Portless admin via the Organizations admin UI, not derived from the user's
 email (see `services/auth/organization.py`) — and is stamped server-side,
 never client-supplied. `GET /deals` and `GET /deals/{id}` are scoped to
 `org_id == caller's org` except for Portless
-platform staff (`is_portless` JWT claim), who see every organization's deals.
+platform staff (`is_portless`, from the `AUTH_PORTLESS_EMAILS` allowlist), who see every organization's deals.
 
 ## 6. Completion status
 

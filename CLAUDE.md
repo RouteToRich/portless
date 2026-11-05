@@ -95,7 +95,7 @@ In the combined monolith (`app.py`) services call each other's `service.py` dire
 | `shared/readiness.py` | Production readiness gate: every stub / fallback as a named ok/warn/fail check (`GET /health/readiness`); `ENV_PROFILE=production` refuses to boot while a check fails |
 | `shared/orchestration/enrichment.py` | Counterparty identification: contact finder → e-mail check → sanctions / LEI / VIES screening on the Apify actors; results land on the deal `Party` (`email`, `email_status`, `sanctions_status` …). Runs at `DEAL_CREATED`, re-screens the buyer before the PI, and on demand via `POST /deals/{id}/enrich` |
 | `shared/llm_gateway/` | Resilient LLM client with Groq fallback chain + MongoDB call tracking |
-| `shared/auth/` | `AuthMiddleware` (JWT bearer enforcement + non-Portless allowlist), `dependencies.py` (`require_org_scope`, `require_portless`), `blacklist.py` (logout/token revocation), `security.py` (hash/verify/`create_access_token`) |
+| `shared/auth/` | Sign-in is **auth-service's**, through the shared RouteToRich API gateway (same as MakeMeRich) — PortLess issues no tokens. `identity.py` checks each bearer token with the gateway's `GET /auth/me` (cached 60 s; `AUTH_GATEWAY_URL` → `LLM_GATEWAY_URL`), or believes the gateway's `X-User-*` headers when `AUTH_TRUST_GATEWAY_HEADERS=true`; refuses other applications' tokens when `PORTLESS_ACCOUNT_ID` is set. `AuthMiddleware` (that check + non-Portless allowlist), `dependencies.py` (`AuthUser`, `require_org_scope`, `require_portless`) |
 | `shared/orchestration/continuations.py` | **Production automation backbone** — event subscribers that move a deal to its next step (opportunity → deal, RFQ, negotiation start, PI, escrow, PO/QC/freight/customs/tranche/payout gates, document pack, counterparty notifications, failure triage). Registered on the bus in the monolith only |
 | `shared/orchestration/autonomy_policy.py` | Per-action gate policy **v2**: level L0–L3 (override store → env → deal profile → default; money ceiling) **plus** per-action L1 timeout + on-timeout default (negotiation e-mails 4 h → APPROVE, money → REJECT) and a value threshold (`auto_approve_below_usd` per action or `money_auto_approve_below_usd` for all money gates) that drops a gate to L2 only when the amount is under it **and** the caller's preconditions hold (`resolve_gate(action, deal, amount=, conditions_ok=)`). Backs `GET/PUT /hitl-approval/autonomy-policy` |
 | `shared/orchestration/outreach.py` | **Buyer outreach funnel**: the buyers a scan identified (`deal.buyer_candidates`) get a templated introduction behind `SEND_BUYER_OUTREACH` (L2) with a `[BUY:<deal>:<candidate>]` subject token; replies are classified interested / declined / unclear; an interested buyer becomes the deal's buyer party and the negotiation opens; declined / silent (`OUTREACH_FOLLOWUP_DAYS`, `OUTREACH_NO_REPLY_DAYS`) → next candidate; exhausted → `deal.exception` (`OUTREACH:exhausted`). `on_negotiation_started` waits while the funnel is open |
@@ -182,7 +182,7 @@ If the webhook secret env var is not set, the connector logs a warning and retur
 
 **Four-eyes:** a money-moving gate (`RELEASE_ESCROW_TRANCHE`, `RELEASE_SUPPLIER_PAYOUT`, `CONFIRM_BUYER_ACCEPTANCE`) whose `financial_impact_usd` is at or above `FOUR_EYES_THRESHOLD_USD` is created with `required_approvals=2`, is never auto-approved (L2/L3 drop to L0, risk flag `four_eyes_required`), and resolves only when two **different** `resolved_by` operators APPROVE (`approvals` lists the signatures; the same operator twice → 409). One REJECT closes it.
 
-1. **SSE stream** — `GET /hitl-approval/stream` streams `text/event-stream`. One `asyncio.Queue` per connected client; last 50 events buffered for replay on reconnect. Since the browser's `EventSource` API can't set an `Authorization` header, `AuthMiddleware` accepts the bearer token as a `?token=` query param for this one path only (`_QUERY_TOKEN_PATH_SUFFIXES`) — every other endpoint still requires the header.
+1. **SSE stream** — `GET /hitl-approval/stream` streams `text/event-stream`. One `asyncio.Queue` per connected client; last 50 events buffered for replay on reconnect. Since the browser's `EventSource` API can't set an `Authorization` header, `AuthMiddleware` accepts the bearer token as a `?token=` query param for this one path only (`_QUERY_TOKEN_PATH_SUFFIXES`) — every other endpoint still requires the header. The deployed UI opens it against the backend directly (`VITE_SSE_BASE_URL`; the backend's `FRONTEND_URL` must allow that origin) because a serverless gateway cannot hold a stream open.
 2. **Webhook POST** — when `HITL_NOTIFY_WEBHOOK_URL` is set, a HMAC-signed JSON POST fires on every approval created/resolved.
 
 HITL service also runs a **background timeout watcher** (`run_timeout_watcher()`) that polls every 30s and auto-resolves expired L1 approvals with `default_on_timeout`.
@@ -267,7 +267,7 @@ Pipeline continuations (`shared/orchestration/continuations.py`) subscribe in th
 
 | Module | Status | Notes |
 |---|---|---|
-| `auth` | ✅ Full | JWT register/login/me/logout; organizations + Portless-staff allowlist; `shared/auth/middleware.py` gates the whole app |
+| `auth` | ✅ Full | Identity only (`/identity/me`, organizations, users): local record per auth-service `user_id`, created on first sight (never adopted by email; pre-migration records flagged `legacy`); Portless-staff allowlist; `shared/auth/middleware.py` gates the whole app |
 | `api_gateway` | ✅ Full | Edge proxy — auth, validation, webhook ingest, idempotency, request fan-out to every other module |
 | `trade_min` | ✅ Full | 5-phase concurrent pipeline; MongoDB + APScheduler; operator catalogue / corridors (`GET/PUT /trade-min/catalogue`) drive scan defaults, keywords and actor inputs |
 | `match_engine` | ✅ Full | Deterministic CMS formula |
@@ -407,7 +407,12 @@ HITL_NOTIFY_WEBHOOK_SECRET  # HMAC signing key for webhook
 # Exception Resolver (MongoDB)
 EXCEPTION_RESOLVER_MONGO_URI
 
-# Auth (auth service + shared/auth/middleware.py)
+# Sign-in (auth-service via the RouteToRich gateway; shared/auth/identity.py)
+AUTH_GATEWAY_URL            # gateway whose /auth/me checks tokens (default LLM_GATEWAY_URL)
+PORTLESS_ACCOUNT_ID         # PortLess's auth-service app account; other apps' tokens → 403 (default LLM_GATEWAY_ACCOUNT_ID)
+AUTH_TRUST_GATEWAY_HEADERS  # default false — true believes X-User-* headers (only when only the gateway can reach PortLess)
+AUTH_INTROSPECTION_CACHE_SECONDS  # default 60 — token-check cache (= revocation delay)
+FRONTEND_URL                # deployed console origin (CORS for the direct SSE stream)
 AUTH_PORTLESS_EMAILS        # comma-separated allowlist — who counts as Portless platform staff
 AUTH_MONGO_URI               # optional override; falls back to shared MONGO_URI
 

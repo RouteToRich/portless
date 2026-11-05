@@ -100,6 +100,18 @@ class Settings(BaseSettings):
         "http://localhost:8081",
         "http://127.0.0.1:8081",
     ]
+    # The deployed operator console's origin (e.g. https://portless-ui.vercel.app).
+    # Its API calls go through the shared gateway (same origin, no CORS), but the
+    # approvals SSE stream is opened against this backend DIRECTLY — a serverless
+    # gateway cannot hold a stream open — so that one origin must be allowed here.
+    frontend_url: str = ""
+
+    @property
+    def cors_origins(self) -> list[str]:
+        origins = list(self.cors_allow_origins)
+        if self.frontend_url.strip():
+            origins.append(self.frontend_url.strip().rstrip("/"))
+        return origins
 
 
 settings = Settings()

@@ -252,6 +252,26 @@ def evaluate() -> dict[str, Any]:
         fail_detail="LLM_GATEWAY_URL / service-account credential unset — negotiation e-mails are degraded templates (always L0) and the resolver escalates everything",
     ))
 
+    # ── Sign-in (auth-service via the shared API gateway) ─────────────────
+    # shared/auth/identity.py checks every token with the gateway's /auth/me.
+    checks.append(_check(
+        "auth_gateway", "auth", "Sign-in gateway", _set("AUTH_GATEWAY_URL") or _set("LLM_GATEWAY_URL"),
+        ok_detail="tokens are checked with auth-service through the RouteToRich API gateway",
+        fail_detail="AUTH_GATEWAY_URL / LLM_GATEWAY_URL unset — no token can be checked, every request is refused",
+    ))
+    checks.append(_check(
+        "auth_account", "auth", "PortLess app account", _set("PORTLESS_ACCOUNT_ID") or _set("LLM_GATEWAY_ACCOUNT_ID"),
+        warn_only=not prod,
+        ok_detail="only tokens scoped to PortLess's app account are accepted",
+        fail_detail="PORTLESS_ACCOUNT_ID unset — a sign-in to ANY RouteToRich application (e.g. MakeMeRich) is accepted here",
+    ))
+    checks.append(_check(
+        "auth_header_trust", "auth", "Token check on every request", not _flag("AUTH_TRUST_GATEWAY_HEADERS"),
+        warn_only=True,
+        ok_detail="each token is checked with auth-service (cached 60 s) — forged identity headers are ignored",
+        fail_detail="AUTH_TRUST_GATEWAY_HEADERS=true — X-User-* headers are believed; only safe while nothing but the gateway can reach this service",
+    ))
+
     failures = [c for c in checks if c["status"] == "fail"]
     warnings = [c for c in checks if c["status"] == "warn"]
     return {

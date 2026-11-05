@@ -5,9 +5,9 @@ emails count as "Portless" (platform staff who can create organizations,
 assign users to them, and access cross-organization data) is entirely
 controlled by the AUTH_PORTLESS_EMAILS config value (see config.py).
 
-Everyone else starts with no organization at signup (UserRecord.org_id is
+Everyone else starts with no organization the first time they reach PortLess (UserRecord.org_id is
 None) — a Portless admin assigns them one via the Organizations admin UI
-(POST /auth/organizations, PATCH /auth/users/{id}/organization). Until
+(POST /identity/organizations, PATCH /identity/users/{id}/organization). Until
 assigned, org-scoped endpoints reject the caller (see
 shared.auth.dependencies.require_org_scope).
 """

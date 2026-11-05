@@ -115,7 +115,7 @@ also runs standalone on its own port.
 | 8011 | `exception_resolver` | `/exception-resolver` | ✅ | LangGraph LLM agent; AUTO_FIX/ESCALATE/CANCEL/MONITOR |
 | 8012 | `email_gateway` | `/email-gateway` | ✅ | Email **transport**: IMAP fetch (auto) + SMTP send (API) |
 | 8013 | `email_processor` | `/email-processor` | ✅ | Inbound **processing**: match to live negotiation, extract price, persist, advance |
-| — | `auth` | — | ✅ | JWT users + admin-provisioned organizations (Portless-allowlist admin UI; shared MongoDB `portless` db, `users`/`organizations` collections + in-memory fallback), wired in `app.py` lifespan |
+| — | `auth` | — | ✅ | Identity: auth-service sign-in via the RouteToRich gateway (token checked at `/auth/me`) + admin-provisioned organizations (Portless-allowlist admin UI; shared MongoDB `portless` db, `users`/`organizations` collections + in-memory fallback), wired in `app.py` lifespan |
 
 > **Docker-compose gap:** `docker-compose.yml` defines services only through
 > `exception-resolver` (8011). `email_gateway` (8012) and `email_processor`

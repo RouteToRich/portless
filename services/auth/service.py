@@ -1,40 +1,24 @@
-"""Auth business logic — register, authenticate, issue tokens, organization admin."""
+"""Identity business logic — local user records for auth-service identities,
+and organization admin.
+
+Sign-up, sign-in, refresh, logout and password reset are auth-service's,
+reached through the shared API gateway; nothing here checks a password or
+issues a token. What stays local is what auth-service has no notion of: which
+organization a user belongs to, and whether they are Portless staff.
+"""
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from shared.auth.blacklist import revoke_token
-from shared.auth.security import create_access_token, decode_token, hash_password, verify_password
+from shared.auth.identity import Identity
 
 from .organization import PORTLESS_ORG_ID, is_portless_user
 from .repository import get_org_repository, get_repository
-from .schemas import (
-    LoginRequest,
-    OrganizationRecord,
-    RegisterRequest,
-    TokenResponse,
-    UserPublic,
-    UserRecord,
-)
+from .schemas import OrganizationRecord, UserPublic, UserRecord
 
 logger = logging.getLogger(__name__)
-
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-class EmailTakenError(Exception):
-    """Raised when registering an email that already exists (409)."""
-
-
-class InvalidEmailError(Exception):
-    """Raised on malformed email (422)."""
-
-
-class InvalidCredentialsError(Exception):
-    """Raised on bad login (401)."""
 
 
 class OrganizationNotFoundError(Exception):
@@ -45,85 +29,50 @@ class UserNotFoundError(Exception):
     """Raised when assigning an org to a user_id that doesn't exist (404)."""
 
 
-def _new_user_id() -> str:
-    return f"USR-{uuid4().hex[:12].upper()}"
-
-
 def _new_org_id() -> str:
     return f"ORG-{uuid4().hex[:12].upper()}"
 
 
-def _token_for(user: UserRecord) -> TokenResponse:
-    token = create_access_token(
-        subject=user.user_id,
-        extra_claims={
-            "email": user.email,
-            "name": user.name,
-            "org_id": user.org_id,
-            "is_portless": is_portless_user(user.email),
-        },
-    )
-    return TokenResponse(access_token=token, user=UserPublic.from_record(user))
+async def user_for_identity(identity: Identity) -> UserRecord:
+    """The local record for an auth-service identity, created on first sight.
 
+    A first-seen identity on the AUTH_PORTLESS_EMAILS allowlist gets the
+    reserved Portless org; everyone else starts unassigned until a Portless
+    admin assigns them (assign_user_organization).
 
-async def register(req: RegisterRequest) -> TokenResponse:
-    """Register a new user.
-
-    No organization is derived from the email — org_id stays unset (None)
-    unless the email is on the AUTH_PORTLESS_EMAILS allowlist, in which case
-    it gets the reserved Portless org_id automatically. Everyone else waits
-    for a Portless admin to assign them to an organization (see
-    assign_user_organization) before org-scoped endpoints will serve them.
+    Deliberately NOT done: adopting an existing record by email. auth-service
+    sign-up does not prove ownership of the address, so matching on email
+    would hand a legacy record's organization — and its deals — to whoever
+    registered that address first. The new identity gets its own record; an
+    admin assigns it, and the legacy record (``legacy: true`` in the
+    Organizations admin) shows where the person used to belong.
     """
-    email = req.email.strip().lower()
-    if not _EMAIL_RE.match(email):
-        raise InvalidEmailError(f"{req.email!r} is not a valid email address")
-
     repo = get_repository()
-    if await repo.get_by_email(email) is not None:
-        raise EmailTakenError(f"An account with {email!r} already exists")
+    user = await repo.get_by_id(identity.user_id)
+    if user is not None:
+        return user
 
-    org_id = PORTLESS_ORG_ID if is_portless_user(email) else None
+    org_id = PORTLESS_ORG_ID if is_portless_user(identity.email) else None
     user = UserRecord(
-        user_id=_new_user_id(),
-        email=email,
-        name=req.name.strip(),
-        password_hash=hash_password(req.password),
+        user_id=identity.user_id,
+        email=identity.email,
+        name=identity.name or identity.email,
+        account_id=identity.account_id,
         org_id=org_id,
         created_at=datetime.now(timezone.utc),
     )
-    await repo.create(user)
-    logger.info("Auth: registered user %s (%s) org=%s", user.user_id, email, org_id or "unassigned")
-    return _token_for(user)
-
-
-async def login(req: LoginRequest) -> TokenResponse:
-    repo = get_repository()
-    user = await repo.get_by_email(req.email.strip().lower())
-    # Always run verify to keep timing roughly constant whether or not the user exists.
-    if user is None or not verify_password(req.password, user.password_hash):
-        raise InvalidCredentialsError("Invalid email or password")
-    logger.info("Auth: login OK for %s", user.user_id)
-    return _token_for(user)
-
-
-async def logout(token: str, user_id: str) -> None:
-    """Revoke ``token`` (see shared/auth/blacklist.py) so it can't be reused.
-
-    Best-effort: the router's ``get_current_user`` dependency already proved
-    the token was valid, so a decode failure here would be unexpected —
-    still, logout should never fail from the client's perspective (it's
-    discarding the token locally either way), so any error is logged and
-    swallowed rather than raised.
-    """
-    if not token:
-        return
     try:
-        claims = decode_token(token)
-        await revoke_token(claims["jti"], claims["exp"])
-        logger.info("Auth: user %s logged out (token revoked)", user_id)
-    except Exception as exc:
-        logger.warning("Auth: logout for user %s could not revoke token: %s", user_id, exc)
+        await repo.create(user)
+    except Exception:  # noqa: BLE001 — a concurrent first request won the race on user_id
+        winner = await repo.get_by_id(identity.user_id)
+        if winner is not None:
+            return winner
+        raise
+    logger.info(
+        "Auth: first sight of %s (%s) — local record created, org=%s",
+        user.user_id, user.email, org_id or "unassigned",
+    )
+    return user
 
 
 async def get_user(user_id: str) -> UserPublic | None:

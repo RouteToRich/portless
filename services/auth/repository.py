@@ -240,9 +240,17 @@ async def init_repository() -> None:
         _motor_client = client
 
         users_col = client[_DB_NAME][_USERS_COLLECTION]
+        # Email is no longer unique: a legacy record (pre-auth-service) and the
+        # same person's new auth-service identity share it until an admin
+        # tidies up. Identity is the user_id. Drop the old unique index once.
+        try:
+            await users_col.drop_index("email_unique")
+            logger.info("Auth: dropped the legacy unique email index on %s", _USERS_COLLECTION)
+        except Exception:  # noqa: BLE001 — absent on fresh databases
+            pass
         await users_col.create_indexes([
             IndexModel([("user_id", ASCENDING)], unique=True, name="user_id_unique"),
-            IndexModel([("email", ASCENDING)], unique=True, name="email_unique"),
+            IndexModel([("email", ASCENDING)], name="email"),
         ])
         _user_repository = MongoUserRepository(users_col)
 

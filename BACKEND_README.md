@@ -14,7 +14,7 @@ The functional walkthrough lives in [workflow.md](workflow.md); the engineering 
 
 | Module | Type | Responsibility | Port |
 |---|---|---|---|
-| `services/auth` | service | Register / login / JWT, organizations, Portless-staff allowlist; `shared/auth/middleware.py` gates every request | monolith only |
+| `services/auth` | service | Identity (`/identity/*`): sign-in is auth-service's via the RouteToRich gateway; PortLess keeps organizations + the Portless-staff allowlist; `shared/auth/middleware.py` checks every token | monolith only |
 | `services/api_gateway` | service | Edge proxy for microservice mode: auth, validation, webhook ingest, idempotency, fan-out | 8000 |
 | `services/deals` | service | Deal record + state machine (source of truth), parties, buyer candidates, timeline, evidence pack | 8001 |
 | `services/trade_min` | service | Opportunity discovery (5 phases, own Apify actors + free APIs), catalogue / corridors, scheduler | 8002 |
@@ -53,7 +53,7 @@ shared/
 ├─ catalogue.py       product lines / corridors behind GET/PUT /trade-min/catalogue
 ├─ readiness.py       production readiness gate (GET /health/readiness)
 ├─ telegram.py        operator push
-├─ auth/              AuthMiddleware, JWT, org scoping, token blacklist
+├─ auth/              AuthMiddleware, auth-service token check (identity.py), org scoping
 ├─ llm_gateway/       LLM client → shared LLM Gateway (no provider keys held) + call tracking
 └─ cache/             shared Mongo-backed TTL cache (raw third-party responses)
 ```
