@@ -180,7 +180,45 @@ def _build_connector(name: str) -> object | None:
         return None
 
 
+# In-flight calls to cached connectors, keyed by request: corridors scanned in
+# parallel ask the same question (the supplier search is per product, not per
+# market; the worldwide search too) — one paid actor run answers all of them.
+_INFLIGHT: dict[str, "asyncio.Future[dict | None]"] = {}
+
+
 async def _safe_quote(name: str, req: dict) -> dict | None:
+    """``_quote_once`` with identical concurrent calls to a cached connector
+    coalesced into one live call."""
+    if not DEFAULT_CONFIG.cache_ttl_seconds.get(name):
+        return await _quote_once(name, req)
+    key = make_cache_key(name, req)
+    pending = _INFLIGHT.get(key)
+    if pending is not None and not pending.done():
+        return await asyncio.shield(pending)
+    task = asyncio.ensure_future(_quote_once(name, req))
+    _INFLIGHT[key] = task
+    try:
+        return await asyncio.shield(task)
+    finally:
+        if _INFLIGHT.get(key) is task:
+            _INFLIGHT.pop(key, None)
+
+
+def _refine(name: str, result: Any) -> Any:
+    """Re-apply the company-search filters / name cleanup to a result — cached
+    rows were normalised by whatever code ran when they were fetched."""
+    if name == "apify_company_search" and isinstance(result, dict) and result.get("companies"):
+        from shared.connectors.apify import refine_companies
+        companies = refine_companies(result["companies"])
+        return {**result, "companies": companies, "total": len(companies)}
+    return result
+
+
+async def _quote_once(name: str, req: dict) -> dict | None:
+    return _refine(name, await _quote_raw(name, req))
+
+
+async def _quote_raw(name: str, req: dict) -> dict | None:
     """Call connector.quote(req) and return the result, or None on any failure.
 
     Handles:
@@ -227,8 +265,8 @@ def _keyword_for(hs_code: str) -> str:
             return name
     except Exception:  # noqa: BLE001
         pass
-    from shared.connectors.trade_intel import _HS_TO_KEYWORD as _HS_KW
-    return _HS_KW.get(hs_code[:4], hs_code)
+    from shared.connectors.trade_intel import hs_keyword
+    return hs_keyword(hs_code)
 
 
 def _web_searchable(keyword: str) -> bool:
@@ -896,6 +934,7 @@ async def _phase4_seller_discovery(
                 "website": c.get("website"),
                 "listing_url": c.get("contact_page_url") or c.get("website"),
                 "fit_score": c.get("fit_score"),
+                "country": "IN",
             }, "apify_company_search")
 
     if im_r is not None:
@@ -955,6 +994,7 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         udyam=s.get("udyam") or None,
         export_shipments_12m=(int(s["export_shipments_12m"]) if s.get("export_shipments_12m") else None),
         fit_score=s.get("fit_score"),
+        country=(s.get("country") or None) if "country" in s else "IN",
         price_unit="USD/MT",
     )
 
@@ -1046,7 +1086,7 @@ async def _phase5_assemble_and_persist(
     expires_at = now + timedelta(hours=ttl_hours)
 
     opp = EnrichedOpportunity(
-        opportunity_id=_new_opportunity_id(),
+        opportunity_id=await _opportunity_id_for(hs_code, market),
         hs_code=hs_code,
         market=market,
         status=status,  # type: ignore[arg-type]
@@ -1111,6 +1151,8 @@ async def scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
     pairs = _scan_pairs(payload, config)
 
     tasks = [_scan_one(hs, mkt, config) for hs, mkt in pairs]
+    if payload.worldwide_search:
+        tasks += [_worldwide_counterparties(hs) for hs in dict.fromkeys(hs for hs, _ in pairs)]
     raw = await asyncio.gather(*tasks, return_exceptions=True)
 
     results: list[EnrichedOpportunity] = []
@@ -1125,6 +1167,58 @@ async def scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
 
     results.sort(key=lambda o: (o.urgency_tier, o.arbitrage_rank), reverse=True)
     return results[: config.max_per_scan]
+
+
+async def _worldwide_counterparties(hs_code: str) -> None:
+    """Importers and manufacturers / exporters of the product in EVERY country
+    (search lines without a country), kept in the buyer / supplier directory with
+    the company's own country. One search pair per product per scan (cached a
+    week); not tied to a corridor, so it never feeds an opportunity or deal —
+    the corridor scan keeps searching the market's buyers and India's suppliers."""
+    keyword = _keyword_for(hs_code)
+    if not _web_searchable(keyword):
+        return None
+    from shared.connectors.apify import WORLDWIDE
+    n = DEFAULT_CONFIG.worldwide_search_max_results
+    buyers_r, sellers_r = await asyncio.gather(
+        _safe_quote("apify_company_search", {"keyword": keyword, "countries": [WORLDWIDE],
+                                             "role": "buyer", "max_results": n}),
+        _safe_quote("apify_company_search", {"keyword": keyword, "countries": [WORLDWIDE],
+                                             "role": "supplier", "max_results": n}),
+    )
+    buyers = [
+        BuyerSignal(
+            buyer_name=c.get("company_name") or c.get("name") or c.get("domain") or "Unknown importer",
+            buyer_country=c.get("country") or "",
+            company_id=c.get("domain"),
+            signal_type="web_search",
+            source="apify_company_search",
+            urgency_tier=1,
+            contact_url=c.get("contact_page_url") or c.get("website"),
+            website=c.get("website"),
+            email=c.get("email"),
+            phone=c.get("phone"),
+            address=c.get("address"),
+            fit_score=c.get("fit_score"),
+            fit_reason=(c.get("summary") or c.get("page_title") or None),
+        )
+        for c in (buyers_r or {}).get("companies", [])
+    ]
+    sellers = [
+        _seller_from_raw({
+            "company_id": c.get("domain"),
+            "company_name": c.get("company_name") or c.get("name") or c.get("domain") or "",
+            "email": c.get("email"),
+            "phone": c.get("phone"),
+            "website": c.get("website"),
+            "listing_url": c.get("contact_page_url") or c.get("website"),
+            "fit_score": c.get("fit_score"),
+            "country": c.get("country"),
+        }, "apify_company_search", hs_code)
+        for c in (sellers_r or {}).get("companies", [])
+    ]
+    await directory.record_scan(hs_code, "", buyers, sellers, outcome=directory.WORLDWIDE_OUTCOME)
+    return None
 
 
 def _scan_pairs(payload: ScanRequest, config: TradeMinConfig) -> list[tuple[str, str]]:
@@ -1211,7 +1305,29 @@ async def list_opportunities(
     opps = await repo.list_active(limit=limit * 2, min_rank=min_rank)
     if urgency_tier is not None:
         opps = [o for o in opps if o.urgency_tier == urgency_tier]
-    return opps[:limit]
+    # One open opportunity per corridor: the latest scan of a product × market.
+    latest: dict[tuple[str, str], EnrichedOpportunity] = {}
+    for o in opps:
+        key = (o.hs_code, o.market)
+        if key not in latest or o.scanned_at > latest[key].scanned_at:
+            latest[key] = o
+    return [o for o in opps if latest[(o.hs_code, o.market)] is o][:limit]
+
+
+async def _opportunity_id_for(hs_code: str, market: str) -> str:
+    """A rescan refreshes the corridor's open opportunity (same id) instead of
+    adding a second one; a converted (deal started) or closed one is left alone
+    and the new scan gets a fresh id."""
+    try:
+        repo = await get_repository()
+        open_ = [o for o in await repo.list_by_hs_market(hs_code, market)
+                 if o.status in ("ACTIVE", "MARGINAL")]
+    except Exception as exc:  # noqa: BLE001 - a lookup failure must not stop the scan
+        logger.warning("Opportunity lookup failed for %s×%s: %s", hs_code, market, exc)
+        open_ = []
+    if open_:
+        return max(open_, key=lambda o: o.scanned_at).opportunity_id
+    return _new_opportunity_id()
 
 
 async def get_opportunity(opportunity_id: str) -> EnrichedOpportunity | None:

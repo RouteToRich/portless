@@ -341,7 +341,8 @@ def test_verify_supplier_no_credentials_skips_all_calls():
 # Quote intake pipeline
 # ---------------------------------------------------------------------------
 
-def test_receive_quote_sources_and_transitions(_repo):
+def test_receive_quote_sources_and_transitions(_repo, monkeypatch):
+    monkeypatch.setenv("MATCHMAKING_ENABLED", "false")  # legacy: a SOURCE quote opens the negotiation itself
     transition = AsyncMock()
     financials = AsyncMock()
     with (

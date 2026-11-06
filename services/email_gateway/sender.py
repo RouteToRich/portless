@@ -97,4 +97,11 @@ async def send_email(req: SendEmailRequest) -> SendEmailResult:
         "Email sent via Gmail: negotiation_id=%s round=%d to=%s",
         req.negotiation_id, req.round_no, req.to_address,
     )
+    try:
+        from shared.orchestration.memory import remember_email
+        await remember_email(direction="outbound", from_address=settings.gmail_sender_address,
+                             to_address=req.to_address, subject=req.subject, body=req.body,
+                             message_id=message_id)
+    except Exception:  # noqa: BLE001 — memory never fails a send
+        logger.debug("Email memory skipped for %s", message_id)
     return SendEmailResult(outcome=SendOutcome.SENT, message_id=message_id)

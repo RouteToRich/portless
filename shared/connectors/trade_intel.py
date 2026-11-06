@@ -507,9 +507,7 @@ class IndiamartConnector(Connector):
               ]
             }
         """
-        keyword = request.get("keyword") or _HS_TO_KEYWORD.get(
-            request["hs_code"][:4], request["hs_code"]
-        )
+        keyword = request.get("keyword") or hs_keyword(request["hs_code"])
         params: dict[str, Any] = {
             "mobile_no": self._mobile,
             "api_key":   self._key,
@@ -677,9 +675,7 @@ class TradeIndiaConnector(Connector):
               ]
             }
         """
-        keyword = request.get("keyword") or _HS_TO_KEYWORD.get(
-            request["hs_code"][:4], request["hs_code"]
-        )
+        keyword = request.get("keyword") or hs_keyword(request["hs_code"])
         params: dict[str, Any] = {
             "keyword": keyword,
             "page":    request.get("page", 1),
@@ -1128,6 +1124,9 @@ _HS_TO_KEYWORD: dict[str, str] = {
     "0910": "mixed spices cardamom",
     "1001": "wheat grain",
     "2905": "glycerol alcohol",
+    # 6-digit entries win over the 4-digit heading (looked up first): 2905 is every
+    # acyclic alcohol, so "glycerol alcohol" found spirits and beer companies.
+    "290543": "glycerine",
     "0901": "coffee beans",
     "0306": "shrimp prawn seafood",
     "6109": "cotton t-shirts garments",
@@ -1147,6 +1146,12 @@ _HS_TO_KEYWORD: dict[str, str] = {
     "0703": "onions",
 }
 
+
+
+def hs_keyword(hs_code: str, default: str | None = None) -> str:
+    """Product keyword for an HS code: the 6-digit entry, else the 4-digit heading."""
+    hs = str(hs_code or "")
+    return _HS_TO_KEYWORD.get(hs[:6]) or _HS_TO_KEYWORD.get(hs[:4]) or (hs if default is None else default)
 
 class MacmapConnector(Connector):
     """ITC Market Access Map: import tariffs, trade barriers, and rules of origin.

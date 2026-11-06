@@ -59,6 +59,12 @@ class ScanRequest(BaseModel):
     force_refresh: bool = False
     """When True, skip any cached results and run a fresh scan."""
 
+    worldwide_search: bool = True
+    """Also search importers and manufacturers / exporters of each product in
+    every country (one search pair per product, kept in the buyer / supplier
+    directory only). The console's "Worldwide" toggle; False → only the scanned
+    markets' buyers and India's suppliers."""
+
 
 # ---------------------------------------------------------------------------
 # Phase sub-models
@@ -162,6 +168,9 @@ class SellerCandidate(BaseModel):
     export_shipments_12m: int | None = None
     """Export shipments in the last 12 months (customs records) — reliability input."""
     fit_score: int | None = None
+    country: str | None = "IN"
+    """ISO-2 country of the supplier — India for the corridor's supplier search;
+    the worldwide search records the company's own country (None when unknown)."""
     price_unit: str | None = "USD/MT"
     """``estimated_fob_price_usd`` is normalised to USD per MT (kg prices × 1000)."""
 

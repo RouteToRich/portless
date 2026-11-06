@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
 from shared.auth.dependencies import AuthUser, get_current_user, require_org_scope
 
 from . import service
 from .schemas import (
+    BuyerRequirement,
+    SupplierOffer,
     BuyerCandidate,
     CreateDealRequest,
     DealRecord,
@@ -278,6 +281,117 @@ async def skip_buyer_candidate(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return {"deal_id": deal_id, "candidate_id": candidate_id, **result}
+
+
+# ---------------------------------------------------------------------------
+# Match board — buyer requirements × supplier offers (prospect stage)
+# ---------------------------------------------------------------------------
+
+class _PairRef(BaseModel):
+    candidate_id: str
+    offer_id: str
+
+
+@router.get("/{deal_id}/match-board", response_model=dict)
+async def get_match_board(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Every buyer × supplier pair of the prospect, scored: prices (stated or price-book
+    estimate), landed cost, margin, chance of closing, blockers, what is missing."""
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import matchmaking
+    board = await matchmaking.build_board(deal)
+    return board.model_dump(mode="json")
+
+
+@router.put("/{deal_id}/buyer-candidates/{candidate_id}/requirement", response_model=DealRecord)
+async def put_buyer_requirement(
+    deal_id: str, candidate_id: str, requirement: BuyerRequirement,
+    user: AuthUser = Depends(get_current_user),
+) -> DealRecord:
+    """Operator sets / corrects what a buyer wants (grade, quantity, port, target price…)."""
+    await _org_deal(deal_id, user)
+    try:
+        deal = await service.set_buyer_requirement(deal_id, candidate_id, requirement)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    if requirement.target_price_usd_per_mt:
+        from shared import pricebook
+        from shared.orchestration import landed_cost as lc
+        await pricebook.record(pricebook.PriceObservation(
+            hs_code=deal.hs_code, side="buyer", kind="buyer_target", market=deal.market,
+            price_usd_per_mt=lc.to_cif(requirement.target_price_usd_per_mt,
+                                       requirement.target_price_incoterm or requirement.incoterm, deal.market),
+            grade=requirement.grade, quantity_mt=requirement.quantity_mt, deal_id=deal_id,
+            counterparty_id=candidate_id, note="entered by operator",
+        ))
+    return deal
+
+
+@router.post("/{deal_id}/supplier-offers", response_model=DealRecord, status_code=status.HTTP_201_CREATED)
+async def post_supplier_offer(
+    deal_id: str, offer: SupplierOffer, user: AuthUser = Depends(get_current_user),
+) -> DealRecord:
+    """Operator adds / replaces a supplier's offer (e.g. a quote received by phone)."""
+    deal = await _org_deal(deal_id, user)
+    offer = offer.model_copy(update={"source": offer.source or "operator"})
+    updated = await service.upsert_supplier_offer(deal_id, offer)
+    if offer.fob_price_usd_per_mt:
+        from shared import pricebook
+        await pricebook.record(pricebook.PriceObservation(
+            hs_code=deal.hs_code, side="supplier", kind="supplier_offer",
+            price_usd_per_mt=offer.fob_price_usd_per_mt, grade=offer.grade, deal_id=deal_id,
+            counterparty_id=offer.supplier_id, note="entered by operator",
+        ))
+    return updated
+
+
+@router.post("/{deal_id}/match/evaluate", response_model=dict)
+async def evaluate_match(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Re-score the board now and open the next gate (confirm match / indicative offer)."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import matchmaking
+    return await matchmaking.evaluate(deal_id)
+
+
+async def _pair(deal, ref: _PairRef):
+    from shared.orchestration import matchmaking
+    board = await matchmaking.build_board(deal)
+    pair = next((p for p in board.pairs if p.candidate_id == ref.candidate_id and p.offer_id == ref.offer_id), None)
+    if pair is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="pair not on the match board")
+    return board, pair
+
+
+@router.post("/{deal_id}/match/indicative-offer", response_model=dict)
+async def request_indicative_offer(deal_id: str, ref: _PairRef, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Operator asks for an indicative offer to this buyer from this supplier's quote (SEND_INDICATIVE_OFFER gate)."""
+    deal = await _org_deal(deal_id, user)
+    board, pair = await _pair(deal, ref)
+    if not pair.landed or pair.supplier_price.basis != "quoted":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="an indicative offer needs this supplier's quoted price")
+    if pair.blockers:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=pair.blockers[0])
+    from shared.orchestration import matchmaking
+    lead = next((o.get("lead_time_days") for o in board.offers if o["offer_id"] == ref.offer_id), None)
+    gid = await matchmaking.propose_indicative_offer(deal, pair, board, lead)
+    if gid is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="buyer has no e-mail address")
+    return {"deal_id": deal_id, "approval_id": gid}
+
+
+@router.post("/{deal_id}/match/confirm", response_model=dict)
+async def request_match(deal_id: str, ref: _PairRef, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Operator proposes this pair as the deal (CONFIRM_MATCH gate) — even below the
+    probability threshold, as long as nothing blocks it."""
+    deal = await _org_deal(deal_id, user)
+    _, pair = await _pair(deal, ref)
+    if pair.blockers:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=pair.blockers[0])
+    if not pair.buyer_price.value or not pair.supplier_price.value:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="both prices are needed")
+    from shared.orchestration import matchmaking
+    gid = await matchmaking.propose_match(deal, pair)
+    return {"deal_id": deal_id, "approval_id": gid}
 
 
 # ---------------------------------------------------------------------------

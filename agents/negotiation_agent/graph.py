@@ -169,6 +169,27 @@ def _current_ask(state: NegotiationGraphState) -> float:
     return state["session"].supplier_quote_price
 
 
+async def _knowledge_context(session: Any, role: str) -> str:
+    """What PortLess remembers (knowledge-service RAG) about this counterparty and
+    product: past e-mails, operator notes, deal summaries. '' when off / nothing."""
+    try:
+        from shared.orchestration.memory import context_for
+        who = session.buyer_id if role == "buyer" else session.seller_id
+        name = None
+        try:
+            from services.deals.service import get_deal  # type: ignore[import]
+            deal = await get_deal(session.deal_id)
+            party = next((p for p in deal.parties if str(getattr(p.role, "value", p.role)) == role), None)
+            name = party.legal_name if party else None
+            market = deal.market
+        except Exception:  # noqa: BLE001
+            market = None
+        return await context_for(purpose=f"negotiation with the {role}", hs_code=session.product_code,
+                                 market=market, counterparties=[name, who], max_chars=1800)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 async def _chat(system_prompt: str, payload: dict[str, Any], caller: str) -> str:
     """Invoke the shared LLM Gateway and return the raw content string."""
     client = get_llm_client()
@@ -584,6 +605,7 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
         "conversation_history": buyer_history,
         "is_first_contact": is_first_contact,
         "market_context": state.get("buyer_market_context", ""),
+        "knowledge_context": await _knowledge_context(session, "buyer"),
         "qc_provider_options": _qc_provider_options_summary(),
         "buyer_selected_qc_provider": _qc_provider_display(session.qc_provider),
         "pending_agreement_info": state.get("pending_agreement_info") or [],
@@ -661,6 +683,7 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
         "conversation_history": supplier_history,
         "is_first_contact": is_first_contact,
         "market_context": state.get("supplier_market_context", ""),
+        "knowledge_context": await _knowledge_context(session, "supplier"),
         "product_code": session.product_code,
         "concession_budget_remaining_usd": concession_usd,
         "concession_budget_remaining_inr": round(concession_usd * usd_inr_rate, 2),

@@ -217,18 +217,27 @@ def _seed_parties_from_opportunity(
     opportunity: Any,
     winning_supplier_id: str | None,
     market: str,
+    *,
+    buyer_funnel: bool = False,
 ) -> list[Party]:
-    """Build initial buyer/supplier Party entries from the opportunity data.
+    """Initial buyer/supplier Party entries — only for counterparties that are
+    actually decided.
 
-    Deals created from an opportunity previously had an empty ``parties``
-    list for their whole lifecycle, leaving the Overview tab blank. The top
-    buyer signal and the winning (or cheapest) seller candidate are the best
-    identities known at creation time; Sourcing verification can enrich them
-    later."""
+    A deal created from an opportunity starts as a *prospect* (MATCHING): the
+    buyers are candidates the outreach funnel works through and the suppliers
+    get an RFQ. Naming one of them "the buyer" / "the supplier" before anyone
+    said yes made the prospect read as a closed deal (and an interested reply
+    from candidate #2 inherited candidate #1's screening). So:
+
+    - buyer — only when there is no outreach funnel (``buyer_funnel=False``);
+      otherwise the funnel sets it when a candidate replies "interested";
+    - supplier — only the Match Engine's SOURCE winner; otherwise it is set when
+      a verified quote wins or an operator confirms one (``set_supplier_party``).
+    """
     parties: list[Party] = []
     try:
         signals = list(getattr(opportunity, "buyer_signals", None) or [])
-        if signals:
+        if signals and not buyer_funnel:
             # Prefer the buyer the actors scored highest / that carries a
             # contact — a named importer with a website beats an anonymous RFQ.
             def _rank(b: Any) -> tuple:
@@ -255,8 +264,8 @@ def _seed_parties_from_opportunity(
             ))
         candidates = getattr(opportunity, "seller_candidates", None) or []
         winner = next(
-            (c for c in candidates if c.candidate_id == winning_supplier_id),
-            candidates[0] if candidates else None,
+            (c for c in candidates if winning_supplier_id and c.candidate_id == winning_supplier_id),
+            None,
         )
         if winner is not None:
             s_email = getattr(winner, "email", None)
@@ -399,8 +408,10 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
     if not parties and payload.opportunity_id:
         opportunity = await _fetch_opportunity(payload.opportunity_id)
         if opportunity is not None:
+            from shared.orchestration import outreach
             parties = _seed_parties_from_opportunity(
-                opportunity, winning_supplier_id, payload.market
+                opportunity, winning_supplier_id, payload.market,
+                buyer_funnel=outreach.enabled() and any(c.email for c in buyer_candidates),
             )
 
     deal = DealRecord(
@@ -538,7 +549,29 @@ async def update_status(deal_id: str, payload: UpdateStatusRequest) -> DealRecor
             },
         )
 
+    await _learn_from_status(deal, payload.target_status.value, payload.reason)
     return deal
+
+
+_SUMMARY_EVENTS = {"NEGOTIATING": "match confirmed", "PI_ACCEPTED": "contract signed (PI accepted)",
+                   "PAID": "completed", "CANCELLED": "cancelled", "REFUNDED": "refunded",
+                   "NEGOTIATION_FAILED": "negotiation failed", "DISPUTE": "dispute opened"}
+
+
+async def _learn_from_status(deal: DealRecord, status: str, reason: str | None) -> None:
+    """Feedback loop: the match outcome follows the deal, and milestones become
+    deal summaries in knowledge-service. Never blocks the transition."""
+    try:
+        from shared.orchestration import outcomes
+        await outcomes.on_status(deal, status, reason)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Outcome tracking skipped for %s: %s", deal.deal_id, exc)
+    if status in _SUMMARY_EVENTS and (status != "NEGOTIATING" or deal.selected_pair):
+        try:
+            from shared.orchestration.memory import remember_deal_summary
+            await remember_deal_summary(deal, _SUMMARY_EVENTS[status], reason)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Deal summary skipped for %s: %s", deal.deal_id, exc)
 
 
 async def update_financials(deal_id: str, payload: UpdateFinancialsRequest) -> DealRecord:
@@ -632,7 +665,106 @@ async def record_match_result(
         "Deal %s: match result recorded for supplier %s (winner=%s, fob=%s)",
         deal_id, supplier_id, make_winner, fob_price_usd,
     )
+    if make_winner:
+        updated_deal = await set_supplier_party(deal_id, supplier_id, company_name=company_name)
     return updated_deal
+
+
+async def _supplier_contact(deal: DealRecord, supplier_id: str) -> dict[str, Any]:
+    """What PortLess knows about a supplier: the address its RFQ went to, and the
+    name / website / phone the scan found (opportunity seller candidates)."""
+    info: dict[str, Any] = {}
+    try:
+        from services.sourcing.service import list_rfqs  # type: ignore[import]
+        for rfq in await list_rfqs(deal.deal_id):
+            for d in rfq.dispatch_results:
+                if d.supplier_id == supplier_id and d.email:
+                    info.setdefault("email", d.email)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Deal %s: RFQ lookup for supplier %s failed: %s", deal.deal_id, supplier_id, exc)
+    if deal.opportunity_id:
+        try:
+            opp = await _fetch_opportunity(deal.opportunity_id)
+            for c in getattr(opp, "seller_candidates", None) or []:
+                if c.candidate_id == supplier_id:
+                    info.setdefault("legal_name", c.company_name)
+                    info.setdefault("email", getattr(c, "email", None))
+                    info.setdefault("website", getattr(c, "website", None))
+                    info.setdefault("phone", getattr(c, "phone", None))
+                    info.setdefault("gstin", getattr(c, "gstin", None))
+                    info.setdefault("iec", getattr(c, "iec", None))
+                    info.setdefault("country", getattr(c, "country", None))
+                    info.setdefault("source", getattr(c, "source", None))
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Deal %s: opportunity lookup for supplier %s failed: %s", deal.deal_id, supplier_id, exc)
+    return {k: v for k, v in info.items() if v}
+
+
+async def set_supplier_party(
+    deal_id: str,
+    supplier_id: str,
+    *,
+    company_name: str | None = None,
+    email: str | None = None,
+    gstin: str | None = None,
+    iec: str | None = None,
+) -> DealRecord:
+    """The chosen supplier becomes the deal's supplier party.
+
+    Called when a verified quote wins (sourcing) or an operator confirms a
+    supplier (CONFIRM_SUPPLIER_SELECTION). A different company than the current
+    party replaces it outright (fresh screening); the same company is updated
+    in place. An operator-entered supplier is never replaced by an automated pick.
+    A newly named supplier is screened (sanctions / contact) right away.
+    """
+    repo = get_repository()
+    deal = await repo.get(deal_id)
+    if deal is None:
+        raise DealNotFoundError(deal_id)
+    current = next((p for p in deal.parties
+                    if (getattr(p.role, "value", p.role) or "").lower() == "supplier"), None)
+    if current is not None and current.party_id == supplier_id:
+        same = True
+    elif current is not None and current.contact_source == "operator":
+        logger.info("Deal %s: supplier %s chosen, operator-set supplier party kept", deal_id, supplier_id)
+        return deal
+    else:
+        same = False
+
+    info = await _supplier_contact(deal, supplier_id)
+    source = info.pop("source", None)
+    updates: dict[str, Any] = {
+        **info,
+        "party_id": supplier_id,
+        "legal_name": company_name or info.get("legal_name") or supplier_id,
+        "country": info.get("country") or "IN",
+    }
+    if email:
+        updates["email"] = email
+    if gstin:
+        updates["gstin"] = gstin
+    if iec:
+        updates["iec"] = iec
+    if not same:
+        updates.update({
+            "contact_source": f"sourcing:{source or 'rfq'}" if updates.get("email") else None,
+            "email_status": "unverified" if updates.get("email") else None,
+            "sanctions_status": "unchecked",
+        })
+    updated = await update_party(deal_id, "supplier", updates, source=None, replace=not same)
+    logger.info("Deal %s: supplier party is now %s (%s)", deal_id, updates["legal_name"], supplier_id)
+
+    if not same:
+        try:
+            from shared.orchestration.continuations import _enrichment_enabled
+            if _enrichment_enabled():
+                from shared.orchestration import enrichment
+                result = await enrichment.enrich_deal_parties(deal_id, roles=("supplier",))
+                updated = result.get("deal") or updated
+        except Exception as exc:  # noqa: BLE001 — screening is best-effort here; the PO gate shows it
+            logger.warning("Deal %s: supplier screening after selection failed: %s", deal_id, exc)
+    return updated
 
 
 async def update_party(
@@ -641,12 +773,15 @@ async def update_party(
     updates: dict[str, Any],
     *,
     source: str | None = "operator",
+    replace: bool = False,
 ) -> DealRecord:
     """Patch (or create) the deal's buyer/supplier party.
 
     ``source="operator"`` (the HTTP endpoint) stamps ``contact_source`` so a
     later actor run never overwrites a human correction; the enrichment module
-    passes ``source=None`` and sets ``contact_source`` itself.
+    passes ``source=None`` and sets ``contact_source`` itself. ``replace=True``
+    swaps in a fresh party built from ``updates`` — a different company, so
+    nothing (screening verdict, VAT, phone…) carries over from the old one.
     """
     role = (role or "").lower()
     if role not in ("buyer", "supplier"):
@@ -667,6 +802,9 @@ async def update_party(
     parties = list(deal.parties)
     idx = next((i for i, p in enumerate(parties)
                 if (getattr(p.role, "value", p.role) or "").lower() == role), None)
+    if idx is not None and replace:
+        parties.pop(idx)
+        idx = None
     if idx is None:
         legal_name = clean.pop("legal_name", None) or f"Unknown {role}"
         country = clean.pop("country", None) or (deal.market if role == "buyer" else "IN")
@@ -692,6 +830,54 @@ async def update_buyer_candidate(deal_id: str, candidate_id: str, updates: dict[
         raise ValueError(f"buyer candidate {candidate_id!r} not on deal {deal_id}")
     cands[idx] = cands[idx].model_copy(update={k: v for k, v in updates.items() if v is not None or k == "reply_preview"})
     updated = deal.model_copy(update={"buyer_candidates": cands, "updated_at": datetime.now(timezone.utc)})
+    await repo.save(updated)
+    return updated
+
+
+async def upsert_supplier_offer(deal_id: str, offer: Any) -> DealRecord:
+    """Add or replace (same supplier) a supplier offer on the prospect's match board."""
+    from .schemas import SupplierOffer
+    repo = get_repository()
+    deal = await repo.get(deal_id)
+    if deal is None:
+        raise DealNotFoundError(deal_id)
+    offer = offer if isinstance(offer, SupplierOffer) else SupplierOffer(**offer)
+    if offer.origin_deal_id is None:
+        offer = offer.model_copy(update={"origin_deal_id": deal_id})
+    if offer.received_at is None:
+        offer = offer.model_copy(update={"received_at": datetime.now(timezone.utc)})
+    offers = [o for o in deal.supplier_offers if o.supplier_id != offer.supplier_id] + [offer]
+    updated = deal.model_copy(update={"supplier_offers": offers, "updated_at": datetime.now(timezone.utc)})
+    await repo.save(updated)
+    logger.info("Deal %s: supplier offer %s from %s (FOB %s)", deal_id, offer.offer_id, offer.supplier_id,
+                offer.fob_price_usd_per_mt)
+    return updated
+
+
+async def set_buyer_requirement(deal_id: str, candidate_id: str, requirement: Any,
+                                *, source: str = "operator") -> DealRecord:
+    """Operator sets / corrects what a buyer wants (stamped ``source=operator``)."""
+    from .schemas import BuyerRequirement
+    req = requirement if isinstance(requirement, BuyerRequirement) else BuyerRequirement(**requirement)
+    updates: dict[str, Any] = {"source": source, "updated_at": datetime.now(timezone.utc)}
+    if req.target_price_usd_per_mt and not req.target_price_basis:
+        updates["target_price_basis"] = "stated"
+    return await update_buyer_candidate(deal_id, candidate_id, {"requirement": req.model_copy(update=updates)})
+
+
+async def set_selected_pair(deal_id: str, pair: dict[str, Any], *, quantity_mt: float | None = None,
+                            buyer_price_source: str | None = None) -> DealRecord:
+    """Record the buyer × supplier pair confirmed at CONFIRM_MATCH."""
+    repo = get_repository()
+    deal = await repo.get(deal_id)
+    if deal is None:
+        raise DealNotFoundError(deal_id)
+    updates: dict[str, Any] = {"selected_pair": pair, "updated_at": datetime.now(timezone.utc)}
+    if quantity_mt:
+        updates["quantity_mt"] = quantity_mt
+    if buyer_price_source:
+        updates["buyer_price_source"] = buyer_price_source
+    updated = deal.model_copy(update=updates)
     await repo.save(updated)
     return updated
 

@@ -289,6 +289,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         from shared.llm_gateway.remote import aclose_remote_client
         await aclose_remote_client()
+        from shared import knowledge
+        await knowledge.aclose()
     except Exception as exc:
         logger.warning("LLM Gateway client shutdown error: %s", exc)
 

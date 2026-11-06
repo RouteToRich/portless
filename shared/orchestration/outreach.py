@@ -77,6 +77,9 @@ def no_reply_days() -> int:
     return max(1, _int("OUTREACH_NO_REPLY_DAYS", 7))
 
 
+NOT_DELIVERED = "not delivered — no outbound mailbox configured (GMAIL_SENDER_ADDRESS); e-mail logged only"
+
+
 def subject_token(deal_id: str, candidate_id: str) -> str:
     return f"[BUY:{deal_id}:{candidate_id}]"
 
@@ -148,8 +151,8 @@ def _product_label(deal: Any) -> str:
     except Exception:  # noqa: BLE001
         pass
     try:
-        from shared.connectors.trade_intel import _HS_TO_KEYWORD  # type: ignore[import]
-        return _HS_TO_KEYWORD.get(hs[:4], f"HS {hs}")
+        from shared.connectors.trade_intel import hs_keyword  # type: ignore[import]
+        return hs_keyword(hs, f"HS {hs}")
     except Exception:  # noqa: BLE001
         return f"HS {hs}"
 
@@ -181,8 +184,13 @@ def draft(deal: Any, cand: Any, *, followup: bool = False) -> tuple[str, str]:
         "neutral escrow and is released only against the inspection report and the shipping documents, "
         "so you never pay for goods that have not been inspected.\n\n"
         + (f"We can offer lots of {qty:g} MT or multiples. " if qty else "Typical lots are 20–40 MT. ")
-        + "If this is relevant, reply with the grade or specification you buy, the quantity and the "
-        "destination port, and I will send a firm offer within two working days.\n\n"
+        + "If this is relevant, a short reply with these is all I need to send you a firm offer within "
+        "two working days:\n"
+        "  - grade / specification and packaging\n"
+        "  - quantity (MT) and when you need it delivered\n"
+        "  - destination port and Incoterm (CIF, CFR, FOB…)\n"
+        "  - your target price per MT, if you have one\n"
+        "  - certificates or documents you require\n\n"
         f"Best regards,\n{_entity()} — Trade Operations\n\n"
         "If you would rather not hear from us, reply \"not interested\" and we will not write again.\n"
     )
@@ -213,7 +221,9 @@ async def _gate(deal: Any, cand: Any, *, followup: bool) -> str | None:
             "deal_id": deal.deal_id, "candidate_id": cand.candidate_id, "to_address": cand.email,
             "subject": subject, "body": body, "kind": kind,
         },
-        idempotency_key=f"outreach-{kind}-{deal.deal_id}-{cand.candidate_id}",
+        # A retry after an undelivered send needs its own gate (the first one is resolved).
+        idempotency_key=f"outreach-{kind}-{deal.deal_id}-{cand.candidate_id}"
+                        + (f"-a{cand.send_attempts}" if getattr(cand, "send_attempts", 0) else ""),
     ))
     return approval.approval_id
 
@@ -224,7 +234,11 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
     if not enabled():
         return 0
     cands = _candidates(deal)
-    if not cands or any(_status(c) in ("interested", "selected") for c in cands):
+    from shared.orchestration import matchmaking
+    # With the match board, an interested buyer does not close the funnel — more
+    # interested buyers mean a better pair; it closes when a match is confirmed.
+    closing = ("selected",) if matchmaking.enabled() else ("interested", "selected")
+    if not cands or any(_status(c) in closing for c in cands):
         return 0
     active = [c for c in cands if _status(c) in ("contacted", "followed_up")]
     slots = max(0, (limit if limit is not None else parallel()) - len(active))
@@ -248,7 +262,7 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
 async def send_outreach(deal_id: str, candidate_id: str, to_address: str, subject: str, body: str,
                         kind: str = "intro") -> dict[str, Any]:
     """Approve callback: send the e-mail through the gateway and mark the candidate."""
-    from services.deals.service import update_buyer_candidate  # type: ignore[import]
+    from services.deals.service import get_deal, update_buyer_candidate  # type: ignore[import]
     from services.email_gateway.schemas import SendEmailRequest  # type: ignore[import]
     from services.email_gateway.sender import send_email  # type: ignore[import]
 
@@ -259,13 +273,28 @@ async def send_outreach(deal_id: str, candidate_id: str, to_address: str, subjec
     outcome = getattr(getattr(result, "outcome", None), "value", getattr(result, "outcome", "sent"))
     now = datetime.now(timezone.utc)
     updates: dict[str, Any] = {"email_id": email_id}
+    if str(outcome) == "logged":
+        # No outbound mailbox: the e-mail was written to the log, nobody received
+        # it. The candidate stays where it was (pending / contacted) with the
+        # reason, so the funnel's clocks do not start and "Start outreach" can
+        # send it for real once the mailbox is set up.
+        deal = await get_deal(deal_id)
+        cand = next((c for c in deal.buyer_candidates if c.candidate_id == candidate_id), None)
+        await update_buyer_candidate(deal_id, candidate_id, {
+            "send_error": NOT_DELIVERED,
+            "send_attempts": (getattr(cand, "send_attempts", 0) or 0) + 1,
+        })
+        logger.warning("Outreach: %s to %s (%s) for deal %s NOT delivered — %s",
+                       kind, to_address, candidate_id, deal_id, NOT_DELIVERED)
+        return {"candidate_id": candidate_id, "outcome": "logged", "email_id": email_id, "delivered": False}
+    updates["send_error"] = None
     if kind == "followup":
         updates.update({"status": "followed_up", "followed_up_at": now})
     else:
         updates.update({"status": "contacted", "contacted_at": now})
     await update_buyer_candidate(deal_id, candidate_id, updates)
     logger.info("Outreach: %s to %s (%s) for deal %s → %s", kind, to_address, candidate_id, deal_id, outcome)
-    return {"candidate_id": candidate_id, "outcome": str(outcome), "email_id": email_id}
+    return {"candidate_id": candidate_id, "outcome": str(outcome), "email_id": email_id, "delivered": True}
 
 
 async def skip_candidate(deal_id: str, candidate_id: str, reason: str = "declined by operator") -> dict[str, Any]:
@@ -309,17 +338,25 @@ async def handle_reply(deal_id: str, candidate_id: str | None, from_address: str
         logger.warning("Outreach: reply from %s for deal %s matches no candidate", from_address, deal_id)
         return {"verdict": verdict, "candidate_id": None, "matched": False}
 
+    from shared.orchestration import matchmaking
+    if matchmaking.enabled():
+        # Prospect matching: the reply fills the buyer's requirement and the match
+        # board decides — nobody becomes "the buyer" until CONFIRM_MATCH.
+        return await matchmaking.handle_buyer_reply(deal, cand, from_address, body, verdict)
+
     preview = (body or "")[:200]
     if verdict == "interested":
         await update_buyer_candidate(deal_id, cand.candidate_id, {
             "status": "selected", "replied_at": now, "reply_preview": preview,
         })
+        current = next((p for p in getattr(deal, "parties", None) or []
+                        if str(getattr(getattr(p, "role", ""), "value", getattr(p, "role", ""))).lower() == "buyer"), None)
         deal = await update_party(deal_id, "buyer", {
             "legal_name": cand.legal_name, "country": cand.country, "email": from_address,
             "website": getattr(cand, "website", None), "phone": getattr(cand, "phone", None),
             "contact_source": f"outreach:{getattr(cand, 'source', None) or 'reply'}",
-            "email_status": "ok", "party_id": cand.candidate_id,
-        }, source=None)
+            "email_status": "ok", "party_id": cand.candidate_id, "sanctions_status": "unchecked",
+        }, source=None, replace=current is not None and getattr(current, "party_id", None) != cand.candidate_id)
         await _buyer_confirmed(deal, from_address)
         logger.info("Outreach: %s (%s) is INTERESTED in deal %s — buyer party set", cand.legal_name, from_address, deal_id)
         return {"verdict": verdict, "candidate_id": cand.candidate_id, "matched": True, "buyer_set": True}

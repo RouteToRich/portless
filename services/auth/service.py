@@ -50,6 +50,13 @@ async def user_for_identity(identity: Identity) -> UserRecord:
     repo = get_repository()
     user = await repo.get_by_id(identity.user_id)
     if user is not None:
+        if user.org_id is None and is_portless_user(user.email):
+            # First seen before the address was put on AUTH_PORTLESS_EMAILS: staff
+            # belong to the Portless org (their deals need an organization).
+            updated = await repo.update_org(user.user_id, PORTLESS_ORG_ID)
+            logger.info("Auth: %s (%s) is Portless staff — moved to org %s",
+                        user.user_id, user.email, PORTLESS_ORG_ID)
+            return updated or user.model_copy(update={"org_id": PORTLESS_ORG_ID})
         return user
 
     org_id = PORTLESS_ORG_ID if is_portless_user(identity.email) else None

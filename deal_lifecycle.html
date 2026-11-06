@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PortLess Deal Lifecycle</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a shipping-manifest reference — sticky topic index on the left, one numbered stage per section, diagrams in ruled frames. */
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --fg: #142230;
+  --muted: #566573;
+  --rule: #d6dde3;
+  --accent: #b9471a;      /* container rust */
+  --accent-soft: #f7e6dc;
+  --money: #0f6e66;
+  --money-soft: #dcefec;
+  --warn: #9a6a00;
+  --warn-soft: #f7ecd2;
+  --bad: #b42335;
+  --bad-soft: #f6dde1;
+  --info: #2457a6;
+  --info-soft: #dde7f6;
+  --font-display: "Archivo", "Arial Narrow", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f161d; --surface: #16202a; --fg: #e3e9ee; --muted: #9aa8b4; --rule: #2a3744;
+    --accent: #f08a5d; --accent-soft: #3a2419; --money: #4fc3b6; --money-soft: #13302d;
+    --warn: #e6b450; --warn-soft: #33290f; --bad: #f2788a; --bad-soft: #3a1a20;
+    --info: #7fa8ea; --info-soft: #18263b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f161d; --surface: #16202a; --fg: #e3e9ee; --muted: #9aa8b4; --rule: #2a3744;
+  --accent: #f08a5d; --accent-soft: #3a2419; --money: #4fc3b6; --money-soft: #13302d;
+  --warn: #e6b450; --warn-soft: #33290f; --bad: #f2788a; --bad-soft: #3a1a20;
+  --info: #7fa8ea; --info-soft: #18263b; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 40px; }
+header.top { max-width: 1240px; margin: 0 auto; padding-block: 40px 28px; border-bottom: 2px solid var(--fg); margin-bottom: 32px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-family: var(--font-display); font-weight: 800; font-size: clamp(30px, 5vw, 48px); line-height: 1.05; margin: 8px 0 12px; text-wrap: balance; letter-spacing: -.01em; }
+.lede { max-width: 70ch; color: var(--muted); margin: 0; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); align-self: start; display: flex; flex-direction: column; gap: 2px; font-size: 13.5px; }
+nav.toc .label { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+nav.toc a { color: var(--fg); text-decoration: none; padding: 5px 10px; border-left: 2px solid var(--rule); display: flex; gap: 8px; }
+nav.toc a:hover { border-left-color: var(--accent); color: var(--accent); }
+nav.toc a span { font-family: var(--font-mono); color: var(--muted); font-size: 12px; min-width: 20px; }
+main { min-width: 0; display: flex; flex-direction: column; gap: 56px; }
+section { min-width: 0; scroll-margin-top: 16px; }
+.sec-head { display: flex; align-items: baseline; gap: 14px; border-bottom: 1px solid var(--rule); padding-bottom: 8px; margin-bottom: 16px; }
+.sec-num { font-family: var(--font-mono); font-size: 13px; color: var(--accent); }
+h2 { font-family: var(--font-display); font-weight: 700; font-size: 26px; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--font-display); font-weight: 700; font-size: 18px; margin: 28px 0 8px; }
+p { max-width: 72ch; margin: 0 0 12px; }
+.frame { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; overflow-x: auto; margin: 12px 0; }
+.frame pre.mermaid { margin: 0; background: transparent; min-width: 560px; text-align: center; }
+.cap { font-size: 13px; color: var(--muted); margin-top: -4px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.grid2 > * { min-width: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+.tbl { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; margin: 12px 0; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 500; background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+code, .st { font-family: var(--font-mono); font-size: 12.5px; }
+.st { display: inline-block; padding: 1px 7px; border-radius: 3px; background: var(--info-soft); color: var(--info); white-space: nowrap; }
+.st.m { background: var(--money-soft); color: var(--money); }
+.st.w { background: var(--warn-soft); color: var(--warn); }
+.st.b { background: var(--bad-soft); color: var(--bad); }
+.st.a { background: var(--accent-soft); color: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+.legend > span { display: inline-flex; gap: 6px; align-items: center; }
+.callout { border: 1px solid var(--rule); border-left: 4px solid var(--warn); background: var(--surface); padding: 14px 16px; border-radius: 4px; margin: 12px 0; max-width: 80ch; }
+.callout strong { font-family: var(--font-display); }
+.scen { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.scen article { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.scen h4 { font-family: var(--font-display); margin: 0; font-size: 16px; display: flex; gap: 10px; align-items: baseline; }
+.scen h4 span { font-family: var(--font-mono); color: var(--accent); font-size: 12px; }
+.scen p { font-size: 14px; margin: 0; }
+.scen .frame { margin: 4px 0 0; padding: 10px; }
+.scen pre.mermaid { min-width: 300px; }
+ol.steps { margin: 0; padding-left: 20px; font-size: 14px; display: flex; flex-direction: column; gap: 4px; max-width: 80ch; }
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  nav.toc { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px; }
+  nav.toc .label { width: 100%; margin-bottom: 0; }
+  nav.toc a { border: 1px solid var(--rule); border-radius: 4px; padding: 4px 8px; }
+  .scen { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+html { scroll-behavior: smooth; }
+</style>
+</head>
+<body>
+
+
+<header class="top">
+  <div class="eyebrow">PortLess · how a trade moves through the system</div>
+  <h1>PortLess Deal Lifecycle</h1>
+  <p class="lede">From a scan that spots a profitable product-and-market corridor to the day the supplier is paid. Every status shown here is the real value stored by the system. Read top to bottom for the whole story, or jump to a topic.</p>
+  <div class="legend" aria-label="Status colours">
+    <span><span class="st">STATUS</span> normal step</span>
+    <span><span class="st m">STATUS</span> money</span>
+    <span><span class="st w">STATUS</span> waiting / needs attention</span>
+    <span><span class="st b">STATUS</span> failure / dispute</span>
+    <span><span class="st a">GATE</span> approval gate</span>
+  </div>
+</header>
+
+<div class="wrap">
+<nav class="toc" aria-label="Topics">
+  <div class="label">Topics</div>
+  <a href="#overview"><span>00</span>Big picture</a>
+  <a href="#discovery"><span>01</span>Finding opportunities</a>
+  <a href="#deal-states"><span>02</span>Deal status map</a>
+  <a href="#matching"><span>03</span>Matching: buyers &amp; suppliers</a>
+  <a href="#negotiation"><span>04</span>Negotiation</a>
+  <a href="#pi"><span>05</span>Proforma invoice &amp; screening</a>
+  <a href="#money"><span>06</span>Escrow, tranches, payout</a>
+  <a href="#fulfilment"><span>07</span>PO, QC, freight, customs</a>
+  <a href="#approvals"><span>08</span>Approvals (gates)</a>
+  <a href="#exceptions"><span>09</span>Exceptions &amp; playbooks</a>
+  <a href="#scenarios"><span>10</span>Scenarios</a>
+  <a href="#events"><span>11</span>Event topics</a>
+</nav>
+
+<main>
+
+<!-- 00 OVERVIEW -->
+<section id="overview">
+  <div class="sec-head"><span class="sec-num">00</span><h2>Big picture</h2></div>
+  <p>PortLess is a merchant exporter in the middle. It buys from one Indian supplier and sells to one foreign buyer; the two never deal with each other. A <b>scan</b> finds opportunities, an operator presses <b>Start deal</b>, and from then on the system moves the deal forward by itself, stopping at <b>approval gates</b> where a person must agree.</p>
+  <div class="frame"><pre class="mermaid">
+flowchart LR
+  S["Scan<br/>product x market"] --> O["Opportunity<br/>on the Radar"]
+  O -->|Start deal| M["Matching<br/>buyers + suppliers"]
+  M --> N["Negotiation<br/>with the buyer"]
+  N --> PI["Proforma invoice"]
+  PI --> E["Escrow<br/>buyer pays in"]
+  E --> PO["Purchase order<br/>to supplier"]
+  PO --> Q["Quality inspection"]
+  Q --> F["Freight + customs"]
+  F --> D["Delivery +<br/>buyer acceptance"]
+  D --> P["Supplier paid<br/>deal PAID"]
+  classDef money fill:#dcefec,stroke:#0f6e66,color:#0f3d39
+  class E,P money
+  </pre></div>
+  <p class="cap">Money moves only through escrow: the buyer pays first, the supplier is paid in stages as each proof arrives (PO, inspection, clearance, acceptance).</p>
+</section>
+
+<!-- 01 DISCOVERY -->
+<section id="discovery">
+  <div class="sec-head"><span class="sec-num">01</span><h2>Finding opportunities</h2></div>
+  <p>A scan checks every <b>corridor</b> (one product going to one market, e.g. black pepper → Germany). Corridors come from the Catalogue, or the defaults when it is empty. Each corridor passes five phases; it becomes an opportunity only if it clears every gate. Buyers and suppliers found along the way are always saved to <b>Buyers &amp; Suppliers</b>, opportunity or not.</p>
+  <div class="frame"><pre class="mermaid">
+flowchart TD
+  C["Corridor<br/>HS code x market"] --> P1{"Phase 1<br/>live demand data?<br/>measured price gap?"}
+  P1 -->|no| X1["No opportunity<br/>'no live demand data'"]
+  P1 -->|yes| P2["Phase 2<br/>buyers in the market<br/>(web search)"]
+  P2 --> P3{"Phase 3 tariff gate<br/>net gap = gross gap - duty"}
+  P3 -->|"below 1%"| X2["No opportunity<br/>'net gap below floor'"]
+  P3 -->|"1% to 5%"| MG["MARGINAL"]
+  P3 -->|"5% or more"| AC["ACTIVE"]
+  MG --> P4["Phase 4<br/>Indian suppliers"]
+  AC --> P4
+  P4 --> P5{"Phase 5<br/>arbitrage rank 20 or more?"}
+  P5 -->|no| X3["No opportunity<br/>'rank below minimum'"]
+  P5 -->|yes| OP["Opportunity saved<br/>opportunity.detected"]
+  X1 -.-> DIR[("Buyers &amp; Suppliers<br/>directory")]
+  X2 -.-> DIR
+  X3 -.-> DIR
+  OP -.-> DIR
+  W["Worldwide search<br/>(toggle, once per product)"] -.-> DIR
+  classDef bad fill:#f6dde1,stroke:#b42335,color:#5c1420
+  classDef ok fill:#dcefec,stroke:#0f6e66,color:#0f3d39
+  class X1,X2,X3 bad
+  class OP ok
+  </pre></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Opportunity status</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><span class="st">ACTIVE</span></td><td>Net price gap after duty is 5% or more and rank is at least 20. Shown on the Radar.</td></tr>
+      <tr><td><span class="st w">MARGINAL</span></td><td>Net gap between 1% and 5%: thin margin, shown with caution.</td></tr>
+      <tr><td><span class="st m">CONVERTED</span></td><td>A deal was started from it. A later scan of the same corridor creates a fresh opportunity instead of overwriting it.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="cap">Arbitrage rank = √(demand index × gap score); the gap score reaches 100 at a 40% net gap. A rescan refreshes the corridor's open opportunity rather than adding a duplicate.</p>
+</section>
+
+<!-- 02 DEAL STATES -->
+<section id="deal-states">
+  <div class="sec-head"><span class="sec-num">02</span><h2>Deal status map</h2></div>
+  <p>Every deal has exactly one status. The system refuses any move not drawn here. Four statuses are final: <span class="st m">PAID</span> <span class="st b">CANCELLED</span> <span class="st b">REFUNDED</span>, and a deal can also stop at <span class="st b">NEGOTIATION_FAILED</span> when no other supplier is left.</p>
+  <div class="frame"><pre class="mermaid">
+stateDiagram-v2
+  direction TB
+  [*] --> DRAFT
+  DRAFT --> MATCHING : Start deal
+  MATCHING --> NEGOTIATING : supplier selected
+  NEGOTIATING --> NEGOTIATING : counter round
+  NEGOTIATING --> NEGOTIATION_AGREED : operator confirms agreement
+  NEGOTIATING --> NEGOTIATION_FAILED : buyer walks away
+  NEGOTIATION_FAILED --> MATCHING : re-match next supplier
+  NEGOTIATION_FAILED --> CANCELLED
+  NEGOTIATION_AGREED --> PI_SENT : buyer screening clear
+  PI_SENT --> PI_ACCEPTED : buyer accepts PI
+  PI_ACCEPTED --> ESCROW_PENDING : escrow opened
+  ESCROW_PENDING --> ESCROW_FUNDED : full amount received
+  PI_SENT --> CANCELLED : unfunded playbook
+  PI_ACCEPTED --> CANCELLED : unfunded playbook
+  ESCROW_PENDING --> CANCELLED : unfunded past grace
+  ESCROW_FUNDED --> PO_ISSUED : PO approved
+  PO_ISSUED --> SUPPLIER_DISPATCH_READY : inspector booked
+  SUPPLIER_DISPATCH_READY --> QC_PASSED
+  SUPPLIER_DISPATCH_READY --> QC_FAILED
+  QC_FAILED --> DISPUTE
+  DISPUTE --> SUPPLIER_DISPATCH_READY : re-inspection
+  DISPUTE --> REFUNDED : buyer refunded
+  DISPUTE --> CANCELLED
+  QC_PASSED --> IN_TRANSIT : freight booked
+  IN_TRANSIT --> CLEARED : arrived + customs
+  CLEARED --> PAID : supplier paid in full
+  PAID --> [*]
+  REFUNDED --> [*]
+  CANCELLED --> [*]
+  </pre></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Status</th><th>What is happening</th><th>What moves it on</th></tr></thead>
+    <tbody>
+      <tr><td><span class="st">MATCHING</span></td><td>Buyer introductions and supplier RFQs are out; contacts are checked and screened.</td><td>A supplier's quote is selected (automatically or by you).</td></tr>
+      <tr><td><span class="st">NEGOTIATING</span></td><td>Supplier chosen. Price talks with the buyer start once a buyer has said they are interested.</td><td>The buyer accepts a price and you confirm it.</td></tr>
+      <tr><td><span class="st">NEGOTIATION_AGREED</span></td><td>Price agreed. The buyer is re-screened if the last check is over 30 days old.</td><td>The proforma invoice is issued.</td></tr>
+      <tr><td><span class="st w">PI_SENT</span></td><td>Proforma invoice emailed to the buyer; reminders run.</td><td>The buyer replies "accepted" (you confirm) or accepts in the portal.</td></tr>
+      <tr><td><span class="st">PI_ACCEPTED</span></td><td>Buyer accepted; the escrow account is being opened.</td><td>Escrow created, funding instructions emailed.</td></tr>
+      <tr><td><span class="st w">ESCROW_PENDING</span></td><td>Waiting for the buyer's money. A part payment keeps the deal here.</td><td>The escrow provider reports the full PI amount.</td></tr>
+      <tr><td><span class="st m">ESCROW_FUNDED</span></td><td>Money is safe in escrow.</td><td>You approve the purchase order (margin must be 8% or more).</td></tr>
+      <tr><td><span class="st m">PO_ISSUED</span></td><td>PO sent to the supplier; tranche 1 (30%) can be released.</td><td>Inspector booked.</td></tr>
+      <tr><td><span class="st">SUPPLIER_DISPATCH_READY</span></td><td>Goods ready; third-party inspection booked.</td><td>Inspection result: pass or fail.</td></tr>
+      <tr><td><span class="st m">QC_PASSED</span></td><td>Export documents generated; tranche 2 (40%) can be released.</td><td>You approve freight booking.</td></tr>
+      <tr><td><span class="st b">QC_FAILED</span> → <span class="st b">DISPUTE</span></td><td>Lot rejected. Money is frozen.</td><td>Re-inspection, refund, or cancel.</td></tr>
+      <tr><td><span class="st">IN_TRANSIT</span></td><td>At sea; customs filing gate; carrier tracked every 12 h.</td><td>Carrier reports ARRIVED.</td></tr>
+      <tr><td><span class="st m">CLEARED</span></td><td>Arrived and cleared; tranche 3 (20%) and supplier payout gates open; buyer's acceptance window opens on delivery.</td><td>Supplier payouts reach the full PO value.</td></tr>
+      <tr><td><span class="st m">PAID</span></td><td>Supplier paid in full. Done.</td><td>Final.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 03 MATCHING -->
+<section id="matching">
+  <div class="sec-head"><span class="sec-num">03</span><h2>Matching: buyers &amp; suppliers</h2></div>
+  <p>Pressing Start deal sets off three things at once: <b>contact checks + sanctions screening</b>, the <b>buyer outreach funnel</b>, and <b>RFQs to suppliers</b>. Each side narrows down to one company.</p>
+  <div class="frame"><pre class="mermaid">
+flowchart LR
+  SD["Start deal<br/>deal.created"] --> EN["Contact finder +<br/>sanctions screening"]
+  SD --> OUT["Buyer outreach<br/>top 5 buyers, 2 at a time"]
+  SD --> RFQ["RFQ by e-mail<br/>top 3 suppliers at once"]
+  OUT --> BI["One buyer says<br/>'interested'"]
+  RFQ --> QT["Quotes verified<br/>GST, IEC, MCA, Udyam"]
+  QT --> SEL["Best quote selected"]
+  BI --> NEG["Negotiation opens"]
+  SEL --> NEG
+  </pre></div>
+
+  <div class="grid2">
+    <div>
+      <h3>Buyer candidate sub-status</h3>
+      <div class="frame"><pre class="mermaid">
+stateDiagram-v2
+  [*] --> pending
+  pending --> contacted : introduction sent
+  contacted --> interested
+  contacted --> declined
+  contacted --> followed_up : no reply in 3 days
+  followed_up --> interested
+  followed_up --> declined
+  followed_up --> no_reply : 7 more days silent
+  interested --> selected : becomes the deal's buyer
+  declined --> [*] : next candidate
+  no_reply --> [*] : next candidate
+  selected --> [*]
+      </pre></div>
+      <p class="cap">When every candidate declined or stayed silent the deal raises <code>OUTREACH:exhausted</code> and an operator decides. Replies are matched by the <code>[BUY:deal:candidate]</code> tag in the subject.</p>
+    </div>
+    <div>
+      <h3>RFQ and quote sub-status</h3>
+      <div class="frame"><pre class="mermaid">
+stateDiagram-v2
+  state "RFQ" as R {
+    [*] --> PENDING
+    PENDING --> PARTIAL : some suppliers reached
+    PENDING --> COMPLETE : all dispatched
+    PENDING --> FAILED
+  }
+  state "Quote" as Q {
+    [*] --> RECEIVED
+    RECEIVED --> VERIFIED : GST / IEC checked
+    VERIFIED --> ACCEPTED : SOURCE
+    VERIFIED --> REJECTED : DISCARD
+    RECEIVED --> EXPIRED : 7 days
+  }
+      </pre></div>
+      <p class="cap">A verified quote inside the buyer's price corridor is selected without a click. Otherwise the <span class="st a">CONFIRM_SUPPLIER_SELECTION</span> gate asks you; failed GST/IEC checks always ask.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 04 NEGOTIATION -->
+<section id="negotiation">
+  <div class="sec-head"><span class="sec-num">04</span><h2>Negotiation</h2></div>
+  <p>The negotiation agent drafts each email to the buyer from the cost envelope (supplier price, freight, inspection, duty, margin floor). Every draft passes the <span class="st a">SEND_NEGOTIATION_EMAIL</span> gate; the first outbound email always waits for a person. A detected "yes" never closes the deal by itself.</p>
+  <div class="frame"><pre class="mermaid">
+stateDiagram-v2
+  [*] --> STARTED : buyer interested + supplier selected
+  STARTED --> ROUND : first offer drafted
+  ROUND --> ROUND : buyer counters, new draft
+  ROUND --> HITL_PENDING : acceptance detected or draft flagged
+  HITL_PENDING --> AGREED : operator approves agreement
+  HITL_PENDING --> ROUND : operator rejects, talks reopen
+  ROUND --> FAILED : rounds exhausted or buyer walks
+  ROUND --> ESCALATED : handed to an operator
+  AGREED --> [*] : negotiation.agreed
+  FAILED --> [*] : negotiation.failed
+  </pre></div>
+  <p class="cap">AGREED is reachable only through the <span class="st a">CONFIRM_NEGOTIATION_AGREEMENT</span> gate. A buyer's price is checked against the drafts so a typo cannot close a deal at the wrong price.</p>
+</section>
+
+<!-- 05 PI -->
+<section id="pi">
+  <div class="sec-head"><span class="sec-num">05</span><h2>Proforma invoice &amp; screening</h2></div>
+  <div class="frame"><pre class="mermaid">
+flowchart LR
+  AG["negotiation.agreed"] --> SC{"Buyer sanctions<br/>screening"}
+  SC -->|clear / unchecked| PI["PI issued<br/>deal PI_SENT"]
+  SC -->|review| G["CONFIRM_COUNTERPARTY_RISK<br/>gate"]
+  G -->|approve| PI
+  G -->|reject| EX["deal.exception"]
+  SC -->|block| EX
+  PI --> R{"Buyer reply"}
+  R -->|"clear 'we accept'"| G2["CONFIRM_PI_ACCEPTANCE<br/>gate"] --> ACC["PI_ACCEPTED"]
+  R -->|anything else| H["PARSE_INBOUND_EMAIL<br/>you read it"]
+  classDef gate fill:#f7e6dc,stroke:#b9471a,color:#5a220c
+  classDef bad fill:#f6dde1,stroke:#b42335,color:#5c1420
+  class G,G2,H gate
+  class EX bad
+  </pre></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Document</th><th>Sub-statuses</th></tr></thead>
+    <tbody>
+      <tr><td>Proforma invoice</td><td><span class="st">DRAFT</span> <span class="st">SENT</span> <span class="st m">ACCEPTED</span> <span class="st w">SUPERSEDED</span> (replaced by a newer PI)</td></tr>
+      <tr><td>Sanctions verdict</td><td><span class="st m">clear</span> <span class="st w">review</span> <span class="st b">block</span> <span class="st">unchecked</span></td></tr>
+      <tr><td>Buyer e-mail check</td><td><span class="st m">ok</span> <span class="st w">risky</span> <span class="st w">unverified</span> <span class="st b">invalid</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 06 MONEY -->
+<section id="money">
+  <div class="sec-head"><span class="sec-num">06</span><h2>Escrow, tranches, payout</h2></div>
+  <p>The buyer pays the full PI amount into a neutral escrow. PortLess never issues a PO against money that is not there. The money then leaves escrow in four tranches, strictly in order, each tied to a proof.</p>
+  <div class="frame"><pre class="mermaid">
+flowchart LR
+  F["Escrow FUNDED<br/>100% of PI"] --> T1["T1 · 30%<br/>PO_ISSUED"]
+  T1 --> T2["T2 · 40%<br/>QC_PASSED"]
+  T2 --> T3["T3 · 20%<br/>CLEARED"]
+  T3 --> T4["T4 · 10%<br/>buyer ACCEPTED<br/>or window lapses"]
+  T4 --> ST["escrow.settled<br/>margin recorded"]
+  classDef money fill:#dcefec,stroke:#0f6e66,color:#0f3d39
+  class F,T1,T2,T3,T4,ST money
+  </pre></div>
+  <div class="grid2">
+    <div>
+      <h3>Escrow hold sub-status</h3>
+      <div class="frame"><pre class="mermaid">
+stateDiagram-v2
+  [*] --> PENDING : escrow opened
+  PENDING --> PARTIALLY_FUNDED : less than the PI
+  PARTIALLY_FUNDED --> FUNDED : top-up arrives
+  PENDING --> FUNDED : full amount
+  FUNDED --> RELEASED : last tranche out
+  FUNDED --> REFUNDED : dispute ends in refund
+  PARTIALLY_FUNDED --> REFUNDED : unfunded deal cancelled
+  PENDING --> FAILED
+      </pre></div>
+    </div>
+    <div>
+      <h3>Supplier payout sub-status</h3>
+      <div class="frame"><pre class="mermaid">
+stateDiagram-v2
+  [*] --> REQUESTED : payout gate approved
+  REQUESTED --> PROCESSING
+  PROCESSING --> COMPLETED
+  PROCESSING --> FAILED
+  COMPLETED --> [*] : total paid = PO value means deal PAID
+      </pre></div>
+      <p class="cap">Each payout is capped at the money already released from escrow. A partial payout leaves the deal <span class="st m">CLEARED</span> and a balance payout gate follows.</p>
+    </div>
+  </div>
+  <p class="cap">No tranche moves while the deal is in DISPUTE, CANCELLED, REFUNDED or QC_FAILED. Money gates are capped at L1 (a person, or a timeout that defaults to REJECT) and need two different approvers above the four-eyes threshold.</p>
+</section>
+
+<!-- 07 FULFILMENT -->
+<section id="fulfilment">
+  <div class="sec-head"><span class="sec-num">07</span><h2>PO, QC, freight, customs</h2></div>
+  <div class="frame"><pre class="mermaid">
+flowchart LR
+  EF["ESCROW_FUNDED"] -->|ISSUE_PO gate| PO["PO to supplier"]
+  PO --> QB["Inspector booked<br/>SGS / QIMA / BV / Intertek / TUV"]
+  QB --> QR{"Inspection"}
+  QR -->|pass| DOC["Documents rendered<br/>CI, PL, CoO, SDF, Shipping Bill"]
+  QR -->|fail| DIS["DISPUTE"]
+  DOC -->|BOOK_FREIGHT gate| FR["Freight booked<br/>IN_TRANSIT"]
+  FR -->|FILE_CUSTOMS gate| CU["Shipping Bill + LEO<br/>ICEGATE"]
+  CU --> ARR["Carrier: ARRIVED<br/>deal CLEARED"]
+  ARR --> DLV["Carrier: DELIVERED<br/>acceptance window opens"]
+  classDef bad fill:#f6dde1,stroke:#b42335,color:#5c1420
+  class DIS bad
+  </pre></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Record</th><th>Sub-statuses</th></tr></thead>
+    <tbody>
+      <tr><td>Purchase order</td><td><span class="st">ISSUED</span> <span class="st m">CONFIRMED</span> <span class="st b">CANCELLED</span></td></tr>
+      <tr><td>Third-party order (QC, freight, customs agent)</td><td><span class="st">PENDING</span> <span class="st">BOOKED</span> <span class="st">IN_PROGRESS</span> <span class="st m">COMPLETED</span> <span class="st b">FAILED</span> <span class="st b">CANCELLED</span></td></tr>
+      <tr><td>Inspection result</td><td><span class="st w">PENDING</span> <span class="st m">PASS</span> <span class="st b">FAIL</span></td></tr>
+      <tr><td>Carrier milestone</td><td><span class="st">DEPARTED</span> → <span class="st">IN_TRANSIT</span> → <span class="st">ARRIVED</span> → <span class="st">CLEARED</span> → <span class="st m">DELIVERED</span></td></tr>
+    </tbody>
+  </table></div>
+  <p class="cap">The buyer's acceptance window opens on DELIVERED (from the carrier webhook, the tracking poll, or an operator). If delivery is never reported it opens anyway 21 days after clearance.</p>
+</section>
+
+<!-- 08 APPROVALS -->
+<section id="approvals">
+  <div class="sec-head"><span class="sec-num">08</span><h2>Approvals (gates)</h2></div>
+  <p>Every risky step is a gate. Its <b>autonomy level</b> decides whether a person is asked. You change levels on the Autonomy Settings page.</p>
+  <div class="grid2">
+    <div class="frame"><pre class="mermaid">
+stateDiagram-v2
+  [*] --> PENDING : L0 or L1
+  [*] --> AUTO_APPROVED : L2 or L3
+  PENDING --> APPROVED : operator approves
+  PENDING --> REJECTED : operator rejects
+  PENDING --> TIMED_OUT : L1 timeout, default applied
+  APPROVED --> [*] : action runs
+  AUTO_APPROVED --> [*] : action runs
+  REJECTED --> [*] : soft reject stays put, hard reject raises an exception
+    </pre></div>
+    <div class="tbl" style="margin:12px 0"><table>
+      <thead><tr><th>Level</th><th>Behaviour</th></tr></thead>
+      <tbody>
+        <tr><td><span class="st a">L0</span></td><td>Always ask; waits for you.</td></tr>
+        <tr><td><span class="st a">L1</span></td><td>Ask, then apply a default after a timeout (negotiation e-mails 4 h → approve; money 24 h → reject).</td></tr>
+        <tr><td><span class="st">L2</span></td><td>Approve at once and notify you.</td></tr>
+        <tr><td><span class="st">L3</span></td><td>Fully automatic, logged only.</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Gate</th><th>When</th><th>Default</th></tr></thead>
+    <tbody>
+      <tr><td><span class="st a">SEND_BUYER_OUTREACH</span></td><td>Introduction / follow-up to a buyer candidate</td><td>L2</td></tr>
+      <tr><td><span class="st a">DISPATCH_RFQ</span></td><td>RFQs to the top 3 suppliers</td><td>L2</td></tr>
+      <tr><td><span class="st a">CONFIRM_SUPPLIER_SELECTION</span></td><td>A quote that was not auto-selected</td><td>L0 (L2 when verified and in corridor)</td></tr>
+      <tr><td><span class="st a">SEND_NEGOTIATION_EMAIL</span></td><td>Each drafted e-mail to the buyer</td><td>L0 (first e-mail always L0)</td></tr>
+      <tr><td><span class="st a">CONFIRM_NEGOTIATION_AGREEMENT</span></td><td>Buyer seems to accept a price</td><td>L0</td></tr>
+      <tr><td><span class="st a">CONFIRM_COUNTERPARTY_RISK</span></td><td>Screening says "review"</td><td>L0</td></tr>
+      <tr><td><span class="st a">CONFIRM_PI_ACCEPTANCE</span></td><td>Buyer's reply reads as PI acceptance</td><td>L0</td></tr>
+      <tr><td><span class="st a">ISSUE_PO</span> · <span class="st a">BOOK_FREIGHT</span> · <span class="st a">FILE_CUSTOMS</span></td><td>Fulfilment steps</td><td>L0 or the deal's profile</td></tr>
+      <tr><td><span class="st m">RELEASE_ESCROW_TRANCHE</span> · <span class="st m">RELEASE_SUPPLIER_PAYOUT</span> · <span class="st m">CONFIRM_BUYER_ACCEPTANCE</span></td><td>Money leaves escrow</td><td>L0, never above L1; two approvers above threshold</td></tr>
+      <tr><td><span class="st a">SEND_DEAL_NOTIFICATION</span></td><td>Templated status e-mails (PI, funding, PO, shipment…)</td><td>L2</td></tr>
+      <tr><td><span class="st a">RESOLVE_EXCEPTION</span></td><td>The resolver escalates a problem</td><td>L0</td></tr>
+      <tr><td><span class="st a">PARSE_INBOUND_EMAIL</span></td><td>A reply the system could not read</td><td>L0, informational</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 09 EXCEPTIONS -->
+<section id="exceptions">
+  <div class="sec-head"><span class="sec-num">09</span><h2>Exceptions &amp; playbooks</h2></div>
+  <p>Anything that goes wrong (a rejected gate, a stalled deal, a failed inspection, unpaid escrow) raises a <code>deal.exception</code>. The Exception Resolver first tries a fixed playbook, then asks the LLM for a plan.</p>
+  <div class="frame"><pre class="mermaid">
+stateDiagram-v2
+  [*] --> OPEN : deal.exception
+  OPEN --> ANALYZING : playbook or LLM plan
+  ANALYZING --> REMEDIATING : AUTO_FIX
+  REMEDIATING --> RESOLVED
+  ANALYZING --> RESOLVED : MONITOR
+  ANALYZING --> ESCALATED : ESCALATE or CANCEL, operator gate
+  ANALYZING --> UNRESOLVABLE : agent crashed
+  REMEDIATING --> ESCALATED : no automatic fix
+  </pre></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Category</th><th>Playbook</th></tr></thead>
+    <tbody>
+      <tr><td><span class="st b">QC_FAILED</span></td><td>Re-inspection (supplier reworks, new inspection, deal back to SUPPLIER_DISPATCH_READY) while under the limit; otherwise cancel and refund.</td></tr>
+      <tr><td><span class="st b">PAYMENT_FAILED</span></td><td>Shortfall reminder to the buyer; after 14 days unfunded, an operator-gated cancel with refund of part payments.</td></tr>
+      <tr><td><span class="st b">NEGOTIATION_FAILED</span></td><td>Move to the next buyer candidate; escalate when the list is used up.</td></tr>
+      <tr><td><span class="st w">DOCUMENT_ERROR</span> · <span class="st w">CONNECTOR_ERROR</span></td><td>Automatic retry / regenerate.</td></tr>
+      <tr><td><span class="st w">FREIGHT_DELAY</span> · <span class="st w">CUSTOMS_REJECTED</span> · <span class="st w">MARGIN_BREACH</span> · <span class="st w">APPROVAL_REJECTED</span> · <span class="st w">CALLBACK_FAILED</span> · <span class="st w">UNKNOWN</span></td><td>LLM plan; when unsure it escalates to you.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="cap">The deal watcher also raises exceptions on its own: PI expired, escrow unfunded, or any status stuck longer than the stall limit. It sends reminders before that.</p>
+</section>
+
+<!-- 10 SCENARIOS -->
+<section id="scenarios">
+  <div class="sec-head"><span class="sec-num">10</span><h2>Scenarios</h2></div>
+  <div class="callout">
+    <strong>Your deal right now: DEAL-1950124ED3C5</strong> (black pepper → Germany, 25 MT) is in <span class="st">MATCHING</span>. Two buyers are marked <span class="st">contacted</span> and three supplier RFQs are dispatched, but no mailbox is configured, so these e-mails were only logged, not sent. See scenario I.
+  </div>
+  <div class="scen">
+
+    <article>
+      <h4><span>A</span>Happy path</h4>
+      <p>Everything works first time.</p>
+      <div class="frame"><pre class="mermaid">
+flowchart LR
+  a1[MATCHING] --> a2[NEGOTIATING] --> a3[AGREED] --> a4[PI_SENT] --> a5[PI_ACCEPTED] --> a6[ESCROW_FUNDED] --> a7[PO_ISSUED] --> a8[QC_PASSED] --> a9[IN_TRANSIT] --> a10[CLEARED] --> a11[PAID]
+      </pre></div>
+    </article>
+
+    <article>
+      <h4><span>B</span>Buyers decline or stay silent</h4>
+      <div class="frame"><pre class="mermaid">
+flowchart TD
+  b1["Buyers 1 and 2 contacted"] --> b2{"Replies?"}
+  b2 -->|declined / 10 days silent| b3["Buyers 3 and 4 contacted"]
+  b3 --> b4{"Replies?"}
+  b4 -->|interested| b5["Buyer selected, negotiation opens"]
+  b4 -->|nobody left| b6["OUTREACH:exhausted exception<br/>you add buyers or cancel"]
+      </pre></div>
+    </article>
+
+    <article>
+      <h4><span>C</span>Supplier quote fails checks</h4>
+      <div class="frame"><pre class="mermaid">
+flowchart TD
+  c1["Quote received"] --> c2{"GST / IEC verified?"}
+  c2 -->|yes, in price corridor| c3["Auto-selected<br/>NEGOTIATING"]
+  c2 -->|no| c4["CONFIRM_SUPPLIER_SELECTION<br/>forced L0 with risk flags"]
+  c4 -->|approve| c3
+  c4 -->|reject| c5["Wait for the next quote"]
+      </pre></div>
+    </article>
+
+    <article>
+      <h4><span>D</span>Negotiation fails</h4>
+      <div class="frame"><pre class="mermaid">
+flowchart TD
+  d1["NEGOTIATING"] --> d2["NEGOTIATION_FAILED"]
+  d2 --> d3["Exception + re-match gate<br/>next-best supplier"]
+  d3 -->|approve| d4["MATCHING then NEGOTIATING again"]
+  d3 -->|no candidate| d5["CANCELLED"]
+      </pre></div>
+    </article>
+
+    <article>
+      <h4><span>E</span>Buyer under-pays or never pays</h4>
+      <div class="frame"><pre class="mermaid">
+flowchart TD
+  e1["ESCROW_PENDING"] --> e2{"Money in"}
+  e2 -->|less than PI| e3["PARTIALLY_FUNDED<br/>shortfall e-mail + exception"]
+  e3 -->|top-up| e4["ESCROW_FUNDED"]
+  e2 -->|full| e4
+  e2 -->|nothing after 14 days| e5["cancel_unfunded gate"]
+  e3 -->|still short after 14 days| e5
+  e5 -->|approve| e6["Part payment refunded<br/>CANCELLED"]
+      </pre></div>
+    </article>
+
+    <article>
+      <h4><span>F</span>Inspection fails</h4>
+      <div class="frame"><pre class="mermaid">
+flowchart TD
+  f1["QC_FAILED"] --> f2["DISPUTE, money frozen"]
+  f2 --> f3{"Re-inspections used?"}
+  f3 -->|under limit| f4["Supplier reworks<br/>new inspection booked<br/>SUPPLIER_DISPATCH_READY"]
+  f3 -->|limit reached| f5["Refund buyer<br/>REFUNDED"]
+      </pre></div>
+    </article>
+
+    <article>
+      <h4><span>G</span>Buyer complains after delivery</h4>
+      <div class="frame"><pre class="mermaid">
+flowchart TD
+  g1["DELIVERED<br/>acceptance window open"] --> g2{"Buyer says"}
+  g2 -->|"we accept"| g3["CONFIRM_BUYER_ACCEPTANCE<br/>T4 released"]
+  g2 -->|silence| g4["Window lapses<br/>T4 auto-released"]
+  g2 -->|complaint| g5["Escrow disputed<br/>T4 frozen"]
+  g5 -->|agreed fix| g6["Dispute cleared"]
+      </pre></div>
+    </article>
+
+    <article>
+      <h4><span>H</span>Sanctions screening flags the buyer</h4>
+      <div class="frame"><pre class="mermaid">
+flowchart TD
+  h1["negotiation.agreed"] --> h2{"Screening"}
+  h2 -->|clear| h3["PI_SENT"]
+  h2 -->|review| h4["CONFIRM_COUNTERPARTY_RISK"]
+  h4 -->|approve| h3
+  h4 -->|reject| h5["Exception, no PI"]
+  h2 -->|block| h5
+      </pre></div>
+    </article>
+
+    <article>
+      <h4><span>I</span>No mailbox configured (today)</h4>
+      <p>Outbound e-mails are logged, not sent, yet buyers are marked contacted and timers run.</p>
+      <div class="frame"><pre class="mermaid">
+flowchart TD
+  i1["Introduction 'sent'<br/>(logged only)"] --> i2["3 days: follow-up logged"]
+  i2 --> i3["7 days: no_reply<br/>next 2 buyers"]
+  i3 --> i4["about 3 weeks:<br/>OUTREACH:exhausted"]
+  i5["RFQs logged only"] --> i6["No quotes, RFQ expires<br/>deal stays MATCHING"]
+  classDef bad fill:#f6dde1,stroke:#b42335,color:#5c1420
+  class i4,i6 bad
+      </pre></div>
+    </article>
+
+  </div>
+</section>
+
+<!-- 11 EVENTS -->
+<section id="events">
+  <div class="sec-head"><span class="sec-num">11</span><h2>Event topics</h2></div>
+  <p>Each step announces itself on the event bus; the automation listens and starts the next step. Useful when reading logs or the deal timeline.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Stage</th><th>Events</th></tr></thead>
+    <tbody>
+      <tr><td>Discovery</td><td><code>opportunity.detected</code></td></tr>
+      <tr><td>Matching</td><td><code>deal.created</code> <code>counterparty.screened</code> <code>buyer.interested</code> <code>quote.requested</code> <code>quote.received</code> <code>match.scored</code></td></tr>
+      <tr><td>Negotiation</td><td><code>negotiation.started</code> <code>negotiation.round</code> <code>negotiation.agreed</code> <code>negotiation.failed</code></td></tr>
+      <tr><td>Invoice</td><td><code>pi.sent</code> <code>pi.accepted</code></td></tr>
+      <tr><td>Money</td><td><code>escrow.funded</code> <code>escrow.funding_shortfall</code> <code>escrow.tranche_released</code> <code>escrow.inspection_opened</code> <code>escrow.settled</code> <code>payout.requested</code> <code>payout.completed</code></td></tr>
+      <tr><td>Fulfilment</td><td><code>po.issued</code> <code>qc.booked</code> <code>qc.passed</code> <code>qc.failed</code> <code>freight.booked</code> <code>freight.milestone</code> <code>customs.filed</code> <code>customs.cleared</code></td></tr>
+      <tr><td>Control</td><td><code>approval.requested</code> <code>approval.resolved</code> <code>deal.exception</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+</main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+  // Standalone copy: draw the diagrams with Mermaid, in the reader's light/dark theme.
+  var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "default", securityLevel: "loose",
+                       flowchart: { htmlLabels: true }, fontFamily: "IBM Plex Sans, Segoe UI, sans-serif" });
+</script>
+</body>
+</html>

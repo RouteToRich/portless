@@ -96,6 +96,8 @@ class ApprovalAction(str, Enum):
     deal outright."""
     CONFIRM_BUYER_ACCEPTANCE = "CONFIRM_BUYER_ACCEPTANCE"
     SEND_BUYER_OUTREACH = "SEND_BUYER_OUTREACH"
+    SEND_INDICATIVE_OFFER = "SEND_INDICATIVE_OFFER"
+    CONFIRM_MATCH = "CONFIRM_MATCH"
     """Templated first introduction to a buyer the scan identified (the
     outreach funnel, shared/orchestration/outreach.py). Soft REJECT skips
     that buyer."""

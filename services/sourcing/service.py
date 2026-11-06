@@ -192,6 +192,15 @@ async def _dispatch_one(
     # marketplace API key). The subject token lets the reply map back here.
     if supplier.email:
         ext_id = await _dispatch_by_email(rfq_id, supplier, message, payload)
+        if ext_id == _NOT_DELIVERED:
+            return DispatchResult(
+                supplier_id=supplier.supplier_id,
+                contact_id=contact_id,
+                channel="email",
+                email=supplier.email,
+                success=False,
+                error="not delivered — no outbound mailbox configured (GMAIL_SENDER_ADDRESS); RFQ logged only",
+            )
         if ext_id is not None:
             return DispatchResult(
                 supplier_id=supplier.supplier_id,
@@ -212,6 +221,9 @@ async def _dispatch_one(
     )
 
 
+_NOT_DELIVERED = "__not_delivered__"
+
+
 def rfq_subject(rfq_id: str, hs_code: str, quantity_mt: float | None) -> str:
     qty = f"{quantity_mt:g} MT " if quantity_mt else ""
     return f"Request for quotation — {qty}HS {hs_code} [RFQ:{rfq_id}]"
@@ -228,10 +240,16 @@ async def _dispatch_by_email(
 
         body = (
             f"Dear {supplier.company_name or 'Supplier'},\n\n{message}\n\n"
-            "Please reply to this e-mail with your best FOB price per MT in USD, minimum order "
-            "quantity, lead time and payment terms, and quote your GSTIN and IEC so we can "
-            "verify them. Keep the reference in the subject line so your quote reaches the "
-            "right desk.\n\nBest regards,\nPortLess Trade Operations\n"
+            "Please reply to this e-mail with:\n"
+            "  - your best FOB price per MT in USD, and how long it is valid\n"
+            "  - grade / specification you supply (purity, packaging)\n"
+            "  - minimum order quantity and monthly capacity (MT)\n"
+            "  - lead time from order to FOB, and port of loading\n"
+            "  - certificates you can provide (COA, ISO, FSSAI, Halal…)\n"
+            "  - payment terms\n"
+            "  - your GSTIN and IEC, so we can verify them\n\n"
+            "Keep the reference in the subject line so your quote reaches the right desk.\n\n"
+            "Best regards,\nPortLess Trade Operations\n"
         )
         result = await send_email(SendEmailRequest(
             to_address=supplier.email or "",
@@ -243,6 +261,10 @@ async def _dispatch_by_email(
         ))
         outcome = getattr(result, "outcome", None)
         outcome_val = getattr(outcome, "value", outcome)
+        if str(outcome_val) == "logged":
+            logger.warning("RFQ %s to %s (%s) NOT delivered — no outbound mailbox configured",
+                           rfq_id, supplier.email, supplier.supplier_id)
+            return _NOT_DELIVERED
         logger.info("RFQ %s e-mailed to %s (%s): %s", rfq_id, supplier.email, supplier.supplier_id, outcome_val)
         return getattr(result, "message_id", None) or f"email:{outcome_val}"
     except Exception as exc:  # noqa: BLE001
@@ -286,6 +308,14 @@ async def receive_quote_by_email(
 
     gstin = _find_pattern(body_text, r"\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b")
     iec = _find_pattern(body_text, r"\bIEC[\s:#-]*([A-Z0-9]{10})\b", group=1)
+    fields: dict[str, Any] = {}
+    if body_text:
+        try:
+            from shared.orchestration.extraction import extract_supplier
+            fields = await extract_supplier(body_text)
+        except Exception as exc:  # noqa: BLE001 — a quote without details is still a quote
+            logger.warning("RFQ %s: offer details not read from the reply: %s", rfq_id, exc)
+    validity = fields.get("validity_days")
     return await receive_quote(QuoteIntakeRequest(
         rfq_id=rfq_id,
         deal_id=rfq.deal_id,
@@ -295,7 +325,15 @@ async def receive_quote_by_email(
         quantity_mt=rfq.quantity_mt,
         gstin=gstin,
         iec_number=iec,
-        payment_terms=None,
+        payment_terms=fields.get("payment_terms"),
+        lead_time_days=fields.get("lead_time_days"),
+        port_of_loading=fields.get("port_of_loading"),
+        validity_days=int(validity) if validity and 1 <= int(validity) <= 90 else 30,
+        grade=fields.get("grade"),
+        moq_mt=fields.get("moq_mt"),
+        capacity_mt_per_month=fields.get("capacity_mt_per_month"),
+        certifications=fields.get("certifications") or [],
+        supplier_email=sender or None,
     ))
 
 
@@ -462,6 +500,64 @@ async def _update_deal_financials(
             )
     except Exception as exc:
         logger.warning("Could not update deal financials for %s: %s", deal_id, exc)
+
+
+async def _record_offer(payload: QuoteIntakeRequest, quote: QuoteRecord,
+                        verification: VerificationResult | None) -> None:
+    """The quote as a supplier offer on the prospect's match board, and as a
+    supplier-side price observation in the price book."""
+    try:
+        from services.deals.schemas import SupplierOffer  # type: ignore[import]
+        from services.deals.service import get_deal, upsert_supplier_offer  # type: ignore[import]
+        from shared import pricebook
+
+        failed = bool(verification and (not verification.gst_verified or not verification.iec_active
+                                        or getattr(verification, "dgft_denied", False)))
+        gst_checked = bool(verification and "gstn" in verification.raw)
+        iec_checked = bool(verification and "dgft_iec" in verification.raw)
+        email = payload.supplier_email
+        if not email:
+            try:
+                rfq = await get_rfq(payload.rfq_id)
+                email = next((d.email for d in rfq.dispatch_results
+                              if d.supplier_id == payload.supplier_id and d.email), None)
+            except Exception:  # noqa: BLE001
+                email = None
+        offer = SupplierOffer(
+            offer_id=f"OFR-{quote.quote_id.removeprefix('QUOTE-').removeprefix('QT-')}",
+            supplier_id=payload.supplier_id, company_name=payload.company_name, email=email,
+            grade=payload.grade, fob_price_usd_per_mt=payload.unit_price_usd,
+            moq_mt=payload.moq_mt, capacity_mt_per_month=payload.capacity_mt_per_month,
+            lead_time_days=payload.lead_time_days, port_of_loading=payload.port_of_loading,
+            certifications=payload.certifications, payment_terms=payload.payment_terms,
+            validity_days=payload.validity_days,
+            gst_verified=(verification.gst_verified if gst_checked else None),
+            iec_active=(verification.iec_active if iec_checked else None),
+            verification_failed=failed, quote_id=quote.quote_id, source="quote",
+            origin_deal_id=payload.deal_id, received_at=quote.received_at,
+        )
+        await upsert_supplier_offer(payload.deal_id, offer)
+        deal = await get_deal(payload.deal_id)
+        await pricebook.record(pricebook.PriceObservation(
+            hs_code=deal.hs_code, side="supplier", kind="supplier_quote",
+            price_usd_per_mt=payload.unit_price_usd, grade=payload.grade, incoterm=payload.incoterm,
+            quantity_mt=payload.quantity_mt, deal_id=payload.deal_id, counterparty_id=payload.supplier_id,
+        ))
+    except Exception as exc:  # noqa: BLE001 — the quote itself is already saved
+        logger.warning("Could not record the offer for quote %s: %s", quote.quote_id, exc)
+
+
+async def _set_supplier_party(payload: QuoteIntakeRequest) -> None:
+    """The winning quote's supplier becomes the deal's supplier party."""
+    try:
+        from services.deals.service import set_supplier_party  # type: ignore[import]
+        await set_supplier_party(
+            payload.deal_id, payload.supplier_id,
+            company_name=payload.company_name or None,
+            gstin=payload.gstin, iec=payload.iec_number,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not set the supplier party for %s: %s", payload.deal_id, exc)
 
 
 async def _transition_to_negotiating(deal_id: str) -> None:
@@ -689,7 +785,12 @@ async def receive_quote(payload: QuoteIntakeRequest) -> QuoteRecord:
     if re_scored_cms is not None:
         await _update_deal_financials(payload.deal_id, payload.supplier_id, re_scored_cms)
 
-    if re_scored_decision == "SOURCE" and deal and deal.get("status") == "MATCHING":
+    await _record_offer(payload, quote, verification)
+
+    from shared.orchestration import matchmaking
+    if (re_scored_decision == "SOURCE" and deal and deal.get("status") == "MATCHING"
+            and not matchmaking.enabled()):
+        await _set_supplier_party(payload)
         await _transition_to_negotiating(payload.deal_id)
 
     # ── Emit event ────────────────────────────────────────────────────────

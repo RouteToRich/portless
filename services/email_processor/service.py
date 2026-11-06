@@ -138,6 +138,29 @@ async def process_inbound(
     party_override: str | None = None,
     counter_price_override: float | None = None,
 ) -> ProcessingResult:
+    """Process one inbound email end-to-end, then remember it in knowledge-service
+    (RAG) with the deal and party the mapping found."""
+    result = await _process_inbound(raw, negotiation_id_override, party_override, counter_price_override)
+    if result.message != "Duplicate — already processed":
+        try:
+            from shared.orchestration.memory import remember_email
+            record = await get_repository().get(result.inbound_id)
+            await remember_email(
+                direction="inbound", from_address=raw.from_address, to_address=raw.to_address,
+                subject=raw.subject, body=raw.body_text or "", message_id=raw.message_id or result.inbound_id,
+                deal_id=getattr(record, "deal_id", None), party=getattr(record, "party", None),
+            )
+        except Exception:  # noqa: BLE001 — memory never fails inbound processing
+            logger.debug("Inbound memory skipped for %s", result.inbound_id)
+    return result
+
+
+async def _process_inbound(
+    raw: InboundRawEmail,
+    negotiation_id_override: str | None = None,
+    party_override: str | None = None,
+    counter_price_override: float | None = None,
+) -> ProcessingResult:
     """Process one inbound email end-to-end.  Safe to call multiple times
     for the same message_id (idempotent via deduplication)."""
     repo = get_repository()

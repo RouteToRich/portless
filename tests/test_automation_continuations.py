@@ -95,7 +95,7 @@ class TestDealCreated:
         assert req.autonomy_level == "L2"
         assert req.idempotency_key == "auto-rfq-DEAL-1"
         ids = [s["supplier_id"] for s in req.callback_payload["suppliers"]]
-        assert ids == ["SUP-1", "SUP-3", "SUP-2"]  # SOURCE first, by score, max 3
+        assert ids == ["SUP-1", "SUP-3", "SUP-2", "SUP-4"]  # SOURCE first, by score (RFQ_MAX_SUPPLIERS=5)
         assert req.callback_payload["target_price_usd"] == 1255.0
         assert req.callback_payload["hs_code"] == "1006"
 
@@ -170,6 +170,12 @@ class TestDealCreated:
 # ---------------------------------------------------------------------------
 
 class TestQuoteReceived:
+    """Legacy single-supplier selection (match board off)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_matchmaking(self, monkeypatch):
+        monkeypatch.setenv("MATCHMAKING_ENABLED", "false")
+
     @pytest.mark.asyncio
     async def test_sourced_quote_is_noop(self):
         gate = AsyncMock()
@@ -741,6 +747,7 @@ class TestCallbacks:
         from services.hitl_approval.callbacks import SOFT_REJECT_ACTIONS
         assert {"SEND_NEGOTIATION_EMAIL", "CONFIRM_NEGOTIATION_AGREEMENT", "SEND_DEAL_NOTIFICATION",
                 "DISPATCH_RFQ", "CONFIRM_SUPPLIER_SELECTION", "CONFIRM_PI_ACCEPTANCE",
-                "PARSE_INBOUND_EMAIL", "CONFIRM_BUYER_ACCEPTANCE", "SEND_BUYER_OUTREACH"} == set(SOFT_REJECT_ACTIONS)
+                "PARSE_INBOUND_EMAIL", "CONFIRM_BUYER_ACCEPTANCE", "SEND_BUYER_OUTREACH",
+                "SEND_INDICATIVE_OFFER", "CONFIRM_MATCH"} == set(SOFT_REJECT_ACTIONS)
         assert "RELEASE_ESCROW_TRANCHE" not in SOFT_REJECT_ACTIONS
         assert "RELEASE_SUPPLIER_PAYOUT" not in SOFT_REJECT_ACTIONS

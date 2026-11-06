@@ -47,6 +47,9 @@ async def put_catalogue(payload: CatalogueUpdate) -> dict:
         await _catalogue.set_catalogue(payload.products, updated_by=payload.updated_by)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    from shared.orchestration.memory import remember_product
+    for line in payload.products:
+        remember_product(line)
     return _catalogue_view()
 
 
@@ -73,16 +76,68 @@ async def scan(payload: ScanRequest) -> list[EnrichedOpportunity]:
     return await service.scan_opportunities(payload)
 
 
+class KnowledgeNote(BaseModel):
+    subject_type: str = Field(description="buyer | supplier | product | market | deal")
+    subject_id: str = Field(description="company domain / candidate id, HS code, ISO-2 market or deal id")
+    text: str = Field(min_length=3, max_length=8000)
+    author: str | None = None
+
+
+@router.post("/knowledge/notes", response_model=dict)
+async def add_knowledge_note(note: KnowledgeNote) -> dict:
+    """Remember an operator note in knowledge-service (RAG) — e.g. "supplier X failed
+    QC on moisture in March", "buyer Y only buys with LC at sight". The negotiation
+    agent and the reply reader read it back; money decisions never do."""
+    from shared import knowledge
+    from shared.orchestration.memory import remember_note
+    if not knowledge.enabled():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="knowledge-service not configured (LLM_GATEWAY_URL + service account)")
+    queued = remember_note(subject_type=note.subject_type, subject_id=note.subject_id, text=note.text,
+                           author=note.author)
+    return {"queued": queued, "subject_type": note.subject_type, "subject_id": note.subject_id}
+
+
+@router.get("/knowledge/search", response_model=dict)
+async def search_knowledge(q: str = Query(..., min_length=2), top_k: int = Query(8, ge=1, le=20)) -> dict:
+    """What PortLess remembers that matches ``q`` (e-mails, notes, products, deal summaries)."""
+    from shared import knowledge
+    if not knowledge.enabled():
+        return {"enabled": False, "results": []}
+    results = await knowledge.recall(q, top_k=top_k)
+    return {"enabled": True, "results": [
+        {"text": (r.get("text") or r.get("content") or "")[:1200], "metadata": r.get("metadata") or {},
+         "graph_fact": knowledge.is_graph_fact(r), "score": r.get("score")} for r in results]}
+
+
+@router.get("/price-book/{hs_code}", response_model=dict)
+async def price_book(hs_code: str, market: str | None = Query(None, description="ISO-2 destination market"),
+                     grade: str | None = Query(None)) -> dict:
+    """Collected price information for an HS code: the public Comtrade anchors, the
+    buyer-side (CIF) and supplier-side (FOB India) estimates with their range and
+    confidence, and the observations behind them (quotes, targets, counters, agreed)."""
+    from shared import pricebook
+    priors = await pricebook.public_priors(hs_code, market.upper() if market else None)
+    buyer = await pricebook.estimate(hs_code, "buyer", market=market, grade=grade, priors=priors)
+    supplier = await pricebook.estimate(hs_code, "supplier", market=market, grade=grade, priors=priors)
+    obs = await pricebook.observations(hs_code, limit=200)
+    return {"hs_code": hs_code, "market": market, "priors": priors,
+            "buyer": buyer.model_dump(mode="json"), "supplier": supplier.model_dump(mode="json"),
+            "observations": [o.model_dump(mode="json") for o in obs]}
+
+
 @router.get("/buyers", response_model=list[CounterpartyRecord])
 async def list_buyers(
     hs_code: str | None = Query(default=None),
     market: str | None = Query(default=None, description="ISO-2 market, e.g. AE"),
     q: str | None = Query(default=None, description="Search name / e-mail / website / country"),
+    country: str | None = Query(default=None, description="ISO-2 country of the buyer itself, e.g. DE"),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> list[CounterpartyRecord]:
-    """Every buyer a scan found — with or without an opportunity or deal —
-    newest first, merged per company across scans."""
-    return await directory.list_counterparties("buyer", hs_code=hs_code, market=market, q=q, limit=limit)
+    """Every buyer a scan found, in any country — with or without an opportunity
+    or deal — newest first, merged per company across scans."""
+    return await directory.list_counterparties("buyer", hs_code=hs_code, market=market, q=q,
+                                               country=country, limit=limit)
 
 
 @router.get("/suppliers", response_model=list[CounterpartyRecord])
@@ -90,11 +145,13 @@ async def list_suppliers(
     hs_code: str | None = Query(default=None),
     market: str | None = Query(default=None, description="Market the supplier was scanned for"),
     q: str | None = Query(default=None, description="Search name / e-mail / website"),
+    country: str | None = Query(default=None, description="ISO-2 country of the supplier, e.g. IN for India only"),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> list[CounterpartyRecord]:
-    """Every Indian supplier a scan found — with or without an opportunity or
-    deal — newest first, merged per company across scans."""
-    return await directory.list_counterparties("supplier", hs_code=hs_code, market=market, q=q, limit=limit)
+    """Every supplier a scan found, in any country (``country=IN`` → India only) —
+    with or without an opportunity or deal — newest first, merged per company."""
+    return await directory.list_counterparties("supplier", hs_code=hs_code, market=market, q=q,
+                                               country=country, limit=limit)
 
 
 @router.get("/opportunities", response_model=list[EnrichedOpportunity])

@@ -164,6 +164,12 @@ class TestCreateGate:
 # ---------------------------------------------------------------------------
 
 class TestAutoSourceAndQuantity:
+    """Legacy single-supplier auto-sourcing (match board off)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_matchmaking(self, monkeypatch):
+        monkeypatch.setenv("MATCHMAKING_ENABLED", "false")
+
     async def _quote(self, payload, deal=None):
         gate = AsyncMock()
         with (

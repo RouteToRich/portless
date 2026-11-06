@@ -236,6 +236,26 @@ def iso2(code: Any) -> str | None:
     return _ISO3_TO_ISO2.get(c, c)
 
 
+# A search line without a country is a worldwide search ("black pepper exporter").
+WORLDWIDE = "ALL"
+_WORLDWIDE_ALIASES = frozenset({"", "ALL", "*", "WORLD", "WORLDWIDE", "ANY"})
+# ccTLDs sold as generic domains — they say nothing about where the company is.
+_GENERIC_CCTLDS = frozenset({"co", "io", "ai", "tv", "me", "cc", "ws", "fm", "am", "to", "ly", "gg", "app"})
+
+
+def is_worldwide(code: Any) -> bool:
+    return code is None or str(code).strip().upper() in _WORLDWIDE_ALIASES
+
+
+def country_from_domain(domain: str | None) -> str | None:
+    """The country a company's own website points to (``acme.co.in`` → ``IN``,
+    ``acme.co.uk`` → ``GB``); None for .com / .net and generic ccTLDs."""
+    label = (domain or "").lower().rstrip(".").rsplit(".", 1)[-1]
+    if len(label) != 2 or not label.isalpha() or label in _GENERIC_CCTLDS:
+        return None
+    return "GB" if label == "uk" else label.upper()
+
+
 def iso3(code: Any) -> str | None:
     if not code:
         return None
@@ -906,6 +926,9 @@ _NOT_A_COMPANY_DOMAINS = (
     "chemicalbook.", "tradologie.", "tradeling.", "cbi.eu", "world-grain.", "sio365.", "needsinfo.",
     "uswheat.org", "kswheat.", "indianspices.com", "hazchem.", "chemicalsuppliers.", "exportgenius.",
     "connect2india.", "seair.", "eximpedia.", "importyeti.", "panjiva.", "bizvibe.", "ensun.",
+    # research publishers / market-data sites (2026-11-06 glycerol scan)
+    "intechopen.", "isimarkets.", "researchgate.", "sciencedirect.", "springer.", "mdpi.",
+    "ceicdata.", "mordorintelligence.", "grandviewresearch.", "imarcgroup.",
 )
 _NOT_A_COMPANY_NAME = re.compile(
     r"\b(association|council|federation|directory|marketplace|chamber|ministry|list of|"
@@ -944,15 +967,25 @@ def _domain_label(row: dict[str, Any]) -> str:
     return domain.split(".")[0] if domain else ""
 
 
+_LEGAL_WORDS = frozenset({"ltd", "limited", "pvt", "private", "llc", "inc", "corp", "gmbh", "fze", "fzco",
+                          "fzc", "llp", "co", "s", "l", "sl", "sa", "the", "and", "of"})
+
+
 def _names_the_site(name: str, label: str) -> bool:
-    """True when a title is the company's name, not a product or page heading:
-    it carries a legal form (Ltd, LLC, GmbH…) or shares a word with the domain
-    ("Pepperia Spices" on pepperiaexports.com; "Black Pepper" on biova.de is not)."""
-    if _LEGAL_SUFFIX.search(name):
-        return True
+    """True when a name is the site owner's: it shares a word with the domain
+    ("Pepperia Spices" on pepperiaexports.com; "Black Pepper" on biova.de is not) or
+    its initials are the domain ("Hindustan Unilever Ltd" on hul.co.in). Without a
+    domain to compare, a legal form (Ltd, LLC, GmbH…) is enough. A legal name that
+    names someone else — a client listed on the page ("Gas Authority of India Ltd"
+    on magellanium.com) — is not the company."""
     squashed = re.sub(r"[^a-z0-9]", "", label.lower())
-    words = [w for w in re.findall(r"[a-z0-9]+", name.lower()) if len(w) >= 4]
-    return bool(squashed) and any(w in squashed for w in words)
+    if not squashed:
+        return bool(_LEGAL_SUFFIX.search(name))
+    words = re.findall(r"[a-z0-9]+", name.lower())
+    if any(len(w) >= 4 and w in squashed for w in words):
+        return True
+    initials = "".join(w[0] for w in words if w not in _LEGAL_WORDS)
+    return len(initials) >= 2 and squashed.startswith(initials)
 
 
 def _company_name(row: dict[str, Any]) -> str:
@@ -961,16 +994,46 @@ def _company_name(row: dict[str, Any]) -> str:
     label = _domain_label(row)
     legal = _clean_name(row.get("legal_name") or "")
     legal = re.sub(r"^(?:ltd|limited|llc|inc)\.?,\s*", "", legal, flags=re.IGNORECASE)
-    if legal and not _PRODUCT_TITLE.search(legal) and len(legal) <= 80 and (
-            _LEGAL_SUFFIX.search(legal) or _names_the_site(legal, label)):
+    # "There are many chemical manufacturers in the UAE. Hazchem Chemicals LLC" → the last sentence
+    sentences = re.split(r"(?<=\w)\.\s+(?=[A-Z])", legal)
+    if len(sentences) > 1 and len(sentences[0].split()) >= 5:  # not "Pvt. Ltd"
+        legal = sentences[-1].strip()
+    if legal and not _PRODUCT_TITLE.search(legal) and len(legal) <= 80 and _names_the_site(legal, label):
         return legal
     title = (row.get("name") or "").strip()
-    head = _clean_name(re.split(r"\s+[|:–—-]\s+|:\s+|\s+\|\s*", title, maxsplit=1)[0])
+    head = "" if re.match(r"^https?://", title) else \
+        _clean_name(re.split(r"\s+[|:–—-]\s+|:\s+|\s+\|\s*", title, maxsplit=1)[0])
     if _usable(head) and _names_the_site(head, label):
         return head
     if label:
         return label.replace("-", " ").title()
     return head or title
+
+
+def _not_a_company(row: dict[str, Any]) -> bool:
+    """A directory, marketplace, association, publisher or article — not a buyer/seller."""
+    domain = (row.get("domain") or "").lower()
+    title = row.get("page_title") if "page_title" in row else row.get("name")
+    return any(bad in domain for bad in _NOT_A_COMPANY_DOMAINS) or bool(_NOT_A_COMPANY_NAME.search(title or ""))
+
+
+def refine_companies(companies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Re-apply the current filters and name cleanup to company-search rows.
+
+    The search output is cached for days (trade-min api_cache); running the rows
+    through this on every read means a filter or name fix applies to cached scans
+    too, not only to the next paid actor run."""
+    out: list[dict[str, Any]] = []
+    for c in companies or []:
+        if not isinstance(c, dict) or _not_a_company(c):
+            continue
+        row = dict(c)
+        if "page_title" in row:  # quote() kept the page title in page_title; name is ours
+            row["company_name"] = _company_name({**row, "name": row.get("page_title")})
+        else:
+            row["company_name"] = _company_name(row)
+        out.append(row)
+    return out
 
 
 class ApifyCompanySearchConnector(ApifyActorConnector):
@@ -1000,13 +1063,16 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
 
     @classmethod
     def build_queries(cls, keyword: str, countries: list[str], role: str) -> list[str]:
+        """``"<keyword> <term>, CC"`` per country; ``ALL`` (``WORLDWIDE``) → the line
+        without a country, a worldwide search."""
         terms = cls._SUPPLIER_TERMS if role == "supplier" else cls._BUYER_TERMS
-        lines = []
+        lines: list[str] = []
         for cc in countries:
-            code = iso2(cc)
-            if code:
+            if is_worldwide(cc):
+                lines.extend(f"{keyword} {t}" for t in terms)
+            elif code := iso2(cc):
                 lines.extend(f"{keyword} {t}, {code}" for t in terms)
-        return lines
+        return list(dict.fromkeys(lines))
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
         role = "supplier" if request.get("role") == "supplier" else "buyer"
@@ -1017,6 +1083,7 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
         if not queries:
             raise ValueError("apify_company_search: queries (or keyword + countries) required")
         per_query = max(1, min(int(request.get("max_results") or 5), 20))
+        india_only = all(q.rstrip().upper().endswith(", IN") for q in queries)
         actor_input: dict[str, Any] = {
             **self._common_input(len(queries) * per_query),
             "sourceMode": "live",
@@ -1026,6 +1093,8 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
                 "PortLess is an Indian merchant exporter. We want overseas importers / distributors "
                 "that buy this product (buyers)." if role == "buyer" else
                 "PortLess is an Indian merchant exporter. We want Indian manufacturers / exporters "
+                "that make and ship this product (suppliers)." if india_only else
+                "PortLess is a merchant exporter. We want manufacturers / exporters, in any country, "
                 "that make and ship this product (suppliers)."
             ),
             "minScore": int(request.get("min_score", 30)),
@@ -1042,12 +1111,14 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
             domain = (c.get("domain") or "").lower()
             if c["not_found"] or not (c.get("email") or c.get("phone")):
                 continue
-            if any(bad in domain for bad in _NOT_A_COMPANY_DOMAINS) or _NOT_A_COMPANY_NAME.search(c.get("name") or ""):
+            if _not_a_company(c):
                 continue
             key = domain or (c.get("name") or "").lower()
             if key in seen:
                 continue
             seen.add(key)
+            if not c.get("country"):  # a worldwide line: the site's own ccTLD, when it has one
+                c["country"] = country_from_domain(domain)
             found_by = str(r.get("foundBy") or "")
             c.update({
                 "company_name": _company_name(c),

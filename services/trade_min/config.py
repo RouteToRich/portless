@@ -83,6 +83,10 @@ class TradeMinConfig:
     # Upper bound on opportunities returned per single scan.
     max_per_scan: int = 50
 
+    # Company websites per line of the worldwide buyer / supplier search
+    # (ScanRequest.worldwide_search — the console's "Worldwide" toggle).
+    worldwide_search_max_results: int = 10
+
     # Demand index at which a market is considered a "demand surge" (0–100).
     demand_surge_threshold: float = 40.0
 

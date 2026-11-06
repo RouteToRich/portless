@@ -131,16 +131,36 @@ class TestOutreachFlow:
     @pytest.mark.asyncio
     async def test_send_outreach_marks_candidate_contacted(self, deals_repo):
         await deals_repo.save(_deal(candidates=[_cand("a", "a@x.de")]))
-        send = AsyncMock(return_value=SimpleNamespace(outcome=SimpleNamespace(value="logged")))
+        send = AsyncMock(return_value=SimpleNamespace(outcome=SimpleNamespace(value="sent")))
         with patch("services.email_gateway.sender.send_email", new=send):
             res = await outreach.send_outreach("DEAL-OUT-1", "a", "a@x.de", "Subj [BUY:DEAL-OUT-1:a]", "Body")
         req = send.await_args.args[0]
         assert req.to_address == "a@x.de" and req.negotiation_id == "" and req.email_id == res["email_id"]
+        assert res["delivered"] is True
         deal = await deals_repo.get("DEAL-OUT-1")
         assert deal.buyer_candidates[0].status == "contacted" and deal.buyer_candidates[0].contacted_at is not None
 
     @pytest.mark.asyncio
-    async def test_interested_reply_sets_buyer_party_and_resumes_negotiation(self, deals_repo, published):
+    async def test_logged_only_email_is_not_contacted_and_can_be_retried(self, deals_repo):
+        """No mailbox → the e-mail is only logged: the candidate stays pending with
+        the reason, and the next start_outreach opens a fresh gate for it."""
+        await deals_repo.save(_deal(candidates=[_cand("a", "a@x.de")]))
+        send = AsyncMock(return_value=SimpleNamespace(outcome=SimpleNamespace(value="logged")))
+        with patch("services.email_gateway.sender.send_email", new=send):
+            res = await outreach.send_outreach("DEAL-OUT-1", "a", "a@x.de", "Subj", "Body")
+        assert res["delivered"] is False
+        deal = await deals_repo.get("DEAL-OUT-1")
+        cand = deal.buyer_candidates[0]
+        assert cand.status == "pending" and cand.contacted_at is None
+        assert "no outbound mailbox" in cand.send_error and cand.send_attempts == 1
+        gate = AsyncMock(return_value=SimpleNamespace(approval_id="APPR-2"))
+        with patch("services.hitl_approval.service.create_approval", new=gate):
+            assert await outreach.start_outreach(deal) == 1
+        assert gate.await_args.args[0].idempotency_key == "outreach-intro-DEAL-OUT-1-a-a1"
+
+    @pytest.mark.asyncio
+    async def test_interested_reply_sets_buyer_party_and_resumes_negotiation(self, deals_repo, published, monkeypatch):
+        monkeypatch.setenv("MATCHMAKING_ENABLED", "false")  # legacy: first "yes" becomes the buyer
         deal = _deal(status=DealStatus.NEGOTIATING, candidates=[_cand("a", "a@x.de", status="contacted", website="x.de")])
         await deals_repo.save(deal)
         neg_repo = AsyncMock()

@@ -328,3 +328,27 @@ async def test_gateway_401_means_invalid_token(monkeypatch):
                         lambda **k: real(transport=httpx.MockTransport(handler), **k))
     assert await identity._ask_gateway("tok-x") is None
     assert seen == {"auth": "Bearer tok-x", "url": "https://gateway.test/auth/me"}
+
+
+@pytest.mark.asyncio
+async def test_staff_first_seen_before_the_allowlist_is_moved_to_the_portless_org():
+    """A staff address added to AUTH_PORTLESS_EMAILS after its first sign-in has a
+    record without an organization; creating a deal then had no org (500)."""
+    import services.auth.service as auth_service
+    from services.auth.organization import PORTLESS_ORG_ID
+    from shared.auth.identity import Identity
+
+    users = InMemoryUserRepository()
+    await users.create(UserRecord(user_id="USR-LATE", email="late@portless.io", name="Late Staff",
+                                  account_id=PORTLESS_ACCOUNT, org_id=None,
+                                  created_at=datetime.now(timezone.utc)))
+    saved_repo, saved_emails = auth_service.get_repository, auth_settings.portless_emails_raw
+    auth_service.get_repository = lambda: users
+    auth_settings.portless_emails_raw = "late@portless.io"
+    try:
+        rec = await auth_service.user_for_identity(
+            Identity(user_id="USR-LATE", email="late@portless.io", name="Late Staff", account_id=PORTLESS_ACCOUNT))
+        assert rec.org_id == PORTLESS_ORG_ID
+        assert (await users.get_by_id("USR-LATE")).org_id == PORTLESS_ORG_ID
+    finally:
+        auth_service.get_repository, auth_settings.portless_emails_raw = saved_repo, saved_emails

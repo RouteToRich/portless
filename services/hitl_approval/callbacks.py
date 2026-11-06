@@ -99,6 +99,31 @@ async def _cb_send_buyer_outreach(deal_id: str, payload: dict[str, Any]) -> dict
     )
 
 
+async def _cb_send_indicative_offer(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Send the buyer the indicative price range (match board price discovery)."""
+    from shared.orchestration.matchmaking import send_indicative_offer
+
+    if payload.get("modified_body"):
+        payload = {**payload, "body": payload["modified_body"]}
+    return await send_indicative_offer(deal_id, payload)
+
+
+async def _cb_confirm_match(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """The confirmed buyer × supplier pair becomes the deal (MATCHING → NEGOTIATING)."""
+    from shared.orchestration.matchmaking import confirm_match
+
+    return await confirm_match(deal_id, payload)
+
+
+async def _rcb_confirm_match(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Operator did not take the proposed pair — the prospect stays open and the
+    decision feeds the outcome tracker (operator agreement)."""
+    from shared.orchestration import outcomes
+
+    await outcomes.mark_decision(deal_id, payload.get("candidate_id", ""), payload.get("offer_id", ""), "rejected")
+    return {"deal_id": deal_id, "status": "declined"}
+
+
 async def _rcb_send_buyer_outreach(deal_id: str, payload: dict[str, Any]) -> dict | None:
     """Operator declined to contact this buyer → skip to the next candidate."""
     from shared.orchestration.outreach import skip_candidate
@@ -328,6 +353,8 @@ _CALLBACK_MAP = {
     "CONFIRM_COUNTERPARTY_RISK": _cb_confirm_counterparty_risk,
     "CONFIRM_BUYER_ACCEPTANCE": _cb_confirm_buyer_acceptance,
     "SEND_BUYER_OUTREACH": _cb_send_buyer_outreach,
+    "SEND_INDICATIVE_OFFER": _cb_send_indicative_offer,
+    "CONFIRM_MATCH": _cb_confirm_match,
 }
 
 
@@ -397,6 +424,9 @@ _REJECT_CALLBACK_MAP = {
     "CONFIRM_BUYER_ACCEPTANCE": _rcb_log_only,
     # Operator does not want this buyer contacted — move to the next candidate.
     "SEND_BUYER_OUTREACH": _rcb_send_buyer_outreach,
+    # Prospect stays open: no offer sent / pair not taken — the board keeps the rest.
+    "SEND_INDICATIVE_OFFER": _rcb_log_only,
+    "CONFIRM_MATCH": _rcb_confirm_match,
 }
 
 SOFT_REJECT_ACTIONS: frozenset[str] = frozenset(_REJECT_CALLBACK_MAP)

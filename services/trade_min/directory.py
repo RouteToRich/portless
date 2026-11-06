@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 # Placeholder buyers some sources emit without a name or a contact.
 _PLACEHOLDER = re.compile(r"^(alibaba buyer|eu institution|unknown)\b", re.IGNORECASE)
 _MAX_LIST = 50  # cap on hs_codes / markets / opportunity_ids kept per record
+# Outcome of the worldwide search (not a corridor) — never replaces a corridor's outcome.
+WORLDWIDE_OUTCOME = "found by the worldwide search (not tied to a scanned market)"
 
 
 def _domain(url: str | None) -> str:
@@ -67,7 +69,8 @@ def _merge(old: CounterpartyRecord | None, new: CounterpartyRecord) -> Counterpa
         hs_codes=_union(old.hs_codes, new.hs_codes),
         markets=_union(old.markets, new.markets),
         opportunity_ids=_union(old.opportunity_ids, new.opportunity_ids),
-        last_outcome=new.last_outcome or old.last_outcome,
+        last_outcome=(old.last_outcome if new.last_outcome == WORLDWIDE_OUTCOME and old.last_outcome
+                      else new.last_outcome or old.last_outcome),
         times_seen=old.times_seen + 1,
         last_seen_at=new.last_seen_at,
     )
@@ -88,8 +91,10 @@ class InMemoryDirectory:
         return merged
 
     async def list(self, role: str, *, hs_code: str | None = None, market: str | None = None,
-                   q: str | None = None, limit: int = 200) -> list[CounterpartyRecord]:
-        rows = [r for r in self._store.values() if r.role == role and _matches(r, hs_code, market, q)]
+                   q: str | None = None, country: str | None = None,
+                   limit: int = 200) -> list[CounterpartyRecord]:
+        rows = [r for r in self._store.values()
+                if r.role == role and _matches(r, hs_code, market, q, country)]
         rows.sort(key=lambda r: r.last_seen_at, reverse=True)
         return rows[:limit]
 
@@ -117,8 +122,11 @@ class MongoDirectory:
         return merged
 
     async def list(self, role: str, *, hs_code: str | None = None, market: str | None = None,
-                   q: str | None = None, limit: int = 200) -> list[CounterpartyRecord]:
+                   q: str | None = None, country: str | None = None,
+                   limit: int = 200) -> list[CounterpartyRecord]:
         query: dict[str, Any] = {"role": role}
+        if country:
+            query["country"] = country.upper()
         if hs_code:
             query["hs_codes"] = hs_code
         if market:
@@ -139,7 +147,10 @@ class MongoDirectory:
         await self._col.delete_many({})
 
 
-def _matches(r: CounterpartyRecord, hs_code: str | None, market: str | None, q: str | None) -> bool:
+def _matches(r: CounterpartyRecord, hs_code: str | None, market: str | None, q: str | None,
+             country: str | None = None) -> bool:
+    if country and (r.country or "").upper() != country.upper():
+        return False
     if hs_code and hs_code not in r.hs_codes:
         return False
     if market and market.upper() not in r.markets:
@@ -196,7 +207,7 @@ def _buyer_record(b: BuyerSignal, hs_code: str, market: str, outcome: str,
         role="buyer", name=name, country=(b.buyer_country or market or "").upper() or None,
         email=b.email, phone=b.phone, website=b.website, address=b.address, contact_url=b.contact_url,
         source=b.source, sources=[b.source], fit_score=b.fit_score, fit_reason=b.fit_reason,
-        hs_codes=[hs_code], markets=[market.upper()],  # the corridor scanned; country is their own
+        hs_codes=[hs_code], markets=[market.upper()] if market else [],  # the corridor scanned
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now,
     )
@@ -209,11 +220,11 @@ def _supplier_record(s: SellerCandidate, hs_code: str, market: str, outcome: str
         return None
     return CounterpartyRecord(
         id=record_key("supplier", name, s.website),
-        role="supplier", name=name, country="IN",
+        role="supplier", name=name, country=(s.country or "").upper() or None,
         email=s.email, phone=s.phone, website=s.website, contact_url=s.listing_url,
         source=s.source, sources=[s.source], fit_score=s.fit_score,
         gstin=s.gstin, iec=s.iec, estimated_fob_price_usd=s.estimated_fob_price_usd,
-        hs_codes=[hs_code], markets=[market.upper()],
+        hs_codes=[hs_code], markets=[market.upper()] if market else [],
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now,
     )

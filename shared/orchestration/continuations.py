@@ -90,7 +90,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_QUANTITY_MT = 25.0
 _DEFAULT_PAYMENT_TERMS = "30% advance + 70% on BL"
-_RFQ_MAX_SUPPLIERS = 3
+_RFQ_MAX_SUPPLIERS = int(os.getenv("RFQ_MAX_SUPPLIERS", "5") or 5)
+"""Suppliers asked for a quote per prospect — more quotes give the match board
+real prices to pair (and feed the price book)."""
 
 
 def _enabled() -> bool:
@@ -472,7 +474,31 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
                 })
         except Exception as exc:  # noqa: BLE001
             logger.warning("Continuation[RFQ]: match seed lookup failed for %s: %s", deal.deal_id, exc)
-    return [c for c in out if c.get("supplier_id")][:_RFQ_MAX_SUPPLIERS]
+    out = [c for c in out if c.get("supplier_id")]
+    return (await _rank_for_rfq(deal, out))[:_RFQ_MAX_SUPPLIERS]
+
+
+async def _rank_for_rfq(deal, cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Who gets the RFQ: reachable suppliers first (an RFQ needs an address or a
+    marketplace contact), then a known price inside the price book's supplier
+    band, then any price, then the rest in their original order."""
+    band: tuple[float, float] | None = None
+    try:
+        from shared import pricebook
+        est = await pricebook.estimate(deal.hs_code, "supplier", market=getattr(deal, "market", None))
+        if est.p25 and est.p75:
+            band = (est.p25 * 0.9, est.p75 * 1.1)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Continuation[RFQ]: no price-book band for %s: %s", deal.deal_id, exc)
+
+    def key(item: tuple[int, dict[str, Any]]) -> tuple:
+        i, c = item
+        reachable = bool(c.get("email") or c.get("contact_id"))
+        fob = c.get("fob_price_usd")
+        in_band = bool(fob and band and band[0] <= float(fob) <= band[1])
+        return (not reachable, not in_band, not fob, i)
+
+    return [c for _, c in sorted(enumerate(cands), key=key)]
 
 
 async def _ensure_buyer_target(deal, candidates: list[dict[str, Any]]) -> float | None:
@@ -603,6 +629,14 @@ async def on_quote_received(event: DomainEvent) -> None:
         return
     deal_id = event.deal_id
     payload = event.payload or {}
+    from shared.orchestration import matchmaking
+    if matchmaking.enabled():
+        # Prospect matching: the quote is now an offer on the match board — score
+        # every buyer × supplier pair and open the next gate (confirm match /
+        # indicative offer) instead of picking this supplier on its own.
+        if await _get_deal_in_status(deal_id, "MATCHING", "QUOTE_RECEIVED→MATCH") is not None:
+            await _best_effort("QUOTE_RECEIVED→MATCH", deal_id, matchmaking.evaluate(deal_id))
+        return
     if payload.get("re_scored_decision") == "SOURCE":
         return  # receive_quote transitioned the deal itself
     deal = await _get_deal_in_status(deal_id, "MATCHING", "QUOTE_RECEIVED→SELECT")
@@ -895,6 +929,15 @@ async def on_negotiation_agreed(event: DomainEvent) -> None:
     if deal is None:
         return
     _, quantity_mt = await _negotiation_numbers(deal_id, deal)
+    try:  # an agreed price is the strongest buyer-side evidence the price book gets
+        from shared import pricebook
+        await pricebook.record(pricebook.PriceObservation(
+            hs_code=deal.hs_code, side="buyer", kind="buyer_agreed", market=deal.market,
+            price_usd_per_mt=float(agreed_price), quantity_mt=quantity_mt, deal_id=deal_id,
+            note="negotiation agreed price",
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Price book: agreed price not recorded for %s: %s", deal_id, exc)
 
     # Know who you are invoicing: a Proforma Invoice never goes to a buyer the
     # sanctions / registry screening has not cleared. Re-screen when the last

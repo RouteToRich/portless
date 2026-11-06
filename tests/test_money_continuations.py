@@ -359,7 +359,7 @@ class TestRfqByEmail:
     async def test_dispatch_emails_supplier_with_token(self):
         from services.sourcing.schemas import RfqRequest, SupplierRef
         from services.sourcing.service import dispatch_rfq
-        send = AsyncMock(return_value=SimpleNamespace(outcome="logged", message_id="<m1@portless.io>"))
+        send = AsyncMock(return_value=SimpleNamespace(outcome="sent", message_id="<m1@portless.io>"))
         with (
             patch("services.email_gateway.sender.send_email", new=send),
             patch("services.sourcing.service._emit_event", new=AsyncMock()),
@@ -373,6 +373,25 @@ class TestRfqByEmail:
         assert res.dispatch_results[0].email == "sales@kerala.in"
         sent = send.await_args.args[0]
         assert f"[RFQ:{res.rfq_id}]" in sent.subject and sent.to_address == "sales@kerala.in"
+
+    @pytest.mark.asyncio
+    async def test_logged_only_rfq_is_not_a_dispatch(self):
+        """No mailbox configured: the RFQ is written to the log, not delivered —
+        the dispatch says so instead of claiming success."""
+        from services.sourcing.schemas import RfqRequest, SupplierRef
+        from services.sourcing.service import dispatch_rfq
+        with (
+            patch("services.email_gateway.sender.send_email",
+                  new=AsyncMock(return_value=SimpleNamespace(outcome="logged", message_id=""))),
+            patch("services.sourcing.service._emit_event", new=AsyncMock()),
+        ):
+            res = await dispatch_rfq(RfqRequest(
+                deal_id="DEAL-1", hs_code="090422", quantity_mt=25.0,
+                suppliers=[SupplierRef(supplier_id="SUP-1", source="other", email="sales@kerala.in")],
+            ))
+        d = res.dispatch_results[0]
+        assert res.status == "FAILED" and d.success is False and d.channel == "email"
+        assert d.email == "sales@kerala.in" and "no outbound mailbox" in d.error
 
     @pytest.mark.asyncio
     async def test_reply_maps_to_rfq_and_records_quote(self):

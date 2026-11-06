@@ -151,6 +151,13 @@ class QuoteIntakeRequest(BaseModel):
     lead_time_days: int | None = None
     payment_terms: str | None = None
 
+    # Offer details the match board scores on (read from the reply when e-mailed)
+    grade: str | None = None
+    moq_mt: float | None = None
+    capacity_mt_per_month: float | None = None
+    certifications: list[str] = Field(default_factory=list)
+    supplier_email: str | None = None
+
     # Regulatory credentials (optional but strongly recommended)
     gstin: str | None = None
     iec_number: str | None = None

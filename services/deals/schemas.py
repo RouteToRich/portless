@@ -48,6 +48,78 @@ class MatchResult(BaseModel):
     the supplier actor) — the reliability input the Match Engine lacked."""
 
 
+class BuyerRequirement(BaseModel):
+    """What one buyer wants — read from their reply (LLM gateway, regex fallback)
+    or entered by an operator. Every field is optional: buyers reveal it bit by
+    bit, and the match board shows what is still missing."""
+
+    grade: str | None = None
+    """Grade / specification ("USP 99.7%", "refined", "ASTA 500 bold")."""
+    packaging: str | None = None
+    quantity_mt: float | None = None
+    delivery_window: str | None = None
+    """Free text as the buyer wrote it ("March", "within 6 weeks")."""
+    delivery_by_days: int | None = None
+    """Days from now the goods must arrive, when the window could be read as a number."""
+    incoterm: str | None = None
+    destination_port: str | None = None
+    target_price_usd_per_mt: float | None = None
+    target_price_incoterm: str | None = None
+    target_price_basis: Literal["stated", "counter", "accepted_offer"] | None = None
+    """How we know the price: they named it, countered our indicative offer, or accepted it."""
+    certifications: list[str] = Field(default_factory=list)
+    payment_terms: str | None = None
+    notes: str | None = None
+    source: str | None = None
+    """``email`` (extracted from a reply) | ``operator``."""
+    confidence: float | None = None
+    updated_at: datetime | None = None
+
+
+class IndicativeOffer(BaseModel):
+    """A price range PortLess sent a buyer (SEND_INDICATIVE_OFFER gate) to learn
+    what they will pay — their reaction is the price discovery."""
+
+    offer_id: str
+    """The supplier offer the range was built from."""
+    price_low_usd_per_mt: float
+    price_high_usd_per_mt: float
+    incoterm: str = "CIF"
+    destination_port: str | None = None
+    quantity_mt: float | None = None
+    sent_at: datetime | None = None
+    response: Literal["accepted", "countered", "declined"] | None = None
+    responded_at: datetime | None = None
+
+
+class SupplierOffer(BaseModel):
+    """What one supplier offers — from a quote (RFQ reply / portal) or an operator."""
+
+    offer_id: str
+    supplier_id: str
+    company_name: str = ""
+    email: str | None = None
+    grade: str | None = None
+    fob_price_usd_per_mt: float | None = None
+    moq_mt: float | None = None
+    capacity_mt_per_month: float | None = None
+    lead_time_days: int | None = None
+    port_of_loading: str | None = None
+    certifications: list[str] = Field(default_factory=list)
+    payment_terms: str | None = None
+    validity_days: int | None = None
+    gst_verified: bool | None = None
+    iec_active: bool | None = None
+    verification_failed: bool = False
+    """GST inactive / IEC inactive / DGFT denied — never matched."""
+    quote_id: str | None = None
+    source: str | None = None
+    """``quote`` | ``operator``."""
+    origin_deal_id: str | None = None
+    """The prospect the quote came in on (offers are matched across prospects of the same HS code)."""
+    received_at: datetime | None = None
+
+
 class BuyerCandidate(BaseModel):
     """One buyer the scan identified for this deal — the outreach funnel works
     through them in order until one is interested (see
@@ -69,6 +141,14 @@ class BuyerCandidate(BaseModel):
     replied_at: datetime | None = None
     reply_preview: str | None = None
     email_id: str | None = None
+    send_error: str | None = None
+    """Why the last e-mail to this candidate did not go out (e.g. no mailbox configured)."""
+    send_attempts: int = 0
+    requirement: BuyerRequirement | None = None
+    """What this buyer wants (grade, quantity, port, target price…) — the match board's buyer side."""
+    indicative_offer: IndicativeOffer | None = None
+    reply_address: str | None = None
+    """The address the buyer actually replied from (becomes the buyer party's e-mail)."""
 
 
 class StatusHistoryEntry(BaseModel):
@@ -131,6 +211,10 @@ class DealRecord(BaseModel):
     pipeline default applies when None."""
     buyer_candidates: list[BuyerCandidate] = Field(default_factory=list)
     """Buyer outreach funnel: every buyer the scan identified, in contact order."""
+    supplier_offers: list[SupplierOffer] = Field(default_factory=list)
+    """Supplier side of the match board: every quote received on this prospect."""
+    selected_pair: dict[str, Any] | None = None
+    """The buyer × supplier pair confirmed at CONFIRM_MATCH (prospect → deal), with its scores."""
 
     # ── Financial ─────────────────────────────────────────────────────────
     margin_floor_pct: float | None = None

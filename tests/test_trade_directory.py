@@ -122,7 +122,139 @@ class TestNoSimulation:
         assert "simulated" not in get_args(DataSource)
 
 
+class TestWorldwide:
+    def test_worldwide_lines_have_no_country_and_cctld_gives_the_country(self):
+        from shared.connectors.apify import WORLDWIDE, ApifyCompanySearchConnector, country_from_domain
+        assert ApifyCompanySearchConnector.build_queries("rice", [WORLDWIDE, "IN"], "supplier") == [
+            "rice exporter", "rice manufacturer", "rice exporter, IN", "rice manufacturer, IN"]
+        assert country_from_domain("acme.co.in") == "IN"
+        assert country_from_domain("acme.co.uk") == "GB"
+        assert country_from_domain("acme.de") == "DE"
+        assert country_from_domain("acme.com") is None and country_from_domain("acme.io") is None
+
+    @pytest.mark.asyncio
+    async def test_worldwide_search_records_every_country_without_a_market(self):
+        calls = []
+
+        async def fake_quote(name, req):
+            calls.append(req)
+            if req["role"] == "buyer":
+                return {"companies": [{"company_name": "Hamburg Reis GmbH", "country": "DE",
+                                       "website": "https://reis.de", "email": "einkauf@reis.de"}]}
+            return {"companies": [
+                {"company_name": "Thai Rice Co", "country": "TH", "website": "https://thairice.co.th",
+                 "email": "sales@thairice.co.th"},
+                {"company_name": "Global Rice", "country": None, "website": "https://globalrice.com",
+                 "email": "info@globalrice.com"},
+            ]}
+
+        with patch.object(svc, "_safe_quote", fake_quote):
+            await svc._worldwide_counterparties("100630")
+        assert {tuple(r["countries"]) for r in calls} == {("ALL",)}
+        [b] = await directory.list_counterparties("buyer")
+        assert b.country == "DE" and b.markets == [] and b.last_outcome == directory.WORLDWIDE_OUTCOME
+        suppliers = {s.name: s for s in await directory.list_counterparties("supplier")}
+        assert suppliers["Thai Rice Co"].country == "TH" and suppliers["Global Rice"].country is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("on", [True, False])
+    async def test_scan_request_toggle_controls_the_worldwide_search(self, on):
+        from services.trade_min.schemas import ScanRequest
+        searched: list[str] = []
+
+        async def fake_worldwide(hs):
+            searched.append(hs)
+
+        async def no_opp(*a, **k):
+            return None
+
+        with patch.object(svc, "_worldwide_counterparties", fake_worldwide), \
+             patch.object(svc, "_scan_one", no_opp):
+            await svc.scan_opportunities(ScanRequest(hs_codes=["100630", "090411"], target_markets=["AE", "DE"],
+                                                     worldwide_search=on))
+        assert searched == (["100630", "090411"] if on else [])
+
+    @pytest.mark.asyncio
+    async def test_worldwide_outcome_never_replaces_a_corridor_outcome(self):
+        await directory.record_scan("100630", "AE", [_buyer()], [], outcome="opportunity OPP-9",
+                                    opportunity_id="OPP-9")
+        await directory.record_scan("100630", "", [_buyer()], [], outcome=directory.WORLDWIDE_OUTCOME)
+        [b] = await directory.list_counterparties("buyer")
+        assert b.last_outcome == "opportunity OPP-9" and b.markets == ["AE"] and b.times_seen == 2
+
+    @pytest.mark.asyncio
+    async def test_country_filter_india_only(self):
+        foreign = SellerCandidate(candidate_id="thairice", company_name="Thai Rice Co", location_city="",
+                                  location_state="", hs_code="100630", source="apify_company_search",
+                                  website="https://thairice.co.th", country="TH")
+        await directory.record_scan("100630", "AE", [], [_seller(), foreign], outcome="x")
+        assert [s.name for s in await directory.list_counterparties("supplier", country="in")] == ["Jashn Foods"]
+        assert [s.name for s in await directory.list_counterparties("supplier", country="TH")] == ["Thai Rice Co"]
+        assert len(await directory.list_counterparties("supplier")) == 2
+
+    @pytest.mark.asyncio
+    async def test_identical_concurrent_actor_calls_run_once(self):
+        import asyncio
+        runs = 0
+
+        async def slow_quote(name, req):
+            nonlocal runs
+            runs += 1
+            await asyncio.sleep(0.05)
+            return {"companies": []}
+
+        req = {"keyword": "rice", "countries": ["IN"], "role": "supplier", "max_results": 5}
+        with patch.object(svc, "_quote_once", slow_quote):
+            out = await asyncio.gather(*[svc._safe_quote("apify_company_search", dict(req)) for _ in range(5)])
+        assert runs == 1 and all(o == {"companies": []} for o in out)
+
+
+class TestOneOpportunityPerCorridor:
+    @pytest.mark.asyncio
+    async def test_rescan_refreshes_the_open_opportunity_and_lists_it_once(self):
+        from datetime import timedelta
+
+        from services.trade_min import repository
+        from services.trade_min.schemas import EnrichedOpportunity
+        repo = repository.InMemoryFallbackRepository()
+        now = datetime.now(timezone.utc)
+
+        def opp(oid, status="ACTIVE", age_h=0):
+            return EnrichedOpportunity(
+                opportunity_id=oid, hs_code="090422", market="DE", status=status, source="apify_export_markets",
+                scanned_at=now - timedelta(hours=age_h), demand_signals=[], demand_index=60.0,
+                price_gap_pct=20.0, buyer_signals=[], urgency_tier=1, net_price_gap_pct=15.0,
+                tariff_viable=True, seller_candidates=[], arbitrage_rank=50.0, confidence_score=60,
+                expires_at=now + timedelta(days=7))
+
+        async def get_repo():
+            return repo
+
+        with patch.object(svc, "get_repository", get_repo):
+            assert (await svc._opportunity_id_for("090422", "DE")).startswith("OPP-")   # nothing yet → new id
+            await repo.save(opp("OPP-OLD", age_h=5))
+            await repo.save(opp("OPP-NEW", age_h=1))                                    # legacy duplicate
+            assert await svc._opportunity_id_for("090422", "DE") == "OPP-NEW"
+            assert [o.opportunity_id for o in await svc.list_opportunities()] == ["OPP-NEW"]
+            await repo.mark_converted("OPP-NEW")
+            await repo.mark_converted("OPP-OLD")
+            assert await svc._opportunity_id_for("090422", "DE") not in ("OPP-NEW", "OPP-OLD")
+
+
 class TestEndpoints:
+    def test_supplier_country_filter_endpoint(self):
+        import asyncio
+
+        from services.trade_min.main import create_app
+        foreign = SellerCandidate(candidate_id="thairice", company_name="Thai Rice Co", location_city="",
+                                  location_state="", hs_code="100630", source="apify_company_search",
+                                  website="https://thairice.co.th", country="TH")
+        asyncio.run(directory.record_scan("100630", "AE", [], [_seller(), foreign], outcome="x"))
+        with TestClient(create_app()) as client:
+            india = client.get("/trade-min/suppliers", params={"country": "IN"}).json()
+            everyone = client.get("/trade-min/suppliers").json()
+        assert [s["name"] for s in india] == ["Jashn Foods"] and len(everyone) == 2
+
     def test_buyers_and_suppliers_endpoints(self):
         import asyncio
 

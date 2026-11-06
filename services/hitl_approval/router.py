@@ -89,6 +89,24 @@ def _policy_view() -> dict[str, Any]:
     }
 
 
+@router.get("/learning")
+async def api_learning() -> dict:
+    """Feedback loop: calibration of the match board's chance of closing against real
+    outcomes, counterparty track records, indicative-offer acceptance, and the
+    evidence-based recommendation for each prospect gate's autonomy level."""
+    from shared.orchestration import outcomes
+    from shared.orchestration.matchmaking import min_probability
+    rows = await outcomes.all_outcomes()
+    evidence = outcomes.autonomy_evidence(rows, threshold=min_probability())
+    records = outcomes.track_records(rows)
+    return {
+        "evidence": evidence,
+        "offer_pricing": outcomes.offer_pricing(rows),
+        "track_records": dict(sorted(records.items(), key=lambda kv: -kv[1]["deals"])[:50]),
+        "recent": [o.model_dump(mode="json") for o in rows[:25]],
+    }
+
+
 @router.get("/autonomy-policy")
 async def api_get_autonomy_policy() -> dict[str, Any]:
     """Effective autonomy level, L1 timeout, timeout default and value threshold

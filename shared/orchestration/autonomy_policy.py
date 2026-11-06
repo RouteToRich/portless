@@ -104,6 +104,18 @@ ACTION_CLASSES: tuple[ActionClass, ...] = (
         default="L2", default_timeout_seconds=_DAY, default_on_timeout="APPROVE",
     ),
     ActionClass(
+        "SEND_INDICATIVE_OFFER", "Indicative Offers",
+        "Send an interested buyer a price range built from a supplier's quote + landed cost + "
+        "margin floor, so their reaction (accept / counter) reveals what they will pay.",
+        default="L0",
+    ),
+    ActionClass(
+        "CONFIRM_MATCH", "Match Confirmation",
+        "The match board's best buyer × supplier pair has firm prices and a high enough chance "
+        "of closing — confirm it and the prospect becomes a deal (negotiation opens).",
+        default="L0",
+    ),
+    ActionClass(
         "CONFIRM_SUPPLIER_SELECTION", "Supplier Selection",
         "Confirm a supplier the Match Engine did not auto-SOURCE (thin data / "
         "verification gap / re-match after a failed negotiation). A GST+IEC-verified "
