@@ -18,7 +18,10 @@ dependencies = [
     "PyJWT>=2.8",
     "motor>=3.3",
     "apscheduler>=3.10",
-    "nats-py[nkeys]>=2.9",
+    # No [nkeys] extra here: nkeys ships no wheel and Vercel refuses source
+    # builds. It is only needed for NATS *.creds sign-in (Docker installs
+    # requirements.txt, which keeps it); serverless runs the in-process bus.
+    "nats-py>=2.9",
     "jinja2>=3.1",
     "langgraph>=0.1,<1.0",
     "google-api-python-client>=2.100",
