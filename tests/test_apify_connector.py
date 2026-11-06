@@ -142,7 +142,8 @@ class TestNormalisers:
         m = out["markets"][0]
         assert m["market"] == "DE" and m["unit_value_usd_per_mt"] == 4200.0
         assert m["exporter_world_unit_value_usd_per_mt"] == 3500.0
-        assert conn.run.await_args.args[0]["markets"] == ["DEU"]
+        # The deployed actor's markets enum is ISO-2 (ISO-3 → HTTP 400 invalid-input).
+        assert conn.run.await_args.args[0]["markets"] == ["DE"]
         assert conn.run.await_args.args[0]["enableAi"] is False
 
     @pytest.mark.asyncio
@@ -172,6 +173,60 @@ class TestNormalisers:
         assert c1["not_found"] is True
         assert conn.run.await_args.args[0]["companies"] == ["Acme Foods Inc, US", "Ghost GmbH, DE"]
         assert conn.run.await_args.args[0]["includeNotFound"] is True
+
+    @pytest.mark.asyncio
+    async def test_company_search_buyers(self):
+        # Rows shaped like the live company-contact-finder-ai search output (2026-11-06).
+        conn = _rows(ap.ApifyCompanySearchConnector(), [
+            {"name": "Best Wholesale Rice Markets in Dubai", "domain": "alturabfood.com", "inputCountry": "AE",
+             "website": "https://alturabfood.com/", "bestEmail": "purchase@alturabfood.com", "bestEmailStatus": "ok",
+             "phones": [{"number": "+971 4 000"}], "foundBy": "search: basmati rice importers, AE", "score": 80},
+            {"name": "Jashn Foods: Basmati Rice Manufacturers, Suppliers", "domain": "jashnfoods.com",
+             "inputCountry": "AE", "website": "https://www.jashnfoods.com/", "bestEmail": "info@jashnfoods.com"},
+            {"name": "Rice Exporters from India", "legalName": "Rice Master Global Ltd", "domain": "ricemasterglobal.com",
+             "bestEmail": "info@ricemasterglobal.com"},
+            {"name": "Top Rice Exporters in India", "domain": "exportmandi.com", "bestEmail": "x@y.com"},   # directory
+            {"name": "All India Rice Exporters Association", "domain": "rice-assoc.example", "bestEmail": "a@b.c"},
+            {"name": "No Contact Co", "domain": "nocontact.example"},                                        # no e-mail/phone
+            {"name": "Ghost", "notFound": True, "notFoundReason": "site_unreachable"},
+            {"name": "Dup", "domain": "alturabfood.com", "bestEmail": "info@alturabfood.com"},              # duplicate domain
+        ])
+        out = await conn.quote({"keyword": "basmati rice", "countries": ["AE"], "role": "buyer", "max_results": 4})
+        names = [c["company_name"] for c in out["companies"]]
+        assert names == ["Alturabfood", "Jashn Foods", "Rice Master Global Ltd"]
+        first = out["companies"][0]
+        assert first["email"] == "purchase@alturabfood.com" and first["phone"] == "+971 4 000"
+        assert first["role"] == "buyer" and first["query"] == "basmati rice importers, AE"
+        sent = conn.run.await_args.args[0]
+        assert sent["sourceMode"] == "live" and sent["maxSearchResults"] == 4
+        assert sent["searchQuery"] == "basmati rice importers, AE\nbasmati rice wholesale distributors, AE"
+        assert sent["preferRoles"][0] == "purchasing"
+
+    @pytest.mark.parametrize("row,expected", [
+        # real names the live search returned on 2026-11-06
+        ({"legal_name": "88 Motta white Rice 20 KG", "domain": "meridianpf.com"}, "Meridianpf"),
+        ({"legal_name": "21, Warsan 1, Dubai, UAE, PO BOX 455012 Arham Foodstuff Trading L.L.C"},
+         "Arham Foodstuff Trading L.L.C"),
+        ({"name": "Welcome To Indiafeast Millers Private Limited"}, "Indiafeast Millers Private Limited"),
+        ({"legal_name": "Rice Master Global Ltd"}, "Rice Master Global Ltd"),
+        ({"name": "Best Wholesale Rice Markets in Dubai", "domain": "alturabfood.com"}, "Alturabfood"),
+        ({"name": "Agro Factory", "domain": "agro-factory.com"}, "Agro Factory"),
+    ])
+    def test_company_name_cleanup(self, row, expected):
+        assert ap._company_name(row) == expected
+
+    @pytest.mark.asyncio
+    async def test_company_search_suppliers_query(self):
+        conn = _rows(ap.ApifyCompanySearchConnector(), [])
+        await conn.quote({"keyword": "basmati rice", "role": "supplier"})
+        sent = conn.run.await_args.args[0]
+        assert sent["searchQuery"] == "basmati rice exporter, IN\nbasmati rice manufacturer, IN"
+        assert sent["preferRoles"][0] == "export"
+
+    @pytest.mark.asyncio
+    async def test_company_search_requires_queries(self):
+        with pytest.raises(ValueError):
+            await ap.ApifyCompanySearchConnector().quote({"role": "buyer"})
 
     @pytest.mark.asyncio
     async def test_counterparty_check_verdicts(self):
@@ -313,6 +368,76 @@ class TestTradeMinWiring:
         d = describe_sources()
         names = {s["name"] for s in d["sources"]}
         assert {"apify_us_importers", "apify_alibaba_rfq", "apify_export_markets", "apify_india_suppliers",
-                "apify_contact_finder", "apify_counterparty_check", "apify_email_qualifier"} <= names
+                "apify_contact_finder", "apify_company_search", "apify_counterparty_check",
+                "apify_email_qualifier", "apify_carrier_tracking"} <= names
         assert d["apify"]["token_present"] is False
         assert all(s["mode"] in ("live", "stub", "open") for s in d["sources"])
+        by_name = {s["name"]: s for s in d["sources"]}
+        # contact finder and company search share one actor but stay separate entries
+        assert by_name["apify_contact_finder"]["actor"] == by_name["apify_company_search"]["actor"]
+        assert "not used" in by_name["apify_us_importers"]["detail"]
+
+    def test_sources_mark_blocked_actors_stub_even_with_token(self, monkeypatch):
+        from services.trade_min.service import describe_sources
+        monkeypatch.setenv("APIFY_TOKEN", "tok")
+        by_name = {s["name"]: s for s in describe_sources()["sources"]}
+        assert by_name["apify_company_search"]["mode"] == "live"
+        for blocked in ("apify_us_importers", "apify_alibaba_rfq", "apify_india_suppliers"):
+            assert by_name[blocked]["mode"] == "stub"
+
+    @pytest.mark.asyncio
+    async def test_phase2_buyers_come_from_company_search(self):
+        from services.trade_min import service as svc
+        calls: dict[str, dict] = {}
+
+        async def fake_quote(name, req):
+            calls[name] = req
+            if name == "apify_company_search":
+                return {"companies": [{"company_name": "Al Turab Foods", "country": "AE", "domain": "alturabfood.com",
+                                       "website": "https://alturabfood.com/", "email": "purchase@alturabfood.com",
+                                       "phone": "+971 4 000", "fit_score": 80}]}
+            return None
+
+        with patch.object(svc, "_safe_quote", fake_quote):
+            res = await svc._phase2_live_signals("100630", "AE", svc._Phase1Result(), svc.DEFAULT_CONFIG)
+        assert "apify_us_importers" not in calls and "apify_alibaba_rfq" not in calls
+        assert calls["apify_company_search"] == {"keyword": svc._keyword_for("100630"), "countries": ["AE"],
+                                                 "role": "buyer", "max_results": 5}
+        b = res.buyer_signals[0]
+        assert (b.buyer_name, b.email, b.source, b.signal_type) == (
+            "Al Turab Foods", "purchase@alturabfood.com", "apify_company_search", "web_search")
+
+    @pytest.mark.asyncio
+    async def test_no_web_search_for_a_bare_hs_number(self, monkeypatch):
+        from services.trade_min import service as svc
+        calls: list[str] = []
+
+        async def fake_quote(name, req):
+            calls.append(name)
+            return None
+
+        monkeypatch.setattr(svc, "_keyword_for", lambda hs: hs)   # no catalogue / map entry
+        with patch.object(svc, "_safe_quote", fake_quote):
+            await svc._phase2_live_signals("999999", "AE", svc._Phase1Result(), svc.DEFAULT_CONFIG)
+            await svc._phase4_seller_discovery("999999", svc.DEFAULT_CONFIG)
+        assert "apify_company_search" not in calls
+        assert svc._web_searchable("rice") and not svc._web_searchable("100630")
+
+    @pytest.mark.asyncio
+    async def test_phase4_suppliers_come_from_company_search(self):
+        from services.trade_min import service as svc
+        calls: dict[str, dict] = {}
+
+        async def fake_quote(name, req):
+            calls[name] = req
+            if name == "apify_company_search":
+                return {"companies": [{"company_name": "Jashn Foods", "domain": "jashnfoods.com",
+                                       "website": "https://www.jashnfoods.com/", "email": "info@jashnfoods.com"}]}
+            return None
+
+        with patch.object(svc, "_safe_quote", fake_quote):
+            sellers = await svc._phase4_seller_discovery("100630", svc.DEFAULT_CONFIG)
+        assert "apify_india_suppliers" not in calls
+        assert calls["apify_company_search"]["role"] == "supplier"
+        assert (sellers[0].company_name, sellers[0].email, sellers[0].source) == (
+            "Jashn Foods", "info@jashnfoods.com", "apify_company_search")

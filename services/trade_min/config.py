@@ -130,6 +130,9 @@ class TradeMinConfig:
             "apify_export_markets": 7 * _DAY,
             "apify_us_importers":   3 * _DAY,
             "apify_india_suppliers": 7 * _DAY,
+            # Buyer + supplier web search (company-contact-finder-ai): companies
+            # change slowly; one search per product × market × role a week.
+            "apify_company_search": 7 * _DAY,
             "apify_alibaba_rfq":    12 * _HOUR,
         }
     )

@@ -481,7 +481,7 @@ class ApifyUsImporterConnector(ApifyActorConnector):
             raise ValueError("apify_us_importers: hs_code or products required")
         actor_input: dict[str, Any] = {
             **self._common_input(request.get("max_items")),
-            "sourceMode": "actor",
+            "sourceMode": "live",  # the actor's enum is live | dataset | list
             "originCountry": (request.get("origin_country") or "IN").upper(),
             "hsCodes": [hs_code] if hs_code else [],
             "products": products,
@@ -671,7 +671,8 @@ class ApifyExportMarketConnector(ApifyActorConnector):
         }
         actor_input["enableAi"] = bool(request.get("enable_ai", False))  # rules are enough here
         if markets:
-            actor_input["markets"] = [iso3(m) for m in markets]
+            # The actor's markets enum is ISO-2 (US, AE, …), not ISO-3.
+            actor_input["markets"] = [m for m in markets if m]
         comtrade_key = os.getenv("COMTRADE_SUBSCRIPTION_KEY", "").strip()
         if comtrade_key:
             actor_input["comtradeKey"] = comtrade_key
@@ -891,6 +892,148 @@ class ApifyContactFinderConnector(ApifyActorConnector):
             "fit_score": _safe_int(r.get("score")),
             "source_path": r.get("sourcePath"),
         }
+
+
+# Sites that list OTHER companies (directories, marketplaces, associations, news) —
+# a web search for "rice importers, AE" returns them next to real importers.
+_NOT_A_COMPANY_DOMAINS = (
+    "indiamart.", "tradeindia.", "alibaba.", "exportersindia.", "exportmandi.", "justdial.",
+    "yellowpages", "wikipedia.", "linkedin.", "facebook.", "instagram.", "youtube.", "volza.",
+    "zauba", "made-in-china.", "go4worldbusiness.", "kompass.", "dnb.com", "airea.net", "apeda.",
+    "climateactiontracker.", "tradekey.", "ec21.", "globalsources.", "amazon.", "statista.",
+    "reuters.", "economictimes.", "thehindu", "business-standard.", "gov.", "nic.in",
+)
+_NOT_A_COMPANY_NAME = re.compile(
+    r"\b(association|council|federation|directory|marketplace|chamber|ministry|list of|"
+    r"news|price (?:list|today|trend)|market report)\b", re.IGNORECASE)
+# Page titles written for search engines, not company names.
+_SEO_TITLE = re.compile(
+    r"^(?:best|top|leading|current|cheap|buy|premium|wholesale|indian|basmati|rice)\b|"
+    r"\b(?:exporters?|importers?|suppliers?|manufacturers?|traders?|distributors?|wholesalers?|"
+    r"markets?)\b.*\b(?:in|from|to)\b", re.IGNORECASE)
+
+
+# A product listing or pack size, not a company: "88 Motta white Rice 20 KG".
+_PRODUCT_TITLE = re.compile(r"\b\d+\s?(?:kg|kgs|g|gm|lb|lbs|mt|ton|tons)\b", re.IGNORECASE)
+_LEGAL_SUFFIX = re.compile(
+    r"\b(?:l\.?l\.?c|ltd|limited|pvt|private|inc|corp|gmbh|fze|fzco|fzc|llp|trading|co\.)\b", re.IGNORECASE)
+
+
+def _clean_name(text: str) -> str:
+    text = re.sub(r"^\s*welcome\s+to\s+(?:the\s+)?", "", text or "", flags=re.IGNORECASE).strip(" ,.-|")
+    # "21, Warsan 1, Dubai, UAE, PO BOX 455012 Arham Foodstuff Trading L.L.C" → the name after the address
+    if "," in text and re.search(r"\d|p\.?\s?o\.?\s?box", text, re.IGNORECASE):
+        tail = text.rsplit(",", 1)[-1]
+        tail = re.sub(r"^.*?p\.?\s?o\.?\s?box\s*\d+\s*", "", tail, flags=re.IGNORECASE).strip()
+        if _LEGAL_SUFFIX.search(tail) or len(tail.split()) >= 2:
+            text = tail
+    return " ".join(text.split())
+
+
+def _usable(name: str) -> bool:
+    return bool(name) and len(name) <= 60 and not _SEO_TITLE.search(name) and not _PRODUCT_TITLE.search(name)
+
+
+def _company_name(row: dict[str, Any]) -> str:
+    """Legal name when the site states a usable one, else a name from the page title, else the domain."""
+    legal = _clean_name(row.get("legal_name") or "")
+    if _usable(legal) or (legal and _LEGAL_SUFFIX.search(legal) and not _PRODUCT_TITLE.search(legal)):
+        return legal
+    title = (row.get("name") or "").strip()
+    head = _clean_name(re.split(r"\s+[|:–—-]\s+|:\s+|\s+\|\s*", title, maxsplit=1)[0])
+    if _usable(head):
+        return head
+    domain = (row.get("domain") or "").lower().removeprefix("www.")
+    label = domain.split(".")[0] if domain else ""
+    return label.replace("-", " ").title() if label else head or title
+
+
+class ApifyCompanySearchConnector(ApifyActorConnector):
+    """``company-contact-finder-ai`` in SEARCH mode — the buyer AND supplier discovery
+    source that runs on any Apify plan.
+
+    The actor's own Google reader turns "what the companies do, 2-letter country"
+    lines (``rice importers, AE``) into company websites, then reads each site for a
+    checked e-mail, phones, address and VAT id. Unlike us-importer-finder-ai /
+    alibaba-rfq-leads-ai it calls no third-party Store Actor, so it is not blocked by
+    a plan that cannot run public Actors.
+
+    quote(request): ``queries`` = list of ``"what, CC"`` lines (or ``keyword`` +
+    ``countries`` + ``role`` to build them), ``role`` = ``buyer`` | ``supplier``,
+    ``max_results`` = company websites per line. Returns ``{"companies": [...]}`` —
+    the contact-finder row shape plus ``company_name``, ``role``, ``query``.
+    Directories, marketplaces and associations are dropped.
+    """
+
+    name = "apify_company_search"
+    actor_key = "COMPANY_CONTACT_FINDER"
+    default_slug = "company-contact-finder-ai"
+    empty_key = "companies"
+
+    _BUYER_TERMS = ("importers", "wholesale distributors")
+    _SUPPLIER_TERMS = ("exporter", "manufacturer")
+
+    @classmethod
+    def build_queries(cls, keyword: str, countries: list[str], role: str) -> list[str]:
+        terms = cls._SUPPLIER_TERMS if role == "supplier" else cls._BUYER_TERMS
+        lines = []
+        for cc in countries:
+            code = iso2(cc)
+            if code:
+                lines.extend(f"{keyword} {t}, {code}" for t in terms)
+        return lines
+
+    async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
+        role = "supplier" if request.get("role") == "supplier" else "buyer"
+        queries = [q for q in (request.get("queries") or []) if q and str(q).strip()]
+        if not queries and request.get("keyword"):
+            countries = request.get("countries") or (["IN"] if role == "supplier" else [])
+            queries = self.build_queries(str(request["keyword"]).strip(), countries, role)
+        if not queries:
+            raise ValueError("apify_company_search: queries (or keyword + countries) required")
+        per_query = max(1, min(int(request.get("max_results") or 5), 20))
+        actor_input: dict[str, Any] = {
+            **self._common_input(len(queries) * per_query),
+            "sourceMode": "live",
+            "searchQuery": "\n".join(queries),
+            "maxSearchResults": per_query,
+            "goalDescription": request.get("goal") or (
+                "PortLess is an Indian merchant exporter. We want overseas importers / distributors "
+                "that buy this product (buyers)." if role == "buyer" else
+                "PortLess is an Indian merchant exporter. We want Indian manufacturers / exporters "
+                "that make and ship this product (suppliers)."
+            ),
+            "minScore": int(request.get("min_score", 30)),
+            "preferRoles": (["purchasing", "general", "sales"] if role == "buyer"
+                            else ["export", "sales", "general"]),
+        }
+        rows = await self.run(actor_input, max_items=len(queries) * per_query)
+        if not rows and not self.configured:
+            return self._empty()
+        companies: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for r in rows:
+            c = ApifyContactFinderConnector._contact(r)
+            domain = (c.get("domain") or "").lower()
+            if c["not_found"] or not (c.get("email") or c.get("phone")):
+                continue
+            if any(bad in domain for bad in _NOT_A_COMPANY_DOMAINS) or _NOT_A_COMPANY_NAME.search(c.get("name") or ""):
+                continue
+            key = domain or (c.get("name") or "").lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            found_by = str(r.get("foundBy") or "")
+            c.update({
+                "company_name": _company_name(c),
+                "page_title": c.get("name"),
+                "role": role,
+                "query": found_by.removeprefix("search:").strip() or None,
+                "summary": r.get("summary"),
+            })
+            companies.append(c)
+        return {"companies": companies, "total": len(companies), "queries": queries,
+                "actor": self.actor_ref}
 
 
 class ApifyCounterpartyCheckConnector(ApifyActorConnector):
@@ -1145,6 +1288,7 @@ APIFY_CONNECTORS: tuple[type[ApifyActorConnector], ...] = (
     ApifyExportMarketConnector,
     ApifyIndiaSupplierConnector,
     ApifyContactFinderConnector,
+    ApifyCompanySearchConnector,
     ApifyCounterpartyCheckConnector,
     ApifyEmailQualifierConnector,
     ApifyCarrierTrackingConnector,

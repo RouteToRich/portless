@@ -114,9 +114,12 @@ _P1_WEIGHTS: dict[str, float] = {
     "apify_export_markets": 0.40,
 }
 
-# Phase-2 live buyer sources that are PortLess-owned Apify actors. The US
-# importer actor only knows US customs records, so it runs for the US market.
-_APIFY_BUYER_SOURCES = ("apify_alibaba_rfq", "apify_us_importers")
+# Phase-2 named-buyer source: company-contact-finder-ai in search mode
+# ("<product> importers, <market>"). It replaced us-importer-finder-ai and
+# alibaba-rfq-leads-ai, whose data comes from third-party Store Actors that the
+# rich_minds Apify plan cannot run (they finished with 0 rows). Both connectors
+# stay registered for a plan that can run public Actors.
+_APIFY_BUYER_SOURCES = ("apify_company_search",)
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +226,14 @@ def _keyword_for(hs_code: str) -> str:
         pass
     from shared.connectors.trade_intel import _HS_TO_KEYWORD as _HS_KW
     return _HS_KW.get(hs_code[:4], hs_code)
+
+
+def _web_searchable(keyword: str) -> bool:
+    """A web search for "<keyword> importers, AE" only finds companies when the
+    keyword is a product name — a bare HS number ("100630") returns pump models and
+    directories. Add the product to the catalogue (PUT /trade-min/catalogue) or the
+    static HS → keyword map to search it."""
+    return bool(keyword) and not keyword.replace(".", "").isdigit()
 
 
 def _products_for(hs_code: str) -> list[str]:
@@ -592,27 +603,20 @@ async def _phase2_live_signals(
     now = datetime.now(timezone.utc)
 
     keyword = _keyword_for(hs_code)
-    products = _products_for(hs_code)
     competitors = _HS_COMPETITOR_ORIGINS.get(hs_code[:4], ["China", "Vietnam"])
 
     ted_req: dict = {"query": keyword, "limit": 25}
     if market in _EU_MARKETS:
         ted_req["country"] = market
 
-    # PortLess-owned Apify actors — the named-buyer sources. The US importer
-    # actor reads US customs records only; the benchmark lets it value each
-    # importer's annual volume.
-    bench_per_kg = (
-        round(phase1.price_benchmark_usd_per_mt / 1000.0, 4)
-        if phase1.price_benchmark_usd_per_mt else None
-    )
-    us_req: dict | None = None
-    if market == "US":
-        us_req = {"hs_code": hs_code, "products": products, "origin_country": "IN",
-                  "unit_value_usd_per_kg": bench_per_kg,
-                  "unit_value_source": f"UN Comtrade via export-market actor, HS {hs_code}"}
+    # Named buyers: web search for importers / distributors of the product in
+    # this market (company-contact-finder-ai, any Apify plan) — each row is a
+    # real company with a checked e-mail and/or phone from its own website.
+    buyer_search_req = {
+        "keyword": keyword, "countries": [market], "role": "buyer", "max_results": 5,
+    }
 
-    rfq_r, gdelt_r, ted_r, apify_rfq_r, us_r = await asyncio.gather(
+    rfq_r, gdelt_r, ted_r, search_r = await asyncio.gather(
         _safe_quote("alibaba_rfq", {"query": keyword, "country": market, "page_size": 20}),
         _safe_quote("gdelt_disruption", {
             "origin_country": competitors[0],
@@ -620,80 +624,42 @@ async def _phase2_live_signals(
             "hours_lookback": 72,
         }),
         _safe_quote("eu_ted", ted_req),
-        _safe_quote("apify_alibaba_rfq", {
-            "products": products, "country": market, "seller_profile": _seller_profile_for(hs_code),
-        }),
-        _safe_quote("apify_us_importers", us_req) if us_req else _noop(),
+        _safe_quote("apify_company_search", buyer_search_req) if _web_searchable(keyword) else _noop(),
     )
+    if not _web_searchable(keyword):
+        logger.warning("Trade-Min: no product name for HS %s — buyer web search skipped "
+                       "(add it to the catalogue: PUT /trade-min/catalogue)", hs_code)
 
     result = _Phase2Result()
 
-    # Apify Alibaba RFQ leads — named buyers, quantities, stated target prices.
-    if apify_rfq_r is not None and apify_rfq_r.get("rfqs"):
-        leads = apify_rfq_r["rfqs"]
-        result.active_rfq_count += len(leads)
+    if search_r is not None and search_r.get("companies"):
+        found = search_r["companies"]
         result.demand_signals.append(DemandSignal(
-            source="apify_alibaba_rfq",
-            signal_type="rfq",
-            urgency_tier=3,
-            normalized_value=min(len(leads) / 20.0 * 100.0, 100.0),
+            source="apify_company_search",
+            signal_type="web_search",
+            urgency_tier=1,
+            normalized_value=min(len(found) / 10.0 * 100.0, 100.0),
             weight=0.0,
-            raw_summary=f"{len(leads)} matched Alibaba buying requests for '{keyword}' in {market} (PortLess actor)",
+            raw_summary=f"{len(found)} importers / distributors of '{keyword}' in {market} with a checked contact (web search)",
             fetched_at=now,
         ))
-        for r in leads[:15]:
+        for c in found[:15]:
             result.buyer_signals.append(BuyerSignal(
-                buyer_name=r.get("buyer_name") or f"Alibaba buyer ({r.get('buyer_country') or market})",
-                buyer_country=r.get("buyer_country") or market,
-                company_id=r.get("rfq_id"),
-                signal_type="rfq",
-                source="apify_alibaba_rfq",
-                urgency_tier=3,
-                unit_price_usd=r.get("unit_price_usd"),
-                price_unit=r.get("price_unit"),
-                contact_url=r.get("contact_url"),
-                fit_score=r.get("fit_score"),
-                fit_reason=r.get("fit_reason"),
-                pitch_angle=r.get("quote_reply") or None,
-                quantity=r.get("quantity"),
-                quantity_unit=r.get("quantity_unit"),
-                last_import_date=r.get("posted_at"),
-            ))
-
-    # Apify US importers — manifest-grade named buyers with contact + fit.
-    if us_r is not None and us_r.get("buyers"):
-        importers = us_r["buyers"]
-        result.demand_signals.append(DemandSignal(
-            source="apify_us_importers",
-            signal_type="manifest",
-            urgency_tier=2,
-            normalized_value=min(len(importers) / 20.0 * 100.0, 100.0),
-            weight=0.0,
-            raw_summary=f"{len(importers)} active US importers of HS {hs_code} from customs records (PortLess actor)",
-            fetched_at=now,
-        ))
-        for b in importers[:20]:
-            result.buyer_signals.append(BuyerSignal(
-                buyer_name=b["buyer_name"],
-                buyer_country="US",
-                company_id=b.get("company_id"),
-                last_import_date=b.get("last_import_date"),
-                annual_volume_mt=b.get("annual_volume_mt"),
-                signal_type="manifest",
-                source="apify_us_importers",
-                urgency_tier=2 if (b.get("shipments_12m") or 0) >= 3 else 1,
-                estimated_order_value_usd=b.get("estimated_order_value_usd"),
-                unit_price_usd=b.get("unit_price_usd"),
-                price_unit=b.get("price_unit"),
-                contact_url=b.get("contact_url"),
-                website=b.get("website"),
-                phone=b.get("phone"),
-                address=b.get("address"),
-                fit_score=b.get("fit_score"),
-                fit_reason=b.get("fit_reason"),
-                pitch_angle=b.get("pitch_angle"),
-                shipments_12m=b.get("shipments_12m"),
-                hs_codes=list(b.get("hs_codes") or []),
+                buyer_name=c.get("company_name") or c.get("name") or c.get("domain") or "Unknown importer",
+                buyer_country=c.get("country") or market,
+                company_id=c.get("domain"),
+                signal_type="web_search",
+                source="apify_company_search",
+                urgency_tier=1,
+                contact_url=c.get("contact_page_url") or c.get("website"),
+                website=c.get("website"),
+                email=c.get("email"),
+                phone=c.get("phone"),
+                address=c.get("address"),
+                fit_score=c.get("fit_score"),
+                fit_reason=(c.get("summary") or c.get("page_title") or None),
+                pitch_angle=c.get("first_line") or None,
+                hs_codes=[hs_code],
             ))
 
     if rfq_r is not None:
@@ -894,11 +860,16 @@ async def _phase4_seller_discovery(
 ) -> list[SellerCandidate]:
     keyword = _keyword_for(hs_code)
 
-    im_r, ti_r, apify_r = await asyncio.gather(
+    im_r, ti_r, search_r = await asyncio.gather(
         _safe_quote("indiamart", {"hs_code": hs_code, "page_size": 20}),
         _safe_quote("tradeindia", {"hs_code": hs_code, "limit": 20}),
-        # PortLess's own India supplier actor (price, MOQ, GSTIN, contact).
-        _safe_quote("apify_india_suppliers", {"hs_code": hs_code, "keyword": keyword}),
+        # Indian exporters / manufacturers by web search (company-contact-finder-ai,
+        # any Apify plan) — replaces india-supplier-finder-ai, which does not exist
+        # on the account. Rows carry a checked contact; price / GSTIN come later
+        # from the RFQ reply and the sourcing verification.
+        _safe_quote("apify_company_search", {
+            "keyword": keyword, "countries": ["IN"], "role": "supplier", "max_results": 5,
+        }) if _web_searchable(keyword) else _noop(),
     )
 
     candidates: list[SellerCandidate] = []
@@ -912,10 +883,20 @@ async def _phase4_seller_discovery(
         seen.add(key)
         candidates.append(cand)
 
-    # Actor rows first — they carry contact + credentials the APIs lack.
-    if apify_r is not None:
-        for s in apify_r.get("sellers", [])[:15]:
-            _add(s, "apify_india_suppliers")
+    # Web-search rows first — they carry the checked contact the RFQ e-mail needs.
+    if search_r is not None:
+        for c in search_r.get("companies", [])[:15]:
+            _add({
+                "company_id": c.get("domain"),
+                "company_name": c.get("company_name") or c.get("name") or c.get("domain") or "",
+                "city": "",
+                "state": "",
+                "email": c.get("email"),
+                "phone": c.get("phone"),
+                "website": c.get("website"),
+                "listing_url": c.get("contact_page_url") or c.get("website"),
+                "fit_score": c.get("fit_score"),
+            }, "apify_company_search")
 
     if im_r is not None:
         for s in im_r.get("sellers", [])[:15]:
@@ -1327,21 +1308,32 @@ def describe_sources() -> dict[str, Any]:
     from shared.connectors.apify import describe_actors
 
     apify = describe_actors()
-    actors = {a["actor"].split("~")[-1]: a for a in apify["actors"]}
+    # Keyed by connector name: two connectors (contact finder + company search)
+    # share the company-contact-finder-ai actor.
+    actors = {a["connector"]: a for a in apify["actors"]}
 
     def _mode(live: bool) -> str:
         return "live" if live else "stub"
 
-    def _actor(slug: str, role: str, label: str, detail: str) -> dict[str, Any]:
-        a = actors.get(slug, {})
+    # Actors the scan no longer calls: their data comes from third-party Store
+    # Actors the rich_minds plan cannot run, or the actor does not exist yet.
+    blocked = {
+        "apify_us_importers": "not used - needs an Apify plan that runs public Store Actors (ImportYeti scraper)",
+        "apify_alibaba_rfq": "not used - needs an Apify plan that runs public Store Actors (Alibaba RFQ scraper)",
+        "apify_india_suppliers": "not used - india-supplier-finder-ai is not built on the account",
+    }
+
+    def _actor(connector: str, role: str, label: str, detail: str) -> dict[str, Any]:
+        a = actors.get(connector, {})
+        note = blocked.get(connector)
         return {
-            "name": a.get("connector", f"apify_{slug}"),
+            "name": connector,
             "label": label,
             "role": role,
             "provider": "apify",
-            "actor": a.get("actor", f"{apify['owner']}~{slug}"),
-            "mode": _mode(bool(a.get("live"))),
-            "detail": detail,
+            "actor": a.get("actor", ""),
+            "mode": "stub" if note else _mode(bool(a.get("live"))),
+            "detail": f"{detail} ({note})" if note else detail,
             "external": bool(a.get("external")),
         }
 
@@ -1352,11 +1344,14 @@ def describe_sources() -> dict[str, Any]:
         {"name": "census", "label": "US Census trade", "role": "demand", "provider": "us_census",
          "mode": _mode(bool(os.getenv("CENSUS_API_KEY"))),
          "detail": "US import statistics (Phase 1, US market only)."},
-        _actor("export-market-finder-ai", "demand", "Export markets (Comtrade actor)",
+        _actor("apify_export_markets", "demand", "Export markets (Comtrade actor)",
                "Market demand + what each market pays per MT - the buyer price benchmark (Phase 1)."),
-        _actor("us-importer-finder-ai", "buyers", "US importers (customs records)",
+        _actor("apify_company_search", "buyers", "Buyer search (importers / distributors)",
+               "Named importers and distributors per market from a web search, each with a checked "
+               "e-mail / phone from its own site (Phase 2; also finds Indian suppliers in Phase 4)."),
+        _actor("apify_us_importers", "buyers", "US importers (customs records)",
                "Named US buyers with shipments, website/phone, fit score (Phase 2, US market)."),
-        _actor("alibaba-rfq-leads-ai", "buyers", "Alibaba buying requests",
+        _actor("apify_alibaba_rfq", "buyers", "Alibaba buying requests",
                "Live RFQs matched to PortLess product lines, buyer country + target price (Phase 2)."),
         {"name": "alibaba_rfq", "label": "Alibaba Open Platform RFQ", "role": "buyers", "provider": "alibaba_api",
          "mode": _mode(bool(os.getenv("ALIBABA_APP_KEY") and os.getenv("ALIBABA_APP_SECRET"))),
@@ -1367,7 +1362,7 @@ def describe_sources() -> dict[str, Any]:
          "mode": "open", "detail": "Supply disruptions in competitor origins (urgency tier 4)."},
         {"name": "wits_tariff", "label": "World Bank WITS tariffs", "role": "tariff", "provider": "wits",
          "mode": "open", "detail": "Applied import duty at HS-6 (Phase 3 tariff gate)."},
-        _actor("india-supplier-finder-ai", "sellers", "Indian suppliers (actor)",
+        _actor("apify_india_suppliers", "sellers", "Indian suppliers (actor)",
                "Indian manufacturers with price, MOQ, GSTIN and a reachable contact (Phase 4)."),
         {"name": "indiamart", "label": "IndiaMART", "role": "sellers", "provider": "indiamart_api",
          "mode": _mode(bool(os.getenv("INDIAMART_API_KEY") and os.getenv("INDIAMART_MOBILE"))),
@@ -1375,13 +1370,13 @@ def describe_sources() -> dict[str, Any]:
         {"name": "tradeindia", "label": "TradeIndia", "role": "sellers", "provider": "tradeindia_api",
          "mode": _mode(bool(os.getenv("TRADEINDIA_API_KEY"))),
          "detail": "Fallback seller directory (Phase 4)."},
-        _actor("company-contact-finder-ai", "enrichment", "Company contact finder",
+        _actor("apify_contact_finder", "enrichment", "Company contact finder",
                "Buyer/supplier website, checked e-mail, phone, VAT id before the first outbound mail."),
-        _actor("counterparty-check-ai", "screening", "Counterparty screening",
+        _actor("apify_counterparty_check", "screening", "Counterparty screening",
                "OFAC / UN / EU / UK sanctions, GLEIF LEI, EU VIES - gates the Proforma Invoice."),
-        _actor("email-list-qualifier-ai", "enrichment", "E-mail deliverability",
+        _actor("apify_email_qualifier", "enrichment", "E-mail deliverability",
                "Verifies a counterparty address before PortLess writes to it."),
-        _actor("container-tracking-ai", "logistics", "Carrier tracking (external actor)",
+        _actor("apify_carrier_tracking", "logistics", "Carrier tracking (external actor)",
                "Container / BL milestones for shipments in transit; DELIVERED opens the buyer's "
                "acceptance window. Built outside /actor-pipeline; stubs until it exists."),
     ]

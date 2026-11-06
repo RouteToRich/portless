@@ -1137,6 +1137,14 @@ _HS_TO_KEYWORD: dict[str, str] = {
     "3004": "pharmaceutical medicines",
     "8471": "computers laptops",
     "6203": "mens suits trousers garments",
+    # Common Indian agri exports — also the web-search keyword for named buyers /
+    # suppliers (apify_company_search), which returns junk for a bare HS number.
+    "1006": "rice",
+    "0909": "cumin seeds",
+    "1207": "sesame seeds",
+    "0801": "cashew nuts",
+    "1701": "sugar",
+    "0703": "onions",
 }
 
 

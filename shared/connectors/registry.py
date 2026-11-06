@@ -8,6 +8,7 @@ from __future__ import annotations
 from .apify import (
     ApifyAlibabaRfqConnector,
     ApifyCarrierTrackingConnector,
+    ApifyCompanySearchConnector,
     ApifyContactFinderConnector,
     ApifyCounterpartyCheckConnector,
     ApifyEmailQualifierConnector,
@@ -253,6 +254,11 @@ CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
     # company-contact-finder-ai: company name → website, checked e-mail, phone,
     # VAT id (deal enrichment before the first outbound mail).
     ApifyContactFinderConnector.name: ApifyContactFinderConnector,
+
+    # company-contact-finder-ai in search mode: "<product> importers, <CC>" /
+    # "<product> exporter, IN" -> named buyers (Phase 2) and suppliers (Phase 4)
+    # with checked contacts. Needs no third-party Store Actor (any Apify plan).
+    ApifyCompanySearchConnector.name: ApifyCompanySearchConnector,
 
     # counterparty-check-ai: OFAC / UN / EU / UK sanctions + GLEIF LEI + EU VIES
     # (deal enrichment; gates the PI).

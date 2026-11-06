@@ -29,12 +29,14 @@ DataSource = Literal[
     "indiamart", "tradeindia", "simulated",
     # PortLess-owned Apify actors (shared/connectors/apify.py)
     "apify_us_importers", "apify_alibaba_rfq", "apify_export_markets",
-    "apify_india_suppliers",
+    "apify_india_suppliers", "apify_company_search",
     # Legacy / paid sources (retired from the default pipeline; kept so older
     # persisted opportunities still validate)
     "volza", "macmap", "trademo", "importgenius",
 ]
-SignalType = Literal["historical", "manifest", "rfq", "tender", "disruption"]
+# web_search: a company found by searching the web for "<product> importers, <CC>"
+# (apify_company_search) — a named buyer with a checked contact, no shipment record.
+SignalType = Literal["historical", "manifest", "rfq", "tender", "disruption", "web_search"]
 
 
 # ---------------------------------------------------------------------------
