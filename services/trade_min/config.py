@@ -35,6 +35,9 @@ class TradeMinSettings(BaseSettings):
         default="portless", validation_alias=AliasChoices("TRADE_MONGO_DB_NAME", "MONGO_DB_NAME")
     )
     trade_mongo_collection: str = "opportunities"
+    # Every buyer / supplier a scan found, kept even without an opportunity or deal
+    # (services/trade_min/directory.py).
+    trade_counterparties_collection: str = "trade_counterparties"
 
     # ── Raw API response cache ────────────────────────────────────────────
     # Collection (same shared DB) holding cached raw connector responses, with

@@ -166,6 +166,44 @@ class SellerCandidate(BaseModel):
     """``estimated_fob_price_usd`` is normalised to USD per MT (kg prices × 1000)."""
 
 
+CounterpartyRole = Literal["buyer", "supplier"]
+
+
+class CounterpartyRecord(BaseModel):
+    """A buyer or supplier the scanner found — kept whether or not the scan
+    produced an opportunity or a deal (``GET /trade-min/buyers`` / ``/suppliers``).
+    One record per company (website domain, else name), merged across scans."""
+
+    id: str
+    """``<role>:<domain or name>``."""
+    role: CounterpartyRole
+    name: str
+    country: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    website: str | None = None
+    address: str | None = None
+    contact_url: str | None = None
+    source: str
+    """Connector that found it (e.g. ``apify_company_search``)."""
+    sources: list[str] = Field(default_factory=list)
+    fit_score: int | None = None
+    fit_reason: str | None = None
+    gstin: str | None = None
+    iec: str | None = None
+    estimated_fob_price_usd: float | None = None
+    """Suppliers: USD/MT when the source states a price."""
+    hs_codes: list[str] = Field(default_factory=list)
+    markets: list[str] = Field(default_factory=list)
+    """Buyers: their market. Suppliers: the markets they were scanned for."""
+    opportunity_ids: list[str] = Field(default_factory=list)
+    last_outcome: str = ""
+    """What the latest scan that found it produced: ``opportunity <id>`` or why there was none."""
+    times_seen: int = 1
+    first_seen_at: datetime
+    last_seen_at: datetime
+
+
 # ---------------------------------------------------------------------------
 # MatchEngineSeed — the next-phase bridge object
 # ---------------------------------------------------------------------------

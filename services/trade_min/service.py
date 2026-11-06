@@ -28,7 +28,7 @@ from uuid import uuid4
 from shared.bus import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 
-from . import ranking
+from . import directory, ranking
 from .cache import cache_get, cache_set, make_cache_key
 from .config import DEFAULT_CONFIG, TradeMinConfig, settings
 from .repository import get_repository
@@ -1164,12 +1164,28 @@ async def _scan_one(
             hs_code, market, phase1.gross_price_gap_pct, config
         )
         net_gap = phase1.gross_price_gap_pct - tariff.total_landed_cost_add_pct
-        if net_gap < config.tariff_hard_discard_floor:
-            return None
+        # Suppliers are searched even when the tariff gate will drop the corridor:
+        # the buyer / supplier directory keeps every counterparty found (the
+        # supplier search is per product and cached for a week, so this is cheap).
         sellers = await _phase4_seller_discovery(hs_code, config)
-        return await _phase5_assemble_and_persist(
+        buyers = phase1.buyer_signals + phase2.buyer_signals
+        if net_gap < config.tariff_hard_discard_floor:
+            await directory.record_scan(
+                hs_code, market, buyers, sellers,
+                outcome=f"no opportunity: net price gap {net_gap:.1f}% after duty is below "
+                        f"the {config.tariff_hard_discard_floor:.0f}% floor",
+            )
+            return None
+        opp = await _phase5_assemble_and_persist(
             hs_code, market, phase1, phase2, tariff, sellers, config
         )
+        await directory.record_scan(
+            hs_code, market, buyers, sellers,
+            outcome=f"opportunity {opp.opportunity_id}" if opp else
+                    "no opportunity: arbitrage rank below the minimum",
+            opportunity_id=opp.opportunity_id if opp else None,
+        )
+        return opp
     except Exception as exc:
         logger.exception("Unhandled error in _scan_one(%s×%s): %s", hs_code, market, exc)
         return None

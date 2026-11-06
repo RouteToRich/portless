@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field
 from shared import catalogue as _catalogue
 from shared.catalogue import ProductLine
 
-from . import service
+from . import directory, service
 from .config import DEFAULT_CONFIG
-from .schemas import EnrichedOpportunity, MatchEngineSeed, ScanRequest
+from .schemas import CounterpartyRecord, EnrichedOpportunity, MatchEngineSeed, ScanRequest
 
 router = APIRouter(prefix="/trade-min", tags=["trade-min"])
 
@@ -71,6 +71,30 @@ async def scan(payload: ScanRequest) -> list[EnrichedOpportunity]:
     opportunities sorted by urgency tier then arbitrage rank.
     """
     return await service.scan_opportunities(payload)
+
+
+@router.get("/buyers", response_model=list[CounterpartyRecord])
+async def list_buyers(
+    hs_code: str | None = Query(default=None),
+    market: str | None = Query(default=None, description="ISO-2 market, e.g. AE"),
+    q: str | None = Query(default=None, description="Search name / e-mail / website / country"),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> list[CounterpartyRecord]:
+    """Every buyer a scan found — with or without an opportunity or deal —
+    newest first, merged per company across scans."""
+    return await directory.list_counterparties("buyer", hs_code=hs_code, market=market, q=q, limit=limit)
+
+
+@router.get("/suppliers", response_model=list[CounterpartyRecord])
+async def list_suppliers(
+    hs_code: str | None = Query(default=None),
+    market: str | None = Query(default=None, description="Market the supplier was scanned for"),
+    q: str | None = Query(default=None, description="Search name / e-mail / website"),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> list[CounterpartyRecord]:
+    """Every Indian supplier a scan found — with or without an opportunity or
+    deal — newest first, merged per company across scans."""
+    return await directory.list_counterparties("supplier", hs_code=hs_code, market=market, q=q, limit=limit)
 
 
 @router.get("/opportunities", response_model=list[EnrichedOpportunity])

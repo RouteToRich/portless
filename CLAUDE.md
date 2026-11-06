@@ -269,7 +269,7 @@ Pipeline continuations (`shared/orchestration/continuations.py`) subscribe in th
 |---|---|---|
 | `auth` | ✅ Full | Identity only (`/identity/me`, organizations, users): local record per auth-service `user_id`, created on first sight (never adopted by email; pre-migration records flagged `legacy`); Portless-staff allowlist; `shared/auth/middleware.py` gates the whole app |
 | `api_gateway` | ✅ Full | Edge proxy — auth, validation, webhook ingest, idempotency, request fan-out to every other module |
-| `trade_min` | ✅ Full | 5-phase concurrent pipeline; MongoDB + APScheduler; operator catalogue / corridors (`GET/PUT /trade-min/catalogue`) drive scan defaults, keywords and actor inputs |
+| `trade_min` | ✅ Full | 5-phase concurrent pipeline; MongoDB + APScheduler; operator catalogue / corridors (`GET/PUT /trade-min/catalogue`) drive scan defaults, keywords and actor inputs; buyer / supplier directory (`services/trade_min/directory.py`, Mongo `trade_counterparties`, `GET /trade-min/buyers` · `/suppliers`, console page Buyers & Suppliers) keeps every counterparty a scan found even when the corridor yields no opportunity or deal — the supplier search runs even for tariff-dropped corridors |
 | `match_engine` | ✅ Full | Deterministic CMS formula |
 | `deals` | ✅ Full | State machine, MongoDB, orchestration; optional dev/test `AUTO_FLOW_ENABLED` auto-continuation (`shared/orchestration/auto_flow.py`) |
 | `sourcing` | ✅ Full | RFQ dispatch + GSTN/DGFT/MCA/Udyam verification |

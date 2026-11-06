@@ -1,0 +1,241 @@
+"""Buyer / supplier directory — every counterparty a scan found, kept whether or
+not that scan produced an opportunity or a deal.
+
+The opportunity pipeline drops a corridor at the tariff gate or below the
+arbitrage-rank floor, and with it the named buyers / suppliers the Apify actors
+already paid to find. ``record_scan()`` stores them first, merged per company
+(website domain, else name), with the products, markets, opportunities and
+the latest scan outcome they appeared in. Served by ``GET /trade-min/buyers``
+and ``GET /trade-min/suppliers`` (the console's Buyers & Suppliers page).
+
+Storage: the shared Mongo database, collection ``trade_counterparties``
+(``TRADE_COUNTERPARTIES_COLLECTION``); in-memory without ``MONGO_URI``.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import urlsplit
+
+from .config import settings
+from .schemas import BuyerSignal, CounterpartyRecord, SellerCandidate
+
+logger = logging.getLogger(__name__)
+
+# Placeholder buyers some sources emit without a name or a contact.
+_PLACEHOLDER = re.compile(r"^(alibaba buyer|eu institution|unknown)\b", re.IGNORECASE)
+_MAX_LIST = 50  # cap on hs_codes / markets / opportunity_ids kept per record
+
+
+def _domain(url: str | None) -> str:
+    if not url:
+        return ""
+    host = urlsplit(url if "//" in url else f"//{url}").hostname or ""
+    return host.lower().removeprefix("www.")
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+
+
+def record_key(role: str, name: str, website: str | None) -> str:
+    return f"{role}:{_domain(website) or _slug(name)}"
+
+
+def _union(old: list[str], new: list[str]) -> list[str]:
+    out = list(old)
+    for v in new:
+        if v and v not in out:
+            out.append(v)
+    return out[-_MAX_LIST:]
+
+
+def _merge(old: CounterpartyRecord | None, new: CounterpartyRecord) -> CounterpartyRecord:
+    if old is None:
+        return new
+    data = old.model_dump()
+    for field in ("name", "country", "email", "phone", "website", "address", "contact_url",
+                  "fit_score", "fit_reason", "gstin", "iec", "estimated_fob_price_usd"):
+        value = getattr(new, field)
+        if value not in (None, ""):
+            data[field] = value
+    data.update(
+        source=new.source,
+        sources=_union(old.sources, new.sources),
+        hs_codes=_union(old.hs_codes, new.hs_codes),
+        markets=_union(old.markets, new.markets),
+        opportunity_ids=_union(old.opportunity_ids, new.opportunity_ids),
+        last_outcome=new.last_outcome or old.last_outcome,
+        times_seen=old.times_seen + 1,
+        last_seen_at=new.last_seen_at,
+    )
+    return CounterpartyRecord.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# Stores
+# ---------------------------------------------------------------------------
+
+class InMemoryDirectory:
+    def __init__(self) -> None:
+        self._store: dict[str, CounterpartyRecord] = {}
+
+    async def upsert(self, rec: CounterpartyRecord) -> CounterpartyRecord:
+        merged = _merge(self._store.get(rec.id), rec)
+        self._store[rec.id] = merged
+        return merged
+
+    async def list(self, role: str, *, hs_code: str | None = None, market: str | None = None,
+                   q: str | None = None, limit: int = 200) -> list[CounterpartyRecord]:
+        rows = [r for r in self._store.values() if r.role == role and _matches(r, hs_code, market, q)]
+        rows.sort(key=lambda r: r.last_seen_at, reverse=True)
+        return rows[:limit]
+
+    async def clear(self) -> None:
+        self._store.clear()
+
+
+class MongoDirectory:
+    def __init__(self, collection: Any) -> None:
+        self._col = collection
+
+    async def upsert(self, rec: CounterpartyRecord) -> CounterpartyRecord:
+        doc = await self._col.find_one({"_id": rec.id})
+        old = None
+        if doc:
+            doc.pop("_id", None)
+            try:
+                old = CounterpartyRecord.model_validate(doc)
+            except Exception:  # noqa: BLE001 - a malformed old row is replaced
+                old = None
+        merged = _merge(old, rec)
+        out = merged.model_dump(mode="json")
+        out["_id"] = merged.id
+        await self._col.replace_one({"_id": merged.id}, out, upsert=True)
+        return merged
+
+    async def list(self, role: str, *, hs_code: str | None = None, market: str | None = None,
+                   q: str | None = None, limit: int = 200) -> list[CounterpartyRecord]:
+        query: dict[str, Any] = {"role": role}
+        if hs_code:
+            query["hs_codes"] = hs_code
+        if market:
+            query["markets"] = market.upper()
+        if q:
+            rx = {"$regex": re.escape(q), "$options": "i"}
+            query["$or"] = [{"name": rx}, {"email": rx}, {"website": rx}, {"country": rx}]
+        rows: list[CounterpartyRecord] = []
+        async for doc in self._col.find(query).sort("last_seen_at", -1).limit(limit):
+            doc.pop("_id", None)
+            try:
+                rows.append(CounterpartyRecord.model_validate(doc))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Directory: skipping malformed row: %s", exc)
+        return rows
+
+    async def clear(self) -> None:
+        await self._col.delete_many({})
+
+
+def _matches(r: CounterpartyRecord, hs_code: str | None, market: str | None, q: str | None) -> bool:
+    if hs_code and hs_code not in r.hs_codes:
+        return False
+    if market and market.upper() not in r.markets:
+        return False
+    if q:
+        hay = " ".join(filter(None, [r.name, r.email, r.website, r.country])).lower()
+        if q.lower() not in hay:
+            return False
+    return True
+
+
+_directory: InMemoryDirectory | MongoDirectory | None = None
+
+
+async def get_directory() -> InMemoryDirectory | MongoDirectory:
+    global _directory
+    if _directory is not None:
+        return _directory
+    uri = settings.trade_mongo_uri
+    if not uri:
+        _directory = InMemoryDirectory()
+        return _directory
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore[import]
+        client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=5_000, connectTimeoutMS=5_000)
+        col = client[settings.trade_mongo_db_name][settings.trade_counterparties_collection]
+        await col.create_index([("role", 1), ("last_seen_at", -1)], name="role_last_seen", background=True)
+        await col.create_index("hs_codes", name="hs_codes", background=True)
+        _directory = MongoDirectory(col)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Directory: MongoDB unavailable (%s) — buyers/suppliers kept in memory", exc)
+        _directory = InMemoryDirectory()
+    return _directory
+
+
+def reset_directory() -> None:
+    """Tests: back to a fresh in-memory store."""
+    global _directory
+    _directory = InMemoryDirectory()
+
+
+# ---------------------------------------------------------------------------
+# Recording
+# ---------------------------------------------------------------------------
+
+def _buyer_record(b: BuyerSignal, hs_code: str, market: str, outcome: str,
+                  opportunity_id: str | None, now: datetime) -> CounterpartyRecord | None:
+    name = (b.buyer_name or "").strip()
+    has_contact = bool(b.email or b.phone or b.website or b.contact_url)
+    if not name or (_PLACEHOLDER.match(name) and not has_contact):
+        return None
+    return CounterpartyRecord(
+        id=record_key("buyer", name, b.website),
+        role="buyer", name=name, country=(b.buyer_country or market or "").upper() or None,
+        email=b.email, phone=b.phone, website=b.website, address=b.address, contact_url=b.contact_url,
+        source=b.source, sources=[b.source], fit_score=b.fit_score, fit_reason=b.fit_reason,
+        hs_codes=[hs_code], markets=[market.upper()],  # the corridor scanned; country is their own
+        opportunity_ids=[opportunity_id] if opportunity_id else [],
+        last_outcome=outcome, first_seen_at=now, last_seen_at=now,
+    )
+
+
+def _supplier_record(s: SellerCandidate, hs_code: str, market: str, outcome: str,
+                     opportunity_id: str | None, now: datetime) -> CounterpartyRecord | None:
+    name = (s.company_name or "").strip()
+    if not name:
+        return None
+    return CounterpartyRecord(
+        id=record_key("supplier", name, s.website),
+        role="supplier", name=name, country="IN",
+        email=s.email, phone=s.phone, website=s.website, contact_url=s.listing_url,
+        source=s.source, sources=[s.source], fit_score=s.fit_score,
+        gstin=s.gstin, iec=s.iec, estimated_fob_price_usd=s.estimated_fob_price_usd,
+        hs_codes=[hs_code], markets=[market.upper()],
+        opportunity_ids=[opportunity_id] if opportunity_id else [],
+        last_outcome=outcome, first_seen_at=now, last_seen_at=now,
+    )
+
+
+async def record_scan(hs_code: str, market: str, buyers: list[BuyerSignal], sellers: list[SellerCandidate],
+                      *, outcome: str, opportunity_id: str | None = None) -> tuple[int, int]:
+    """Store the buyers and suppliers one corridor scan found. Never raises."""
+    now = datetime.now(timezone.utc)
+    stored = [0, 0]
+    try:
+        directory = await get_directory()
+        for i, (items, build) in enumerate(((buyers, _buyer_record), (sellers, _supplier_record))):
+            for item in items:
+                rec = build(item, hs_code, market, outcome, opportunity_id, now)  # type: ignore[arg-type]
+                if rec is not None:
+                    await directory.upsert(rec)
+                    stored[i] += 1
+    except Exception as exc:  # noqa: BLE001 - the directory must never break a scan
+        logger.error("Directory: could not record %s×%s: %s", hs_code, market, exc)
+    return stored[0], stored[1]
+
+
+async def list_counterparties(role: str, **filters: Any) -> list[CounterpartyRecord]:
+    return await (await get_directory()).list(role, **filters)
