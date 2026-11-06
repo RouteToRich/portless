@@ -133,7 +133,10 @@ class _Phase1Result:
     demand_index: float = 0.0
     gross_price_gap_pct: float = 0.0
     active_connectors: int = 0
-    source: str = "simulated"
+    source: str = ""
+    """The demand source that answered; empty when no live source did."""
+    price_gap_measured: bool = False
+    """True when a source measured the corridor's price gap (never estimated)."""
     price_benchmark_usd_per_mt: float | None = None
     """Market unit value per MT (export-market actor) — the real buyer price anchor."""
     price_benchmark_source: str | None = None
@@ -315,13 +318,12 @@ async def _phase1_historical_demand(
     result.active_connectors = len(active_weights)
 
     if result.active_connectors < config.phase1_min_connectors:
+        # No live demand source answered: no opportunity is built on invented
+        # numbers. The corridor's buyers / suppliers are still searched and kept.
         logger.info(
-            "Phase 1 below minimum connectors (%d/%d) for %s×%s — using simulation",
-            result.active_connectors, config.phase1_min_connectors, hs_code, market,
+            "Phase 1: no live demand data for %s×%s (%d/%d sources) — no opportunity",
+            hs_code, market, result.active_connectors, config.phase1_min_connectors,
         )
-        result.demand_index = ranking.simulated_demand_index(hs_code, market)
-        result.gross_price_gap_pct = ranking.simulated_price_gap_pct(hs_code, market)
-        result.source = "simulated"
         return result
 
     # Normalise weights among responding connectors
@@ -341,6 +343,7 @@ async def _phase1_historical_demand(
         result.buyer_signals.extend(buyers)
         if gap and result.gross_price_gap_pct == 0.0:
             result.gross_price_gap_pct = gap
+            result.price_gap_measured = True
 
     if "apify_export_markets" in connector_data:
         score, signals, benchmark, gap = _extract_export_market(
@@ -354,13 +357,10 @@ async def _phase1_historical_demand(
         # the one measured on the real corridor — prefer it over the CIF/FOB ratio.
         if gap:
             result.gross_price_gap_pct = gap
+            result.price_gap_measured = True
 
     result.demand_index = round(sum(s for _, s in scores), 2)
-
-    if result.gross_price_gap_pct == 0.0:
-        result.gross_price_gap_pct = ranking.simulated_price_gap_pct(hs_code, market)
-
-    result.source = scores[0][0] if scores else "simulated"
+    result.source = scores[0][0] if scores else ""
     return result
 
 
@@ -1160,6 +1160,17 @@ async def _scan_one(
     try:
         phase1 = await _phase1_historical_demand(hs_code, market, config)
         phase2 = await _phase2_live_signals(hs_code, market, phase1, config)
+        if not phase1.source or not phase1.price_gap_measured:
+            # No live demand data, or no measured price gap: no opportunity (never
+            # simulated numbers) — the buyers / suppliers found are still kept.
+            sellers = await _phase4_seller_discovery(hs_code, config)
+            await directory.record_scan(
+                hs_code, market, phase1.buyer_signals + phase2.buyer_signals, sellers,
+                outcome=("no opportunity: no live demand data for this product and market"
+                         if not phase1.source else
+                         "no opportunity: no measured price gap for this product and market"),
+            )
+            return None
         tariff = await _phase3_tariff_gate(
             hs_code, market, phase1.gross_price_gap_pct, config
         )

@@ -26,7 +26,7 @@ DataSource = Literal[
     # Free / active sources
     "comtrade", "census", "wits_tariff",
     "alibaba_rfq", "gdelt_disruption", "eu_ted",
-    "indiamart", "tradeindia", "simulated",
+    "indiamart", "tradeindia",
     # PortLess-owned Apify actors (shared/connectors/apify.py)
     "apify_us_importers", "apify_alibaba_rfq", "apify_export_markets",
     "apify_india_suppliers", "apify_company_search",

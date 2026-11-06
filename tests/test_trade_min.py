@@ -27,31 +27,6 @@ def client() -> TestClient:
 # --------------------------------------------------------------------------- #
 # Pure ranking functions
 # --------------------------------------------------------------------------- #
-def test_deterministic_score_is_stable() -> None:
-    """Same HS code + market always yields the same demand index."""
-    a = ranking.simulated_demand_index("090422", "ES")
-    b = ranking.simulated_demand_index("090422", "ES")
-    assert a == b
-
-
-def test_different_markets_produce_different_scores() -> None:
-    assert ranking.simulated_demand_index("090422", "ES") != ranking.simulated_demand_index(
-        "090422", "DE"
-    )
-
-
-def test_demand_index_in_range() -> None:
-    for market in ("ES", "DE", "US", "AE", "GB"):
-        score = ranking.simulated_demand_index("100190", market)
-        assert 0.0 <= score <= 100.0, f"{market}: {score}"
-
-
-def test_price_gap_pct_in_range() -> None:
-    for market in ("ES", "DE", "US", "AE", "GB"):
-        gap = ranking.simulated_price_gap_pct("100190", market)
-        assert 0.0 <= gap <= 50.0, f"{market}: {gap}"
-
-
 def test_price_gap_score_saturates() -> None:
     assert ranking.price_gap_score(DEFAULT_CONFIG.price_gap_saturation_pct) == 100.0
     assert ranking.price_gap_score(0.0) == 0.0
@@ -87,13 +62,13 @@ def test_scan_returns_opportunities(client: TestClient) -> None:
         assert opp["opportunity_id"].startswith("OPP-")
         assert opp["hs_code"] == "090422"
         assert opp["market"] in ("ES", "DE", "US")
-        assert opp["source"] in ("comtrade", "volza", "macmap", "simulated")
+        assert opp["source"] in ("comtrade", "census", "apify_export_markets")
 
 
 def test_scan_results_sorted_descending(client: TestClient) -> None:
     """Results must be ordered by descending arbitrage_rank."""
     payload = {
-        "hs_codes": ["090422", "100190"],
+        "hs_codes": ["090422", "100199"],
         "target_markets": ["ES", "DE", "US", "AE", "GB"],
     }
     body = client.post("/trade-min/scan", json=payload).json()
@@ -152,3 +127,11 @@ def test_scan_is_idempotent_on_repeated_calls(client: TestClient) -> None:
     second = client.post("/trade-min/scan", json=payload).json()
     all_opps = client.get("/trade-min/opportunities").json()
     assert len(all_opps) >= len(first) + len(second)
+
+
+def test_no_live_demand_data_means_no_opportunity(client: TestClient) -> None:
+    """Without a live demand source (the suite has no keys / Apify token) a scan
+    builds no opportunity on invented numbers — the list stays empty."""
+    body = client.post("/trade-min/scan", json={"hs_codes": ["090422"], "target_markets": ["ES", "DE"]}).json()
+    assert body == []
+    assert client.get("/trade-min/opportunities").json() == []

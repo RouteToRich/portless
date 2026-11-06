@@ -365,7 +365,7 @@ async def on_opportunity_detected(event: DomainEvent) -> None:
       • ``auto_deal_from_opportunity_enabled`` must be true (default false);
       • ``arbitrage_rank`` ≥ ``auto_deal_min_arbitrage_rank`` and
         ``confidence_score`` ≥ ``auto_deal_min_confidence``;
-      • the opportunity is ACTIVE and its demand data is not ``simulated``;
+      • the opportunity is ACTIVE (opportunities are only built on live data);
       • no deal exists for this opportunity, and no non-terminal deal exists
         for the same HS code × market (duplicate-demand guard).
     """
@@ -395,12 +395,6 @@ async def on_opportunity_detected(event: DomainEvent) -> None:
             return
         if getattr(opp, "status", "ACTIVE") != "ACTIVE":
             logger.info("Continuation[OPPORTUNITY]: %s is %s — skipped", opportunity_id, opp.status)
-            return
-        if getattr(opp, "source", "") == "simulated":
-            logger.warning(
-                "Continuation[OPPORTUNITY]: %s rests on simulated demand data — never auto-converted",
-                opportunity_id,
-            )
             return
 
         from services.deals.service import create_deal, list_deals  # type: ignore[import]

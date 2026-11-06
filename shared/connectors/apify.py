@@ -902,10 +902,15 @@ _NOT_A_COMPANY_DOMAINS = (
     "zauba", "made-in-china.", "go4worldbusiness.", "kompass.", "dnb.com", "airea.net", "apeda.",
     "climateactiontracker.", "tradekey.", "ec21.", "globalsources.", "amazon.", "statista.",
     "reuters.", "economictimes.", "thehindu", "business-standard.", "gov.", "nic.in",
+    # seen in live scans (2026-11-06): marketplaces, data sites, boards, trade press
+    "chemicalbook.", "tradologie.", "tradeling.", "cbi.eu", "world-grain.", "sio365.", "needsinfo.",
+    "uswheat.org", "kswheat.", "indianspices.com", "hazchem.", "chemicalsuppliers.", "exportgenius.",
+    "connect2india.", "seair.", "eximpedia.", "importyeti.", "panjiva.", "bizvibe.", "ensun.",
 )
 _NOT_A_COMPANY_NAME = re.compile(
     r"\b(association|council|federation|directory|marketplace|chamber|ministry|list of|"
-    r"news|price (?:list|today|trend)|market report)\b", re.IGNORECASE)
+    r"news|price (?:list|today|trend)|market (?:report|potential|data)|how to|spices board|commission|"
+    r"manufacturing process|wikipedia)\b|\.pdf\b|^https?://", re.IGNORECASE)
 # Page titles written for search engines, not company names.
 _SEO_TITLE = re.compile(
     r"^(?:best|top|leading|current|cheap|buy|premium|wholesale|indian|basmati|rice)\b|"
@@ -934,18 +939,38 @@ def _usable(name: str) -> bool:
     return bool(name) and len(name) <= 60 and not _SEO_TITLE.search(name) and not _PRODUCT_TITLE.search(name)
 
 
+def _domain_label(row: dict[str, Any]) -> str:
+    domain = (row.get("domain") or "").lower().removeprefix("www.")
+    return domain.split(".")[0] if domain else ""
+
+
+def _names_the_site(name: str, label: str) -> bool:
+    """True when a title is the company's name, not a product or page heading:
+    it carries a legal form (Ltd, LLC, GmbH…) or shares a word with the domain
+    ("Pepperia Spices" on pepperiaexports.com; "Black Pepper" on biova.de is not)."""
+    if _LEGAL_SUFFIX.search(name):
+        return True
+    squashed = re.sub(r"[^a-z0-9]", "", label.lower())
+    words = [w for w in re.findall(r"[a-z0-9]+", name.lower()) if len(w) >= 4]
+    return bool(squashed) and any(w in squashed for w in words)
+
+
 def _company_name(row: dict[str, Any]) -> str:
-    """Legal name when the site states a usable one, else a name from the page title, else the domain."""
+    """The company's name: its stated legal name, else a page title that names the
+    site, else the website's domain ("biova.de" → "Biova")."""
+    label = _domain_label(row)
     legal = _clean_name(row.get("legal_name") or "")
-    if _usable(legal) or (legal and _LEGAL_SUFFIX.search(legal) and not _PRODUCT_TITLE.search(legal)):
+    legal = re.sub(r"^(?:ltd|limited|llc|inc)\.?,\s*", "", legal, flags=re.IGNORECASE)
+    if legal and not _PRODUCT_TITLE.search(legal) and len(legal) <= 80 and (
+            _LEGAL_SUFFIX.search(legal) or _names_the_site(legal, label)):
         return legal
     title = (row.get("name") or "").strip()
     head = _clean_name(re.split(r"\s+[|:–—-]\s+|:\s+|\s+\|\s*", title, maxsplit=1)[0])
-    if _usable(head):
+    if _usable(head) and _names_the_site(head, label):
         return head
-    domain = (row.get("domain") or "").lower().removeprefix("www.")
-    label = domain.split(".")[0] if domain else ""
-    return label.replace("-", " ").title() if label else head or title
+    if label:
+        return label.replace("-", " ").title()
+    return head or title
 
 
 class ApifyCompanySearchConnector(ApifyActorConnector):

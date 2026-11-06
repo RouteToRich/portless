@@ -1,32 +1,14 @@
 """Deterministic opportunity-ranking math for the Trade-Min module (FR-1, LLD 4.5).
 
 All functions are pure — no I/O, no global state — reproducible and fully
-unit-testable regardless of whether connectors are live.
-
-Simulated demand data uses a deterministic SHA-256 hash of the (hs_code, market)
-pair so the same inputs always produce the same scores.
+unit-testable regardless of whether connectors are live. There is no simulated
+demand: a corridor without live data yields no opportunity (service.py).
 """
 from __future__ import annotations
 
-import hashlib
 import math
 
 from .config import DEFAULT_CONFIG, TradeMinConfig
-
-
-def _deterministic_score(seed: str) -> float:
-    """Map an arbitrary string to a stable 0.0–100.0 score via SHA-256."""
-    digest = int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16)
-    return round((digest % 10_001) / 100.0, 1)
-
-
-def simulated_demand_index(hs_code: str, market: str) -> float:
-    return _deterministic_score(f"{hs_code}:demand:{market}")
-
-
-def simulated_price_gap_pct(hs_code: str, market: str) -> float:
-    raw = _deterministic_score(f"{hs_code}:pricegap:{market}")
-    return round(raw * 0.5, 1)  # scale 0–100 → 0–50 %
 
 
 def price_gap_score(

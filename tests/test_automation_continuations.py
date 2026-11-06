@@ -608,19 +608,20 @@ class TestOpportunityDetected:
         assert create.await_args.kwargs["org_id"] == "portless"
 
     @pytest.mark.asyncio
-    async def test_thresholds_simulated_and_duplicates_block(self, monkeypatch):
+    async def test_thresholds_and_duplicates_block(self, monkeypatch):
         from shared.config import settings
         monkeypatch.setattr(settings, "auto_deal_from_opportunity_enabled", True)
         create = AsyncMock()
-        opp = SimpleNamespace(opportunity_id="OPP-1", status="ACTIVE", source="simulated", hs_code="1006", market="DE")
+        opp = SimpleNamespace(opportunity_id="OPP-1", status="ACTIVE", source="comtrade", hs_code="1006", market="DE")
         with (
             patch("services.trade_min.service.get_opportunity", new=AsyncMock(return_value=opp)),
             patch("services.deals.service.list_deals", new=AsyncMock(return_value=[])),
             patch("services.deals.service.create_deal", new=create),
         ):
             await c.on_opportunity_detected(self._event(arbitrage_rank=10.0))   # below rank
-            await c.on_opportunity_detected(self._event())                      # simulated source
-            opp.source = "comtrade"
+            opp.status = "MARGINAL"
+            await c.on_opportunity_detected(self._event())                      # not ACTIVE
+            opp.status = "ACTIVE"
             with patch("services.deals.service.list_deals", new=AsyncMock(return_value=[
                 SimpleNamespace(opportunity_id=None, hs_code="1006", market="DE",
                                 status=SimpleNamespace(value="NEGOTIATING"), deal_id="DEAL-OLD"),

@@ -70,7 +70,9 @@ class TestScanWiring:
     @pytest.mark.asyncio
     async def test_tariff_discarded_corridor_still_records_counterparties(self):
         phase1 = svc._Phase1Result()
-        phase1.gross_price_gap_pct = 0.0
+        phase1.source = "apify_export_markets"     # live data, measured gap — dropped by duty
+        phase1.price_gap_measured = True
+        phase1.gross_price_gap_pct = 5.0
         phase2 = svc._Phase2Result()
         phase2.buyer_signals = [_buyer()]
         tariff = TariffData(hs_code="100630", destination_country="AE", applied_duty_pct=50.0,
@@ -87,6 +89,37 @@ class TestScanWiring:
         [b] = await directory.list_counterparties("buyer")
         [s] = await directory.list_counterparties("supplier")
         assert "no opportunity" in b.last_outcome and s.name == "Jashn Foods"
+
+
+class TestNoSimulation:
+    @pytest.mark.asyncio
+    async def test_no_live_demand_data_no_opportunity_but_counterparties_kept(self):
+        async def p1(*a, **k): return svc._Phase1Result()          # no source answered
+        async def p2(*a, **k):
+            r = svc._Phase2Result()
+            r.buyer_signals = [_buyer()]
+            return r
+        async def p4(*a, **k): return [_seller()]
+        tariff_called = False
+
+        async def p3(*a, **k):
+            nonlocal tariff_called
+            tariff_called = True
+
+        with patch.object(svc, "_phase1_historical_demand", p1), patch.object(svc, "_phase2_live_signals", p2), \
+             patch.object(svc, "_phase3_tariff_gate", p3), patch.object(svc, "_phase4_seller_discovery", p4):
+            assert await svc._scan_one("100630", "AE", svc.DEFAULT_CONFIG) is None
+        assert tariff_called is False
+        [b] = await directory.list_counterparties("buyer")
+        [s] = await directory.list_counterparties("supplier")
+        assert b.last_outcome == "no opportunity: no live demand data for this product and market"
+        assert s.name == "Jashn Foods"
+
+    def test_simulated_is_not_a_data_source(self):
+        from typing import get_args
+
+        from services.trade_min.schemas import DataSource
+        assert "simulated" not in get_args(DataSource)
 
 
 class TestEndpoints:

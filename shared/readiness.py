@@ -170,7 +170,7 @@ def evaluate() -> dict[str, Any]:
         "trade_data", "data", "Live demand data (Comtrade / Census)",
         _set("COMTRADE_SUBSCRIPTION_KEY") or _set("CENSUS_API_KEY") or bool(apify.get("token_present")),
         ok_detail="at least one live demand source configured",
-        fail_detail="no Comtrade / Census key and no Apify token — opportunities fall back to simulated demand numbers",
+        fail_detail="no Comtrade / Census key and no Apify token — scans find no demand data, so no opportunities",
     ))
     checks.append(_check(
         "auto_flow_off", "automation", "Dev auto-flow off", not _flag("AUTO_FLOW_ENABLED"),

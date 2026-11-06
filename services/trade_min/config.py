@@ -70,8 +70,9 @@ class TradeMinSettings(BaseSettings):
 class TradeMinConfig:
     """Algorithmic constants for the five-phase pipeline."""
 
-    # Default HS codes to scan when the caller does not provide a list.
-    default_hs_codes: tuple[str, ...] = ("090422", "100190", "290543")
+    # Default HS codes to scan when the caller does not provide a list (HS 2022 —
+    # 100190 was retired in 2012; the export-market actor rejects it, so wheat is 100199).
+    default_hs_codes: tuple[str, ...] = ("090422", "100199", "290543")
 
     # Default destination markets (ISO-3166 alpha-2).
     default_markets: tuple[str, ...] = ("ES", "DE", "US", "AE", "GB")
