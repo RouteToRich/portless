@@ -142,55 +142,69 @@ def _entity() -> str:
 
 
 def _product_label(deal: Any) -> str:
-    hs = getattr(deal, "hs_code", "") or ""
-    try:
-        from shared.catalogue import product_name_for
-        name = product_name_for(hs)
-        if name:
-            return name
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from shared.connectors.trade_intel import hs_keyword  # type: ignore[import]
-        return hs_keyword(hs, f"HS {hs}")
-    except Exception:  # noqa: BLE001
-        return f"HS {hs}"
+    """Display name for the e-mail ("crude glycerine"), else "the HS 1520 product".
+    Never the Apify search keyword ("glycerol alcohol") — that reads badly in a letter."""
+    from shared.product_label import product_phrase
+    return product_phrase(getattr(deal, "hs_code", "") or "")
+
+
+def _greeting(cand: Any) -> str:
+    name = (getattr(cand, "legal_name", None) or "").strip()
+    return f"Dear {name} team," if name else "Dear Sir or Madam,"
 
 
 def draft(deal: Any, cand: Any, *, followup: bool = False) -> tuple[str, str]:
+    """The buyer's first e-mail from PortLess — written to earn a reply.
+
+    Structure: why we are writing to *them* (actor pitch angle, or the product
+    they buy) → what removes their risk (escrow with staged release, inspection
+    by the agency they pick, verified manufacturer — exactly as the escrow
+    works, see agents/negotiation_agent/briefing.py) → a low-effort ask whose
+    answers are precisely what a CIF offer needs → a concrete promise (firm
+    offer in two working days) → an easy opt-out.
+    """
+    from shared.product_label import product_title
+
     product = _product_label(deal)
-    name = getattr(cand, "legal_name", None) or "Sir/Madam"
+    title = product_title(getattr(deal, "hs_code", "") or "")
     pitch = (getattr(cand, "pitch_angle", None) or "").strip()
     qty = getattr(cand, "quantity_mt", None) or getattr(deal, "quantity_mt", None)
     token = subject_token(deal.deal_id, getattr(cand, "candidate_id"))
     if followup:
-        subject = f"Re: {product.title()} from India — quick follow-up {token}"
+        subject = f"Re: {title} from India — quick follow-up {token}"
         body = (
-            f"Dear {name},\n\n"
-            f"Following up on my note about {product} supply from India. If timing is not right "
-            "a one-line reply is enough and I will close the file; if it is, tell me the grade, "
-            "quantity and destination port and I will send a firm offer with escrow and "
-            "inspection terms within two working days.\n\n"
+            f"{_greeting(cand)}\n\n"
+            f"Following up on my note about {product} supply from India. If the timing is not right, a "
+            "one-line reply is enough and I will close the file. If it is, send me the grade, quantity and "
+            "destination port, and you will have a firm CIF offer within two working days — with payment "
+            "into escrow and an inspection by the agency you choose.\n\n"
             f"Best regards,\n{_entity()} — Trade Operations\n"
         )
         return subject, body
-    subject = f"{product.title()} from India — verified supplier, escrow-protected {token}"
+    subject = f"{title} from India — inspected before shipment, paid through escrow {token}"
+    opener = pitch or (
+        f"I am writing because your company buys {product}, and we can offer a lower-risk way to buy it "
+        "directly from Indian manufacturers."
+    )
     body = (
-        f"Dear {name},\n\n"
-        + (f"{pitch}\n\n" if pitch else "")
-        + f"{_entity()} is an Indian merchant exporter. We source {product} from GST- and IEC-verified "
-        "Indian manufacturers and run every shipment through a third-party pre-shipment inspection "
-        "(SGS, QIMA, Bureau Veritas, Intertek or TUV SUD — your choice). Your payment sits in a "
-        "neutral escrow and is released only against the inspection report and the shipping documents, "
-        "so you never pay for goods that have not been inspected.\n\n"
-        + (f"We can offer lots of {qty:g} MT or multiples. " if qty else "Typical lots are 20–40 MT. ")
+        f"{_greeting(cand)}\n\n"
+        f"{opener}\n\n"
+        f"{_entity()} is an Indian merchant exporter. What that means for you:\n"
+        "  - You choose the inspector. SGS, QIMA, Bureau Veritas, Intertek or TÜV SÜD checks every lot "
+        "before it ships and you get the photo-documented report; the inspection cost is in our price.\n"
+        "  - Your money is protected. You pay into a neutral escrow account, not to us. A production advance "
+        "is released when the order is placed with the manufacturer; the rest only after the inspection "
+        "passes, the goods clear customs and you accept them.\n"
+        f"  - Verified manufacturers only (GST and IEC checked), with freight and export documents handled "
+        "by us — one CIF price to your port.\n\n"
+        + (f"We can supply lots of {qty:g} MT or multiples. " if qty else "Typical lots are 20–40 MT. ")
         + "If this is relevant, a short reply with these is all I need to send you a firm offer within "
         "two working days:\n"
-        "  - grade / specification and packaging\n"
-        "  - quantity (MT) and when you need it delivered\n"
-        "  - destination port and Incoterm (CIF, CFR, FOB…)\n"
-        "  - your target price per MT, if you have one\n"
-        "  - certificates or documents you require\n\n"
+        "  1. grade / specification and packaging\n"
+        "  2. quantity (MT) and when you need it delivered\n"
+        "  3. destination port\n"
+        "  4. your target price per MT, if you have one\n"
+        "  5. certificates or documents you need at destination\n\n"
         f"Best regards,\n{_entity()} — Trade Operations\n\n"
         "If you would rather not hear from us, reply \"not interested\" and we will not write again.\n"
     )

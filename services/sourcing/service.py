@@ -127,12 +127,44 @@ async def _safe_call(connector_name: str, method: str, request: dict) -> dict | 
 def _build_rfq_message(payload: RfqRequest) -> str:
     if payload.message:
         return payload.message
+    from shared.product_label import product_phrase
+    qty = payload.quantity_mt
     return settings.rfq_message_template.format(
-        quantity_mt=payload.quantity_mt or "N/A",
+        product=product_phrase(payload.hs_code),
+        quantity=f"{qty:g} MT" if qty else "a first export lot",
+        quantity_mt=qty or "N/A",
         hs_code=payload.hs_code,
         target_price_usd=payload.target_price_usd or "TBD",
         deal_id=payload.deal_id,
         validity_days=payload.validity_days,
+    )
+
+
+def rfq_email_body(company_name: str | None, message: str) -> str:
+    """The RFQ e-mail: the request, why this order is worth quoting for, and
+    exactly what to send back. Payment wording follows the escrow model
+    (purchase order only once the buyer's money is in escrow; production
+    advance at PO) — the same terms the negotiation agent states later."""
+    greeting = f"Dear {company_name} team," if company_name else "Dear Sir or Madam,"
+    return (
+        f"{greeting}\n\n{message}\n\n"
+        "Why this order is worth quoting for:\n"
+        "  - Payment secured up front: we place the purchase order only after the overseas buyer's money "
+        "is deposited in a neutral escrow account, and you are paid from it in stages, starting with a "
+        "production advance when the order is placed. No credit risk, no letter-of-credit paperwork.\n"
+        "  - We bring the overseas buyer and book the ocean freight; you deliver FOB Indian port.\n"
+        "  - Independent pre-shipment inspection (SGS, QIMA, Bureau Veritas, Intertek or TÜV SÜD) at your "
+        "facility, so quality is settled before dispatch, not argued about after arrival.\n"
+        "  - Repeat orders follow when the first shipment goes well.\n\n"
+        "To quote, please reply with:\n"
+        "  1. Your best FOB price per MT (INR or USD) and how long it is valid\n"
+        "  2. Grade / specification and packaging\n"
+        "  3. Minimum order and monthly capacity (MT)\n"
+        "  4. Lead time from purchase order to goods at the port, and port of loading\n"
+        "  5. Certificates you can provide (COA, ISO, FSSAI, Halal…)\n"
+        "  6. Your GSTIN and IEC, so we can verify them before the purchase order\n\n"
+        "Please keep the reference in the subject line so your quotation reaches the right desk.\n\n"
+        "Best regards,\nPortLess Trade Operations\n"
     )
 
 
@@ -225,8 +257,11 @@ _NOT_DELIVERED = "__not_delivered__"
 
 
 def rfq_subject(rfq_id: str, hs_code: str, quantity_mt: float | None) -> str:
+    from shared.product_label import product_label
+    label = product_label(hs_code)
+    product = f"{label} (HS {hs_code})" if label else f"HS {hs_code}"
     qty = f"{quantity_mt:g} MT " if quantity_mt else ""
-    return f"Request for quotation — {qty}HS {hs_code} [RFQ:{rfq_id}]"
+    return f"Request for quotation — {qty}{product}, payment secured in escrow [RFQ:{rfq_id}]"
 
 
 async def _dispatch_by_email(
@@ -238,19 +273,7 @@ async def _dispatch_by_email(
         from services.email_gateway.schemas import SendEmailRequest  # type: ignore[import]
         from services.email_gateway.sender import send_email  # type: ignore[import]
 
-        body = (
-            f"Dear {supplier.company_name or 'Supplier'},\n\n{message}\n\n"
-            "Please reply to this e-mail with:\n"
-            "  - your best FOB price per MT in USD, and how long it is valid\n"
-            "  - grade / specification you supply (purity, packaging)\n"
-            "  - minimum order quantity and monthly capacity (MT)\n"
-            "  - lead time from order to FOB, and port of loading\n"
-            "  - certificates you can provide (COA, ISO, FSSAI, Halal…)\n"
-            "  - payment terms\n"
-            "  - your GSTIN and IEC, so we can verify them\n\n"
-            "Keep the reference in the subject line so your quote reaches the right desk.\n\n"
-            "Best regards,\nPortLess Trade Operations\n"
-        )
+        body = rfq_email_body(supplier.company_name, message)
         result = await send_email(SendEmailRequest(
             to_address=supplier.email or "",
             subject=rfq_subject(rfq_id, payload.hs_code, payload.quantity_mt),

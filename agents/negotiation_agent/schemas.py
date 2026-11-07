@@ -202,6 +202,18 @@ class NegotiationSession(BaseModel):
     """Buyer's most recent offer (USD)."""
     current_ask: float | None = None
     """Supplier's most recent ask (USD-equivalent)."""
+    # current_bid / current_ask hold whatever price is on the table with that
+    # party — theirs or our counter. The price strategy (pricing.py) needs the
+    # two apart: what each counterpart itself committed to, and what we last
+    # offered them (our offers only ever move toward the counterpart).
+    buyer_last_offer: float | None = None
+    """Price the BUYER itself last named (USD/MT); None → buyer_target_price."""
+    supplier_last_quote: float | None = None
+    """Price the SUPPLIER itself last named (USD/MT); None → supplier_quote_price."""
+    last_offer_to_buyer: float | None = None
+    """Our last price in an e-mail to the buyer (USD/MT CIF)."""
+    last_offer_to_supplier: float | None = None
+    """Our last price in an e-mail to the supplier (USD/MT)."""
     agreed_price: float | None = None
     realized_cms: float | None = None
     """Final CMS recomputed by Match Engine after agreement."""

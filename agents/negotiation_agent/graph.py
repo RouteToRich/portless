@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, TypedDict
 
 from .config import settings
@@ -25,13 +26,17 @@ from .guards import (
     missing_agreement_info,
     verify_payout_and_margin,
 )
+from . import briefing
 from .llm import get_llm_client
+from .pricing import PriceBand, buyer_band, supplier_band
 from .prompts import (
     BUYER_AGENT_SYSTEM_PROMPT,
     INTENT_CLASSIFIER_SYSTEM_PROMPT,
     ORCHESTRATOR_SYSTEM_PROMPT,
     SUPPLIER_AGENT_SYSTEM_PROMPT,
 )
+from shared.product_label import product_label, product_phrase
+
 from .schemas import (
     AgentRouting,
     NegotiationSession,
@@ -69,6 +74,10 @@ class NegotiationGraphState(TypedDict, total=False):
     supplier_outbound_message: str
     buyer_draft_degraded: bool
     supplier_draft_degraded: bool
+    buyer_draft_flags: list[str]      # extra HITL risk flags (e.g. price_out_of_band)
+    supplier_draft_flags: list[str]
+    buyer_stage: str                  # briefing stage of the e-mail just drafted
+    supplier_stage: str
     buyer_terms: dict[str, Any]
     supplier_terms: dict[str, Any]
     routing: AgentRouting
@@ -135,6 +144,72 @@ def _escape_control_chars_in_strings(candidate: str) -> str:
             if ch == '"':
                 in_string = True
     return "".join(out)
+
+
+_SUBJECT_LINE = re.compile(r"^[ \t]*subject[ \t]*:.*(?:\r?\n|$)", re.IGNORECASE | re.MULTILINE)
+_MD_EMPHASIS = re.compile(r"(\*\*|__)(.+?)\1", re.DOTALL)
+_MD_HEADER = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
+_MD_BULLET = re.compile(r"^(\s*)[*•]\s+", re.MULTILINE)
+
+
+def clean_outbound(text: str | None) -> str:
+    """Make an LLM draft read like a plain-text business e-mail: no markdown
+    emphasis / headers (they arrive as literal ``**`` in a mail client), no
+    "Subject:" line inside the body (the subject is set separately), ``-``
+    bullets, at most one blank line in a row."""
+    if not text:
+        return ""
+    t = _SUBJECT_LINE.sub("", text)
+    t = _MD_EMPHASIS.sub(r"\2", t)
+    t = _MD_HEADER.sub("", t)
+    t = _MD_BULLET.sub(r"\1- ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+def _num(x: float | None) -> float | int | None:
+    """20.0 → 20 so the model writes "20 MT", not "20.0 MT"."""
+    if x is None:
+        return None
+    return int(x) if float(x).is_integer() else x
+
+
+def _buyer_named_price(session: Any, brief: dict[str, Any], price: float) -> bool:
+    named = session.buyer_last_offer or (brief.get("what_they_told_us") or {}).get("their_target_price_usd_per_mt")
+    return bool(named) and abs(float(named) - price) < 0.01
+
+
+def _band_payload(band: PriceBand, rate: float | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "recommended_price_usd_per_mt": band.recommended,
+        "lowest_allowed_usd_per_mt": band.low,
+        "highest_allowed_usd_per_mt": band.high,
+        "is_final_offer": band.final_offer,
+    }
+    if rate:
+        out.update({
+            "recommended_price_inr_per_mt": int(round(band.recommended * rate)),
+            "lowest_allowed_inr_per_mt": int(round(band.low * rate)),
+            "highest_allowed_inr_per_mt": int(round(band.high * rate)),
+        })
+    return out
+
+
+def _settle_price(result: dict[str, Any], band: PriceBand, party: str) -> tuple[float, list[str]]:
+    """The price the draft commits to, kept inside the band. A model price
+    outside it is replaced by the recommended price and the draft is flagged
+    ``price_out_of_band`` (forced human review: the e-mail text may still state
+    the wrong figure)."""
+    raw = result.get("counter_price_usd")
+    try:
+        price = float(raw) if raw is not None else band.recommended
+    except (TypeError, ValueError):
+        price = band.recommended
+    if band.contains(price):
+        return band.clamp(price), []
+    logger.warning("%s draft priced %.2f outside band [%.2f, %.2f] — corrected to %.2f",
+                   party, price, band.low, band.high, band.recommended)
+    return band.recommended, ["price_out_of_band"]
 
 
 def _parse_llm_json(raw: str, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -573,9 +648,22 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
     # raw ask, the midpoint, logistics, or the cost envelope — so the supplier's
     # actual price cannot be recovered from this bound. (The node keeps `ask` only
     # for the deterministic LLM-failure fallback below, never in the payload.)
+    # Bounds come from what the supplier itself committed to (its own last
+    # quote), not from our counter to it — see pricing.py for why that keeps
+    # the margin floor on any pair of prices the two agents can quote.
+    supplier_price = session.supplier_last_quote or session.supplier_quote_price or ask
     denom = max(1.0 - floor_pct / 100.0, 0.01)
-    floor_price = round((ask + logistics + env_total) / denom, 2)
-    midpoint = compute_midpoint_price(bid, ask)  # local only — fallback, not sent
+    floor_price = round((supplier_price + logistics + env_total) / denom, 2)
+    band = buyer_band(
+        buyer_offer=session.buyer_last_offer or bid,
+        supplier_price=supplier_price,
+        costs=logistics + env_total,
+        floor_pct=floor_pct,
+        target_pct=session.policy.target_margin_pct,
+        last_offer_to_buyer=session.last_offer_to_buyer,
+        round_no=session.round_no,
+        max_rounds=session.policy.max_rounds,
+    )
 
     # The inbound message belongs to whoever just replied (state["party"]). Only
     # feed it as the BUYER's inbound when the buyer is actually the one who
@@ -588,11 +676,32 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
     # First outreach = nothing has ever actually been exchanged with THIS buyer:
     # no real party-scoped history and no inbound from them this pass. Driven off
     # real SENT/RECEIVED history, never off is_first_round or a cross-party msg.
-    is_first_contact = not buyer_history and not inbound_from_buyer
+    brief = await briefing.buyer_brief(session, buyer_history, inbound_from_buyer)
+    # The introduction / indicative offer went out before the negotiation thread
+    # existed — a buyer who answered it is not a cold contact any more.
+    is_first_contact = brief["stage"] == briefing.COLD
 
     payload = {
         "buyer_id": session.buyer_id,
+        "buyer_company_name": brief.get("company_name"),
+        "buyer_country": brief.get("country"),
         "product_hs_code": session.product_code,
+        "product_name": product_label(session.product_code),
+        "quantity_mt": _num(session.quantity_mt),
+        "stage": brief["stage"],
+        "what_buyer_told_us": brief["what_they_told_us"],
+        "buyer_reply_to_our_introduction": brief.get("their_reply_to_our_introduction"),
+        "our_earlier_messages": brief["our_earlier_messages"],
+        "missing_information": brief["missing_information"],
+        "pricing": {
+            **_band_payload(band),
+            # True when the recommended price IS the buyer's own target — the
+            # strongest line an e-mail can carry ("we can meet your target").
+            # Only when the buyer really named that price (in a reply or a
+            # counter) — a scan benchmark is OUR estimate, not "your target".
+            "meets_buyer_target": _buyer_named_price(session, brief, band.recommended),
+        },
+        "portless_terms": briefing.buyer_terms(),
         "current_bid": bid,
         "floor_price": floor_price,
         "round_no": session.round_no,
@@ -614,21 +723,26 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
     result = await _chat_json(
         BUYER_AGENT_SYSTEM_PROMPT, payload, "negotiation_agent.buyer_agent",
         fallback={
-            "counter_price_usd": midpoint,
-            "outbound_message": f"Thank you for your offer. We propose USD {midpoint:.2f}/unit CIF.",
-            "negotiated_terms": {"unit_price": midpoint, "currency": "USD"},
+            "counter_price_usd": band.recommended,
+            "outbound_message": (
+                f"We can offer {product_phrase(session.product_code)} at USD {band.recommended:,.2f} per MT "
+                "CIF your destination port, with independent pre-shipment inspection and escrow-protected payment."
+            ),
+            "negotiated_terms": {"unit_price": band.recommended, "currency": "USD"},
             "reasoning": "LLM parse fallback",
         },
     )
 
-    new_bid = float(result.get("counter_price_usd", midpoint))
+    new_bid, flags = _settle_price(result, band, "buyer")
     return {
         **state,
         "current_bid": new_bid,
-        "buyer_outbound_message": result.get("outbound_message", ""),
+        "buyer_outbound_message": clean_outbound(result.get("outbound_message", "")),
         "buyer_draft_degraded": bool(result.get("_degraded")),
+        "buyer_draft_flags": flags,
+        "buyer_stage": brief["stage"],
         "buyer_terms": result.get("negotiated_terms", {}),
-        "reasoning": result.get("reasoning", ""),
+        "reasoning": f"[price: {band.basis}] {result.get('reasoning', '')}".strip(),
     }
 
 
@@ -642,7 +756,11 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
     ask = _current_ask(state)
     logistics = state.get("logistics_cost", 0.0)
     env_total = session.cost_envelope.total() if session.cost_envelope else 0.0
-    implied_max = bid * (1 - session.policy.margin_floor_pct / 100) - logistics - env_total
+    # Ceiling from what the buyer itself offered (not our counter to it); the
+    # supplier is never offered more than its own last quote (pricing.py).
+    buyer_offer = session.buyer_last_offer or session.buyer_target_price or bid
+    implied_max = buyer_offer * (1 - session.policy.margin_floor_pct / 100) - logistics - env_total
+    supplier_own = session.supplier_last_quote or ask
     # Computed here, not by the LLM: a bare "communicate in INR" instruction
     # with no rate supplied previously sent the model into a token-burning
     # spiral trying to guess a conversion (see market_intel.get_usd_inr_rate).
@@ -665,10 +783,29 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
     # is truly the FIRST email ever sent to this supplier.
     supplier_history = state.get("supplier_history", "")
     inbound_from_supplier = (state.get("inbound_message") or "") if state.get("party") == "supplier" else ""
-    is_first_contact = not supplier_history and not inbound_from_supplier
+    brief = await briefing.supplier_brief(session, supplier_history, inbound_from_supplier)
+    # A supplier that answered our RFQ e-mail is not a cold contact.
+    is_first_contact = brief["stage"] == briefing.COLD
+    band = supplier_band(
+        supplier_quote=supplier_own,
+        ceiling=implied_max,
+        last_offer_to_supplier=session.last_offer_to_supplier,
+        round_no=session.round_no,
+        max_rounds=session.policy.max_rounds,
+        opening_discount_pct=settings.supplier_opening_discount_pct,
+    )
 
     payload = {
         "seller_id": session.seller_id,
+        "supplier_company_name": brief.get("company_name"),
+        "product_name": product_label(session.product_code),
+        "quantity_mt": _num(session.quantity_mt),
+        "stage": brief["stage"],
+        "what_supplier_told_us": brief["what_they_told_us"],
+        "our_earlier_messages": brief["our_earlier_messages"],
+        "missing_information": brief["missing_information"],
+        "pricing": _band_payload(band, usd_inr_rate),
+        "portless_terms": briefing.supplier_terms(),
         "current_ask_usd": round(ask, 4),
         "current_ask_inr": ask_inr,
         "implied_max_supplier_price_usd": round(implied_max, 4),
@@ -692,21 +829,27 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
     result = await _chat_json(
         SUPPLIER_AGENT_SYSTEM_PROMPT, payload, "negotiation_agent.supplier_agent",
         fallback={
-            "counter_price_usd": implied_max,
-            "outbound_message": f"We can offer USD {implied_max:.2f}/unit Ex-Works.",
-            "negotiated_terms": {"unit_price": implied_max, "currency": "USD"},
+            "counter_price_usd": band.recommended,
+            "outbound_message": (
+                f"For {product_phrase(session.product_code)} we can place the order at INR "
+                f"{band.recommended * usd_inr_rate:,.0f} per MT FOB (USD {band.recommended:,.2f}), "
+                "with the buyer's payment secured in escrow before the purchase order."
+            ),
+            "negotiated_terms": {"unit_price": band.recommended, "currency": "USD"},
             "reasoning": "LLM parse fallback",
         },
     )
 
-    new_ask = float(result.get("counter_price_usd", implied_max))
+    new_ask, flags = _settle_price(result, band, "supplier")
     return {
         **state,
         "current_ask": new_ask,
-        "supplier_outbound_message": result.get("outbound_message", ""),
+        "supplier_outbound_message": clean_outbound(result.get("outbound_message", "")),
         "supplier_draft_degraded": bool(result.get("_degraded")),
+        "supplier_draft_flags": flags,
+        "supplier_stage": brief["stage"],
         "supplier_terms": result.get("negotiated_terms", {}),
-        "reasoning": result.get("reasoning", ""),
+        "reasoning": f"[price: {band.basis}] {result.get('reasoning', '')}".strip(),
     }
 
 

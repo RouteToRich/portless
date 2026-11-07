@@ -335,7 +335,7 @@ def _email_gate_level(session: NegotiationSession, flags: list[str]) -> str:
     outbound of a negotiation stays human-gated while
     ``hitl_on_first_outbound`` is on.
     """
-    if "degraded_llm_fallback" in flags or "unresolved_placeholders" in flags:
+    if "degraded_llm_fallback" in flags or "unresolved_placeholders" in flags or "price_out_of_band" in flags:
         return "L0"
     if session.round_no == 0 and settings.hitl_on_first_outbound:
         return "L0"
@@ -349,6 +349,7 @@ async def _create_and_gate_email(
     subject: str,
     body: str,
     degraded: bool = False,
+    extra_flags: list[str] | None = None,
 ) -> str:
     """Persist an email draft and create an L0 HITL approval gate.
 
@@ -383,11 +384,14 @@ async def _create_and_gate_email(
 
         preview = body[:150] + ("..." if len(body) > 150 else "")
         flags = draft_risk_flags(body, degraded)
+        flags += [f for f in (extra_flags or []) if f not in flags]
         quality_note = ""
         if "degraded_llm_fallback" in flags:
             quality_note = "⚠ DEGRADED TEMPLATE (LLM unavailable) — edit before sending. "
         elif "unresolved_placeholders" in flags:
             quality_note = "⚠ Contains unresolved [placeholders] — edit before sending. "
+        elif "price_out_of_band" in flags:
+            quality_note = "⚠ Draft quoted a price outside the allowed range — check the figure in the text. "
         approval_req = CreateApprovalRequest(
             deal_id=session.deal_id,
             action="SEND_NEGOTIATION_EMAIL",
@@ -471,6 +475,35 @@ async def _create_agreement_gate(
         )
 
 
+def negotiation_subject(session: NegotiationSession, party: str, stage: str | None) -> str:
+    """Subject line that tells the reader in one glance what this e-mail is for.
+
+    Names the product (catalogue / display name, never a bare "HS 1520" when a
+    name is known), never says "Round N" (reads like a missed thread), and only
+    uses "Re:" when a real thread with this party already exists. Reply mapping
+    relies on headers + the ``[NEG:…]`` token the gateway appends, not this text.
+    """
+    from shared.product_label import product_title
+
+    from .briefing import AFTER_INTRO, CONTINUING
+
+    title = product_title(session.product_code)
+    qty = f"{session.quantity_mt:g} MT" if session.quantity_mt else ""
+    if stage is None:  # legacy callers: infer from the round
+        stage = "cold_introduction" if session.round_no <= 1 else CONTINUING
+    if party == "buyer":
+        if stage == CONTINUING:
+            return f"Re: {title}{' — ' + qty if qty else ''} offer"
+        if stage == AFTER_INTRO:
+            return f"{title} — our offer{' for ' + qty if qty else ''}, CIF your port"
+        return f"{title} from India — CIF offer with independent inspection and escrow"
+    if stage == CONTINUING:
+        return f"Re: {title}{' — ' + qty if qty else ''} order"
+    if stage == AFTER_INTRO:
+        return f"{title} — your quotation and our order offer{' for ' + qty if qty else ''}"
+    return f"{title} export order{' — ' + qty if qty else ''}: payment secured in escrow"
+
+
 async def _post_graph_notify(
     session: NegotiationSession,
     final_state: NegotiationGraphState,
@@ -489,17 +522,8 @@ async def _post_graph_notify(
     # in a cold email reads as if the recipient missed prior messages. Reply
     # threading is unaffected: inbound mapping uses headers + the [NEG:{uuid}]
     # token the Email Gateway appends, never the human-readable subject.
-    first_contact = session.round_no <= 1
-    buyer_subject = (
-        f"Trade Proposal — HS {session.product_code} Supply Partnership"
-        if first_contact
-        else f"PortLess Trade Update — Round {session.round_no}"
-    )
-    supplier_subject = (
-        f"Sourcing Inquiry — HS {session.product_code}"
-        if first_contact
-        else f"PortLess Trade Quote — Round {session.round_no}"
-    )
+    buyer_subject = negotiation_subject(session, "buyer", final_state.get("buyer_stage"))
+    supplier_subject = negotiation_subject(session, "supplier", final_state.get("supplier_stage"))
 
     tasks = []
     if buyer_msg:
@@ -510,6 +534,7 @@ async def _post_graph_notify(
             buyer_subject,
             buyer_msg,
             degraded=bool(final_state.get("buyer_draft_degraded")),
+            extra_flags=final_state.get("buyer_draft_flags") or [],
         ))
     if supplier_msg:
         tasks.append(_create_and_gate_email(
@@ -519,6 +544,7 @@ async def _post_graph_notify(
             supplier_subject,
             supplier_msg,
             degraded=bool(final_state.get("supplier_draft_degraded")),
+            extra_flags=final_state.get("supplier_draft_flags") or [],
         ))
 
     if tasks:
@@ -645,6 +671,15 @@ async def _sync_deal_status(session: NegotiationSession) -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _record_offers(session: NegotiationSession, final_state: NegotiationGraphState) -> None:
+    """Remember the price each drafted e-mail commits to — the price strategy
+    only ever moves our offers toward the counterpart (pricing.py)."""
+    if final_state.get("buyer_outbound_message") and final_state.get("current_bid") is not None:
+        session.last_offer_to_buyer = final_state["current_bid"]
+    if final_state.get("supplier_outbound_message") and final_state.get("current_ask") is not None:
+        session.last_offer_to_supplier = final_state["current_ask"]
+
+
 async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResponse:
     repo = get_repository()
 
@@ -758,6 +793,7 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
     session.round_no = session.round_no + 1
     session.current_bid = final_state.get("current_bid", session.current_bid)
     session.current_ask = final_state.get("current_ask", session.current_ask)
+    _record_offers(session, final_state)
     session.agreed_price = final_state.get("agreed_price")
     session.margin_at_current = final_state.get("current_margin")
     session.hitl_required = final_state.get("hitl_required", False)
@@ -838,8 +874,10 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
         ) or request.counter_price
     elif request.party == "buyer":
         session.current_bid = effective_price
+        session.buyer_last_offer = effective_price
     else:
         session.current_ask = effective_price
+        session.supplier_last_quote = effective_price
 
     # Capture a buyer QC-provider opt-in BEFORE the graph pass so this round's
     # floor/acceptance math already prices the chosen inspector. Deterministic
@@ -923,6 +961,7 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
     session.round_no += 1
     session.current_bid = final_state.get("current_bid", session.current_bid)
     session.current_ask = final_state.get("current_ask", session.current_ask)
+    _record_offers(session, final_state)
     session.agreed_price = final_state.get("agreed_price")
     session.margin_at_current = final_state.get("current_margin")
     session.hitl_required = final_state.get("hitl_required", False)
@@ -1494,6 +1533,7 @@ async def _retry_round_zero(session: NegotiationSession) -> None:
     session.round_no = session.round_no + 1
     session.current_bid = final_state.get("current_bid", session.current_bid)
     session.current_ask = final_state.get("current_ask", session.current_ask)
+    _record_offers(session, final_state)
     session.agreed_price = final_state.get("agreed_price")
     session.margin_at_current = final_state.get("current_margin")
     session.hitl_required = final_state.get("hitl_required", False)

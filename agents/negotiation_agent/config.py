@@ -117,6 +117,14 @@ class NegotiationSettings(BaseSettings):
     network call). Search results matching known prompt-injection patterns are
     discarded before reaching any drafting prompt."""
 
+    # ── Price strategy (pricing.py) ────────────────────────────────────────
+    supplier_opening_discount_pct: float = Field(
+        default=4.0, ge=0.0, le=20.0,
+        validation_alias="NEGOTIATION_SUPPLIER_OPENING_DISCOUNT_PCT",
+    )
+    """First counter to a supplier sits this % under its own quote (never above
+    the margin ceiling, never more than twice this under the quote)."""
+
     # ── Inbound price plausibility band ────────────────────────────────────
     price_band_factor: float = Field(
         default=3.0, validation_alias="NEGOTIATION_PRICE_BAND_FACTOR"

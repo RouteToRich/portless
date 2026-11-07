@@ -93,8 +93,9 @@ def _tpl_pi_issued(ctx: dict[str, Any]) -> tuple[str, str]:
         + (f"  Document         : {link}\n" if link else "")
         + "\nTo proceed, simply reply to this email with \"We accept the Proforma Invoice\". "
         "Once accepted we will open a neutral escrow account and send you the funding "
-        "instructions; your payment stays in escrow and is released only against "
-        "independent inspection and shipping proof."
+        "instructions; your payment stays in escrow and is released in stages — a "
+        "production advance when the order is placed, the rest against independent "
+        "inspection, shipping proof and your acceptance of the goods."
         + _signature()
     )
     return subject, body
@@ -116,7 +117,8 @@ def _tpl_escrow_opened(ctx: dict[str, Any]) -> tuple[str, str]:
         + (f"  Payment link     : {esc.checkout_url}\n" if esc.checkout_url else "")
         + ("\n  Staged release schedule:\n" + tranches if tranches else "")
         + "\nFunds are held by the escrow provider — never by us — and are released only "
-        "against the independent QC report, the shipping bill and the bill of lading. "
+        "on the schedule above: the production advance when the purchase order is placed, "
+        "the rest against the independent QC report, the shipping documents and delivery. "
         "Production starts as soon as the escrow is funded."
         + _signature()
     )

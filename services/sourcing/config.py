@@ -8,11 +8,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
 
+# Never put the buyer's price in here: a supplier who reads "target CIF 900"
+# quotes just under 900 instead of its real price. Available placeholders:
+# {product}, {quantity}, {hs_code}, {deal_id}, {validity_days} — and, for
+# custom templates only, {quantity_mt} / {target_price_usd}.
 _DEFAULT_RFQ_MSG = (
-    "PortLess Trade Agent requesting a formal quotation for {quantity_mt} MT of "
-    "HS-code {hs_code} at a target CIF price of {target_price_usd} USD/unit. "
-    "Deal reference: {deal_id}. Please respond with your best FOB price, lead "
-    "time, and payment terms within {validity_days} days."
+    "We are sourcing {quantity} of {product} (HS {hs_code}) for an overseas buyer and "
+    "would like your best quotation. Our reference: {deal_id}. A reply within "
+    "{validity_days} days keeps you in this order."
 )
 
 

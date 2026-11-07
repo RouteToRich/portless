@@ -429,22 +429,25 @@ def indicative_range(pair: PairScore, buyer_est: pricebook.PriceEstimate | None 
 
 def draft_indicative(deal: Any, cand: Any, pair: PairScore, low: float, high: float,
                      lead_time_days: int | None = None) -> tuple[str, str]:
-    from shared.orchestration.outreach import _entity, _product_label, subject_token
+    from shared.orchestration.outreach import _entity, _greeting, _product_label, subject_token
+    from shared.product_label import product_title
     product = _product_label(deal)
     req = getattr(cand, "requirement", None)
     grade = getattr(req, "grade", None) if req else None
     port = getattr(req, "destination_port", None) if req else None
     inc = pair.buyer_price.incoterm or "CIF"
     lead = f" Lead time about {lead_time_days} days from order." if lead_time_days else ""
-    subject = f"Re: {product.title()} — indicative {inc} price {subject_token(deal.deal_id, cand.candidate_id)}"
+    title = product_title(getattr(deal, "hs_code", "") or "")
+    subject = f"Re: {title} — indicative {inc} price {subject_token(deal.deal_id, cand.candidate_id)}"
     body = (
-        f"Dear {cand.legal_name},\n\n"
+        f"{_greeting(cand)}\n\n"
         f"Thank you for your reply. For {pair.quantity_mt:g} MT of {product}"
         + (f" ({grade})" if grade else "")
         + f", our indicative price is USD {low:,.0f}–{high:,.0f} per MT {inc}"
         + (f" {port}" if port else "")
-        + f", from a GST- and IEC-verified Indian manufacturer.{lead} Payment goes into a neutral escrow "
-        "and is released only against the third-party inspection report and shipping documents.\n\n"
+        + f", from a GST- and IEC-verified Indian manufacturer, inspection by the agency you choose "
+        f"included.{lead} You pay into a neutral escrow, not to us: a production advance is released when "
+        "the order is placed, the rest only after the inspection passes, the goods clear and you accept them.\n\n"
         "Does this range work for you? If you have a target price, tell me and I will see how close we "
         "can get. The indicative price is valid for 7 days; a firm proforma invoice follows once you "
         "confirm grade, quantity and port.\n\n"
