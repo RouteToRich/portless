@@ -264,16 +264,40 @@ async def _cb_send_deal_notification(deal_id: str, payload: dict[str, Any]) -> d
 
 
 async def _cb_confirm_counterparty_risk(deal_id: str, payload: dict[str, Any]) -> dict | None:
-    """Operator accepted a REVIEW screening verdict → issue the Proforma Invoice
-    the NEGOTIATION_AGREED leg held back."""
-    from shared.orchestration.continuations import issue_pi_for_deal
+    """Operator accepted a REVIEW screening verdict → the Proforma Invoice the
+    NEGOTIATION_AGREED leg held back, after the trade-compliance check."""
+    from shared.orchestration.continuations import pi_after_compliance
 
-    pi = await issue_pi_for_deal(
+    pi = await pi_after_compliance(
         deal_id,
         agreed_price=float(payload["agreed_price"]),
         quantity_mt=payload.get("quantity_mt"),
         market=payload.get("market"),
     )
+    if pi is None:
+        return {"status": "pi_withheld_by_compliance"}
+    return {"pi_id": getattr(pi, "pi_id", None), "status": "pi_issued"}
+
+
+async def _cb_confirm_trade_compliance(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Operator accepted the compliance findings → record them (a never-verified
+    HS code becomes confirmed Free) and issue the PI (re-checked first: a new
+    finding asks again, a block still stops it)."""
+    from shared.orchestration import compliance
+    from shared.orchestration.continuations import pi_after_compliance
+
+    await compliance.accept_findings(
+        deal_id, list(payload.get("codes") or []),
+        by=payload.get("resolved_by"), hs_code=payload.get("hs_code"),
+    )
+    pi = await pi_after_compliance(
+        deal_id,
+        agreed_price=float(payload["agreed_price"]),
+        quantity_mt=payload.get("quantity_mt"),
+        market=payload.get("market"),
+    )
+    if pi is None:
+        return {"status": "pi_withheld_by_compliance"}
     return {"pi_id": getattr(pi, "pi_id", None), "status": "pi_issued"}
 
 
@@ -351,6 +375,7 @@ _CALLBACK_MAP = {
     "SEND_DEAL_NOTIFICATION": _cb_send_deal_notification,
     "PARSE_INBOUND_EMAIL": _cb_parse_inbound_email,
     "CONFIRM_COUNTERPARTY_RISK": _cb_confirm_counterparty_risk,
+    "CONFIRM_TRADE_COMPLIANCE": _cb_confirm_trade_compliance,
     "CONFIRM_BUYER_ACCEPTANCE": _cb_confirm_buyer_acceptance,
     "SEND_BUYER_OUTREACH": _cb_send_buyer_outreach,
     "SEND_INDICATIVE_OFFER": _cb_send_indicative_offer,
@@ -378,6 +403,12 @@ async def execute_callback(
         return None
 
     try:
+        accept = callback_payload.get("compliance_accept") if isinstance(callback_payload, dict) else None
+        if accept:
+            # An operator approved a gate that showed open compliance flags:
+            # the review findings are accepted (block-level ones never are).
+            from shared.orchestration import compliance
+            await compliance.accept_findings(deal_id, list(accept), by=callback_payload.get("resolved_by"))
         result = await handler(deal_id, callback_payload)
         logger.info(
             "HITL: callback %s executed for deal %s approval %s → %s",

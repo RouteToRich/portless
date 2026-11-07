@@ -174,13 +174,37 @@ class ChaFilingRequest(BaseModel):
 
 
 class QcWebhookPayload(BaseModel):
-    """Inbound webhook from QC provider with inspection result."""
+    """Inbound webhook from QC provider with inspection result.
+
+    When the inspector also supervised the container stuffing, the loading
+    fields carry what went into the container and the seal applied."""
     ext_ref: str
     result: Literal["PASS", "FAIL"]
     report_url: str | None = None
     crf_hash: str | None = None
     completed_at: str | None = None
     notes: str | None = None
+    container_numbers: list[str] = Field(default_factory=list)
+    seal_numbers: list[str] = Field(default_factory=list)
+    loaded_quantity_mt: float | None = None
+    loaded_hs_code: str | None = None
+    goods_description: str | None = None
+    photos: list[str] = Field(default_factory=list)
+
+
+class LoadingRecordRequest(BaseModel):
+    """Supervised loading (stuffing) record: what went into which container
+    under which seal — from the inspector's report, entered by an operator or
+    posted by the inspection provider."""
+    container_numbers: list[str] = Field(min_length=1)
+    seal_numbers: list[str] = Field(min_length=1)
+    loaded_quantity_mt: float | None = None
+    hs_code: str | None = None
+    goods_description: str | None = None
+    inspector_ref: str | None = None
+    photos: list[str] = Field(default_factory=list)
+    """Links to stuffing / seal photos."""
+    source: str = "operator"
 
 
 FreightMilestone = Literal["DEPARTED", "IN_TRANSIT", "ARRIVED", "CLEARED", "DELIVERED"]
@@ -193,6 +217,9 @@ class FreightMilestonePayload(BaseModel):
     location: str | None = None
     timestamp: str | None = None
     notes: str | None = None
+    seal_numbers: list[str] = Field(default_factory=list)
+    """Seal number(s) on the bill of lading — must match the inspector's seal."""
+    container_number: str | None = None
 
 
 class RecordMilestoneRequest(BaseModel):
@@ -202,6 +229,8 @@ class RecordMilestoneRequest(BaseModel):
     timestamp: str | None = None
     notes: str | None = None
     source: str = "operator"
+    seal_numbers: list[str] = Field(default_factory=list)
+    container_number: str | None = None
 
 
 # ---------------------------------------------------------------------------

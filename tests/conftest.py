@@ -26,3 +26,11 @@ os.environ["APIFY_TOKEN_AUTODISCOVER"] = "false"
 # with a mocked transport in tests/llm_gateway/test_remote.py.
 os.environ["MONGO_URI"] = ""
 os.environ["LLM_GATEWAY_URL"] = ""
+
+# Trade compliance (shared/orchestration/compliance.py) is on by default and
+# holds most fixtures (an unconfirmed HS code is a REVIEW, a deal without an
+# inspector's seal never gets a freight gate). The pipeline tests exercise the
+# flow around it, so the suite runs with it off; tests/test_compliance.py turns
+# it on per test.
+os.environ["COMPLIANCE_ENABLED"] = "false"
+os.environ["COMPLIANCE_LOADING_CHECK_REQUIRED"] = "false"

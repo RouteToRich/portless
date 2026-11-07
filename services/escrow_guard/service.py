@@ -408,6 +408,8 @@ async def handle_escrow_funded_webhook(
         "amount": hold.amount,
         "funded_amount": funded_amount,
         "currency": hold.currency,
+        "payer_name": payload.payer_name,
+        "payer_country": payload.payer_country,
     })
 
     logger.info("EscrowGuard: hold %s funded for deal %s", hold.escrow_id, hold.deal_id)

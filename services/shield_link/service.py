@@ -66,6 +66,7 @@ from .schemas import (
     FreightMilestonePayload,
     FreightQuoteRequest,
     FreightQuoteResponse,
+    LoadingRecordRequest,
     QcBookingRequest,
     QcProviderInfo,
     QcProvidersResponse,
@@ -301,6 +302,9 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False) -> Third
             "pickup_ready_at": req.pickup_ready_at or "",
             "hs_code": req.hs_code or getattr(deal, "hs_code", ""),
             "quantity_mt": req.quantity_mt or 0.0,
+            # Pre-shipment inspection AND supervision of the container
+            # stuffing + sealing, so what was inspected is what ships.
+            "services": _qc_services(),
         })
     except ConnectorError as exc:
         failed = record.model_copy(update={"status": "FAILED", "updated_at": datetime.now(timezone.utc)})
@@ -384,6 +388,12 @@ async def handle_qc_result(
             "ext_ref": ext_ref,
             "crf_hash": payload.crf_hash,
             "report_url": payload.report_url,
+            "container_numbers": payload.container_numbers,
+            "seal_numbers": payload.seal_numbers,
+            "loaded_quantity_mt": payload.loaded_quantity_mt,
+            "loaded_hs_code": payload.loaded_hs_code,
+            "goods_description": payload.goods_description,
+            "photos": payload.photos,
         })
     else:
         try:
@@ -577,6 +587,7 @@ async def handle_freight_milestone(
     return await _apply_milestone(
         tpo, payload.milestone, location=payload.location, timestamp=payload.timestamp,
         notes=payload.notes, source="webhook",
+        seal_numbers=payload.seal_numbers, container_number=payload.container_number,
     )
 
 
@@ -588,6 +599,8 @@ async def _apply_milestone(
     timestamp: str | None = None,
     notes: str | None = None,
     source: str = "webhook",
+    seal_numbers: list[str] | None = None,
+    container_number: str | None = None,
 ) -> dict[str, str]:
     """Record one carrier milestone on the freight order (webhook, tracking
     poll or operator) and move the deal: ARRIVED/CLEARED → CLEARED; DELIVERED
@@ -609,6 +622,7 @@ async def _apply_milestone(
         "last_milestone_at": now,
         "last_milestone_source": source,
         "delivered_at": now if milestone == "DELIVERED" and tpo.delivered_at is None else tpo.delivered_at,
+        "container_number": container_number or tpo.container_number,
         "updated_at": now,
     })
     await repo.save(updated)
@@ -622,6 +636,8 @@ async def _apply_milestone(
         "notes": notes,
         "source": source,
         "delivered_at": updated.delivered_at.isoformat() if updated.delivered_at else None,
+        "seal_numbers": list(seal_numbers or []),
+        "container_number": container_number,
     })
 
     if milestone in ("ARRIVED", "CLEARED"):
@@ -663,7 +679,36 @@ async def record_milestone(ref: str, req: RecordMilestoneRequest) -> dict[str, s
         raise TpoNotFoundError(ref)
     return await _apply_milestone(
         tpo, req.milestone, location=req.location, timestamp=req.timestamp, notes=req.notes, source=req.source,
+        seal_numbers=req.seal_numbers, container_number=req.container_number,
     )
+
+
+def _qc_services() -> list[str]:
+    from shared.orchestration.compliance import loading_check_required
+    return ["PRE_SHIPMENT_INSPECTION"] + (["LOADING_SUPERVISION"] if loading_check_required() else [])
+
+
+async def record_loading(deal_id: str, req: LoadingRecordRequest) -> dict[str, Any]:
+    """Store the supervised-loading record (container, seal, loaded quantity)
+    and emit ``shipment.loading_recorded`` — the shipment compliance check then
+    decides whether the QC tranche and the freight booking go ahead."""
+    from shared.orchestration import compliance
+    await _fetch_deal(deal_id)
+    rec = await compliance.record_loading(deal_id, compliance.LoadingRecord(
+        container_numbers=req.container_numbers, seal_numbers=req.seal_numbers,
+        loaded_quantity_mt=req.loaded_quantity_mt, hs_code=req.hs_code,
+        goods_description=req.goods_description, inspector_ref=req.inspector_ref,
+        photos=req.photos, source=req.source,
+    ))
+    await _emit(EventTopic.LOADING_RECORDED, deal_id, {
+        "container_numbers": rec.loading.container_numbers if rec.loading else [],
+        "seal_numbers": rec.loading.seal_numbers if rec.loading else [],
+        "source": req.source,
+    })
+    logger.info("ShieldLink: loading recorded for deal %s (seals %s)", deal_id,
+                rec.loading.seal_numbers if rec.loading else [])
+    return {"status": "ok", "deal_id": deal_id,
+            "loading": rec.loading.model_dump(mode="json") if rec.loading else None}
 
 
 async def poll_tracking(deal_id: str) -> dict[str, Any]:

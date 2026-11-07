@@ -272,6 +272,25 @@ def evaluate() -> dict[str, Any]:
         fail_detail="AUTH_TRUST_GATEWAY_HEADERS=true — X-User-* headers are believed; only safe while nothing but the gateway can reach this service",
     ))
 
+    # ── Trade compliance (shared/orchestration/compliance.py) ─────────────
+    checks.append(_check(
+        "compliance_trade", "compliance", "Trade compliance check", _flag("COMPLIANCE_ENABLED", "true"),
+        ok_detail="HS export policy, destination, parties and prices are checked before outreach and the PI",
+        fail_detail="COMPLIANCE_ENABLED=false — prohibited / SCOMET products and embargoed destinations are not stopped",
+    ))
+    checks.append(_check(
+        "compliance_loading", "compliance", "Supervised loading + seal",
+        _flag("COMPLIANCE_LOADING_CHECK_REQUIRED", "true"),
+        ok_detail="freight and the QC tranche wait for the inspector's container + seal record",
+        fail_detail="COMPLIANCE_LOADING_CHECK_REQUIRED=false — nothing proves the container holds only the inspected goods",
+    ))
+    checks.append(_check(
+        "compliance_unscreened", "compliance", "Unscreened parties stop the PI",
+        (os.getenv("COMPLIANCE_UNCHECKED_SCREENING") or "review").strip().lower() in ("review", "block"),
+        ok_detail="a party whose sanctions screening never ran needs an operator before the PI",
+        fail_detail="COMPLIANCE_UNCHECKED_SCREENING=allow — a PI can go to a never-screened buyer",
+    ))
+
     failures = [c for c in checks if c["status"] == "fail"]
     warnings = [c for c in checks if c["status"] == "warn"]
     return {

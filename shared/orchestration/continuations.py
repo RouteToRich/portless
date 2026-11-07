@@ -206,6 +206,16 @@ async def _create_gate(
     flags = list(risk_flags or [])
     if spec and spec.threshold_applied and not autonomy_level:
         flags.append("auto_approved_below_value_threshold")
+    if action in _COMPLIANCE_HELD_ACTIONS:
+        # An open trade-compliance finding (product / destination / payer /
+        # loading / seal) puts a human on every money or commitment step.
+        from shared.orchestration import compliance
+        held = await compliance.hold_flags(deal_id)
+        if held:
+            level = "L0"
+            flags += [f for f in held if f not in flags]
+            callback_payload = {**callback_payload,
+                                "compliance_accept": [f.split(":", 1)[1] for f in held]}
     await create_approval(CreateApprovalRequest(
         deal_id=deal_id, action=action, summary=summary,
         financial_impact_usd=financial_impact_usd,
@@ -216,6 +226,12 @@ async def _create_gate(
         callback_payload=callback_payload,
         idempotency_key=idempotency_key,
     ))
+
+
+_COMPLIANCE_HELD_ACTIONS = frozenset({
+    "ISSUE_PO", "BOOK_FREIGHT", "FILE_CUSTOMS", "RELEASE_ESCROW_TRANCHE",
+    "RELEASE_SUPPLIER_PAYOUT", "CONFIRM_BUYER_ACCEPTANCE",
+})
 
 
 def _deal_quantity(deal) -> float:
@@ -560,6 +576,24 @@ async def on_deal_created(event: DomainEvent) -> None:
                 verdict = enrichment.screening_verdict(deal, role)
                 if verdict in ("review", "block"):
                     risk_flags.append(f"{role}_sanctions_{verdict}")
+    # Trade compliance: a prohibited / SCOMET product or an embargoed
+    # destination stops the prospect before a single e-mail goes out.
+    from shared.orchestration import compliance
+    if compliance.enabled():
+        check = await _best_effort("DEAL_CREATED→COMPLIANCE", deal_id,
+                                   compliance.check_trade(deal, stage="deal_created"))
+        if check is not None and check.status == "block":
+            await _publish_exception(
+                deal_id, "DEAL_CREATED→COMPLIANCE_BLOCK",
+                f"trade compliance BLOCK — {check.summary()}",
+                {"category": "APPROVAL_REJECTED", "compliance": "block",
+                 "findings": [f.model_dump() for f in check.blocks],
+                 "action_required": "compliance_block_review"},
+            )
+            logger.error("Continuation: deal %s STOPPED at creation — %s", deal_id, check.summary())
+            return
+        if check is not None:
+            risk_flags += [f"compliance:{f.code}" for f in check.reviews]
     # Buyer outreach funnel: introduce PortLess to the identified buyers now,
     # in parallel with the supplier RFQ — the negotiation waits for a "yes".
     from shared.orchestration import outreach
@@ -991,20 +1025,72 @@ async def on_negotiation_agreed(event: DomainEvent) -> None:
     if verdict == "unchecked":
         logger.warning(
             "Continuation: buyer of deal %s is UNSCREENED (no APIFY_TOKEN / actor unavailable) — "
-            "PI proceeds; configure the counterparty-check actor for production", deal_id,
+            "the trade-compliance check decides (COMPLIANCE_UNCHECKED_SCREENING)", deal_id,
         )
 
     try:
-        pi = await issue_pi_for_deal(
+        pi = await pi_after_compliance(
             deal_id, agreed_price=float(agreed_price), quantity_mt=quantity_mt,
-            market=getattr(deal, "market", None),
+            market=getattr(deal, "market", None), deal=deal,
         )
-        logger.info(
-            "Continuation: PI %s issued for deal %s at %s × %s MT (event %s)",
-            pi.pi_id, deal_id, agreed_price, quantity_mt, event.event_id,
-        )
+        if pi is not None:
+            logger.info(
+                "Continuation: PI %s issued for deal %s at %s × %s MT (event %s)",
+                pi.pi_id, deal_id, agreed_price, quantity_mt, event.event_id,
+            )
     except Exception as exc:
         await _emit_exception(deal_id, "NEGOTIATION_AGREED→PI_SENT", exc)
+
+
+async def pi_after_compliance(
+    deal_id: str, *, agreed_price: float, quantity_mt: float | None, market: str | None, deal=None,
+):
+    """Run the trade-compliance check, then issue the PI — or stop (block →
+    deal.exception) or ask (review → CONFIRM_TRADE_COMPLIANCE, L0). Returns the
+    PI, or None when it was withheld. Shared by the AGREED leg and the
+    counterparty-risk / compliance approve callbacks."""
+    from shared.orchestration import compliance
+    if compliance.enabled():
+        if deal is None:
+            from services.deals.service import get_deal  # type: ignore[import]
+            deal = await get_deal(deal_id)
+        supplier_ask, qty = await _negotiation_numbers(deal_id, deal)
+        quantity_mt = quantity_mt or qty
+        check = await compliance.check_trade(
+            deal, stage="pre_pi", buyer_price=float(agreed_price), supplier_price=supplier_ask,
+        )
+        if check.status == "block":
+            await _publish_exception(
+                deal_id, "NEGOTIATION_AGREED→COMPLIANCE_BLOCK",
+                f"trade compliance BLOCK — Proforma Invoice withheld: {check.summary()}",
+                {"category": "APPROVAL_REJECTED", "compliance": "block",
+                 "findings": [f.model_dump() for f in check.blocks],
+                 "action_required": "compliance_block_review"},
+            )
+            logger.error("Continuation: PI for deal %s WITHHELD — %s", deal_id, check.summary())
+            return None
+        if check.status == "review":
+            codes = sorted(f.code for f in check.reviews)
+            await _create_gate(
+                deal_id, "CONFIRM_TRADE_COMPLIANCE",
+                summary=(f"Trade compliance REVIEW before the PI ({agreed_price} × {quantity_mt} MT): "
+                         f"{check.summary()}")[:900],
+                financial_impact_usd=round(float(agreed_price) * float(quantity_mt or 0), 2),
+                callback_payload={
+                    "deal_id": deal_id, "agreed_price": float(agreed_price),
+                    "quantity_mt": quantity_mt, "market": market,
+                    "hs_code": getattr(deal, "hs_code", None),
+                    "codes": codes,
+                    "findings": [f.model_dump() for f in check.reviews],
+                },
+                idempotency_key=f"auto-compliance-{deal_id}-{'-'.join(codes)}"[:200],
+                autonomy_level="L0",
+                risk_flags=[f"compliance:{c}" for c in codes],
+                deal=deal,
+            )
+            logger.info("Continuation: CONFIRM_TRADE_COMPLIANCE gate for deal %s (%s)", deal_id, codes)
+            return None
+    return await issue_pi_for_deal(deal_id, agreed_price=agreed_price, quantity_mt=quantity_mt, market=market)
 
 
 async def issue_pi_for_deal(
@@ -1200,6 +1286,12 @@ async def on_escrow_funded(event: DomainEvent) -> None:
     deal = await _get_deal_in_status(deal_id, "ESCROW_FUNDED", "ESCROW_FUNDED→PO_GATE")
     if deal is None:
         return
+    from shared.orchestration import compliance
+    if compliance.enabled():
+        # Third-party payments are the classic laundering route: the money
+        # must come from the buyer (a finding holds the PO gate at L0).
+        await _best_effort("ESCROW_FUNDED→PAYER", deal_id,
+                           compliance.check_payer(deal, event.payload or {}))
     try:
         supplier_ask, quantity_mt = await _negotiation_numbers(deal_id, deal)
         if not supplier_ask:
@@ -1346,27 +1438,107 @@ async def on_qc_passed(event: DomainEvent) -> None:
         return
     payload = event.payload or {}
     await _best_effort("QC_PASSED→DOCS", deal_id, _generate_documents(deal_id))
+    from shared.orchestration import compliance
+    if compliance.loading_check_required():
+        if payload.get("seal_numbers"):
+            # The inspector supervised the stuffing as part of the QC visit.
+            await _best_effort("QC_PASSED→LOADING", deal_id, compliance.record_loading(
+                deal_id, compliance.LoadingRecord(
+                    container_numbers=payload.get("container_numbers") or [],
+                    seal_numbers=payload.get("seal_numbers") or [],
+                    loaded_quantity_mt=payload.get("loaded_quantity_mt"),
+                    hs_code=payload.get("loaded_hs_code"),
+                    goods_description=payload.get("goods_description"),
+                    inspector_ref=payload.get("ext_ref"),
+                    photos=payload.get("photos") or [],
+                    source="qc_webhook",
+                )))
+        await _after_loading_check(deal, stage="QC_PASSED")
+        return
+    await _qc_tranche_and_freight(deal, payload)
+
+
+async def _qc_proof(deal_id: str) -> dict[str, Any]:
+    """The completed QC order's proof (report hash / url / ref) for the T2 tranche."""
+    try:
+        from services.shield_link.repository import get_repository as _sl_repo  # type: ignore[import]
+        orders = [o for o in await _sl_repo().list_by_deal(deal_id)
+                  if o.order_type == "QC" and o.qc_result == "PASS"]
+        if orders:
+            o = max(orders, key=lambda x: x.updated_at)
+            return {"crf_hash": o.crf_hash, "report_url": o.qc_report_url, "ext_ref": o.ext_ref}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Continuation: QC proof lookup failed for %s: %s", deal_id, exc)
+    return {}
+
+
+async def _after_loading_check(deal, *, stage: str) -> None:
+    """Shipment compliance: container + seal on record and consistent with the
+    paperwork → QC tranche + freight gates (review findings hold them at L0);
+    nothing on record yet → wait; mismatch → deal.exception."""
+    from shared.orchestration import compliance
+    deal_id = deal.deal_id
+    check = await compliance.check_shipment(deal)
+    if check.status == "block":
+        if [f for f in check.blocks if f.code != "loading_not_verified"]:
+            await _publish_exception(
+                deal_id, f"{stage}→SHIPMENT_COMPLIANCE",
+                f"container does not match the deal — {check.summary()}",
+                {"category": "QC_FAILED", "compliance": "block",
+                 "findings": [f.model_dump() for f in check.blocks],
+                 "action_required": "stop_shipment_and_reinspect"},
+            )
+        else:
+            logger.info(
+                "Continuation[%s]: deal %s waits for the supervised loading (container + seal) "
+                "— POST /shield-link/deals/%s/loading or the inspector's webhook", stage, deal_id, deal_id,
+            )
+        return
+    rec = await compliance.get_record(deal_id)
+    await _qc_tranche_and_freight(deal, await _qc_proof(deal_id), loading=rec.loading)
+
+
+async def _qc_tranche_and_freight(deal, payload: dict[str, Any], loading=None) -> None:
+    deal_id = deal.deal_id
     await _best_effort(
         "QC_PASSED→TRANCHE_T2", deal_id,
         _tranche_gate(
             deal, "QC_PASSED",
-            [payload.get("crf_hash") or "", payload.get("report_url") or "", payload.get("ext_ref") or ""],
+            [payload.get("crf_hash") or "", payload.get("report_url") or "", payload.get("ext_ref") or ""]
+            + (list(loading.seal_numbers) if loading else []),
             "QC_PASSED→TRANCHE_T2",
         ),
     )
     try:
+        seal_text = (f" — container {', '.join(loading.container_numbers)} sealed "
+                     f"{', '.join(loading.seal_numbers)}") if loading else ""
         await _create_gate(
             deal_id, "BOOK_FREIGHT",
-            summary=f"QC passed — book freight for deal {deal_id}",
+            summary=f"QC passed — book freight for deal {deal_id}{seal_text}",
             financial_impact_usd=None,
-            callback_payload={"deal_id": deal_id, "provider": "cogoport", "incoterm": "FOB"},
+            callback_payload={"deal_id": deal_id, "provider": "cogoport", "incoterm": "FOB",
+                              **({"container_numbers": loading.container_numbers,
+                                  "seal_numbers": loading.seal_numbers} if loading else {})},
             idempotency_key=f"auto-freight-gate-{deal_id}",
             deal=deal,
         )
-        logger.info("Continuation: BOOK_FREIGHT gate created for deal %s (event %s)",
-                    deal_id, event.event_id)
+        logger.info("Continuation: BOOK_FREIGHT gate created for deal %s", deal_id)
     except Exception as exc:
         await _emit_exception(deal_id, "QC_PASSED→BOOK_FREIGHT_GATE", exc)
+
+
+async def on_loading_recorded(event: DomainEvent) -> None:
+    """The inspector's stuffing / seal record arrived after QC passed → run the
+    shipment check and, when it holds, gate the QC tranche and freight."""
+    if not _enabled():
+        return
+    deal = await _get_deal_in_status(event.deal_id, "QC_PASSED", "LOADING_RECORDED")
+    if deal is None:
+        return
+    try:
+        await _after_loading_check(deal, stage="LOADING_RECORDED")
+    except Exception as exc:
+        await _emit_exception(event.deal_id, "LOADING_RECORDED→FREIGHT_GATE", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1701,6 +1873,17 @@ async def on_freight_milestone(event: DomainEvent) -> None:
     deal_id = event.deal_id
     payload = event.payload or {}
     milestone = str(payload.get("milestone") or "").upper()
+    if deal_id and payload.get("seal_numbers"):
+        from shared.orchestration import compliance
+        finding = await _best_effort("FREIGHT_MILESTONE→SEAL", deal_id,
+                                     compliance.check_seal(deal_id, payload.get("seal_numbers") or []))
+        if finding is not None:
+            await _publish_exception(
+                deal_id, "FREIGHT_MILESTONE→SEAL_MISMATCH", finding.message,
+                {"category": "CUSTOMS_REJECTED", "compliance": "block",
+                 "findings": [finding.model_dump()],
+                 "action_required": "inspect_container_before_release"},
+            )
     if not deal_id or milestone not in _inspection_window_milestones():
         return
     try:
@@ -1888,6 +2071,7 @@ def register_continuations(bus) -> None:
     bus.subscribe(EventTopic.FREIGHT_BOOKED, on_freight_booked)
     bus.subscribe(EventTopic.CUSTOMS_CLEARED, on_customs_cleared)
     bus.subscribe(EventTopic.FREIGHT_MILESTONE, on_freight_milestone)
+    bus.subscribe(EventTopic.LOADING_RECORDED, on_loading_recorded)
     bus.subscribe(EventTopic.ESCROW_INSPECTION_OPENED, on_escrow_inspection_opened)
     bus.subscribe(EventTopic.ESCROW_TRANCHE_RELEASED, on_escrow_tranche_released)
     bus.subscribe(EventTopic.ESCROW_SETTLED, on_escrow_settled)

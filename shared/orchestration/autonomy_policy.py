@@ -145,6 +145,13 @@ ACTION_CLASSES: tuple[ActionClass, ...] = (
         default="L0",
     ),
     ActionClass(
+        "CONFIRM_TRADE_COMPLIANCE", "Trade Compliance",
+        "Product export policy (ITC-HS / SCOMET), destination, unscreened party, related "
+        "parties or an off-market price need a look before the Proforma Invoice. Always asks; "
+        "a BLOCK (prohibited product, embargoed destination) never reaches a gate.",
+        default="L0",
+    ),
+    ActionClass(
         "CONFIRM_PI_ACCEPTANCE", "PI Acceptance",
         "Accept the Proforma Invoice when the buyer's email reply reads as an acceptance.",
         default="L0", default_timeout_seconds=_DAY, default_on_timeout="APPROVE",

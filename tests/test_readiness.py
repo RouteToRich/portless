@@ -28,6 +28,8 @@ def bare_env(monkeypatch):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("APIFY_TOKEN", "")
     monkeypatch.setenv("APIFY_TOKEN_AUTODISCOVER", "false")
+    for v in ("COMPLIANCE_ENABLED", "COMPLIANCE_LOADING_CHECK_REQUIRED", "COMPLIANCE_UNCHECKED_SCREENING"):
+        monkeypatch.delenv(v, raising=False)  # conftest pins compliance off for the pipeline tests
     from shared.config import settings
     monkeypatch.setattr(settings, "mongo_uri", "")
     from services.dealmaker.config import settings as dm
@@ -112,3 +114,12 @@ def test_auth_checks(bare_env):
     ids = {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}
     assert ids["auth_gateway"] == "ok" and ids["auth_account"] == "ok"
     assert ids["auth_header_trust"] == "warn"
+
+
+def test_compliance_switched_off_fails_in_production(bare_env):
+    _fill(bare_env)
+    bare_env.setenv("COMPLIANCE_ENABLED", "false")
+    bare_env.setenv("COMPLIANCE_LOADING_CHECK_REQUIRED", "false")
+    bare_env.setenv("COMPLIANCE_UNCHECKED_SCREENING", "allow")
+    ids = {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}
+    assert ids["compliance_trade"] == ids["compliance_loading"] == ids["compliance_unscreened"] == "fail"

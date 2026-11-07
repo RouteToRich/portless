@@ -47,6 +47,9 @@ class EventTopic(str, Enum):
     """The provider confirmed less than the Proforma Invoice total — the deal
     stays ESCROW_PENDING until the balance arrives."""
     COUNTERPARTY_SCREENED = "counterparty.screened"
+    LOADING_RECORDED = "shipment.loading_recorded"
+    """The inspector's supervised-loading record (container + seal numbers,
+    loaded quantity) arrived — the shipment compliance check runs."""
     ESCROW_INSPECTION_OPENED = "escrow.inspection_opened"
     """The buyer's acceptance window for the final tranche started (goods delivered)."""
     BUYER_INTERESTED = "buyer.interested"

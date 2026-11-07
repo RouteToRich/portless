@@ -218,6 +218,9 @@ class EscrowFundedWebhookPayload(BaseModel):
     currency: str | None = None
     event_id: str | None = None
     """Provider event id — a replayed id is acknowledged and ignored."""
+    payer_name: str | None = None
+    """Account holder the funds came from (compliance: must be the buyer)."""
+    payer_country: str | None = None
 
 
 class PayoutWebhookPayload(BaseModel):

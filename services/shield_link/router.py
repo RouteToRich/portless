@@ -26,6 +26,7 @@ from .schemas import (
     FreightMilestonePayload,
     FreightQuoteRequest,
     FreightQuoteResponse,
+    LoadingRecordRequest,
     QcBookingRequest,
     QcProvidersResponse,
     QcQuoteRequest,
@@ -52,6 +53,7 @@ from .service import (
     poll_tracking,
     quote_freight,
     quote_qc,
+    record_loading,
     record_milestone,
 )
 
@@ -161,6 +163,17 @@ async def api_record_milestone(ref: str, req: RecordMilestoneRequest) -> dict[st
     try:
         return await record_milestone(ref, req)
     except TpoNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post("/deals/{deal_id}/loading")
+async def api_record_loading(deal_id: str, req: LoadingRecordRequest) -> dict[str, Any]:
+    """Supervised loading record from the inspector (container + seal numbers,
+    loaded quantity, HS code, photos). Freight and the QC-stage tranche are
+    gated only once this matches the PI / PO."""
+    try:
+        return await record_loading(deal_id, req)
+    except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 

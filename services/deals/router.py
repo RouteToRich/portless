@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from shared.auth.dependencies import AuthUser, get_current_user, require_org_scope
+from shared.auth.dependencies import AuthUser, get_current_user, require_org_scope, require_portless
 
 from . import service
 from .schemas import (
@@ -23,6 +23,46 @@ from .schemas import (
 from .service import DealNotFoundError, InvalidTransitionError
 
 router = APIRouter(prefix="/deals", tags=["deals"])
+
+
+# ---------------------------------------------------------------------------
+# Trade compliance — HS export-policy confirmations (platform-wide, staff only).
+# Declared before the /{deal_id} routes so "compliance" is never read as an id.
+# ---------------------------------------------------------------------------
+
+class HsPolicyUpdate(BaseModel):
+    status: str
+    """free · licensed · restricted · prohibited · scomet · state_trading · dual_use"""
+    note: str | None = None
+    licence_ref: str | None = None
+    """DGFT export authorisation / SCOMET licence number when status=licensed."""
+
+
+@router.get("/compliance/hs-policy")
+async def list_hs_policy(user: AuthUser = Depends(require_portless)) -> dict:
+    """Operator-confirmed export policy per HS code, plus the built-in seed list."""
+    from shared.orchestration import compliance
+    return {
+        "confirmed": [e.model_dump(mode="json") for e in await compliance.list_hs_policy()],
+        "seed": {k: {"status": v[0], "note": v[1]} for k, v in compliance.HS_POLICY_SEED.items()},
+    }
+
+
+@router.put("/compliance/hs-policy/{hs_code}")
+async def put_hs_policy(hs_code: str, body: HsPolicyUpdate, user: AuthUser = Depends(require_portless)) -> dict:
+    """Record the result of checking an HS code against ITC-HS Schedule 2 / SCOMET."""
+    from shared.orchestration import compliance
+    try:
+        entry = compliance.HsPolicyEntry(
+            hs_code=hs_code, status=body.status, note=body.note, licence_ref=body.licence_ref,
+            confirmed_by=getattr(user, "email", None) or getattr(user, "user_id", None),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    if entry.status == "licensed" and not entry.licence_ref:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="status=licensed needs the licence_ref")
+    return (await compliance.set_hs_policy(entry)).model_dump(mode="json")
 
 
 async def _org_deal(deal_id: str, user: AuthUser) -> DealRecord:
@@ -194,6 +234,33 @@ async def enrich_deal(
     except DealNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return EnrichmentResult(**result)
+
+
+# ---------------------------------------------------------------------------
+# Trade compliance per deal
+# ---------------------------------------------------------------------------
+
+@router.get("/{deal_id}/compliance")
+async def deal_compliance(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Trade check, payer check, supervised loading + seal, shipment check and
+    the open holds (flags that keep every money / commitment gate at L0)."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import compliance
+    return (await compliance.get_record(deal_id)).model_dump(mode="json")
+
+
+@router.post("/{deal_id}/compliance/check")
+async def deal_compliance_check(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Re-run the trade check now (e.g. after confirming an HS code or fixing a party)."""
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import compliance
+    from shared.orchestration.continuations import _negotiation_numbers
+    supplier_ask, _ = await _negotiation_numbers(deal_id, deal)
+    result = await compliance.check_trade(
+        deal, stage="manual", buyer_price=getattr(deal, "buyer_target_price_usd", None),
+        supplier_price=supplier_ask,
+    )
+    return result.model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------

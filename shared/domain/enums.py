@@ -95,6 +95,10 @@ class ApprovalAction(str, Enum):
     deal exception. A ``block`` verdict never reaches this gate — it stops the
     deal outright."""
     CONFIRM_BUYER_ACCEPTANCE = "CONFIRM_BUYER_ACCEPTANCE"
+    CONFIRM_TRADE_COMPLIANCE = "CONFIRM_TRADE_COMPLIANCE"
+    """Trade-compliance REVIEW before the Proforma Invoice (product export
+    policy, destination, unscreened party, related parties, off-market price)
+    → an operator accepts the findings; APPROVE issues the PI. Always L0."""
     SEND_BUYER_OUTREACH = "SEND_BUYER_OUTREACH"
     SEND_INDICATIVE_OFFER = "SEND_INDICATIVE_OFFER"
     CONFIRM_MATCH = "CONFIRM_MATCH"
