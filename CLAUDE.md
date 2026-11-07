@@ -61,6 +61,7 @@ pytest tests/test_gate_policy_v2.py       # gate timeouts / on-timeout defaults 
 pytest tests/test_batch_b.py              # buyer outreach funnel, catalogue, carrier tracking + delivery window, resolver playbooks, Apify run budget
 pytest tests/test_batch_c.py              # four-eyes approvals, double-entry journal, timeline + evidence pack, Telegram + digest
 pytest tests/test_negotiation_drafting.py # price bands + margin guarantee, briefing stages, draft hygiene, RFQ / outreach templates
+pytest tests/test_negotiation_routing.py  # right e-mail to the right party: send preflight, sender verification, RFQ/outreach matching, memory scoping
 pytest -k "test_name" -q                  # single test by name
 
 # API connectivity check (trade-min third-party APIs)
@@ -251,6 +252,13 @@ Every gate above is created from `resolve_gate(action, deal, amount=, conditions
 - Status lifecycle: `OPEN` → `ANALYZING` → `REMEDIATING` → `RESOLVED` | `ESCALATED` | `UNRESOLVABLE`.
 - `UNRESOLVABLE` means the agent crashed OR HITL creation failed — always requires manual intervention.
 - The LLM prompt returns strict JSON; markdown fences are stripped automatically before parsing.
+
+### Right e-mail, right counterparty (`agents/negotiation_agent/email_safety.py`)
+
+Many deals run at once, so every e-mail path checks identity:
+- **History** — the drafting agents only see `email_history` of their own `negotiation_id`, scoped to their party (buyer agent never sees supplier mail), SENT/RECEIVED only. Knowledge memory reaches a draft only through `knowledge_filter`: this counterparty's own e-mails (`counterparty_address` / company domain), notes about it, product notes — never deal summaries (margins), the other side's e-mails, other companies' threads or graph facts.
+- **Outbound** — `send_approved_email` is idempotent (only DRAFT / PENDING_APPROVAL send) and runs `preflight` right before SMTP: real address; recipient is a current contact of the party the draft was written for (session + deal party + selected candidate) and never the other party; buyer ≠ supplier address; body names nothing of the other side; for agent drafts the session is not FAILED/ESCALATED and the party has not replied (nor a newer e-mail been sent) since drafting. Refusal → status `BLOCKED` + `block_reason` + `EmailBlockedError` (→ deal.exception). Draft-time: other side's name / address / domain / price in the body → `counterparty_leak`, no real address → `no_real_address`, both force L0.
+- **Inbound** — the mapper takes the party from the exact outbound e-mail answered (`EMAIL-…` in In-Reply-To / References), then the address we wrote to, then the folder hint, and sets `sender_check` (`verified` = known address of that party, same company domain allowed, free-mail exact only). Only `verified` / operator override advances a negotiation; `other_party` / `unknown` / no party → `NEEDS_OPERATOR` + `PARSE_INBOUND_EMAIL` (flag `sender_not_verified`), not recorded in the agent's history (there is no default party). RFQ replies (`rfq_sender_supplier`) and outreach replies (`outreach.sender_matches`) use the same rule — no domain guess on gmail, no "only one supplier" fallback, a token alone is not enough.
 
 ### Event publishing
 

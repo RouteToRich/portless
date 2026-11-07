@@ -324,19 +324,29 @@ async def skip_candidate(deal_id: str, candidate_id: str, reason: str = "decline
 # Replies
 # ---------------------------------------------------------------------------
 
+def sender_matches(cand: Any, from_address: str | None) -> bool:
+    """The reply comes from the candidate we wrote to (same mailbox, or the same
+    company domain — never just a shared free-mail domain). A candidate we never
+    had an address for cannot be verified → False."""
+    from agents.negotiation_agent.email_safety import same_owner
+    known = [getattr(cand, "email", None), getattr(cand, "reply_address", None)]
+    return any(same_owner(from_address, a) for a in known if a)
+
+
 def _find(deal: Any, candidate_id: str | None, from_address: str | None) -> Any | None:
+    from agents.negotiation_agent.email_safety import same_owner
     cands = _candidates(deal)
     if candidate_id:
         for c in cands:
             if c.candidate_id == candidate_id:
                 return c
     if from_address:
-        addr = from_address.lower()
-        domain = addr.split("@")[-1]
-        for c in cands:
-            email = (getattr(c, "email", None) or "").lower()
-            if email and (email == addr or email.split("@")[-1] == domain):
-                return c
+        exact = [c for c in cands if (getattr(c, "email", None) or "").strip().lower() == from_address.strip().lower()]
+        if len(exact) == 1:
+            return exact[0]
+        hits = [c for c in cands if getattr(c, "email", None) and same_owner(c.email, from_address)]
+        if len(hits) == 1:  # two candidates on one domain → ambiguous → operator
+            return hits[0]
     return None
 
 
@@ -351,6 +361,13 @@ async def handle_reply(deal_id: str, candidate_id: str | None, from_address: str
     if cand is None:
         logger.warning("Outreach: reply from %s for deal %s matches no candidate", from_address, deal_id)
         return {"verdict": verdict, "candidate_id": None, "matched": False}
+    if not sender_matches(cand, from_address):
+        # The subject token names the candidate, but someone else answered (a
+        # forwarded mail, another company): never make them "the buyer" or read
+        # their words as this candidate's requirement — an operator decides.
+        logger.warning("Outreach: reply on candidate %s (%s) came from %s — held for an operator",
+                       cand.candidate_id, getattr(cand, "email", None), from_address)
+        return {"verdict": verdict, "candidate_id": cand.candidate_id, "matched": False, "sender_mismatch": True}
 
     from shared.orchestration import matchmaking
     if matchmaking.enabled():

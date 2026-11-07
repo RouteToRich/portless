@@ -8,6 +8,9 @@ buyer/supplier is stored here.  The record progresses through:
         → MODIFIED_SENT     (operator approved with modified body, SMTP delivered)
         → REJECTED          (operator rejected, not sent)
         → FAILED            (SMTP/delivery error after approval)
+        → BLOCKED           (approved, but the send-time safety check refused it:
+                             wrong / stale recipient, other party named, thread
+                             moved on — see email_safety.preflight)
 
 Inbound emails (received from buyer/supplier) start at RECEIVED and are
 terminal — they are audit records only.
@@ -38,6 +41,8 @@ class EmailStatus(str, Enum):
     MODIFIED_SENT = "modified_sent"
     REJECTED = "rejected"
     FAILED = "failed"
+    BLOCKED = "blocked"
+    """Approved, but the send-time safety check (email_safety.preflight) refused it."""
     RECEIVED = "received"
 
 
@@ -56,6 +61,10 @@ class EmailHistoryRecord(BaseModel):
     """Populated when operator modified the body before sending."""
     approval_id: str | None = None
     status: EmailStatus
+    kind: str = "negotiation"
+    """``negotiation`` (agent round draft) · ``followup`` · ``notification`` (templated deal e-mail)."""
+    block_reason: str | None = None
+    """Why the send-time safety check refused it (status BLOCKED)."""
     sent_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

@@ -185,7 +185,9 @@ class TestOutreachFlow:
         await deals_repo.save(deal)
         gate = AsyncMock(return_value=SimpleNamespace(approval_id="APPR-2"))
         with patch("services.hitl_approval.service.create_approval", new=gate):
-            res = await outreach.handle_reply("DEAL-OUT-1", None, "someone@x.de", "No thanks, we are not buying this year.")
+            # exact address: a and b share the x.de domain, so a colleague's address
+            # would be ambiguous and is held for an operator (see test_negotiation_routing)
+            res = await outreach.handle_reply("DEAL-OUT-1", None, "a@x.de", "No thanks, we are not buying this year.")
         assert res["verdict"] == "declined" and res["advanced"] == 1 and res["exhausted"] is False
         assert gate.await_args.args[0].callback_payload["candidate_id"] == "b"
         # b declines too → nobody left → deal.exception

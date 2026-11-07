@@ -18,6 +18,15 @@ Matching strategy (applied in strict priority order):
      subject line, making this a reliable fallback.
 
   4. UNMATCHED — no mapping found.
+
+Who sent it (buyer or supplier) comes first from the exact outbound e-mail the
+reply answers (the ``EMAIL-...`` part of the Message-ID in In-Reply-To /
+References — that e-mail was written to one party), then from the address we
+wrote to, then the IMAP folder hint. ``sender_check`` then says whether the
+sender really is a known address of that party (email_safety.classify_sender);
+the processor only lets a ``verified`` reply move a negotiation — anything else
+(a forwarded thread, a third party, the OTHER side replying on this thread)
+goes to an operator.
      The inbound record is saved with status=UNMATCHED and an operator
      can resolve it via the manual submission endpoint supplying
      negotiation_id explicitly.
@@ -51,7 +60,7 @@ logger = logging.getLogger(__name__)
 # Matches: <EMAIL-XXXXXXXXXX.{uuid}@portless.io>
 # Both the EMAIL- prefix and the full 36-char UUID are required.
 _MSG_ID_PATTERN = re.compile(
-    r"<EMAIL-[A-Z0-9]+\."
+    r"<(EMAIL-[A-Z0-9]+)\."
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
     r"@portless\.io>",
     re.IGNORECASE,
@@ -77,7 +86,71 @@ _TERMINAL_STATUSES = {"AGREED", "FAILED", "ESCALATED"}
 def _parse_neg_id_from_header(header_value: str) -> str | None:
     """Extract negotiation_id UUID from a single Message-ID header value."""
     m = _MSG_ID_PATTERN.search(header_value)
-    return m.group(1) if m else None
+    return m.group(2) if m else None
+
+
+def _parse_email_id_from_header(header_value: str) -> str | None:
+    """The exact outbound e-mail (``EMAIL-...``) a reply answers."""
+    m = _MSG_ID_PATTERN.search(header_value or "")
+    return m.group(1).upper() if m else None
+
+
+async def _party_of_email(email_id: str | None, negotiation_id: str) -> str | None:
+    """Party of the outbound e-mail the reply answers - authoritative: they
+    replied to the message we sent to the buyer, or to the supplier."""
+    if not email_id:
+        return None
+    try:
+        from agents.negotiation_agent.email_history import get_email_repository  # type: ignore[import]
+        rec = await get_email_repository().get(email_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Email %s lookup failed: %s", email_id, exc)
+        return None
+    if rec is None or rec.negotiation_id != negotiation_id or rec.direction.value != "outbound":
+        return None
+    return rec.party if rec.party in ("buyer", "supplier") else None
+
+
+async def _sender_check(negotiation_id: str, party: str | None, from_address: str) -> str:
+    """verified / other_party / ambiguous / unknown - see email_safety.classify_sender."""
+    try:
+        from agents.negotiation_agent.email_safety import classify_sender, party_addresses  # type: ignore[import]
+        from agents.negotiation_agent.repository import get_repository  # type: ignore[import]
+        session = await get_repository().get_session(negotiation_id)
+        if session is None:
+            return "unknown"
+        deal = None
+        try:
+            from services.deals.service import get_deal  # type: ignore[import]
+            deal = await get_deal(session.deal_id)
+        except Exception:  # noqa: BLE001
+            deal = None
+        addrs = party_addresses(session, deal)
+        try:  # addresses we actually wrote to in this negotiation count too
+            from agents.negotiation_agent.email_history import get_email_repository  # type: ignore[import]
+            for r in await get_email_repository().list_by_negotiation(negotiation_id):
+                if (r.direction.value == "outbound" and r.party in addrs
+                        and r.status.value in ("sent", "modified_sent")):
+                    addrs[r.party].add(r.to_address.strip().lower())
+        except Exception:  # noqa: BLE001
+            pass
+        return classify_sender(from_address, party, addrs)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Sender check failed for negotiation %s: %s", negotiation_id, exc)
+        return "unknown"
+
+
+async def _resolve_party(negotiation_id: str, from_address: str, email_ids: list[str | None],
+                         party_override: str | None) -> tuple[str | None, str]:
+    """(party, sender_check). Party from the exact e-mail they answered first,
+    then from the address we wrote to, then the IMAP folder hint."""
+    party = None
+    for eid in email_ids:
+        party = await _party_of_email(eid, negotiation_id)
+        if party:
+            break
+    party = party or await _get_party(negotiation_id, from_address) or party_override
+    return party, await _sender_check(negotiation_id, party, from_address)
 
 
 async def _session_status(negotiation_id: str) -> str | None:
@@ -169,6 +242,7 @@ async def map_email(
             confidence=MappingConfidence.MANUAL_OVERRIDE,
             reason="Operator-supplied negotiation_id",
             session_status=status,
+            sender_check="operator",
         )
 
     # ── Step 1: In-Reply-To header ─────────────────────────────────────────
@@ -176,15 +250,15 @@ async def map_email(
         neg_id = _parse_neg_id_from_header(in_reply_to)
         mappable, status = await _resolve_mapping(neg_id) if neg_id else (False, None)
         if neg_id and mappable:
-            # party_override (IMAP folder hint) is the fallback when
-            # email history has no outbound record to this sender yet.
-            party = await _get_party(neg_id, from_address) or party_override
+            party, check = await _resolve_party(
+                neg_id, from_address, [_parse_email_id_from_header(in_reply_to)], party_override)
             return MappingResult(
                 negotiation_id=neg_id,
                 party=party,
                 confidence=MappingConfidence.HEADER,
                 reason=f"Matched via In-Reply-To: {in_reply_to[:80]}",
                 session_status=status,
+                sender_check=check,
             )
 
     # ── Step 2: References header ──────────────────────────────────────────
@@ -192,13 +266,16 @@ async def map_email(
         neg_id = _parse_neg_id_from_header(ref)
         mappable, status = await _resolve_mapping(neg_id) if neg_id else (False, None)
         if neg_id and mappable:
-            party = await _get_party(neg_id, from_address) or party_override
+            party, check = await _resolve_party(
+                neg_id, from_address, [_parse_email_id_from_header(r) for r in reversed(references)],
+                party_override)
             return MappingResult(
                 negotiation_id=neg_id,
                 party=party,
                 confidence=MappingConfidence.HEADER,
                 reason=f"Matched via References: {ref[:80]}",
                 session_status=status,
+                sender_check=check,
             )
 
     # ── Step 2a: Subject [BUY:...] token — buyer answering an outreach e-mail ──
@@ -232,13 +309,14 @@ async def map_email(
         neg_id = m.group(1)
         mappable, status = await _resolve_mapping(neg_id)
         if mappable:
-            party = await _get_party(neg_id, from_address) or party_override
+            party, check = await _resolve_party(neg_id, from_address, [], party_override)
             return MappingResult(
                 negotiation_id=neg_id,
                 party=party,
                 confidence=MappingConfidence.SUBJECT_TOKEN,
                 reason=f"Matched via subject token [NEG:{neg_id}]",
                 session_status=status,
+                sender_check=check,
             )
 
     # ── No match ───────────────────────────────────────────────────────────

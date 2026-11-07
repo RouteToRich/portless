@@ -295,6 +295,22 @@ async def _dispatch_by_email(
         return None
 
 
+def rfq_sender_supplier(rfq: Any, from_address: str | None) -> str | None:
+    """Which dispatched supplier sent this reply — exact address first, then the
+    same company domain (a colleague's mailbox). A free-mail domain (gmail.com…)
+    only ever matches exactly, and a domain shared by two dispatched suppliers
+    matches neither: ``None`` → operator."""
+    from agents.negotiation_agent.email_safety import norm, same_owner
+    sender = norm(from_address)
+    if not sender:
+        return None
+    for d in rfq.dispatch_results:
+        if d.email and norm(d.email) == sender:
+            return d.supplier_id
+    hits = {d.supplier_id for d in rfq.dispatch_results if d.email and same_owner(d.email, sender)}
+    return hits.pop() if len(hits) == 1 else None
+
+
 async def receive_quote_by_email(
     rfq_id: str,
     from_address: str,
@@ -311,23 +327,12 @@ async def receive_quote_by_email(
     """
     rfq = await get_rfq(rfq_id)
     sender = (from_address or "").strip().lower()
-    supplier_id: str | None = None
-    for d in rfq.dispatch_results:
-        if d.email and d.email.strip().lower() == sender:
-            supplier_id = d.supplier_id
-            break
+    supplier_id = rfq_sender_supplier(rfq, from_address)
     if supplier_id is None:
-        # Same domain as a dispatched address (sales@ replied from a colleague's mailbox).
-        domain = sender.split("@")[-1]
-        for d in rfq.dispatch_results:
-            if d.email and d.email.strip().lower().split("@")[-1] == domain:
-                supplier_id = d.supplier_id
-                break
-    if supplier_id is None:
-        if len(rfq.supplier_ids) == 1:
-            supplier_id = rfq.supplier_ids[0]
-        else:
-            raise QuoteNotFoundError(f"{rfq_id}:sender:{from_address}")
+        # Never guess: a quote attributed to the wrong supplier (or a stranger's
+        # price taken as a quote) corrupts the match. The processor parks it
+        # for an operator, who resubmits it naming the supplier.
+        raise QuoteNotFoundError(f"{rfq_id}:sender:{from_address}")
 
     gstin = _find_pattern(body_text, r"\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b")
     iec = _find_pattern(body_text, r"\bIEC[\s:#-]*([A-Z0-9]{10})\b", group=1)

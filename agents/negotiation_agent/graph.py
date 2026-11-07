@@ -249,8 +249,11 @@ async def _knowledge_context(session: Any, role: str) -> str:
     product: past e-mails, operator notes, deal summaries. '' when off / nothing."""
     try:
         from shared.orchestration.memory import context_for
+
+        from .email_safety import knowledge_filter, party_addresses
         who = session.buyer_id if role == "buyer" else session.seller_id
         name = None
+        deal = None
         try:
             from services.deals.service import get_deal  # type: ignore[import]
             deal = await get_deal(session.deal_id)
@@ -259,8 +262,13 @@ async def _knowledge_context(session: Any, role: str) -> str:
             market = deal.market
         except Exception:  # noqa: BLE001
             market = None
+        # Only memory about THIS counterparty (its own e-mails, notes about it)
+        # and the product — never the other side's e-mails, deal summaries
+        # with margins, or another buyer's / supplier's thread.
+        mine = party_addresses(session, deal).get(role, set())
         return await context_for(purpose=f"negotiation with the {role}", hs_code=session.product_code,
-                                 market=market, counterparties=[name, who], max_chars=1800)
+                                 market=market, counterparties=[name, who], max_chars=1800,
+                                 accept=knowledge_filter(role, mine))
     except Exception:  # noqa: BLE001
         return ""
 

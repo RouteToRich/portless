@@ -327,6 +327,12 @@ def _resolve_gate_level(action: str) -> str:
         return "L0"
 
 
+_FORCE_L0_FLAGS = (
+    "degraded_llm_fallback", "unresolved_placeholders", "price_out_of_band",
+    "counterparty_leak", "no_real_address",
+)
+
+
 def _email_gate_level(session: NegotiationSession, flags: list[str]) -> str:
     """Autonomy level for one SEND_NEGOTIATION_EMAIL approval.
 
@@ -335,11 +341,29 @@ def _email_gate_level(session: NegotiationSession, flags: list[str]) -> str:
     outbound of a negotiation stays human-gated while
     ``hitl_on_first_outbound`` is on.
     """
-    if "degraded_llm_fallback" in flags or "unresolved_placeholders" in flags or "price_out_of_band" in flags:
+    if any(f in flags for f in _FORCE_L0_FLAGS):
         return "L0"
     if session.round_no == 0 and settings.hitl_on_first_outbound:
         return "L0"
     return _resolve_gate_level("SEND_NEGOTIATION_EMAIL")
+
+
+async def _draft_safety(session: NegotiationSession, party: str, to_address: str, body: str) -> tuple[list[str], list[str]]:
+    """Draft-time check: the other side's name / address / domain / price in the
+    body, or no real recipient → flags that force human review (L0)."""
+    from .email_safety import is_real_address, leak_findings
+    flags: list[str] = []
+    leaks: list[str] = []
+    try:
+        deal = await _load_deal_quiet(session.deal_id)
+        leaks = leak_findings(body, party, session, deal)
+    except Exception as exc:  # noqa: BLE001 — the send-time preflight still runs
+        logger.warning("Draft safety check failed for %s: %s", session.negotiation_id, exc)
+    if leaks:
+        flags.append("counterparty_leak")
+    if not is_real_address(to_address):
+        flags.append("no_real_address")
+    return flags, leaks
 
 
 async def _create_and_gate_email(
@@ -350,6 +374,7 @@ async def _create_and_gate_email(
     body: str,
     degraded: bool = False,
     extra_flags: list[str] | None = None,
+    kind: str = "negotiation",
 ) -> str:
     """Persist an email draft and create an L0 HITL approval gate.
 
@@ -373,10 +398,12 @@ async def _create_and_gate_email(
         subject=subject,
         body=body,
         status=EmailStatus.DRAFT,
+        kind=kind,
         created_at=now,
         updated_at=now,
     )
     await get_email_repository().save(record)
+    safety_flags, leaks = await _draft_safety(session, party, to_address, body)
 
     try:
         from services.hitl_approval.service import create_approval  # type: ignore[import]
@@ -384,9 +411,13 @@ async def _create_and_gate_email(
 
         preview = body[:150] + ("..." if len(body) > 150 else "")
         flags = draft_risk_flags(body, degraded)
-        flags += [f for f in (extra_flags or []) if f not in flags]
+        flags += [f for f in (extra_flags or []) + safety_flags if f not in flags]
         quality_note = ""
-        if "degraded_llm_fallback" in flags:
+        if "counterparty_leak" in flags:
+            quality_note = f"⛔ Mentions the other side ({'; '.join(leaks)}) — edit before sending. "
+        elif "no_real_address" in flags:
+            quality_note = f"⛔ No real address for the {party} ({to_address}) — set the contact first. "
+        elif "degraded_llm_fallback" in flags:
             quality_note = "⚠ DEGRADED TEMPLATE (LLM unavailable) — edit before sending. "
         elif "unresolved_placeholders" in flags:
             quality_note = "⚠ Contains unresolved [placeholders] — edit before sending. "
@@ -1032,6 +1063,30 @@ async def list_rounds(negotiation_id: str) -> list[NegotiationRound]:
 # Email history helpers — called by HITL callbacks and router
 # ---------------------------------------------------------------------------
 
+class EmailBlockedError(RuntimeError):
+    """An approved e-mail failed the send-time safety check (email_safety.preflight).
+    Raised so the HITL callback turns it into a deal exception for the operator."""
+
+
+async def _load_deal_quiet(deal_id: str) -> Any | None:
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        return await get_deal(deal_id)
+    except Exception:  # noqa: BLE001 — no deal (tests / standalone) → session-only checks
+        return None
+
+
+async def _send_preflight(record: EmailHistoryRecord) -> list[str]:
+    from .email_safety import preflight
+    session = await get_repository().get_session(record.negotiation_id) if record.negotiation_id else None
+    deal = await _load_deal_quiet(record.deal_id or (session.deal_id if session else ""))
+    try:
+        thread = await get_email_repository().list_by_negotiation(record.negotiation_id)
+    except Exception:  # noqa: BLE001
+        thread = []
+    return preflight(record, session, deal, thread)
+
+
 async def send_approved_email(email_id: str, modified_body: str | None = None) -> None:
     """Send an operator-approved email draft.
 
@@ -1045,7 +1100,28 @@ async def send_approved_email(email_id: str, modified_body: str | None = None) -
         logger.error("send_approved_email: email %s not found", email_id)
         return
 
+    # Idempotent: a callback retry / redelivered event must never send twice.
+    if record.status not in (EmailStatus.DRAFT, EmailStatus.PENDING_APPROVAL):
+        logger.warning("send_approved_email: email %s is already %s — not sent again",
+                       email_id, record.status.value)
+        return
+
     body_to_send = modified_body or record.body
+
+    # Last check before SMTP: right recipient for the side this was written
+    # for, never the other side, nothing of the other side in the body, thread
+    # not moved on since drafting. A refusal is surfaced, never silent.
+    reasons = await _send_preflight(record.model_copy(update={"body": body_to_send}))
+    if reasons:
+        reason = "; ".join(reasons)
+        await repo.save(record.model_copy(update={
+            "status": EmailStatus.BLOCKED,
+            "block_reason": reason,
+            "updated_at": datetime.now(timezone.utc),
+        }))
+        logger.error("Email %s to %s (%s) BLOCKED before sending: %s",
+                     email_id, record.to_address, record.party, reason)
+        raise EmailBlockedError(f"E-mail {email_id} to the {record.party} was not sent: {reason}")
 
     try:
         # SMTP transport is a separate service (the Email Gateway; single
@@ -1709,7 +1785,7 @@ async def _maybe_followup_party(
         else f"Re: {last_out.subject}"
     )
     await _create_and_gate_email(
-        session, party, last_out.to_address, subject, body, degraded
+        session, party, last_out.to_address, subject, body, degraded, kind="followup",
     )
     logger.info(
         "FollowUp: drafted no-reply follow-up to %s for negotiation %s "

@@ -531,7 +531,17 @@ def test_graph_below_floor_drafts_one_message_and_ends():
 # Service — email lifecycle
 # ---------------------------------------------------------------------------
 
-def test_send_approved_email_marks_sent(_email_repo):
+@pytest.fixture
+def _live_session(monkeypatch):
+    """The negotiation the drafts belong to — the send-time safety check
+    (email_safety.preflight) refuses to send for a session it cannot find."""
+    repo = InMemoryNegotiationRepository()
+    monkeypatch.setattr("agents.negotiation_agent.repository._repo", repo)
+    run(repo.save_session(_session(buyer_email="buyer@example.com", seller_email="sales@supplier.in")))
+    return repo
+
+
+def test_send_approved_email_marks_sent(_email_repo, _live_session):
     run(_email_repo.save(_email(email_id="E1")))
     with patch("services.email_gateway.sender.send_email", AsyncMock()):
         run(send_approved_email("E1"))
@@ -540,7 +550,7 @@ def test_send_approved_email_marks_sent(_email_repo):
     assert rec.sent_at is not None
 
 
-def test_send_approved_email_with_modification(_email_repo):
+def test_send_approved_email_with_modification(_email_repo, _live_session):
     run(_email_repo.save(_email(email_id="E2", body="orig draft")))
     with patch("services.email_gateway.sender.send_email", AsyncMock()):
         run(send_approved_email("E2", modified_body="operator-edited body"))
@@ -550,7 +560,7 @@ def test_send_approved_email_with_modification(_email_repo):
     assert rec.body == "operator-edited body"
 
 
-def test_send_approved_email_marks_failed_on_smtp_error(_email_repo):
+def test_send_approved_email_marks_failed_on_smtp_error(_email_repo, _live_session):
     run(_email_repo.save(_email(email_id="E3")))
     with patch("services.email_gateway.sender.send_email", AsyncMock(side_effect=RuntimeError("smtp down"))):
         run(send_approved_email("E3"))

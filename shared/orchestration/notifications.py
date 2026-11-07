@@ -456,6 +456,7 @@ async def notify_party(
             subject=subject,
             body=body,
             status=EmailStatus.DRAFT,
+            kind="notification",
             created_at=now,
             updated_at=now,
         )

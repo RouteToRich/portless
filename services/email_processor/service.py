@@ -284,6 +284,16 @@ async def _process_inbound(
     })
     await repo.save(record)
 
+    # ── Who really sent it? ────────────────────────────────────────────────
+    # Many negotiations run at once. A reply only moves this one when we know
+    # which side it is from AND the sender is a known address of that side.
+    # Anything else — a forwarded thread, a third party, the OTHER side writing
+    # on this thread, a colleague on a free-mail address — is held for an
+    # operator, and never enters the drafting agents' history (so no buyer is
+    # ever answered with a supplier's words, or vice versa).
+    if mapping.party not in ("buyer", "supplier") or mapping.sender_check not in ("verified", "operator"):
+        return await _hold_unverified_sender(record, mapping)
+
     # Record inbound email in negotiation agent's own email_history audit log
     try:
         from agents.negotiation_agent.service import record_inbound_email  # type: ignore[import]
@@ -293,7 +303,7 @@ async def _process_inbound(
             negotiation_id=mapping.negotiation_id,
             deal_id=deal_id or "",
             round_no=neg_session.round_no if neg_session else 0,
-            party=mapping.party or "unknown",
+            party=mapping.party,
             from_address=raw.from_address,
             subject=raw.subject,
             body=raw.body_text,
@@ -346,7 +356,7 @@ async def _process_inbound(
             mapping.negotiation_id,
             RoundRequest(
                 counter_price=price,
-                party=mapping.party or "buyer",
+                party=mapping.party,
                 channel="email",
                 inbound_message=raw.body_text,
                 attachment_refs=[a.filename for a in raw.attachments] or None,
@@ -393,6 +403,47 @@ async def _process_inbound(
         )
 
 
+_SENDER_REASON = {
+    "other_party": "the sender is a known address of the OTHER side of this negotiation",
+    "ambiguous": "the sender matches both the buyer and the supplier",
+    "unknown": "the sender is not a known address of either side",
+}
+
+
+async def _hold_unverified_sender(record: InboundEmailRecord, mapping) -> ProcessingResult:
+    """Park a reply whose sender could not be tied to the right side. Nothing
+    advances; an operator confirms who it is from and resubmits it through
+    ``POST /email-processor/inbound/manual`` with ``negotiation_id`` + ``party``."""
+    repo = get_repository()
+    check = mapping.sender_check or "unknown"
+    if mapping.party not in ("buyer", "supplier"):
+        why = "it could not be determined whether it is from the buyer or the supplier"
+    else:
+        why = f"it looks like the {mapping.party}'s reply, but {_SENDER_REASON.get(check, check)}"
+    error = f"Sender {record.from_address} not verified for negotiation {mapping.negotiation_id}: {why}"
+    hitl_id = await _create_price_hitl(
+        record,
+        summary=(f"Reply from {record.from_address} on negotiation {mapping.negotiation_id} was NOT processed: "
+                 f"{why}. Confirm who sent it, then resubmit it with the negotiation id and party. "
+                 f"Preview: {record.body_text[:200]}"),
+        risk_flags=["sender_not_verified", f"sender_{check}"],
+    )
+    record = record.model_copy(update={
+        "status": InboundEmailStatus.NEEDS_OPERATOR,
+        "error": error,
+        "hitl_approval_id": hitl_id,
+        "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(record)
+    logger.warning("Inbound %s held: %s", record.inbound_id, error)
+    return ProcessingResult(
+        inbound_id=record.inbound_id,
+        status=InboundEmailStatus.NEEDS_OPERATOR,
+        negotiation_id=mapping.negotiation_id,
+        message=error,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Outreach replies (buyer funnel)
 # ---------------------------------------------------------------------------
@@ -425,12 +476,16 @@ async def _handle_outreach_reply(record: InboundEmailRecord, raw: InboundRawEmai
                     + (" — no interested buyer left" if verdict.get("exhausted") else ""),
         )
 
-    hitl_id = await _create_price_hitl(
-        record,
-        summary=(f"Buyer {record.from_address} replied to the outreach for deal {deal_id} but the "
-                 f"intent is unclear — read it and mark the buyer interested / skip. Preview: {record.body_text[:200]}"),
-        risk_flags=["outreach_reply", "intent_unclear"],
-    )
+    if verdict.get("sender_mismatch"):
+        summary = (f"{record.from_address} answered the outreach to candidate {candidate_id} of deal {deal_id}, "
+                   "but is not the address we wrote to — confirm who this is before treating it as that "
+                   f"buyer's reply. Preview: {record.body_text[:200]}")
+        flags = ["outreach_reply", "sender_not_verified"]
+    else:
+        summary = (f"Buyer {record.from_address} replied to the outreach for deal {deal_id} but the "
+                   f"intent is unclear — read it and mark the buyer interested / skip. Preview: {record.body_text[:200]}")
+        flags = ["outreach_reply", "intent_unclear"]
+    hitl_id = await _create_price_hitl(record, summary=summary, risk_flags=flags)
     record = record.model_copy(update={
         "status": InboundEmailStatus.NEEDS_OPERATOR, "hitl_approval_id": hitl_id,
         "updated_at": datetime.now(timezone.utc),

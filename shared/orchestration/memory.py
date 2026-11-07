@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from shared import knowledge
 
@@ -91,6 +91,7 @@ async def remember_email(*, direction: str, from_address: str, to_address: str, 
         mid = _slug(message_id or f"{when}-{subject}")
         knowledge.remember(text, path=f"emails/{_slug(deal_id or 'unmapped')}/{mid}.txt", metadata={
             "kind": "email", "direction": direction, "counterparty_domain": domain,
+            "counterparty_address": (other or "").strip().lower(),
             "counterparty_id": counterparty, "party": party, **meta,
         })
     except Exception as exc:  # noqa: BLE001
@@ -165,8 +166,13 @@ async def remember_deal_summary(deal: Any, event: str, reason: str | None = None
 
 async def context_for(*, purpose: str, product: str | None = None, hs_code: str | None = None,
                       market: str | None = None, counterparties: list[str] | None = None,
-                      extra: str | None = None, top_k: int = 6, max_chars: int = 2500) -> str:
-    """A prompt block of what PortLess knows that is relevant — '' when nothing / off."""
+                      extra: str | None = None, top_k: int = 6, max_chars: int = 2500,
+                      accept: Callable[[dict[str, Any]], bool] | None = None) -> str:
+    """A prompt block of what PortLess knows that is relevant — '' when nothing / off.
+
+    ``accept`` scopes what may reach the prompt (the negotiation agent passes
+    ``email_safety.knowledge_filter`` so a buyer-facing draft never sees the
+    supplier's e-mails, deal summaries with margins, or other buyers' threads)."""
     if not knowledge.enabled():
         return ""
     names = [c for c in (counterparties or []) if c]
@@ -174,5 +180,8 @@ async def context_for(*, purpose: str, product: str | None = None, hs_code: str 
         purpose, product, f"HS {hs_code}" if hs_code else None, f"market {market}" if market else None,
         ("about " + ", ".join(names)) if names else None, extra,
     ]))
-    results = await knowledge.recall(query, top_k=top_k)
+    if accept is None:
+        results = await knowledge.recall(query, top_k=top_k)
+    else:
+        results = [r for r in await knowledge.recall(query, top_k=top_k * 3) if accept(r)][:top_k]
     return knowledge.as_context(results, max_chars=max_chars)

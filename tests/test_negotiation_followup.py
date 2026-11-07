@@ -84,7 +84,7 @@ def capture(monkeypatch):
     async def fake_draft(session, party, history_text, last_subject, days):
         return f"follow-up body for {party}", False
 
-    async def fake_gate(session, party, to_address, subject, body, degraded=False):
+    async def fake_gate(session, party, to_address, subject, body, degraded=False, **_kw):
         calls.append({
             "party": party, "to": to_address, "subject": subject,
             "body": body, "degraded": degraded,

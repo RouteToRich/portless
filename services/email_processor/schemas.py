@@ -115,6 +115,10 @@ class MappingResult(BaseModel):
     post-agreement reply (the buyer answering the Proforma Invoice email, the
     supplier acknowledging the PO) — the processor routes it to the deal-stage
     handler instead of ``run_round()``. None for a live negotiation."""
+    sender_check: str | None = None
+    """``verified`` (sender is a known address of ``party``) · ``other_party`` ·
+    ``ambiguous`` · ``unknown`` · ``operator`` (manual override). Only
+    ``verified`` / ``operator`` may advance a negotiation automatically."""
 
 
 # ---------------------------------------------------------------------------
