@@ -85,3 +85,73 @@
 {"request_id": "669844e4-7f5b-46f3-baca-791f89e3e69d", "ts": "2026-11-06T17:02:58.288657+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
 {"_marker": "session_start", "ts": "2026-11-06T17:02:58.431040+00:00"}
 {"request_id": "44f91a07-3d86-44d8-a0f3-00f4fedaa83c", "ts": "2026-11-06T17:02:58.431596+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:16:49.121444+00:00"}
+{"request_id": "75286169-9a66-45f5-9738-c72c5c4dd184", "ts": "2026-11-07T03:16:49.124834+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:16:49.127022+00:00"}
+{"request_id": "b82824c7-777b-4763-b8e3-fb08ce9a48bf", "ts": "2026-11-07T03:16:49.127682+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:16:49.329554+00:00"}
+{"_marker": "session_start", "ts": "2026-11-07T03:18:52.217679+00:00"}
+{"request_id": "7c63389a-0460-4120-b0ed-ab881cd87010", "ts": "2026-11-07T03:18:52.219229+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:18:52.220524+00:00"}
+{"request_id": "669b2a25-7aaa-49fd-9491-1d21a0696d53", "ts": "2026-11-07T03:18:52.220914+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:18:52.308386+00:00"}
+{"_marker": "session_start", "ts": "2026-11-07T03:18:54.855456+00:00"}
+{"request_id": "e486074e-daa5-48c0-aabb-decc2e7a3bbf", "ts": "2026-11-07T03:18:54.856119+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:18:54.864032+00:00"}
+{"request_id": "4a33cf98-d8e1-44ac-8930-4cd68b9d88f3", "ts": "2026-11-07T03:18:54.864676+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:18:55.019605+00:00"}
+{"request_id": "d5c29772-9614-49dc-80f5-7a6cd75188b1", "ts": "2026-11-07T03:18:55.020296+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:24:34.030814+00:00"}
+{"request_id": "62f11755-9e94-401d-bbdc-72d82dcdfb39", "ts": "2026-11-07T03:24:34.032703+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:24:34.034508+00:00"}
+{"request_id": "fd804b24-82c7-4cd6-9e2b-be4487f96244", "ts": "2026-11-07T03:24:34.035310+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:24:34.136253+00:00"}
+{"_marker": "session_start", "ts": "2026-11-07T03:24:35.884311+00:00"}
+{"request_id": "c23427cd-ea97-4970-bdd2-3c18b673dc32", "ts": "2026-11-07T03:24:35.884774+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:24:35.890898+00:00"}
+{"request_id": "9ca5e96c-508d-4192-9ade-1e83e72b281e", "ts": "2026-11-07T03:24:35.891443+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:24:35.973567+00:00"}
+{"request_id": "cadd4c74-4ef8-481e-a349-aeb2a4b0f72c", "ts": "2026-11-07T03:24:35.973964+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:52:17.549821+00:00"}
+{"request_id": "43775c47-a91a-42b8-ba75-9a4683f25293", "ts": "2026-11-07T03:52:17.552988+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:52:17.845054+00:00"}
+{"_marker": "session_start", "ts": "2026-11-07T03:52:17.982435+00:00"}
+{"request_id": "ea5a150e-c7e0-48cc-8d96-25617047f9d3", "ts": "2026-11-07T03:52:17.983582+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:52:17.994828+00:00"}
+{"request_id": "6bd6897b-67fe-42b2-8331-cbd13bd27f28", "ts": "2026-11-07T03:52:17.995637+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:52:27.949038+00:00"}
+{"request_id": "9ebdbbf1-ddf9-4f23-9e28-5f870e6d70f0", "ts": "2026-11-07T03:52:27.950531+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:53:14.683316+00:00"}
+{"request_id": "c2b8fa30-66dd-4e20-800a-60a8bb147114", "ts": "2026-11-07T03:53:14.685407+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:53:15.301642+00:00"}
+{"_marker": "session_start", "ts": "2026-11-07T03:53:15.403111+00:00"}
+{"request_id": "14211f00-a3a8-47c6-b062-597255188b94", "ts": "2026-11-07T03:53:15.403681+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:53:15.411501+00:00"}
+{"request_id": "51769d55-68d6-4545-85dc-724eeb5cf0ec", "ts": "2026-11-07T03:53:15.412069+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:53:29.600951+00:00"}
+{"request_id": "a66e3af1-8577-43bb-ad1c-abd29164b07e", "ts": "2026-11-07T03:53:29.603467+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:53:29.605751+00:00"}
+{"request_id": "f1a0cad4-65fa-4e13-8290-b74b19be7d51", "ts": "2026-11-07T03:53:29.606465+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:53:29.852868+00:00"}
+{"_marker": "session_start", "ts": "2026-11-07T03:55:07.302303+00:00"}
+{"request_id": "c27cba30-9599-4568-91bf-3a3e6f4deb1a", "ts": "2026-11-07T03:55:07.305696+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:55:07.307324+00:00"}
+{"request_id": "62709d2f-d890-419a-8656-10d1515a3b6b", "ts": "2026-11-07T03:55:07.307809+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:55:07.417648+00:00"}
+{"_marker": "session_start", "ts": "2026-11-07T03:55:10.364460+00:00"}
+{"request_id": "31a9d3f5-0841-4801-9b72-770a2bf02315", "ts": "2026-11-07T03:55:10.365128+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:55:10.376605+00:00"}
+{"request_id": "8154084f-51e1-4dd4-9d20-e9f1090dd7a4", "ts": "2026-11-07T03:55:10.377214+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:55:10.542971+00:00"}
+{"request_id": "8848f27a-5397-43aa-af7e-3d43ab5db8b4", "ts": "2026-11-07T03:55:10.543674+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:59:45.676176+00:00"}
+{"request_id": "cc4d6004-bc9b-4f0e-b570-8b4689e1a738", "ts": "2026-11-07T03:59:45.677952+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:59:45.679789+00:00"}
+{"request_id": "021c1154-31e9-4f8b-9b5d-5c08609da8b6", "ts": "2026-11-07T03:59:45.680464+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:59:45.782278+00:00"}
+{"_marker": "session_start", "ts": "2026-11-07T03:59:47.769885+00:00"}
+{"request_id": "51555d3c-2298-489d-88d8-11e94c915e8e", "ts": "2026-11-07T03:59:47.770365+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:59:47.775703+00:00"}
+{"request_id": "27cdc540-10d8-49ef-a99c-c63071e72564", "ts": "2026-11-07T03:59:47.776140+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-07T03:59:47.879741+00:00"}
+{"request_id": "4799f486-09dd-4033-a1cb-e3fb23d75341", "ts": "2026-11-07T03:59:47.880306+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
