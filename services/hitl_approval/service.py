@@ -91,6 +91,16 @@ class SameApproverError(Exception):
         self.approver = approver
 
 
+class ComplianceBlockedError(Exception):
+    """A money-release gate cannot be approved while a block-level hold is open."""
+
+    def __init__(self, approval_id: str, blocks: list[str]) -> None:
+        super().__init__(
+            f"Approval {approval_id!r} cannot be approved while block-level compliance holds are open: "
+            f"{', '.join(blocks)}. Resolve them, or reject this gate."
+        )
+
+
 def four_eyes_threshold_usd() -> float | None:
     """``FOUR_EYES_THRESHOLD_USD``: money gates at/above it need two approvers."""
     import os
@@ -307,6 +317,13 @@ async def resolve_approval(
         raise ApprovalNotFoundError(approval_id)
     if record.status != "PENDING":
         raise ApprovalAlreadyResolved(approval_id, record.status)
+
+    # Refused before any signature is taken, so the gate stays open for a retry.
+    from shared.orchestration import compliance
+    if req.decision == "APPROVE" and record.action in compliance.MONEY_RELEASE_ACTIONS:
+        blocks = await compliance.open_blocks(record.deal_id)
+        if blocks:
+            raise ComplianceBlockedError(approval_id, blocks)
 
     now = datetime.now(timezone.utc)
     new_status = "APPROVED" if req.decision == "APPROVE" else "REJECTED"

@@ -192,7 +192,7 @@ async def _emit(topic: EventTopic, deal_id: str, payload: dict) -> None:
 def _party_name(deal: Any, role: str) -> str | None:
     for p in getattr(deal, "parties", None) or []:
         if (getattr(p, "role", "") or "").lower() == role.lower():
-            return getattr(p, "name", None) or getattr(p, "company_name", None)
+            return getattr(p, "legal_name", None) or getattr(p, "name", None) or getattr(p, "company_name", None)
     return None
 
 

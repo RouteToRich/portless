@@ -18,6 +18,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
+from shared.webhooks import parse_webhook_body
+
 from .schemas import (
     AcceptEscrowRequest,
     CreateEscrowRequest,
@@ -290,10 +292,9 @@ async def api_escrow_funded_webhook(request: Request) -> dict[str, Any]:
     Transitions deal → ESCROW_FUNDED; emits escrow.funded.
     """
     raw_body = await request.body()
-    payload_data = await request.json()
+    payload = parse_webhook_body(raw_body, EscrowFundedWebhookPayload)
     headers = dict(request.headers)
     try:
-        payload = EscrowFundedWebhookPayload(**payload_data)
         return await handle_escrow_funded_webhook(payload, headers, raw_body)
     except WebhookVerifyError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))
@@ -312,10 +313,9 @@ async def api_payout_webhook(request: Request) -> dict[str, Any]:
     FAILED    → emits deal.exception.
     """
     raw_body = await request.body()
-    payload_data = await request.json()
+    payload = parse_webhook_body(raw_body, PayoutWebhookPayload)
     headers = dict(request.headers)
     try:
-        payload = PayoutWebhookPayload(**payload_data)
         return await handle_payout_webhook(payload, headers, raw_body)
     except WebhookVerifyError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))

@@ -8,6 +8,10 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import load_der_public_key
 from fastapi import APIRouter, HTTPException, Request, status
 from starlette.datastructures import UploadFile
 
@@ -87,13 +91,13 @@ async def inbound_sendgrid(request: Request) -> ProcessingResult:
        → Signature Verification → copy Public Key →
        set ``SENDGRID_WEBHOOK_PUBLIC_KEY`` in .env
 
-    Signature verification is performed when ``SENDGRID_WEBHOOK_PUBLIC_KEY`` is set.
+    The signature is verified when ``SENDGRID_WEBHOOK_PUBLIC_KEY`` is set; without it
+    the webhook accepts anything, so set it wherever this route is reachable.
     """
-    form = await request.form()
-
     if settings.sendgrid_webhook_public_key:
-        _verify_sendgrid_signature(request)
+        _verify_sendgrid_signature(settings.sendgrid_webhook_public_key, request.headers, await request.body())
 
+    form = await request.form()
     attachments = await _extract_form_attachments(form)
     return await service.process_inbound(_sendgrid_form_to_raw(form, attachments))
 
@@ -228,25 +232,22 @@ def _verify_mailgun_signature(
         raise HTTPException(status_code=403, detail="Invalid Mailgun webhook signature")
 
 
-def _verify_sendgrid_signature(request: Request) -> None:
+def _verify_sendgrid_signature(public_key: str, headers, raw_body: bytes) -> None:
+    """Verify SendGrid's ECDSA (P-256 / SHA-256) signature over timestamp + raw body.
+
+    ``public_key`` is the base64 DER key from the SendGrid dashboard. Any
+    failure, a misconfigured key included, rejects the request.
     """
-    Placeholder for SendGrid ECDSA webhook signature verification.
-
-    To implement, install ``ecdsa`` (``pip install ecdsa``) and fill in::
-
-        from ecdsa import VerifyingKey, NIST256p, BadSignatureError
-        import base64
-
-        vk = VerifyingKey.from_pem(base64.b64decode(settings.sendgrid_webhook_public_key))
-        ts = request.headers.get("X-Twilio-Email-Event-Webhook-Timestamp", "")
-        sig_b64 = request.headers.get("X-Twilio-Email-Event-Webhook-Signature", "")
-        body = await request.body()
-        try:
-            vk.verify(base64.b64decode(sig_b64), (ts + body.decode()).encode())
-        except BadSignatureError:
-            raise HTTPException(status_code=403, detail="Invalid SendGrid signature")
-    """
-    logger.debug("SendGrid ECDSA verification: placeholder — not yet implemented")
+    signature = headers.get("x-twilio-email-event-webhook-signature", "")
+    timestamp = headers.get("x-twilio-email-event-webhook-timestamp", "")
+    if not signature or not timestamp:
+        raise HTTPException(status_code=400, detail="Missing SendGrid signature headers")
+    try:
+        key = load_der_public_key(base64.b64decode(public_key))
+        key.verify(base64.b64decode(signature), timestamp.encode("utf-8") + raw_body, ec.ECDSA(hashes.SHA256()))
+    except (InvalidSignature, UnsupportedAlgorithm, ValueError, TypeError, AttributeError) as exc:
+        logger.warning("SendGrid webhook: signature rejected (%s)", type(exc).__name__)
+        raise HTTPException(status_code=403, detail="Invalid SendGrid webhook signature") from exc
 
 
 # ---------------------------------------------------------------------------

@@ -207,6 +207,15 @@ class LoadingRecord(BaseModel):
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class HoldClearance(BaseModel):
+    code: str
+    cleared_by: str
+    reason: str
+    evidence_ref: str | None = None
+    seal_numbers: list[str] = Field(default_factory=list)
+    cleared_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class ComplianceRecord(BaseModel):
     deal_id: str
     trade: CheckResult | None = None
@@ -218,6 +227,10 @@ class ComplianceRecord(BaseModel):
     """Open flags that force every money / commitment gate of the deal to L0."""
     cleared_holds: list[str] = Field(default_factory=list)
     """Flags an operator explicitly accepted (the gate's APPROVE)."""
+    accepted_seal_numbers: list[str] = Field(default_factory=list)
+    """Carrier-reported seals an operator confirmed as a false alarm."""
+    hold_clearances: list[HoldClearance] = Field(default_factory=list)
+    """Audit trail of block-level holds an operator cleared as false alarms."""
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -256,7 +269,9 @@ def _collection(name: str):
         return None
 
 
-async def get_record(deal_id: str) -> ComplianceRecord:
+async def get_record(deal_id: str, *, strict: bool = False) -> ComplianceRecord:
+    """The deal's compliance record. ``strict`` raises when the store cannot be
+    read instead of falling back to this process's memory."""
     col = _collection(_CHECKS)
     if col is not None:
         try:
@@ -265,6 +280,8 @@ async def get_record(deal_id: str) -> ComplianceRecord:
                 return ComplianceRecord(**doc)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Compliance: read failed for %s: %s", deal_id, exc)
+            if strict:
+                raise
     return _mem_checks.get(deal_id) or ComplianceRecord(deal_id=deal_id)
 
 
@@ -581,16 +598,98 @@ def _trade_holds(holds: list[str]) -> set[str]:
     return {h for h in holds if not h.startswith(keep_prefixes)}
 
 
+_BLOCK_CODES = frozenset({
+    "loading_not_verified", "seal_mismatch", "shipment_hs_mismatch", "supplier_dgft_denied",
+    *(f"hs_{status}" for status, severity in _STATUS_SEVERITY.items() if severity == "block"),
+})
+
+
+def _is_block_code(code: str, rec: ComplianceRecord) -> bool:
+    """True for a block-level finding. The checks' own stored severity also
+    counts, because some are configurable (``COMPLIANCE_UNCHECKED_SCREENING``)."""
+    if code in _BLOCK_CODES or code.endswith("_embargoed"):
+        return True
+    return any(f.code == code and f.severity == "block"
+               for check in (rec.trade, rec.shipment, rec.payer) if check is not None
+               for f in check.findings)
+
+
 async def accept_findings(deal_id: str, codes: list[str], *, by: str | None = None, hs_code: str | None = None) -> None:
     """Operator APPROVE of a compliance gate: the review findings are accepted
-    (not asked again for this deal) and a never-verified HS code is recorded Free."""
+    (not asked again for this deal) and a never-verified HS code is recorded Free.
+
+    Block-level findings are never accepted here. An approval covers one gate,
+    so the hold stays open and the deal's later gates keep stopping for a human.
+    """
     rec = await get_record(deal_id)
+    blocked = {c for c in codes if _is_block_code(c, rec)}
+    if blocked:
+        logger.warning("Compliance: deal %s block-level holds stay open after approval: %s",
+                       deal_id, ", ".join(sorted(blocked)))
+    codes = [c for c in codes if c not in blocked]
     rec.cleared_holds = sorted(set(rec.cleared_holds) | set(codes))
     rec.holds = [h for h in rec.holds if h not in codes]
     await save_record(rec)
     if hs_code and "hs_unverified" in codes:
         await set_hs_policy(HsPolicyEntry(hs_code=hs_code, status="free", confirmed_by=by or "operator",
                                           note="confirmed Free at a trade-compliance gate"))
+
+
+MONEY_RELEASE_ACTIONS = frozenset({
+    "RELEASE_ESCROW_TRANCHE", "RELEASE_SUPPLIER_PAYOUT", "CONFIRM_BUYER_ACCEPTANCE",
+})
+"""Gates that cannot be approved while a block-level hold is open."""
+
+STORE_UNAVAILABLE_BLOCK = "compliance_store_unavailable"
+
+_CLEARABLE_BLOCK_CODES = frozenset({"seal_mismatch"})
+"""Blocks an operator may clear as a false alarm. The others clear themselves
+when the facts are corrected (a new loading record, a re-run trade check)."""
+
+
+async def open_blocks(deal_id: str) -> list[str]:
+    """Block-level holds that stop money leaving. Fails closed: if the record
+    cannot be read, the release is refused rather than assumed safe."""
+    try:
+        rec = await get_record(deal_id, strict=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("Compliance: cannot read holds for %s — refusing money release", deal_id)
+        return [STORE_UNAVAILABLE_BLOCK]
+    return [h for h in rec.holds if _is_block_code(h, rec)]
+
+
+class HoldNotOpenError(Exception):
+    """The hold to clear is not open on this deal."""
+
+
+class HoldNotClearableError(Exception):
+    """This block-level hold cannot be cleared by an operator."""
+
+
+async def clear_block(
+    deal_id: str, code: str, *, by: str, reason: str, evidence_ref: str | None = None,
+) -> ComplianceRecord:
+    """Clear a block-level hold an operator has confirmed is a false alarm,
+    keeping who, why and on what evidence in ``hold_clearances``.
+
+    For a seal mismatch the carrier's seal numbers seen so far become accepted,
+    so a repeat of the same report does not re-raise it. A new unknown seal does.
+    """
+    if code not in _CLEARABLE_BLOCK_CODES:
+        raise HoldNotClearableError(code)
+    rec = await get_record(deal_id, strict=True)
+    if code not in rec.holds:
+        raise HoldNotOpenError(code)
+    loaded = set(rec.loading.seal_numbers) if rec.loading else set()
+    newly_accepted = sorted(set(rec.bl_seal_numbers) - loaded)
+    rec.accepted_seal_numbers = sorted(set(rec.accepted_seal_numbers) | set(newly_accepted))
+    rec.holds = [h for h in rec.holds if h != code]
+    rec.hold_clearances.append(HoldClearance(
+        code=code, cleared_by=by, reason=reason, evidence_ref=evidence_ref, seal_numbers=newly_accepted,
+    ))
+    await save_record(rec)
+    logger.warning("Compliance: deal %s hold %s cleared by %s: %s", deal_id, code, by, reason)
+    return rec
 
 
 async def hold_flags(deal_id: str | None) -> list[str]:
@@ -722,7 +821,7 @@ async def check_seal(deal_id: str, bl_seal_numbers: list[str]) -> Finding | None
     rec.bl_seal_numbers = sorted(set(rec.bl_seal_numbers) | seals)
     loaded = set(rec.loading.seal_numbers) if rec.loading else set()
     finding = None
-    if loaded and not seals <= loaded:
+    if loaded and not seals <= loaded | set(rec.accepted_seal_numbers):
         finding = Finding(code="seal_mismatch", severity="block",
                           message=(f"carrier reports seal(s) {', '.join(sorted(seals))}, inspector applied "
                                    f"{', '.join(sorted(loaded))} — container may have been opened"),

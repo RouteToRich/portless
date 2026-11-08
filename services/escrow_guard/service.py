@@ -91,6 +91,15 @@ _RELEASE_BLOCKING_DEAL_STATUSES = {"DISPUTE", "CANCELLED", "REFUNDED", "QC_FAILE
 _DEFAULT_FEE_PCT = {"tazapay": 1.0, "escrow_com": 0.89, "stripe": 2.9, "stripe_treasury": 2.9}
 
 
+async def _refuse_if_compliance_blocked(deal_id: str) -> None:
+    """No money leaves while a block-level compliance hold is open. Refunds to
+    the buyer are deliberately not covered: they are the way out of a block."""
+    from shared.orchestration import compliance
+    blocks = await compliance.open_blocks(deal_id)
+    if blocks:
+        raise InvalidDealState(deal_id, f"compliance block: {', '.join(blocks)}", "no open compliance block")
+
+
 def _normalize_funded_amount(provider: str, amount: float | int | None) -> float | None:
     """Normalize a webhook-reported funded amount to **major** units.
 
@@ -550,6 +559,7 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
         )
     if hold.disputed:
         raise InvalidDealState(req.deal_id, "escrow disputed", "not_disputed")
+    await _refuse_if_compliance_blocked(req.deal_id)
 
     # Never pay out money PortLess has not received from the escrow.
     completed, pending = _payout_totals(await repo.list_payouts_by_deal(req.deal_id))
@@ -859,6 +869,7 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
     tranche = hold.tranches[idx]
     if tranche.status == "RELEASED":  # idempotent
         return EscrowResponse.from_record(hold)
+    await _refuse_if_compliance_blocked(hold.deal_id)
 
     # A deal in dispute / cancelled / refunded keeps its money where it is.
     deal_status = await _deal_status(hold.deal_id)
@@ -1184,6 +1195,7 @@ async def accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowRespo
     pending_final = [t for t in hold.tranches if t.trigger == "ACCEPTED" and t.status == "PENDING"]
     if not pending_final and hold.buyer_accepted_at is not None:  # idempotent
         return EscrowResponse.from_record(hold)
+    await _refuse_if_compliance_blocked(hold.deal_id)
 
     now = datetime.now(timezone.utc)
     new_tranches, released_total, all_released = await _release_final_tranches(
@@ -1265,6 +1277,11 @@ async def check_inspection_windows(now: datetime | None = None) -> int:
         if deadline > now:
             continue
         if not any(t.trigger == "ACCEPTED" and t.status == "PENDING" for t in hold.tranches):
+            continue
+        try:
+            await _refuse_if_compliance_blocked(hold.deal_id)
+        except InvalidDealState as exc:  # retried on the next tick
+            logger.warning("EscrowGuard: window auto-release held for %s: %s", hold.escrow_id, exc)
             continue
         try:
             new_tranches, released_total, all_released = await _release_final_tranches(

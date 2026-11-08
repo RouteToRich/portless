@@ -19,6 +19,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
+from shared.webhooks import parse_webhook_body
+
 from .schemas import (
     ChaFilingRequest,
     DealOrdersResponse,
@@ -108,13 +110,11 @@ async def api_qc_webhook(request: Request) -> dict[str, Any]:
     PASS → QC_PASSED; FAIL → QC_FAILED.
     """
     raw_body = await request.body()
-    payload_data = await request.json()
+    payload = parse_webhook_body(raw_body, QcWebhookPayload)
     headers = dict(request.headers)
-    ext_ref = payload_data.get("ext_ref", "")
     try:
-        payload = QcWebhookPayload(**payload_data)
         return await handle_qc_result(
-            ext_ref=ext_ref,
+            ext_ref=payload.ext_ref,
             payload=payload,
             raw_headers=headers,
             raw_body=raw_body,
@@ -191,13 +191,11 @@ async def api_freight_webhook(request: Request) -> dict[str, Any]:
     ARRIVED/CLEARED trigger deal → CLEARED.
     """
     raw_body = await request.body()
-    payload_data = await request.json()
+    payload = parse_webhook_body(raw_body, FreightMilestonePayload)
     headers = dict(request.headers)
-    ext_ref = payload_data.get("ext_ref", "")
     try:
-        payload = FreightMilestonePayload(**payload_data)
         return await handle_freight_milestone(
-            ext_ref=ext_ref,
+            ext_ref=payload.ext_ref,
             payload=payload,
             raw_headers=headers,
             raw_body=raw_body,

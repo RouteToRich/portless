@@ -514,7 +514,8 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
     supplier_gstin = req.supplier_gstin or _party_gstin(deal)
     supplier_iec = req.supplier_iec or _party_iec(deal)
     product_description = req.product_description or _hs_description(deal.hs_code)
-    buyer_name = _party_name(deal, "buyer") or settings.portless_entity_name
+    # PortLess is the purchaser on the PO: the supplier never sees the overseas buyer.
+    buyer_name = settings.portless_entity_name
 
     now = datetime.now(timezone.utc)
     po_id = _new_po_id()
@@ -690,7 +691,7 @@ def _party_name(deal: Any, role: str) -> str | None:
     for p in getattr(deal, "parties", None) or []:
         party_role = getattr(p, "role", "") or ""
         if party_role.lower() == role.lower():
-            return getattr(p, "name", None) or getattr(p, "company_name", None)
+            return getattr(p, "legal_name", None) or getattr(p, "name", None) or getattr(p, "company_name", None)
     return None
 
 

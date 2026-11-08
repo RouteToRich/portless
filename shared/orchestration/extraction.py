@@ -31,7 +31,7 @@ _MOQ = re.compile(r"\b(?:MOQ|minimum order(?: quantity)?)\D{0,15}([0-9][0-9,]*(?
 _CAPACITY = re.compile(r"\b([0-9][0-9,]*(?:\.[0-9]+)?)\s*(MT|tons?|tonnes?)\s*(?:per|/|a)\s*month\b", re.IGNORECASE)
 _LEAD = re.compile(r"\b(?:lead time|delivery|ship(?:ment)?|dispatch)\D{0,25}([0-9]{1,3})\s*(?:-\s*[0-9]{1,3}\s*)?(days?|weeks?)\b",
                    re.IGNORECASE)
-_PORT = re.compile(r"\b(?:port of (?:discharge|destination|loading)?\s*:?\s*|to |at |destination:?\s*|POD:?\s*|POL:?\s*)"
+_PORT = re.compile(r"\b(?:(?i:port of (?:discharge|destination|loading)?)\s*:?\s*|to |at |destination:?\s*|POD:?\s*|POL:?\s*)"
                    r"([A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?)\s*(?:port|harbou?r)?\b")
 _WITHIN = re.compile(r"\bwithin\s+([0-9]{1,3})\s*(days?|weeks?|months?)\b", re.IGNORECASE)
 _CERTS = re.compile(r"\b(USP|BP|EP|IP|FCC|ISO\s?\d{4,5}|HACCP|FSSAI|Halal|Kosher|GMP|REACH|organic|non-GMO|COA|MSDS|SGS)\b",
@@ -149,7 +149,7 @@ def parse_supplier(text: str) -> dict[str, Any]:
         out["capacity_mt_per_month"] = _num(m.group(1))
     if (m := _LEAD.search(t)):
         out["lead_time_days"] = _days(m.group(1), m.group(2))
-    if (m := re.search(r"\b(?:port of loading|POL|ex)\s*:?\s*([A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?)", t)
+    if (m := re.search(r"\b(?:(?i:port of loading)|POL|ex)\s*:?\s*([A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?)", t)
             or _POL_AFTER_FOB.search(t)):
         out["port_of_loading"] = m.group(1).strip()
     certs = list(dict.fromkeys(c.group(1).upper() for c in _CERTS.finditer(t)))

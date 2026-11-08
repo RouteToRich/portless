@@ -40,6 +40,7 @@ from .schemas import (
 )
 from .service import (
     ApprovalAlreadyResolved,
+    ComplianceBlockedError,
     SameApproverError,
     ApprovalNotFoundError,
     InvalidAction,
@@ -190,7 +191,7 @@ async def api_resolve_approval(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except ApprovalAlreadyResolved as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
-    except SameApproverError as exc:
+    except (SameApproverError, ComplianceBlockedError) as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
 
 

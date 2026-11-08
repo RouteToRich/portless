@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.auth.dependencies import AuthUser, get_current_user, require_org_scope, require_portless
 
@@ -261,6 +261,37 @@ async def deal_compliance_check(deal_id: str, user: AuthUser = Depends(get_curre
         supplier_price=supplier_ask,
     )
     return result.model_dump(mode="json")
+
+
+class ClearHoldRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    reason: str = Field(min_length=10, description="What was checked and why this is a false alarm")
+    evidence_ref: str | None = None
+
+
+@router.post("/{deal_id}/compliance/holds/{code}/clear")
+async def deal_compliance_clear_hold(
+    deal_id: str, code: str, body: ClearHoldRequest, user: AuthUser = Depends(require_portless),
+) -> dict:
+    """Clear a block-level hold confirmed as a false alarm (staff only, audited).
+
+    Only a seal mismatch can be cleared here: a wrong loading record is fixed by
+    recording it again, and legal blocks such as an embargo are never waived.
+    """
+    await _org_deal(deal_id, user)
+    from shared.orchestration import compliance
+    try:
+        record = await compliance.clear_block(
+            deal_id, code, by=user.email or user.user_id, reason=body.reason, evidence_ref=body.evidence_ref,
+        )
+    except compliance.HoldNotClearableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"{code} cannot be cleared by an operator") from exc
+    except compliance.HoldNotOpenError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"{code} is not open on deal {deal_id}") from exc
+    return record.model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------

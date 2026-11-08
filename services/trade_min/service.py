@@ -955,12 +955,13 @@ def _normalise_price_per_mt(value: float | None, price_unit: str | None) -> floa
     if value is None:
         return None
     unit = (price_unit or "").lower().replace(" ", "")
-    if unit.endswith("/kg") or unit.endswith("perkg") or unit == "kg":
-        return round(value * 1000.0, 2)
-    if unit.startswith("inr"):
+    per_kg = unit.endswith("/kg") or unit.endswith("perkg") or unit == "kg"
+    if unit.startswith(("inr", "rs", "₹")):
         # INR -> USD at a conservative fallback rate when no FX is wired in.
         usd = value / 84.0
-        return round(usd * 1000.0, 2) if "/kg" in unit else round(usd, 2)
+        return round(usd * 1000.0, 2) if per_kg else round(usd, 2)
+    if per_kg:
+        return round(value * 1000.0, 2)
     return round(value, 4)
 
 

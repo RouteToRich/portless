@@ -51,10 +51,8 @@ class InMemoryEscrowGuardRepository:
         return self._holds.get(escrow_id)
 
     async def get_hold_by_deal(self, deal_id: str) -> EscrowHoldRecord | None:
-        for h in self._holds.values():
-            if h.deal_id == deal_id:
-                return h
-        return None
+        holds = (h for h in self._holds.values() if h.deal_id == deal_id)
+        return max(holds, key=lambda h: h.created_at, default=None)
 
     async def get_hold_by_ext_ref(self, ext_ref: str) -> EscrowHoldRecord | None:
         for h in self._holds.values():

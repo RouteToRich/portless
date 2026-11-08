@@ -34,7 +34,7 @@ async def create_deal(payload: CreateDealRequest) -> DealResponse:
 
 
 async def list_deals(status: str | None) -> Any:
-    return await clients.deals.list_deals(status)
+    return await clients.deals.list_deals(status=status)
 
 
 async def get_deal(deal_id: str) -> Any:
@@ -50,7 +50,7 @@ async def list_opportunities() -> Any:
 
 
 async def scan_opportunities(payload: dict[str, Any]) -> Any:
-    return await clients.trade_min.scan(payload)
+    return await clients.trade_min.post("/trade-min/scan", json=payload)
 
 
 async def list_approvals(status: str | None) -> Any:

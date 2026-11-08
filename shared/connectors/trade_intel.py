@@ -1082,7 +1082,7 @@ class Access2MarketsConnector(Connector):
         ntbs = data.get("nonTariffMeasures") or data.get("ntms") or data.get("ntbs") or []
         if isinstance(ntbs, list):
             result["ntb_flags"] = [
-                str(n.get("code") or n.get("description") or n)
+                str((n.get("code") or n.get("description") or n) if isinstance(n, dict) else n)
                 for n in ntbs[:5]
             ]
         roo = data.get("rulesOfOrigin") or data.get("roo")
