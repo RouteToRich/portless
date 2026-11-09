@@ -241,6 +241,22 @@ class TestLLMFallback:
         assert resp.status in (ExceptionStatus.ESCALATED, ExceptionStatus.UNRESOLVABLE)
         assert resp.category in (ExceptionCategory.UNKNOWN, None)
 
+    @pytest.mark.asyncio
+    async def test_gateway_not_configured_reaches_an_operator(self):
+        from shared.llm_gateway import LLMConfigurationError
+        from services.exception_resolver import agent as agent_mod
+
+        create = AsyncMock(return_value=MagicMock(approval_id="APR-1", status="PENDING"))
+        with (
+            patch.object(agent_mod, "LLMClient") as MockClient,
+            patch("services.hitl_approval.service.create_approval", new=create),
+        ):
+            MockClient.return_value.chat = AsyncMock(side_effect=LLMConfigurationError("no url"))
+            resp = await raise_exception(_req())
+
+        assert resp.status == ExceptionStatus.ESCALATED
+        assert create.await_args.args[0].action == "RESOLVE_EXCEPTION"
+
 
 # ---------------------------------------------------------------------------
 # raise_exception — agent crash

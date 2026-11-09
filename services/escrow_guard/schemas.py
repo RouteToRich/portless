@@ -369,7 +369,11 @@ class DealLedger(BaseModel):
     payouts_pending: float = 0.0
     """Sum of REQUESTED / PROCESSING supplier payouts (committed, not yet confirmed)."""
     available_for_payout: float = 0.0
-    """net_to_portless − completed − pending payouts: what can still be paid to the supplier now."""
+    """What can still be paid to the supplier now: net_to_portless − completed −
+    pending payouts, never reaching into ``retained_until_acceptance``."""
+    retained_until_acceptance: float = 0.0
+    """Part of the supplier's money held back until the buyer accepts the goods
+    (SUPPLIER_RETENTION_ENABLED); 0 once the acceptance tranche has released."""
     supplier_owed: float | None = None
     """Supplier's total entitlement (Purchase Order value) when known."""
     supplier_balance_due: float | None = None

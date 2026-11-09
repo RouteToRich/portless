@@ -279,6 +279,45 @@ class TestHolds:
         assert await cp.hold_flags("DEAL-C") == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("payer, expected", [
+        ("Someone Else FZE", ["compliance:payer_not_buyer"]),
+        (None, ["compliance:payer_unknown"]),
+    ])
+    async def test_status_echo_uses_the_payer_on_the_stored_webhook(self, payer, expected):
+        """The Deals status echo reaches the handler first and carries no payer."""
+        hold = SimpleNamespace(provider_payload={"funded_event": {"payer_name": payer}})
+        escrow = AsyncMock()
+        escrow.get_hold_by_deal = AsyncMock(return_value=hold)
+        gate = AsyncMock()
+        with (
+            patch("services.deals.service.get_deal", new=AsyncMock(return_value=_deal("ESCROW_FUNDED"))),
+            patch("services.escrow_guard.repository.get_repository", return_value=escrow),
+            patch("services.hitl_approval.service.create_approval", new=gate),
+            patch("agents.negotiation_agent.repository.get_repository", return_value=_neg_repo()),
+        ):
+            await c.on_escrow_funded(DomainEvent(topic=EventTopic.ESCROW_FUNDED, deal_id="DEAL-C",
+                                                 payload={"status": "ESCROW_FUNDED"}))
+        assert [f for f in gate.await_args.args[0].risk_flags if f.startswith("compliance:")] == expected
+
+    @pytest.mark.asyncio
+    async def test_buyer_who_paid_gets_no_payer_flag_from_the_echo(self):
+        deal = _deal("ESCROW_FUNDED")
+        paid_by = cp._party(deal, "buyer").legal_name
+        hold = SimpleNamespace(provider_payload={"funded_event": {"payer_name": paid_by}})
+        escrow = AsyncMock()
+        escrow.get_hold_by_deal = AsyncMock(return_value=hold)
+        gate = AsyncMock()
+        with (
+            patch("services.deals.service.get_deal", new=AsyncMock(return_value=deal)),
+            patch("services.escrow_guard.repository.get_repository", return_value=escrow),
+            patch("services.hitl_approval.service.create_approval", new=gate),
+            patch("agents.negotiation_agent.repository.get_repository", return_value=_neg_repo()),
+        ):
+            await c.on_escrow_funded(DomainEvent(topic=EventTopic.ESCROW_FUNDED, deal_id="DEAL-C",
+                                                 payload={"status": "ESCROW_FUNDED"}))
+        assert not [f for f in gate.await_args.args[0].risk_flags if "payer_" in f]
+
+    @pytest.mark.asyncio
     async def test_qc_passed_waits_for_seal_then_loading_gates_freight(self):
         deal = _deal("QC_PASSED")
         gate = AsyncMock()

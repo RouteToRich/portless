@@ -34,3 +34,8 @@ os.environ["LLM_GATEWAY_URL"] = ""
 # it on per test.
 os.environ["COMPLIANCE_ENABLED"] = "false"
 os.environ["COMPLIANCE_LOADING_CHECK_REQUIRED"] = "false"
+
+# The supplier holdback until buyer acceptance is on by default and changes
+# every payout amount; the money-chain tests pin the payout arithmetic around
+# it. tests/test_supplier_retention.py turns it on per test.
+os.environ["SUPPLIER_RETENTION_ENABLED"] = "false"

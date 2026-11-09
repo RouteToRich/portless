@@ -42,7 +42,7 @@ make up    # docker compose up --build
 make down
 
 # Tests
-pytest -q                                 # full suite (3937 pass, ~5 min)
+pytest -q                                 # full suite (3952 pass, ~5 min)
 pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 95.46% line + branch (2026-11-09)
 pytest tests/test_health.py -q            # smoke: every service boots + /health 200
 pytest tests/test_state_machine.py        # deal state machine unit tests
@@ -57,6 +57,7 @@ pytest tests/test_apify_connector.py      # PortLess Apify actors: normalisers, 
 pytest tests/test_enrichment.py           # counterparty contact + sanctions enrichment, party PATCH
 pytest tests/test_escrow_money_chain.py   # shortfall, replay, tranche order, fees, settlement, payout cap, PAID rule
 pytest tests/test_money_continuations.py  # screening gate, capped/balance payouts, tranche/settled legs, RFQ by e-mail
+pytest tests/test_supplier_retention.py   # supplier holdback until buyer acceptance: refusal, ledger, gate flags, off switch
 pytest tests/test_readiness.py            # production readiness gate
 pytest tests/test_gate_policy_v2.py       # gate timeouts / on-timeout defaults / value thresholds, auto-source, delivery replies, supplier reminders
 pytest tests/test_batch_b.py              # buyer outreach funnel, catalogue, carrier tracking + delivery window, resolver playbooks, Apify run budget
@@ -273,7 +274,7 @@ Every gate above is created from `resolve_gate(action, deal, amount=, conditions
 
 **Exception categories:** `QC_FAILED`, `FREIGHT_DELAY`, `PAYMENT_FAILED`, `NEGOTIATION_FAILED`, `CUSTOMS_REJECTED`, `DOCUMENT_ERROR`, `CONNECTOR_ERROR`, `MARGIN_BREACH`, `APPROVAL_REJECTED`, `CALLBACK_FAILED`, `UNKNOWN`.
 
-**LLM fallback:** if all models exhausted, returns conservative `UNKNOWN/HIGH/ESCALATE` analysis without raising — the pipeline always produces a result.
+**LLM fallback:** if all models are exhausted or the gateway is not configured, returns conservative `UNKNOWN/HIGH/ESCALATE` analysis without raising — the pipeline always produces a result.
 
 ### Exception Resolver — key invariants
 
@@ -425,6 +426,7 @@ INSPECTION_WINDOW_TRIGGER    # delivery (default) | proof — what starts the fi
 INSPECTION_WINDOW_MILESTONES # default DELIVERED — carrier milestones that open the window
 INSPECTION_WINDOW_FALLBACK_DAYS  # default 21 — open it anyway this long after customs clearance
 TRACKING_POLL_HOURS          # default 12 — carrier-tracking actor poll for IN_TRANSIT deals
+SUPPLIER_RETENTION_ENABLED   # default true — hold back the acceptance tranche's share of the supplier's money until the buyer accepts or the window lapses
 
 # Exception playbooks (shared/orchestration/playbooks.py)
 EXCEPTION_PLAYBOOKS_ENABLED  # default true — deterministic plans before the LLM
@@ -525,7 +527,7 @@ Run `python scripts/check_trade_api_connections.py` to test all third-party API 
 `BOOK_FREIGHT` gate → `POST /shield-link/freight` → deal `IN_TRANSIT` → `freight.booked` → `FILE_CUSTOMS` gate (document ids attached) + shipment emailed to the buyer → freight webhook (ARRIVED) → deal `CLEARED` → T3 tranche gate + arrival email + `RELEASE_SUPPLIER_PAYOUT` gate whose amount is **capped at the net funds already released from escrow** (`DealLedger.available_for_payout`; `total_owed` = PO value travels in the payload) → `POST /escrow-guard/payouts` → Payoneer payout → payout webhook (COMPLETED) → deal `PAID` **only once completed payouts reach the PO value**; a partial payout leaves the deal `CLEARED` and `on_payout_completed` gates the balance as `supplier_balance`.
 
 **Escrow money chain (`escrow_guard` + `continuations`):**
-Tranches (default 30/40/20/10 on PO_ISSUED / QC_PASSED / CLEARED / ACCEPTED) release strictly in schedule order, never while the deal is in `DISPUTE` / `CANCELLED` / `REFUNDED` / `QC_FAILED`, never above the principal; each release accrues the provider fee and emits `escrow.tranche_released`. The buyer's acceptance window for the final tranche opens on **delivery**, not when the goods are still at sea: the carrier's `DELIVERED` milestone (freight webhook, the `container-tracking-ai` poll for `IN_TRANSIT` deals every `TRACKING_POLL_HOURS`, or an operator's `POST /shield-link/freight/{ref}/milestone`) → `freight.milestone` → `escrow_guard.open_inspection_window()` (`escrow.inspection_opened` → `inspection_window_open` e-mail; a delivery recorded before the last proof tranche released opens the window on that release; `INSPECTION_WINDOW_FALLBACK_DAYS` after clearance the deal watcher opens it anyway; `inspection_window_trigger=proof` restores the old behaviour). "We accept the goods" → `CONFIRM_BUYER_ACCEPTANCE` gate → `accept_escrow()`; a complaint → `dispute_escrow()` (`/clear-dispute` lifts it, e.g. when a re-inspection is agreed); silence → auto-release after `inspection_window_hours`. The tranche leg also re-gates the next tranche whose trigger status is already reached and tops up the supplier payout. When the last tranche leaves the escrow `escrow.settled` fires: the supplier balance is gated, both parties get a settlement notice, and `realized_margin_usd` = net received − payouts is patched onto the deal. `GET /escrow-guard/deals/{id}/ledger` (and `/ledgers` for all deals) exposes principal / funded / shortfall / released / fees / net / payouts / available / supplier owed & balance / realised margin with a reconciliation check (`payouts ≤ net received` included); the escrow watcher raises `deal.exception` once per breach.
+Tranches (default 30/40/20/10 on PO_ISSUED / QC_PASSED / CLEARED / ACCEPTED) release strictly in schedule order, never while the deal is in `DISPUTE` / `CANCELLED` / `REFUNDED` / `QC_FAILED`, never above the principal; each release accrues the provider fee and emits `escrow.tranche_released`. The buyer's acceptance window for the final tranche opens on **delivery**, not when the goods are still at sea: the carrier's `DELIVERED` milestone (freight webhook, the `container-tracking-ai` poll for `IN_TRANSIT` deals every `TRACKING_POLL_HOURS`, or an operator's `POST /shield-link/freight/{ref}/milestone`) → `freight.milestone` → `escrow_guard.open_inspection_window()` (`escrow.inspection_opened` → `inspection_window_open` e-mail; a delivery recorded before the last proof tranche released opens the window on that release; `INSPECTION_WINDOW_FALLBACK_DAYS` after clearance the deal watcher opens it anyway; `inspection_window_trigger=proof` restores the old behaviour). "We accept the goods" → `CONFIRM_BUYER_ACCEPTANCE` gate → `accept_escrow()`; a complaint → `dispute_escrow()` (`/clear-dispute` lifts it, e.g. when a re-inspection is agreed); silence → auto-release after `inspection_window_hours`. The tranche leg also re-gates the next tranche whose trigger status is already reached and tops up the supplier payout. Until the acceptance tranche has released, the supplier's payouts stop short of `retained_until_acceptance` (the same share of the PO value, default 10 %; `SUPPLIER_RETENTION_ENABLED`; enforced by `request_payout`, shown on the ledger, risk flag `supplier_retention_held`), so a deal cannot reach `PAID` before the buyer has accepted or the window has lapsed. When the last tranche leaves the escrow `escrow.settled` fires: the supplier balance is gated, both parties get a settlement notice, and `realized_margin_usd` = net received − payouts is patched onto the deal. `GET /escrow-guard/deals/{id}/ledger` (and `/ledgers` for all deals) exposes principal / funded / shortfall / released / fees / net / payouts / available / supplier owed & balance / realised margin with a reconciliation check (`payouts ≤ net received` included); the escrow watcher raises `deal.exception` once per breach.
 
 **Books, timeline, evidence:**
 `GET /escrow-guard/deals/{id}/journal` (`?format=csv`; `/journals` for all) derives the double-entry journal from the hold and payouts (escrow funded, PO value, tranche net + fee + revenue, refund, supplier payouts) with a trial-balance and escrow-trust check. `GET /deals/{id}/timeline` merges every dated fact of the deal (status changes, outreach, RFQs/quotes, rounds, e-mails, gates and signatures, PI/PO, documents, orders and milestones, escrow events, payouts, exceptions). `GET /deals/{id}/evidence-pack?format=json|html` is the hand-over pack with a SHA-256 over its content.

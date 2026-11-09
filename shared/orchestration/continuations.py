@@ -952,6 +952,11 @@ async def on_negotiation_agreed(event: DomainEvent) -> None:
         return
     deal_id = event.deal_id
     agreed_price = event.payload.get("agreed_price")
+    if deal_id and not agreed_price and "negotiation_id" not in event.payload:
+        # The Deals status emitter's echo of the same transition carries no
+        # price; the Negotiation Agent's own event right behind it does.
+        logger.debug("Continuation: status echo of NEGOTIATION_AGREED for %s — skipped", deal_id)
+        return
     if not deal_id or not agreed_price or float(agreed_price) <= 0:
         logger.error(
             "Continuation: cannot issue PI for deal %s — missing/invalid agreed_price %r",
@@ -1278,6 +1283,22 @@ async def _tranche_gate(
 # ESCROW_FUNDED → PO gate
 # ---------------------------------------------------------------------------
 
+async def _payer_facts(deal_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Who paid, whichever ESCROW_FUNDED copy arrives first: the Deals status
+    emitter's echo carries no payer, so fall back to the provider's webhook
+    stored on the hold before the deal moved."""
+    if payload.get("payer_name"):
+        return payload
+    try:
+        from services.escrow_guard.repository import get_repository as _eg_repo  # type: ignore[import]
+        hold = await _eg_repo().get_hold_by_deal(deal_id)
+        funded = (hold.provider_payload or {}).get("funded_event") or {} if hold else {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Continuation: funded webhook lookup failed for %s: %s", deal_id, exc)
+        return payload
+    return {**payload, "payer_name": funded.get("payer_name"), "payer_country": funded.get("payer_country")}
+
+
 async def on_escrow_funded(event: DomainEvent) -> None:
     """ESCROW_FUNDED → create the ISSUE_PO HITL gate (operator approves → PO)."""
     if not _enabled():
@@ -1291,7 +1312,7 @@ async def on_escrow_funded(event: DomainEvent) -> None:
         # Third-party payments are the classic laundering route: the money
         # must come from the buyer (a finding holds the PO gate at L0).
         await _best_effort("ESCROW_FUNDED→PAYER", deal_id,
-                           compliance.check_payer(deal, event.payload or {}))
+                           compliance.check_payer(deal, await _payer_facts(deal_id, event.payload or {})))
     try:
         supplier_ask, quantity_mt = await _negotiation_numbers(deal_id, deal)
         if not supplier_ask:
@@ -1669,8 +1690,11 @@ async def on_customs_cleared(event: DomainEvent) -> None:
         await _emit_exception(deal_id, "CLEARED→PAYOUT_GATE", exc)
 
 
-async def _supplier_owed_and_paid(deal, ask: float | None, qty: float) -> tuple[float | None, float, float, float, float, bool]:
-    """→ (owed, paid, pending, available_for_payout, released_total, ledger_reconciled).
+async def _supplier_owed_and_paid(
+    deal, ask: float | None, qty: float,
+) -> tuple[float | None, float, float, float, float, bool, float]:
+    """→ (owed, paid, pending, available_for_payout, released_total, ledger_reconciled,
+    retained_until_acceptance).
 
     ``owed`` is the Purchase Order value, else supplier ask × quantity.
     ``available`` is what the escrow ledger says PortLess can pay out now;
@@ -1688,7 +1712,7 @@ async def _supplier_owed_and_paid(deal, ask: float | None, qty: float) -> tuple[
         pass
     if owed is None and ask:
         owed = round(float(ask) * qty, 2)
-    paid = pending = released = 0.0
+    paid = pending = released = retained = 0.0
     available: float | None = None
     reconciled = False
     try:
@@ -1698,6 +1722,7 @@ async def _supplier_owed_and_paid(deal, ask: float | None, qty: float) -> tuple[
         available = float(ledger.available_for_payout)
         released = float(ledger.released_total)
         reconciled = bool(getattr(ledger, "reconciled", False))
+        retained = float(getattr(ledger, "retained_until_acceptance", 0.0))
         if ledger.supplier_owed:
             owed = float(ledger.supplier_owed)
     except Exception as exc:  # noqa: BLE001
@@ -1705,7 +1730,7 @@ async def _supplier_owed_and_paid(deal, ask: float | None, qty: float) -> tuple[
                        deal.deal_id, exc)
     if available is None:
         available = owed or 0.0
-    return owed, paid, pending, available, released, reconciled
+    return owed, paid, pending, available, released, reconciled, retained
 
 
 async def _pending_payout_gate_exists(deal_id: str) -> bool:
@@ -1726,7 +1751,7 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
     supplier_ask, quantity_mt = await _negotiation_numbers(deal_id, deal)
     if first and not supplier_ask:
         raise RuntimeError(f"no supplier price available for deal {deal_id} — payout gate needs one")
-    owed, paid, pending, available, released, reconciled = await _supplier_owed_and_paid(
+    owed, paid, pending, available, released, reconciled, retained = await _supplier_owed_and_paid(
         deal, supplier_ask, quantity_mt,
     )
     if not owed:
@@ -1742,19 +1767,22 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
     amount = round(min(due, available), 2)
     if amount <= 0.01:
         logger.info(
-            "Continuation[%s]: deal %s — supplier owed %.2f but nothing released from escrow yet; "
-            "payout waits for the next tranche", stage, deal_id, due,
+            "Continuation[%s]: deal %s — supplier owed %.2f, nothing payable yet (%.2f held back until "
+            "the buyer accepts); payout waits for the next tranche", stage, deal_id, due, retained,
         )
         return False
     supplier_id = getattr(deal, "winning_supplier_id", None) or "UNKNOWN"
     kind = "supplier_payout" if (paid == 0 and pending == 0) else "supplier_balance"
     key = f"auto-payout-gate-{deal_id}" if first else f"auto-payout-balance-{deal_id}-{int(round(released))}-{int(round(paid + pending))}"
     partial = amount < due - 0.01
+    # The holdback, not the escrow's released funds, is what limits this payout.
+    held_back = partial and retained > 0 and available >= owed - retained - paid - pending - 0.01
+    reason = f"${retained:,.2f} held back until the buyer accepts the goods" if held_back else "capped at funds released from escrow"
     await _create_gate(
         deal_id, "RELEASE_SUPPLIER_PAYOUT",
         summary=(
             f"{'Cargo cleared' if first else 'Escrow released funds'} — pay supplier ${amount:,.2f}"
-            + (f" (of ${due:,.2f} still owed; capped at funds released from escrow)" if partial else "")
+            + (f" (of ${due:,.2f} still owed; {reason})" if partial else "")
             + f" for deal {deal_id}"
         ),
         financial_impact_usd=amount,
@@ -1769,7 +1797,9 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
         idempotency_key=key,
         deal=deal,
         conditions_ok=reconciled,
-        risk_flags=["money_movement"] + (["partial_payout_capped_by_escrow"] if partial else []),
+        risk_flags=["money_movement"] + (
+            ["supplier_retention_held"] if held_back else ["partial_payout_capped_by_escrow"] if partial else []
+        ),
     )
     return True
 

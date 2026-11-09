@@ -99,6 +99,24 @@ class TestAgreedScreening:
         return enrich
 
     @pytest.mark.asyncio
+    async def test_status_echo_without_price_is_skipped_quietly(self, caplog):
+        get = AsyncMock()
+        with patch("services.deals.service.get_deal", new=get), caplog.at_level("ERROR"):
+            await c.on_negotiation_agreed(DomainEvent(
+                topic=EventTopic.NEGOTIATION_AGREED, deal_id="DEAL-1", payload={"status": "NEGOTIATION_AGREED"},
+            ))
+        get.assert_not_awaited()
+        assert not caplog.records
+
+    @pytest.mark.asyncio
+    async def test_real_agreement_without_price_is_still_an_error(self, caplog):
+        with caplog.at_level("ERROR"):
+            await c.on_negotiation_agreed(DomainEvent(
+                topic=EventTopic.NEGOTIATION_AGREED, deal_id="DEAL-1", payload={"negotiation_id": "NEG-1"},
+            ))
+        assert "missing/invalid agreed_price" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_clear_and_fresh_issues_pi_without_rescreen(self):
         issue, gate = AsyncMock(return_value=SimpleNamespace(pi_id="PI-1")), AsyncMock()
         deal = _deal("NEGOTIATION_AGREED",

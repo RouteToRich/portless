@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -491,6 +492,26 @@ def _payout_totals(payouts: list[PayoutRecord]) -> tuple[float, float]:
     return completed, pending
 
 
+def supplier_retention_enabled() -> bool:
+    return os.getenv("SUPPLIER_RETENTION_ENABLED", "true").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _retained_until_acceptance(hold: EscrowHoldRecord, owed: float | None) -> float:
+    """Part of the supplier's money held back until the buyer has accepted the
+    goods: the same share as the buyer's unreleased acceptance tranche(s).
+
+    Without it a healthy margin lets the supplier be paid in full at customs
+    clearance, with the goods still at sea and only the last tranche left to
+    answer a dispute. Zero for a legacy hold (no tranches), an unknown PO value
+    and once the acceptance tranche has left the escrow."""
+    if owed is None or not supplier_retention_enabled():
+        return 0.0
+    share = sum(t.pct or 0.0 for t in hold.tranches if t.trigger == "ACCEPTED" and t.status == "PENDING")
+    return round(owed * share, 2)
+
+
 async def _settle_if_complete(hold: EscrowHoldRecord, now: datetime) -> EscrowHoldRecord:
     """When every tranche is RELEASED: stamp ``settled_at``, emit ESCROW_SETTLED,
     refresh the deal's realised margin. Idempotent."""
@@ -569,6 +590,16 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
             req.deal_id,
             f"payout {req.amount:.2f} exceeds funds released from escrow (available {available:.2f})",
             "amount <= available_for_payout",
+        )
+    # The last part of the supplier's money waits for the buyer's acceptance.
+    owed = req.total_owed if req.total_owed is not None else await _supplier_owed(req.deal_id)
+    retained = _retained_until_acceptance(hold, owed)
+    if retained and completed + pending + req.amount > owed - retained + _FUNDING_TOLERANCE:
+        raise InvalidDealState(
+            req.deal_id,
+            f"payout {req.amount:.2f} reaches the {retained:.2f} held back until the buyer accepts the goods "
+            f"(already committed {completed + pending:.2f} of {owed:.2f})",
+            "buyer acceptance or a lapsed inspection window",
         )
     if req.amount <= 0:
         raise InvalidDealState(req.deal_id, "payout amount <= 0", "amount > 0")
@@ -1468,6 +1499,8 @@ async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> De
     owed = next((p.total_owed for p in payouts if p.total_owed is not None), None)
     if owed is None:
         owed = await _supplier_owed(hold.deal_id)
+    retained = _retained_until_acceptance(hold, owed)
+    payable_ceiling = min(net, owed - retained) if retained else net
     return DealLedger(
         deal_id=hold.deal_id,
         currency=hold.currency,
@@ -1484,7 +1517,8 @@ async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> De
         net_to_portless=net,
         payouts_total=completed,
         payouts_pending=pending,
-        available_for_payout=round(max(net - completed - pending, 0.0), 2),
+        available_for_payout=round(max(payable_ceiling - completed - pending, 0.0), 2),
+        retained_until_acceptance=retained,
         supplier_owed=owed,
         supplier_balance_due=(round(owed - completed, 2) if owed is not None else None),
         realized_margin=round(net - completed, 2) if (hold.tranches and hold.released_total) or completed else None,

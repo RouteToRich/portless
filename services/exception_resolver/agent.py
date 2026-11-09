@@ -20,7 +20,7 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from shared.llm_gateway import LLMClient, LLMExhaustedException
+from shared.llm_gateway import LLMClient, LLMConfigurationError, LLMExhaustedException
 from .config import settings
 from .schemas import (
     AgentAnalysis,
@@ -421,14 +421,14 @@ async def _node_analyze(state: AgentState) -> dict[str, Any]:
         )
         return {"analysis": analysis, "error": None}
 
-    except LLMExhaustedException as exc:
-        logger.error("LLM exhausted for exception %s: %s", record.exception_id, exc)
+    except (LLMExhaustedException, LLMConfigurationError) as exc:
+        logger.error("LLM unavailable for exception %s: %s", record.exception_id, exc)
         # Fallback: conservative ESCALATE with UNKNOWN category
         analysis = AgentAnalysis(
             category=ExceptionCategory.UNKNOWN,
             severity=ExceptionSeverity.HIGH,
             summary=f"Exception on deal {record.deal_id} — LLM unavailable, manual review required.",
-            root_cause="LLM gateway exhausted; cannot determine root cause automatically.",
+            root_cause="LLM gateway unavailable; cannot determine root cause automatically.",
             remediation_steps=[
                 "Review exception context manually.",
                 "Determine appropriate remediation action.",
