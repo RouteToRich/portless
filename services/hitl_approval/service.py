@@ -101,6 +101,10 @@ class ComplianceBlockedError(Exception):
         )
 
 
+class GateNotApproved(Exception):
+    """An HTTP call tried to move money without the approved gate behind it."""
+
+
 def four_eyes_threshold_usd() -> float | None:
     """``FOUR_EYES_THRESHOLD_USD``: money gates at/above it need two approvers."""
     import os
@@ -513,6 +517,25 @@ async def get_approval(approval_id: str) -> ApprovalResponse:
     if record is None:
         raise ApprovalNotFoundError(approval_id)
     return ApprovalResponse.from_record(record)
+
+
+async def assert_gate_approved(approval_id: str | None, action: str, expect: dict[str, Any]) -> None:
+    """Money moves over HTTP only as the execution of an approved gate: it must
+    exist, be approved, be for this action, and name exactly this money."""
+    if not approval_id:
+        raise GateNotApproved(f"{action} needs an approved gate — it cannot be called directly")
+    try:
+        approval = await get_approval(approval_id)
+    except ApprovalNotFoundError as exc:
+        raise GateNotApproved(f"Approval {approval_id!r} not found") from exc
+    if approval.action != action:
+        raise GateNotApproved(f"Approval {approval_id!r} is for {approval.action}, not {action}")
+    if approval.status not in ("APPROVED", "AUTO_APPROVED"):
+        raise GateNotApproved(f"Approval {approval_id!r} is {approval.status}, not approved")
+    payload = approval.callback_payload or {}
+    for field, value in expect.items():
+        if payload.get(field) != value:
+            raise GateNotApproved(f"Approval {approval_id!r} does not cover this {field}")
 
 
 async def list_approvals(

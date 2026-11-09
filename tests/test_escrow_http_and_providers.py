@@ -157,6 +157,14 @@ def _provider_down(*_a, **_k):
 # HTTP journeys
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _gate_already_approved():
+    """These tests cover the routes once their approval gate exists;
+    tests/test_approval_gate_enforcement.py covers the gate check."""
+    with patch("services.escrow_guard.router._require_approved_gate", new=AsyncMock()):
+        yield
+
+
 class TestHttpJourney:
     def test_escrow_from_open_to_paid(self, api, world):
         opened = api.post("/escrow-guard/escrows", json={"deal_id": "D1", "provider": "tazapay", "amount": 50000})

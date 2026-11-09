@@ -19,7 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from shared.webhooks import parse_webhook_body
+from shared.webhooks import parse_webhook_body, signature_required
 
 from .schemas import (
     ChaFilingRequest,
@@ -118,6 +118,7 @@ async def api_qc_webhook(request: Request) -> dict[str, Any]:
             payload=payload,
             raw_headers=headers,
             raw_body=raw_body,
+            require_signature=signature_required(request),
         )
     except WebhookVerifyError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))
@@ -199,6 +200,7 @@ async def api_freight_webhook(request: Request) -> dict[str, Any]:
             payload=payload,
             raw_headers=headers,
             raw_body=raw_body,
+            require_signature=signature_required(request),
         )
     except WebhookVerifyError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))

@@ -143,6 +143,31 @@ async def get_deal(
 # Status transitions
 # ---------------------------------------------------------------------------
 
+# Only these statuses may be set by hand. Every other one records something a
+# gate or a provider confirmed (money received, PO issued, inspection passed,
+# supplier paid …) and is set by that step, in process, never over this route.
+_OPERATOR_SETTABLE_STATUSES = frozenset({
+    DealStatus.MATCHING, DealStatus.NEGOTIATING, DealStatus.NEGOTIATION_FAILED,
+    DealStatus.DISPUTE, DealStatus.CANCELLED,
+})
+
+
+async def _refuse_gated_status(deal_id: str, target: DealStatus) -> None:
+    if target not in _OPERATOR_SETTABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{target.value} is set by its own approved step or provider confirmation, not by hand",
+        )
+    if target == DealStatus.CANCELLED:
+        from services.escrow_guard.repository import get_repository as escrow_repository
+        hold = await escrow_repository().get_hold_by_deal(deal_id)
+        if hold is not None and (hold.funded_amount or 0) > hold.refunded_total:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="the buyer has funds in this escrow — cancel it through the unfunded-deal playbook, which refunds them",
+            )
+
+
 @router.patch("/{deal_id}/status", response_model=DealRecord)
 async def update_status(
     deal_id: str,
@@ -155,6 +180,7 @@ async def update_status(
     Returns ``422`` when the transition is not permitted, ``404`` if not theirs.
     """
     await _org_deal(deal_id, user)  # organization ownership gate
+    await _refuse_gated_status(deal_id, payload.target_status)
     try:
         return await service.update_status(deal_id, payload)
     except DealNotFoundError as exc:

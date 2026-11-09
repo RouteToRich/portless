@@ -15,6 +15,8 @@ from cryptography.hazmat.primitives.serialization import load_der_public_key
 from fastapi import APIRouter, HTTPException, Request, status
 from starlette.datastructures import UploadFile
 
+from shared.webhooks import signature_required
+
 from . import service
 from .config import settings
 from .schemas import (
@@ -31,6 +33,8 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/email-processor", tags=["email-processor"])
+
+_MAILGUN_MAX_AGE_SECONDS = 900
 
 
 @router.get("/health")
@@ -91,9 +95,10 @@ async def inbound_sendgrid(request: Request) -> ProcessingResult:
        → Signature Verification → copy Public Key →
        set ``SENDGRID_WEBHOOK_PUBLIC_KEY`` in .env
 
-    The signature is verified when ``SENDGRID_WEBHOOK_PUBLIC_KEY`` is set; without it
-    the webhook accepts anything, so set it wherever this route is reachable.
+    The signature is verified when ``SENDGRID_WEBHOOK_PUBLIC_KEY`` is set; without
+    it only a signed-in PortLess operator can post here.
     """
+    _refuse_unsigned(request, settings.sendgrid_webhook_public_key)
     if settings.sendgrid_webhook_public_key:
         _verify_sendgrid_signature(settings.sendgrid_webhook_public_key, request.headers, await request.body())
 
@@ -124,8 +129,10 @@ async def inbound_mailgun(request: Request) -> ProcessingResult:
     3. Settings → API Security → HTTP Webhook Signing Key →
        set ``MAILGUN_SIGNING_KEY`` in .env
 
-    HMAC-SHA256 signature is verified when ``MAILGUN_SIGNING_KEY`` is set.
+    HMAC-SHA256 signature is verified when ``MAILGUN_SIGNING_KEY`` is set; without
+    it only a signed-in PortLess operator can post here.
     """
+    _refuse_unsigned(request, settings.mailgun_signing_key)
     form = await request.form()
 
     if settings.mailgun_signing_key:
@@ -135,6 +142,8 @@ async def inbound_mailgun(request: Request) -> ProcessingResult:
             token=str(form.get("token", "")),
             signature=str(form.get("signature", "")),
         )
+        if signature_required(request):
+            _refuse_stale_mailgun(str(form.get("timestamp", "")))
 
     attachments = await _extract_form_attachments(form)
     return await service.process_inbound(_mailgun_form_to_raw(form, attachments))
@@ -207,6 +216,25 @@ async def get_inbound(inbound_id: str) -> InboundEmailRecord:
 # ---------------------------------------------------------------------------
 # Webhook signature verification
 # ---------------------------------------------------------------------------
+
+def _refuse_unsigned(request: Request, signing_key: str) -> None:
+    """An anonymous caller is only believed when the route can check its signature."""
+    if not signing_key and signature_required(request):
+        logger.warning("Inbound e-mail webhook refused: no signing key is configured for %s", request.url.path)
+        raise HTTPException(status_code=403, detail="Webhook signing key is not configured")
+
+
+def _refuse_stale_mailgun(timestamp: str) -> None:
+    """Mailgun signs only ``timestamp + token``, not the message, so an old
+    signature must not be reusable by someone who merely captured it."""
+    try:
+        age = abs(datetime.now(timezone.utc).timestamp() - float(timestamp))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Mailgun timestamp") from exc
+    if age > _MAILGUN_MAX_AGE_SECONDS:
+        logger.warning("Mailgun webhook: stale timestamp (%.0f s) — request rejected", age)
+        raise HTTPException(status_code=403, detail="Stale Mailgun webhook signature")
+
 
 def _verify_mailgun_signature(
     signing_key: str,

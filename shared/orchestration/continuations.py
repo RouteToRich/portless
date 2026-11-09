@@ -150,15 +150,24 @@ async def _get_deal_in_status(deal_id: str | None, required: str, stage: str):
 
 
 async def _negotiation_numbers(deal_id: str, deal=None) -> tuple[float | None, float]:
-    """(final supplier ask, quantity_mt) from the deal's negotiation session,
-    falling back to the deal's own quantity (RFQ lead) and then the default."""
+    """(supplier's price, quantity_mt) from the deal's negotiation session,
+    falling back to the deal's own quantity (RFQ lead) and then the default.
+
+    The price is the last one the supplier itself stated, else its quote.
+    ``current_ask`` can be PortLess's own counter-offer, which the supplier may
+    never have accepted, so a PO must not be written at it."""
     fallback_qty = _deal_quantity(deal) if deal is not None else _DEFAULT_QUANTITY_MT
     try:
         from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
         session = await _neg_repo().get_session_by_deal(deal_id)
         if session is not None:
+            supplier_price = (
+                getattr(session, "supplier_last_quote", None)
+                or getattr(session, "supplier_quote_price", None)
+                or session.current_ask
+            )
             return (
-                session.current_ask,
+                supplier_price,
                 float(session.quantity_mt) if session.quantity_mt else fallback_qty,
             )
     except Exception as exc:
@@ -1792,6 +1801,8 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
             "amount": amount,
             "total_owed": owed,
             "kind": kind,
+            "limited_by": ("holdback" if held_back else "escrow") if partial else None,
+            "retained_until_acceptance": retained,
             "idempotency_key": f"auto-payout-{deal_id}" if first else f"auto-payout-{deal_id}-{int(round(paid + pending))}-{int(round(released))}",
         },
         idempotency_key=key,

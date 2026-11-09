@@ -17,7 +17,13 @@ singleton by hand (module scope — pytest's ``monkeypatch`` is function-scoped)
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,8 +33,11 @@ from services.auth.config import settings as auth_settings
 from services.auth.repository import InMemoryOrganizationRepository, InMemoryUserRepository
 from services.auth.schemas import UserRecord
 from services.deals.repository import InMemoryFallbackRepository
+from services.email_processor.schemas import ProcessingResult
+from services.escrow_guard.schemas import EscrowHoldRecord
 from shared.auth import identity
 from shared.cache import InMemoryCacheBackend, reset_for_tests
+from tests.factories import make
 
 PORTLESS_ACCOUNT = "acc-portless"
 OTHER_ACCOUNT = "acc-makemerich"
@@ -50,6 +59,7 @@ def _me(user_id: str, email: str, name: str, account_id: str = PORTLESS_ACCOUNT)
 # token -> /auth/me body (None = auth-service says the token is invalid)
 TOKENS: dict[str, dict | None] = {
     "tok-staff": _me("USR-STAFF", "admin@portless.io", "Portless Admin"),
+    "tok-staff2": _me("USR-STAFF2", "second@portless.io", "Second Approver"),
     "tok-org": _me("USR-ORG", "org-user@example.com", "Org User"),
     "tok-other-app": _me("USR-MMR", "someone@example.com", "MakeMeRich User", OTHER_ACCOUNT),
     "tok-legacy": _me("USR-NEWID", "legacy@example.com", "Legacy Person"),
@@ -121,6 +131,165 @@ def _fresh_cache():
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+# ---------------------------------------------------------------------------
+# Provider webhooks: no sign-in, so the signature is the proof
+# ---------------------------------------------------------------------------
+
+_FUNDED = json.dumps({"ext_ref": "EXT-1", "status": "FUNDED", "amount": 100.0}).encode()
+
+
+@pytest.fixture
+def funded(monkeypatch):
+    """escrow-funded webhook against one Tazapay hold; nothing is really moved."""
+    monkeypatch.setenv("TAZAPAY_WEBHOOK_SECRET", "")
+    repo = MagicMock()
+    repo.get_hold_by_ext_ref = AsyncMock(return_value=make(
+        EscrowHoldRecord, escrow_id="ESC-1", deal_id="DEAL-1", provider="tazapay", ext_ref="EXT-1",
+        status="PENDING", amount=100.0, currency="USD",
+    ))
+    repo.save_hold = AsyncMock()
+    transition = AsyncMock()
+    monkeypatch.setattr("services.escrow_guard.service.get_repository", lambda: repo)
+    monkeypatch.setattr("services.escrow_guard.service._transition_deal", transition)
+    monkeypatch.setattr("services.escrow_guard.service._emit", AsyncMock())
+    return transition
+
+
+def _post_funded(client, headers=None):
+    return client.post("/escrow-guard/webhooks/escrow-funded", content=_FUNDED, headers=headers or {})
+
+
+def _tazapay_signature(secret: str) -> dict:
+    return {"x-tazapay-signature": hmac.new(secret.encode(), _FUNDED, hashlib.sha256).hexdigest()}
+
+
+def test_anonymous_webhook_without_a_secret_moves_nothing(client, funded):
+    assert _post_funded(client).status_code == 401
+    funded.assert_not_awaited()
+
+
+def test_correctly_signed_webhook_needs_no_token(client, funded, monkeypatch):
+    monkeypatch.setenv("TAZAPAY_WEBHOOK_SECRET", "s3cret")
+    assert _post_funded(client, _tazapay_signature("s3cret")).status_code == 200
+    funded.assert_awaited_once()
+    assert not CALLS  # nor does it depend on auth-service
+
+
+def test_wrongly_signed_webhook_is_refused(client, funded, monkeypatch):
+    monkeypatch.setenv("TAZAPAY_WEBHOOK_SECRET", "s3cret")
+    assert _post_funded(client, _tazapay_signature("guess")).status_code == 401
+    funded.assert_not_awaited()
+
+
+def test_revoked_token_on_a_webhook_is_still_just_anonymous(client, funded):
+    assert _post_funded(client, _auth("tok-revoked")).status_code == 401
+    funded.assert_not_awaited()
+
+
+def test_signed_in_operator_can_still_post_without_a_secret(client, funded):
+    assert _post_funded(client, _auth("tok-staff")).status_code == 200
+    funded.assert_awaited_once()
+
+
+def test_org_user_cannot_use_a_webhook(client, funded):
+    assert _post_funded(client, _auth("tok-org")).status_code == 403
+    funded.assert_not_awaited()
+
+
+@pytest.mark.parametrize("path, repo_module, lookup, record, body", [
+    ("/escrow-guard/webhooks/payout", "services.escrow_guard.service", "get_payout_by_ext_ref",
+     {"processed_events": [], "status": "PROCESSING"}, {"ext_ref": "E", "status": "COMPLETED"}),
+    ("/shield-link/qc/webhook", "services.shield_link.service", "get_by_ext_ref",
+     {"provider": "sgs"}, {"ext_ref": "E", "result": "PASS"}),
+    ("/shield-link/freight/webhook", "services.shield_link.service", "get_by_ext_ref",
+     {"provider": "cogoport"}, {"ext_ref": "E", "milestone": "ARRIVED"}),
+])
+def test_every_money_and_cargo_webhook_needs_its_signature(client, monkeypatch, path, repo_module, lookup, record, body):
+    for name in ("PAYONEER", "SGS", "COGOPORT"):
+        monkeypatch.setenv(f"{name}_WEBHOOK_SECRET", "")
+    repo = MagicMock()
+    setattr(repo, lookup, AsyncMock(return_value=SimpleNamespace(**record)))
+    monkeypatch.setattr(f"{repo_module}.get_repository", lambda: repo)
+    assert client.post(path, json=body).status_code == 401
+    repo.save.assert_not_called()
+    repo.save_payout.assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["/email-processor/inbound/sendgrid", "/email-processor/inbound/mailgun"])
+def test_inbound_email_without_a_signing_key_is_refused(client, monkeypatch, path):
+    monkeypatch.setattr("services.email_processor.router.settings.sendgrid_webhook_public_key", "")
+    monkeypatch.setattr("services.email_processor.router.settings.mailgun_signing_key", "")
+    process = AsyncMock()
+    monkeypatch.setattr("services.email_processor.router.service.process_inbound", process)
+    assert client.post(path, data={"from": "a@b.c"}).status_code == 403
+    process.assert_not_awaited()
+
+
+def _mailgun_form(timestamp: float, key: str = "mg-key") -> dict:
+    ts, token = str(int(timestamp)), "tok123"
+    signature = hmac.new(key.encode(), (ts + token).encode(), hashlib.sha256).hexdigest()
+    return {"timestamp": ts, "token": token, "signature": signature, "sender": "a@b.c", "subject": "s"}
+
+
+def test_mailgun_signed_now_passes_a_captured_old_signature_does_not(client, monkeypatch):
+    monkeypatch.setattr("services.email_processor.router.settings.mailgun_signing_key", "mg-key")
+    process = AsyncMock(return_value=make(ProcessingResult))
+    monkeypatch.setattr("services.email_processor.router.service.process_inbound", process)
+    assert client.post("/email-processor/inbound/mailgun", data=_mailgun_form(time.time())).status_code == 200
+    process.assert_awaited_once()
+    process.reset_mock()
+    assert client.post("/email-processor/inbound/mailgun", data=_mailgun_form(time.time() - 3600)).status_code == 403
+    process.assert_not_awaited()
+
+
+def test_the_opening_is_only_for_provider_webhooks(client):
+    assert client.get("/escrow-guard/webhooks/payout").status_code == 401  # POST only
+    assert client.post("/email-processor/inbound/manual", json={}).status_code == 401
+    assert client.post("/escrow-guard/payouts", json={}).status_code == 401
+    assert client.post("/hitl-approval/approvals", json={}).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Who approved is the signed-in caller, never a name in the body
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def money_gate(client, monkeypatch):
+    monkeypatch.setenv("FOUR_EYES_THRESHOLD_USD", "5000")
+    monkeypatch.setattr(auth_settings, "portless_emails_raw", "admin@portless.io,second@portless.io")
+    monkeypatch.setattr("services.hitl_approval.service.execute_callback", AsyncMock())
+    created = client.post("/hitl-approval/approvals", headers=_auth("tok-staff"), json={
+        "deal_id": "DEAL-4E", "action": "RELEASE_ESCROW_TRANCHE", "financial_impact_usd": 9000, "autonomy_level": "L0",
+        "idempotency_key": f"four-eyes-{time.time_ns()}",
+    })
+    assert created.status_code == 201
+    return f"/hitl-approval/approvals/{created.json()['approval_id']}/resolve"
+
+
+def _approve(client, url, token, name):
+    return client.post(url, headers=_auth(token), json={"decision": "APPROVE", "resolved_by": name})
+
+
+def test_the_name_in_the_body_is_replaced_by_the_signed_in_user(client, money_gate):
+    first = _approve(client, money_gate, "tok-staff", "someone-else")
+    assert first.status_code == 200
+    assert [s["approved_by"] for s in first.json()["approvals"]] == ["admin@portless.io"]
+
+
+def test_one_person_cannot_pass_four_eyes_under_two_names(client, money_gate):
+    assert _approve(client, money_gate, "tok-staff", "person-a").status_code == 200
+    second = _approve(client, money_gate, "tok-staff", "person-b")
+    assert second.status_code == 409
+    assert "different operator" in second.json()["detail"]
+
+
+def test_two_signed_in_people_pass_four_eyes(client, money_gate):
+    assert _approve(client, money_gate, "tok-staff", "x").json()["status"] == "PENDING"
+    final = _approve(client, money_gate, "tok-staff2", "x")
+    assert final.status_code == 200 and final.json()["status"] == "APPROVED"
+    assert final.json()["resolved_by"] == "second@portless.io"
 
 
 # ---------------------------------------------------------------------------

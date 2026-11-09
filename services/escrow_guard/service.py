@@ -51,6 +51,7 @@ from shared.connectors.payments import ConnectorError, PayoneerConnector, Stripe
 from shared.domain.enums import DealStatus
 from shared.domain.events import DomainEvent, EventTopic
 from shared.domain.state_machine import can_transition
+from shared.webhooks import signature_valid
 
 from .config import settings
 from .repository import get_repository
@@ -301,6 +302,8 @@ async def handle_escrow_funded_webhook(
     payload: EscrowFundedWebhookPayload,
     raw_headers: dict[str, str],
     raw_body: bytes,
+    *,
+    require_signature: bool = False,
 ) -> dict[str, str]:
     """Process escrow-funded webhook from payment provider.
 
@@ -315,11 +318,7 @@ async def handle_escrow_funded_webhook(
 
     # Verify webhook signature
     connector = _payment_connector(hold.provider)
-    try:
-        valid = await connector.webhook_verify(raw_headers, raw_body)
-    except Exception:
-        valid = False
-    if not valid:
+    if not await signature_valid(connector, raw_headers, raw_body, require_signature=require_signature):
         raise WebhookVerifyError(f"Escrow webhook signature invalid for ext_ref={payload.ext_ref}")
 
     # Replay protection — a provider re-delivering the same event is acknowledged, not re-applied.
@@ -680,6 +679,8 @@ async def handle_payout_webhook(
     payload: PayoutWebhookPayload,
     raw_headers: dict[str, str],
     raw_body: bytes,
+    *,
+    require_signature: bool = False,
 ) -> dict[str, str]:
     """Process Payoneer payout status webhook.
 
@@ -693,11 +694,7 @@ async def handle_payout_webhook(
         raise PayoutNotFoundError(payload.ext_ref)
 
     connector = PayoneerConnector()
-    try:
-        valid = await connector.webhook_verify(raw_headers, raw_body)
-    except Exception:
-        valid = False
-    if not valid:
+    if not await signature_valid(connector, raw_headers, raw_body, require_signature=require_signature):
         raise WebhookVerifyError(f"Payout webhook signature invalid for ext_ref={payload.ext_ref}")
 
     # Replay protection
@@ -1261,6 +1258,50 @@ async def accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowRespo
                 escrow_id, hold.deal_id, released_total)
     updated = await _settle_if_complete(updated, now)
     return EscrowResponse.from_record(updated)
+
+
+async def request_buyer_acceptance(escrow_id: str, req: AcceptEscrowRequest) -> dict[str, Any]:
+    """Open the CONFIRM_BUYER_ACCEPTANCE gate for an acceptance an operator is
+    relaying (phone, portal). Reuses a gate that is already waiting."""
+    hold = await get_repository().get_hold(escrow_id)
+    if hold is None:
+        raise HoldNotFoundError(escrow_id)
+    if hold.disputed:
+        raise InvalidDealState(hold.deal_id, "disputed", "not_disputed")
+    if hold.status not in ("FUNDED", "RELEASED"):
+        raise InvalidDealState(hold.deal_id, f"escrow={hold.status}", "escrow=FUNDED")
+    final = [t for t in hold.tranches if t.trigger == "ACCEPTED" and t.status == "PENDING"]
+    if not final:
+        raise InvalidDealState(hold.deal_id, "no pending final tranche", "final tranche pending")
+
+    from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
+    from services.hitl_approval.service import create_approval, list_approvals  # type: ignore[import]
+    from shared.orchestration.autonomy_policy import resolve_gate
+
+    waiting = [a for a in await list_approvals(status="PENDING", deal_id=hold.deal_id)
+               if a.action == "CONFIRM_BUYER_ACCEPTANCE"]
+    if waiting:
+        return {"approval_id": waiting[0].approval_id, "status": waiting[0].status,
+                "deal_id": hold.deal_id, "escrow_id": escrow_id}
+    amount = round(sum((t.amount or 0.0) for t in final), 2)
+    spec = resolve_gate("CONFIRM_BUYER_ACCEPTANCE", amount=amount, conditions_ok=True)
+    approval = await create_approval(CreateApprovalRequest(
+        deal_id=hold.deal_id,
+        action="CONFIRM_BUYER_ACCEPTANCE",
+        summary=(f"{req.accepted_by or 'An operator'} reports the buyer accepted the goods — release the final "
+                 f"tranche {amount:,.2f} {hold.currency} of escrow {escrow_id}."
+                 + (f" Note: {req.notes[:200]}" if req.notes else "")),
+        financial_impact_usd=amount,
+        risk_flags=["money_movement", "buyer_acceptance_relayed_by_operator"],
+        autonomy_level=spec.level,
+        expires_at=spec.expires_at_iso(),
+        default_on_timeout=spec.default_on_timeout,
+        callback_payload={"deal_id": hold.deal_id, "escrow_id": escrow_id,
+                          "accepted_by": req.accepted_by, "notes": req.notes},
+        idempotency_key=f"buyer-accept-relay-{escrow_id}-{uuid4().hex[:8]}",
+    ))
+    return {"approval_id": approval.approval_id, "status": approval.status,
+            "deal_id": hold.deal_id, "escrow_id": escrow_id}
 
 
 async def dispute_escrow(escrow_id: str, req: DisputeEscrowRequest) -> EscrowResponse:

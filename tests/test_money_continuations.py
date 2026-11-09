@@ -166,6 +166,21 @@ class TestAgreedScreening:
 # Supplier payout: capped, partial, balance
 # ---------------------------------------------------------------------------
 
+class TestSupplierPriceForThePo:
+    @pytest.mark.parametrize(("session", "expected"), [
+        (dict(current_ask=960.0, supplier_quote_price=1000.0, supplier_last_quote=None), 1000.0),
+        (dict(current_ask=960.0, supplier_quote_price=1000.0, supplier_last_quote=1010.0), 1010.0),
+        (dict(current_ask=960.0, supplier_quote_price=None, supplier_last_quote=None), 960.0),
+    ])
+    @pytest.mark.asyncio
+    async def test_our_own_unanswered_counter_is_not_the_supplier_price(self, session, expected):
+        repo = AsyncMock()
+        repo.get_session_by_deal = AsyncMock(return_value=SimpleNamespace(quantity_mt=20.0, **session))
+        with patch("agents.negotiation_agent.repository.get_repository", return_value=repo):
+            price, quantity = await c._negotiation_numbers("DEAL-1", _deal("ESCROW_FUNDED"))
+        assert price == expected and quantity == 20.0
+
+
 class TestSupplierPayoutGate:
     @pytest.mark.asyncio
     async def test_cleared_payout_capped_at_available(self):

@@ -585,6 +585,8 @@ async def file_customs(req: CustomsFilingRequest) -> CustomsFilingResponse:
             )
             resp = await generate_document(gen_req)
             sb_doc = await repo.get(resp.doc_id)
+        except DealNotFoundError:
+            raise
         except Exception as exc:
             logger.error("DocuGen: auto-generate Shipping Bill failed: %s", exc)
             return CustomsFilingResponse(

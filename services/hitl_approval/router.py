@@ -179,12 +179,18 @@ async def api_get_approval(approval_id: str) -> ApprovalResponse:
 async def api_resolve_approval(
     approval_id: str,
     req: ResolveApprovalRequest,
+    request: Request,
 ) -> ApprovalResponse:
     """Operator approves or rejects a PENDING approval.
 
     APPROVE → saga callback executed; emits approval.resolved.
     REJECT  → emits deal.exception + approval.resolved.
     """
+    # Who decided is the signed-in caller, never a name in the request body —
+    # four-eyes depends on it.
+    caller = getattr(request.state, "user", None)
+    if caller is not None:
+        req.resolved_by = caller.email or caller.user_id
     try:
         return await resolve_approval(approval_id, req)
     except ApprovalNotFoundError as exc:

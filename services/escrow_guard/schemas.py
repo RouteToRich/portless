@@ -149,6 +149,8 @@ class PayoutRequest(BaseModel):
     currency: str = "USD"
     description: str | None = None
     idempotency_key: str
+    approval_id: str | None = None
+    """Over HTTP: the APPROVED gate this payout carries out (a retry after its callback failed)."""
     kind: PayoutKind = "supplier_payout"
     total_owed: float | None = None
     """Supplier's total entitlement (PO value). When set, the deal only moves to
@@ -185,6 +187,8 @@ class ReleaseTrancheRequest(BaseModel):
     """
     tranche_id: str
     proof_refs: list[str] = Field(default_factory=list)
+    approval_id: str | None = None
+    """Over HTTP: the APPROVED gate this release carries out (a retry after its callback failed)."""
     idempotency_key: str | None = None
 
 
@@ -192,6 +196,8 @@ class AcceptEscrowRequest(BaseModel):
     """Buyer acceptance — releases the final ``ACCEPTED``-trigger tranche(s)."""
     accepted_by: str | None = None
     notes: str | None = None
+    approval_id: str | None = None
+    """Over HTTP: the APPROVED CONFIRM_BUYER_ACCEPTANCE gate this carries out."""
 
 
 class DisputeEscrowRequest(BaseModel):

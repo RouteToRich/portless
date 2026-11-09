@@ -56,6 +56,19 @@ _NON_PORTLESS_ALLOWED = frozenset({
 # and directly at /hitl-approval depending on deployment.
 _QUERY_TOKEN_PATH_SUFFIXES = ("/hitl-approval/stream",)
 
+# Provider callbacks: the sender has no PortLess identity and proves itself
+# with a signature instead (shared/webhooks.py). A call without a valid token
+# passes marked ``anonymous_webhook``, and the route refuses it unless it is
+# correctly signed — so an unset secret never means "open to anyone".
+_PROVIDER_WEBHOOK_PATH_SUFFIXES = (
+    "/escrow-guard/webhooks/escrow-funded",
+    "/escrow-guard/webhooks/payout",
+    "/shield-link/qc/webhook",
+    "/shield-link/freight/webhook",
+    "/email-processor/inbound/sendgrid",
+    "/email-processor/inbound/mailgun",
+)
+
 
 def _is_public(path: str) -> bool:
     # "/health" and any "<service>/health" liveness endpoint are public.
@@ -76,6 +89,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         try:
             user = await resolve_user(request, allow_query_token=allow_query)
         except IdentityError as exc:
+            if request.method == "POST" and request.url.path.endswith(_PROVIDER_WEBHOOK_PATH_SUFFIXES):
+                request.state.anonymous_webhook = True
+                return await call_next(request)
             return JSONResponse(
                 status_code=exc.status,
                 content={"detail": exc.detail},

@@ -56,6 +56,7 @@ from shared.connectors.shields import (
 )
 from shared.domain.events import DomainEvent, EventTopic
 from shared.domain.state_machine import can_transition
+from shared.webhooks import signature_valid
 
 from .config import settings
 from .repository import get_repository
@@ -343,6 +344,8 @@ async def handle_qc_result(
     payload: QcWebhookPayload,
     raw_headers: dict[str, str],
     raw_body: bytes,
+    *,
+    require_signature: bool = False,
 ) -> dict[str, str]:
     """Process QC inspection result webhook.
 
@@ -358,11 +361,7 @@ async def handle_qc_result(
 
     # Verify webhook signature
     connector = get_qc_connector(tpo.provider)
-    try:
-        valid = await connector.webhook_verify(raw_headers, raw_body)
-    except Exception:
-        valid = False
-    if not valid:
+    if not await signature_valid(connector, raw_headers, raw_body, require_signature=require_signature):
         raise WebhookVerifyError(f"QC webhook signature invalid for ext_ref={ext_ref}")
 
     now = datetime.now(timezone.utc)
@@ -562,6 +561,8 @@ async def handle_freight_milestone(
     payload: FreightMilestonePayload,
     raw_headers: dict[str, str],
     raw_body: bytes,
+    *,
+    require_signature: bool = False,
 ) -> dict[str, str]:
     """Process freight milestone webhook (DEPARTED / IN_TRANSIT / ARRIVED /
     CLEARED / DELIVERED).
@@ -577,11 +578,7 @@ async def handle_freight_milestone(
         raise TpoNotFoundError(ext_ref)
 
     connector = get_freight_connector(tpo.provider)
-    try:
-        valid = await connector.webhook_verify(raw_headers, raw_body)
-    except Exception:
-        valid = False
-    if not valid:
+    if not await signature_valid(connector, raw_headers, raw_body, require_signature=require_signature):
         raise WebhookVerifyError(f"Freight webhook signature invalid for ext_ref={ext_ref}")
 
     return await _apply_milestone(

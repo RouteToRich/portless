@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from shared.webhooks import parse_webhook_body
+from shared.webhooks import parse_webhook_body, signature_required
 
 from .schemas import (
     AcceptEscrowRequest,
@@ -59,6 +59,7 @@ from .service import (
     open_inspection_window,
     refund,
     release_tranche,
+    request_buyer_acceptance,
     request_payout,
 )
 
@@ -131,9 +132,22 @@ async def api_get_escrow(escrow_id: str) -> EscrowResponse:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
+async def _require_approved_gate(approval_id: str | None, action: str, expect: dict[str, Any]) -> None:
+    """Release, acceptance and payout run from their approval gate. Over HTTP
+    they are only a retry of that gate, naming it and the same money."""
+    from services.hitl_approval.service import GateNotApproved, assert_gate_approved  # type: ignore[import]
+
+    try:
+        await assert_gate_approved(approval_id, action, expect)
+    except GateNotApproved as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=str(exc))
+
+
 @router.post("/escrows/{escrow_id}/release", response_model=EscrowResponse)
 async def api_release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowResponse:
-    """Release one tranche after its independent proof (CRF / shipping bill) is authenticated."""
+    """Retry the release of an approved RELEASE_ESCROW_TRANCHE gate (403 without one)."""
+    await _require_approved_gate(req.approval_id, "RELEASE_ESCROW_TRANCHE",
+                                 {"escrow_id": escrow_id, "tranche_id": req.tranche_id})
     try:
         return await release_tranche(escrow_id, req)
     except HoldNotFoundError as exc:
@@ -146,7 +160,8 @@ async def api_release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> Esc
 
 @router.post("/escrows/{escrow_id}/accept", response_model=EscrowResponse)
 async def api_accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowResponse:
-    """Buyer acceptance — releases the final (ACCEPTED-trigger) tranche(s)."""
+    """Carry out an approved CONFIRM_BUYER_ACCEPTANCE gate (403 without one)."""
+    await _require_approved_gate(req.approval_id, "CONFIRM_BUYER_ACCEPTANCE", {"escrow_id": escrow_id})
     try:
         return await accept_escrow(escrow_id, req)
     except HoldNotFoundError as exc:
@@ -157,9 +172,27 @@ async def api_accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowR
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
 
+@router.post("/escrows/{escrow_id}/request-acceptance", status_code=status.HTTP_202_ACCEPTED)
+async def api_request_acceptance(escrow_id: str, req: AcceptEscrowRequest, request: Request) -> dict[str, Any]:
+    """An operator relays the buyer's acceptance of the goods: opens the
+    CONFIRM_BUYER_ACCEPTANCE gate. Approving it releases the final tranche."""
+    caller = getattr(request.state, "user", None)
+    if caller is not None:
+        req.accepted_by = caller.email or caller.user_id
+    try:
+        return await request_buyer_acceptance(escrow_id, req)
+    except HoldNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
 @router.post("/escrows/{escrow_id}/dispute", response_model=EscrowResponse)
-async def api_dispute_escrow(escrow_id: str, req: DisputeEscrowRequest) -> EscrowResponse:
+async def api_dispute_escrow(escrow_id: str, req: DisputeEscrowRequest, request: Request) -> EscrowResponse:
     """Buyer raises a dispute within the inspection window — blocks auto-release."""
+    caller = getattr(request.state, "user", None)
+    if caller is not None:
+        req.raised_by = caller.email or caller.user_id
     try:
         return await dispute_escrow(escrow_id, req)
     except HoldNotFoundError as exc:
@@ -210,7 +243,10 @@ async def api_refund_escrow(escrow_id: str, req: RefundRequest) -> EscrowRespons
 
 @router.post("/payouts", response_model=PayoutResponse, status_code=status.HTTP_201_CREATED)
 async def api_request_payout(req: PayoutRequest) -> PayoutResponse:
-    """Initiate supplier payout for a deal in CLEARED state."""
+    """Retry the payout of an approved RELEASE_SUPPLIER_PAYOUT gate (403 without one)."""
+    await _require_approved_gate(req.approval_id, "RELEASE_SUPPLIER_PAYOUT", {
+        "deal_id": req.deal_id, "amount": req.amount, "idempotency_key": req.idempotency_key,
+    })
     try:
         return await request_payout(req)
     except DealNotFoundError as exc:
@@ -295,7 +331,9 @@ async def api_escrow_funded_webhook(request: Request) -> dict[str, Any]:
     payload = parse_webhook_body(raw_body, EscrowFundedWebhookPayload)
     headers = dict(request.headers)
     try:
-        return await handle_escrow_funded_webhook(payload, headers, raw_body)
+        return await handle_escrow_funded_webhook(
+            payload, headers, raw_body, require_signature=signature_required(request),
+        )
     except WebhookVerifyError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))
     except HoldNotFoundError as exc:
@@ -316,7 +354,9 @@ async def api_payout_webhook(request: Request) -> dict[str, Any]:
     payload = parse_webhook_body(raw_body, PayoutWebhookPayload)
     headers = dict(request.headers)
     try:
-        return await handle_payout_webhook(payload, headers, raw_body)
+        return await handle_payout_webhook(
+            payload, headers, raw_body, require_signature=signature_required(request),
+        )
     except WebhookVerifyError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))
     except PayoutNotFoundError as exc:

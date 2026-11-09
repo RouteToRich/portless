@@ -171,6 +171,8 @@ class TestPayoutGate:
         assert "supplier_retention_held" in req.risk_flags
         assert "partial_payout_capped_by_escrow" not in req.risk_flags
         assert "held back until the buyer accepts" in req.summary
+        assert req.callback_payload["limited_by"] == "holdback"
+        assert req.callback_payload["retained_until_acceptance"] == 4000.0
 
     @pytest.mark.asyncio
     async def test_escrow_limit_keeps_its_own_flag(self):
@@ -178,6 +180,7 @@ class TestPayoutGate:
         req = gate.await_args.args[0]
         assert "partial_payout_capped_by_escrow" in req.risk_flags
         assert "supplier_retention_held" not in req.risk_flags
+        assert req.callback_payload["limited_by"] == "escrow"
 
     @pytest.mark.asyncio
     async def test_nothing_payable_until_acceptance_means_no_gate(self):
