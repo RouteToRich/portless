@@ -265,6 +265,9 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     counts = {"scanned": 0, "reminders": 0, "exceptions": 0}
     if not enabled():
         return counts
+    from shared.orchestration import kill_switch
+    if await kill_switch.is_paused():
+        return counts
     now = now or datetime.now(timezone.utc)
     try:
         from services.deals.repository import get_repository  # type: ignore[import]

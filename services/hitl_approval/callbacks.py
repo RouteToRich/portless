@@ -315,6 +315,15 @@ async def _cb_confirm_buyer_acceptance(deal_id: str, payload: dict[str, Any]) ->
             "status": result.status}
 
 
+async def _cb_refund_escrow(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Operator-requested refund approved → undisbursed balance back to the buyer."""
+    from services.escrow_guard.schemas import RefundRequest  # type: ignore[import]
+    from services.escrow_guard.service import refund  # type: ignore[import]
+
+    result = await refund(payload["escrow_id"], RefundRequest(reason=payload.get("reason") or ""))
+    return {"escrow_id": payload["escrow_id"], "refunded_total": result.refunded_total, "status": result.status}
+
+
 async def _cb_parse_inbound_email(deal_id: str, payload: dict[str, Any]) -> dict | None:
     """Informational: the operator has read the email. Any resulting action
     (price, acceptance, reassignment) is submitted through the Email
@@ -377,6 +386,7 @@ _CALLBACK_MAP = {
     "CONFIRM_COUNTERPARTY_RISK": _cb_confirm_counterparty_risk,
     "CONFIRM_TRADE_COMPLIANCE": _cb_confirm_trade_compliance,
     "CONFIRM_BUYER_ACCEPTANCE": _cb_confirm_buyer_acceptance,
+    "REFUND_ESCROW": _cb_refund_escrow,
     "SEND_BUYER_OUTREACH": _cb_send_buyer_outreach,
     "SEND_INDICATIVE_OFFER": _cb_send_indicative_offer,
     "CONFIRM_MATCH": _cb_confirm_match,
@@ -453,6 +463,8 @@ _REJECT_CALLBACK_MAP = {
     "PARSE_INBOUND_EMAIL": _rcb_log_only,
     # "Not actually an acceptance" — the inspection window keeps running.
     "CONFIRM_BUYER_ACCEPTANCE": _rcb_log_only,
+    # The refund is not given; the money and the deal stay where they are.
+    "REFUND_ESCROW": _rcb_log_only,
     # Operator does not want this buyer contacted — move to the next candidate.
     "SEND_BUYER_OUTREACH": _rcb_send_buyer_outreach,
     # Prospect stays open: no offer sent / pair not taken — the board keeps the rest.

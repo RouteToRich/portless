@@ -134,6 +134,14 @@ def _new_tpo_id(order_type: str) -> str:
 # Deal bridge
 # ---------------------------------------------------------------------------
 
+CUSTOMS_FILING_STATUSES = frozenset({"QC_PASSED", "IN_TRANSIT", "CLEARED"})
+
+
+async def _assert_platform_running(what: str) -> None:
+    from shared.orchestration import kill_switch
+    await kill_switch.assert_running(what)
+
+
 async def _fetch_deal(deal_id: str) -> Any:
     try:
         from services.deals.service import get_deal  # type: ignore[import]
@@ -242,6 +250,7 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False) -> Third
     ``SUPPLIER_DISPATCH_READY`` after the rework — a fresh booking is made
     without a deal transition.
     """
+    await _assert_platform_running(f"QC booking for deal {req.deal_id}")
     repo = get_repository()
 
     if req.idempotency_key:
@@ -472,6 +481,7 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
     Pre-condition: deal must be in ``QC_PASSED`` state.
     Post: deal → ``IN_TRANSIT``, emits ``freight.booked``.
     """
+    await _assert_platform_running(f"Freight booking for deal {req.deal_id}")
     repo = get_repository()
 
     if req.idempotency_key:
@@ -753,9 +763,11 @@ async def poll_tracking(deal_id: str) -> dict[str, Any]:
 async def file_cha(req: ChaFilingRequest) -> ThirdPartyOrderResponse:
     """Submit customs docs to ICEGATE via registered CHA.
 
-    Does not require a specific deal status; can run alongside freight booking.
+    Only for goods that passed QC and have not finished their journey
+    (``CUSTOMS_FILING_STATUSES``); it can run alongside freight booking.
     Emits customs.filed.
     """
+    await _assert_platform_running(f"Customs filing for deal {req.deal_id}")
     repo = get_repository()
 
     if req.idempotency_key:
@@ -764,6 +776,9 @@ async def file_cha(req: ChaFilingRequest) -> ThirdPartyOrderResponse:
             return ThirdPartyOrderResponse.from_record(existing)
 
     deal = await _fetch_deal(req.deal_id)
+    deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+    if deal_status not in CUSTOMS_FILING_STATUSES:
+        raise InvalidDealState(req.deal_id, deal_status, " or ".join(sorted(CUSTOMS_FILING_STATUSES)))
     now = datetime.now(timezone.utc)
     tpo_id = _new_tpo_id("CHA")
 

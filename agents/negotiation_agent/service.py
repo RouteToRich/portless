@@ -299,6 +299,26 @@ async def _build_conversation_history(negotiation_id: str) -> dict[str, str]:
 _PLACEHOLDER_PATTERN = re.compile(r"\[[A-Za-z][A-Za-z0-9 _/.-]{0,40}\]")
 
 
+_FUNDS_HELD_CLAIM = re.compile(
+    r"\b(?:funds?|money|payment)\b[^.!?\n]{0,60}?\b(?:already|now)\b[^.!?\n]{0,30}?"
+    r"\b(?:deposited|secured|received|held|funded|in escrow)\b"
+    r"|\b(?:funds?|money|payment)\b[^.!?\n]{0,30}?\b(?:has|have)\s+been\s+(?:deposited|secured|received|funded)\b",
+    re.IGNORECASE,
+)
+_FUTURE_CONDITION = re.compile(r"\b(?:only after|after|once|when|until|as soon as)\b", re.IGNORECASE)
+
+
+def claims_funds_already_held(body: str | None) -> bool:
+    """True when a negotiation draft says escrow money is already there. It
+    never is at this stage. "Only after the money is deposited" is fine: a
+    condition before the claim makes it a promise, not a statement of fact."""
+    for match in _FUNDS_HELD_CLAIM.finditer(body or ""):
+        sentence_start = max((body or "").rfind(c, 0, match.start()) for c in ".!?\n") + 1
+        if not _FUTURE_CONDITION.search((body or "")[sentence_start:match.start()]):
+            return True
+    return False
+
+
 def draft_risk_flags(body: str, degraded: bool = False) -> list[str]:
     """Deterministic draft-quality flags shown on the HITL approval.
 
@@ -312,6 +332,8 @@ def draft_risk_flags(body: str, degraded: bool = False) -> list[str]:
         flags.append("degraded_llm_fallback")
     if _PLACEHOLDER_PATTERN.search(body or ""):
         flags.append("unresolved_placeholders")
+    if claims_funds_already_held(body):
+        flags.append("premature_funds_claim")
     return flags
 
 
@@ -329,7 +351,7 @@ def _resolve_gate_level(action: str) -> str:
 
 _FORCE_L0_FLAGS = (
     "degraded_llm_fallback", "unresolved_placeholders", "price_out_of_band",
-    "counterparty_leak", "no_real_address",
+    "counterparty_leak", "no_real_address", "premature_funds_claim",
 )
 
 
@@ -417,6 +439,8 @@ async def _create_and_gate_email(
             quality_note = f"⛔ Mentions the other side ({'; '.join(leaks)}) — edit before sending. "
         elif "no_real_address" in flags:
             quality_note = f"⛔ No real address for the {party} ({to_address}) — set the contact first. "
+        elif "premature_funds_claim" in flags:
+            quality_note = "⚠ Says escrow money is already there; nothing is funded yet — edit before sending. "
         elif "degraded_llm_fallback" in flags:
             quality_note = "⚠ DEGRADED TEMPLATE (LLM unavailable) — edit before sending. "
         elif "unresolved_placeholders" in flags:

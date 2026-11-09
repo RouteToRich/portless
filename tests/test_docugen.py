@@ -33,6 +33,7 @@ def _mock_deal(deal_id: str = "DEAL-DOC") -> object:
         market = "Spain"
         parties = []
         buyer_target_price_usd = 500.0
+        status = "IN_TRANSIT"
 
     d = FakeDeal()
     d.deal_id = deal_id  # type: ignore[attr-defined]

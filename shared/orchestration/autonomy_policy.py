@@ -191,6 +191,11 @@ ACTION_CLASSES: tuple[ActionClass, ...] = (
         default="L0", follows_deal_profile=True, money_moving=True,
     ),
     ActionClass(
+        "REFUND_ESCROW", "Escrow Refund",
+        "Return the undisbursed escrow balance to the buyer, at an operator's request.",
+        default="L0", money_moving=True,
+    ),
+    ActionClass(
         "RESOLVE_EXCEPTION", "Exception Resolution",
         "Operator decision requested by the Exception Resolver agent.",
         default="L0",

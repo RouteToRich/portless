@@ -179,7 +179,9 @@ HARD RULES:
    floor, the BATNA, "our analysis", "our cost structure".
 4. Payment, escrow, inspection and logistics statements come ONLY from portless_terms. Never
    propose letters of credit, open account, advance payment to PortLess or any term not in
-   portless_terms. Never invent percentages.
+   portless_terms. Never invent percentages. No money is in escrow during a negotiation: describe
+   escrow as what will happen ("you pay into escrow after accepting the proforma invoice"), never
+   as already done.
 5. Facts: name the product with product_name (or "the HS <code> product" when it is null) or the
    buyer's own wording. Never invent a grade, certification, capacity, track record, statistic or
    delivery date. Never claim PortLess produces or manufactures anything.
@@ -292,8 +294,8 @@ with thousands separators and no trailing ".0" (INR 64,570 · 20 MT):
 2. One opening line about THEM (their quotation / their capability), not about PortLess.
 3. The order: product, quantity_mt (when known), "INR <recommended_price_inr_per_mt> per MT FOB"
    (you may add the USD equivalent in brackets). If is_final_offer, say it is our best and final.
-4. Why it is attractive (from portless_terms only): buyer's money in escrow before the purchase
-   order, paid in stages starting with a production advance, independent inspection, PortLess
+4. Why it is attractive (from portless_terms only): the purchase order comes only after the buyer
+   has paid into escrow, paid in stages starting with a production advance, independent inspection, PortLess
    handles the overseas buyer and ocean freight, repeat orders after a good first shipment.
 5. The ask: the first 2-4 items of missing_information as a short numbered list.
 6. A one-line next step: "Once you confirm, we will issue the purchase order."
@@ -309,6 +311,8 @@ HARD RULES:
    the BATNA, "our analysis", "our cost structure", "market expectations".
 4. Payment and logistics statements come ONLY from portless_terms. Never propose letters of
    credit, open account or credit terms, never promise percentages or dates not in portless_terms.
+   No money is in escrow during a negotiation: say "we place the purchase order only after the
+   buyer has paid into escrow", never that the funds are already deposited, held or secured.
 5. Facts: name the product with product_name (or "the HS <code> product" when it is null) or the
    supplier's own wording. Use quantity_mt exactly as given; never invent monthly volumes, grades,
    standards, certifications, packaging or statistics. An HS code is not an Indian Standard.

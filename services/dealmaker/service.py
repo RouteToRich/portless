@@ -54,6 +54,7 @@ from .schemas import (
     DealDocumentsResponse,
     IssuePiRequest,
     IssuePoRequest,
+    ExtendPiRequest,
     PiRecord,
     PiResponse,
     PoRecord,
@@ -112,6 +113,35 @@ class PoNotFoundError(Exception):
     def __init__(self, po_id: str) -> None:
         super().__init__(f"Purchase Order {po_id!r} not found")
         self.po_id = po_id
+
+
+class MarginUnknownError(Exception):
+    """A PO cannot be issued when no buyer price exists to check its margin against."""
+    def __init__(self, deal_id: str) -> None:
+        super().__init__(
+            f"Deal {deal_id!r}: no buyer price on the deal or its Proforma Invoice — "
+            "the margin cannot be checked, so the PO is refused"
+        )
+        self.deal_id = deal_id
+
+
+class PiExpiredError(Exception):
+    """A buyer cannot accept a Proforma Invoice past its validity."""
+    def __init__(self, pi_id: str, expires_at: datetime) -> None:
+        super().__init__(
+            f"PI {pi_id!r} expired on {expires_at.date()} — extend it before recording an acceptance"
+        )
+        self.pi_id = pi_id
+        self.expires_at = expires_at
+
+
+def pi_expiry(pi: Any) -> datetime:
+    expires_at = pi.expires_at
+    return expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+
+
+def is_pi_expired(pi: Any, now: datetime | None = None) -> bool:
+    return pi_expiry(pi) <= (now or datetime.now(timezone.utc))
 
 
 class PiStateError(Exception):
@@ -417,6 +447,8 @@ async def accept_pi(pi_id: str, req: AcceptPiRequest) -> PiResponse:
 
     if pi.status != "SENT":
         raise PiStateError(pi_id, pi.status, "SENT")
+    if is_pi_expired(pi):
+        raise PiExpiredError(pi_id, pi_expiry(pi))
 
     now = datetime.now(timezone.utc)
     updated = pi.model_copy(update={"status": "ACCEPTED", "accepted_at": now})
@@ -436,6 +468,59 @@ async def accept_pi(pi_id: str, req: AcceptPiRequest) -> PiResponse:
     )
 
     logger.info("DealMaker: PI %s accepted for deal %s", pi_id, pi.deal_id)
+    return PiResponse.from_record(updated)
+
+
+async def extend_pi(pi_id: str, req: ExtendPiRequest, by: str) -> PiResponse:
+    """Give an unaccepted PI a new validity (staff decision, audited on the
+    record). The document is rendered again so it states the new date."""
+    repo = get_repository()
+    pi = await repo.get_pi(pi_id)
+    if pi is None:
+        raise PiNotFoundError(pi_id)
+    if pi.status != "SENT":
+        raise PiStateError(pi_id, pi.status, "SENT")
+
+    deal = await _fetch_deal(pi.deal_id)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=req.validity_days)
+    html = _jinja_env.get_template("pi.html.j2").render(
+        pi_id=pi.pi_id,
+        deal_id=pi.deal_id,
+        seller_name=settings.portless_entity_name,
+        seller_address=settings.portless_entity_address,
+        seller_iec=settings.portless_entity_iec or "",
+        seller_gstin=settings.portless_entity_gstin or "",
+        buyer_name=pi.buyer_name,
+        buyer_address=pi.buyer_address,
+        buyer_vat_number=pi.buyer_vat_number or "",
+        hs_code=deal.hs_code,
+        product_description=_hs_description(deal.hs_code),
+        quantity_mt=pi.quantity_mt,
+        agreed_price=pi.agreed_price,
+        currency=pi.currency,
+        total_value=pi.total_value,
+        incoterm=pi.incoterm,
+        port_of_destination=pi.port_of_destination,
+        port_of_loading=getattr(deal, "port_of_loading", ""),
+        payment_terms=pi.payment_terms,
+        validity_days=req.validity_days,
+        issued_at=pi.issued_at.strftime("%Y-%m-%d"),
+        expires_at=expires_at.strftime("%Y-%m-%d"),
+    )
+    storage_uri = await _write_document(pi.deal_id, f"{pi.pi_id}.html", html)
+    updated = pi.model_copy(update={
+        "expires_at": expires_at,
+        "validity_days": req.validity_days,
+        "storage_uri": storage_uri,
+        "content_hash": _sha256(html),
+        "extensions": [*pi.extensions, {
+            "by": by, "reason": req.reason, "at": now.isoformat(),
+            "previous_expires_at": pi_expiry(pi).isoformat(), "new_expires_at": expires_at.isoformat(),
+        }],
+    })
+    await repo.save_pi(updated)
+    logger.info("DealMaker: PI %s extended to %s by %s", pi_id, expires_at.date(), by)
     return PiResponse.from_record(updated)
 
 
@@ -460,8 +545,9 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
       • Net margin of this PO must be >= ``po_margin_floor_pct``.
 
     Margin calculation:
-      net_margin_pct = (buyer_target_price - po_price) / buyer_target_price * 100
-      When buyer_target_price is unavailable the margin guard is skipped with a warning.
+      net_margin_pct = (buyer_price - po_price) / buyer_price * 100
+      buyer_price is the deal's target price, else the PI's agreed price.
+      With neither the margin cannot be checked and the PO is refused.
 
     Side-effects:
       • Renders ``po.html.j2`` → writes to ``DEALMAKER_STORAGE_DIR``
@@ -469,6 +555,8 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
       • Transitions deal → ``PO_ISSUED``
       • Emits ``po.issued``
     """
+    from shared.orchestration import kill_switch
+    await kill_switch.assert_running(f"Purchase order for deal {req.deal_id}")
     repo = get_repository()
 
     # ── Idempotency check ─────────────────────────────────────────────────
@@ -496,16 +584,14 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
     # ── Margin guard ──────────────────────────────────────────────────────
     floor = settings.po_margin_floor_pct
     buyer_price: float | None = getattr(deal, "buyer_target_price_usd", None)
-    if buyer_price and buyer_price > 0:
-        net_margin_pct: float | None = (buyer_price - req.agreed_price) / buyer_price * 100.0
-    else:
-        logger.warning(
-            "DealMaker: buyer_target_price_usd not set on deal %s — margin guard skipped",
-            req.deal_id,
-        )
-        net_margin_pct = None
+    if not buyer_price or buyer_price <= 0:
+        pi = await repo.get_pi_by_deal(req.deal_id)
+        buyer_price = pi.agreed_price if pi is not None else None
+    if not buyer_price or buyer_price <= 0:
+        raise MarginUnknownError(req.deal_id)
+    net_margin_pct = (buyer_price - req.agreed_price) / buyer_price * 100.0
 
-    if net_margin_pct is not None and net_margin_pct < floor:
+    if net_margin_pct < floor:
         raise MarginGuardError(req.deal_id, net_margin_pct, floor)
 
     # ── Derive party details ──────────────────────────────────────────────
@@ -606,7 +692,7 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
         req.quantity_mt,
         total_value,
         req.currency,
-        net_margin_pct if net_margin_pct is not None else 0.0,
+        net_margin_pct,
     )
 
     await _patch_deal_est_margin(req.deal_id, po_record)

@@ -222,6 +222,8 @@ async def api_file_cha(req: ChaFilingRequest) -> ThirdPartyOrderResponse:
         return await file_cha(req)
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 

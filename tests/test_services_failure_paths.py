@@ -532,7 +532,7 @@ class TestDocumentParties:
     @staticmethod
     def _deal(status):
         parties = [_party(legal_name="Overseas Buyer GmbH", address="Berlin"), _party(PartyRole.SUPPLIER, legal_name="Chennai Oils Pvt", country="IN")]
-        return SimpleNamespace(status=SimpleNamespace(value=status), hs_code="290543", parties=parties, buyer_target_price_usd=None, port_of_loading="Chennai")
+        return SimpleNamespace(status=SimpleNamespace(value=status), hs_code="290543", parties=parties, buyer_target_price_usd=1000.0, port_of_loading="Chennai")
 
     async def test_pi_names_the_real_buyer(self):
         from services.dealmaker.schemas import IssuePiRequest

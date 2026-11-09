@@ -90,9 +90,17 @@ class PiRecord(BaseModel):
     issued_at: datetime
     expires_at: datetime
     accepted_at: datetime | None = None
+    extensions: list[dict] = Field(default_factory=list)
+    """Audit of every validity extension: by, reason, at, previous / new expiry."""
 
     # Idempotency
     idempotency_key: str | None = None
+
+
+class ExtendPiRequest(BaseModel):
+    """Give an unaccepted Proforma Invoice a new validity, counted from today."""
+    validity_days: int = Field(default=7, ge=1, le=60)
+    reason: str = Field(min_length=3)
 
 
 class AcceptPiRequest(BaseModel):

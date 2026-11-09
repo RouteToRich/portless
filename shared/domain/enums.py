@@ -95,6 +95,9 @@ class ApprovalAction(str, Enum):
     deal exception. A ``block`` verdict never reaches this gate — it stops the
     deal outright."""
     CONFIRM_BUYER_ACCEPTANCE = "CONFIRM_BUYER_ACCEPTANCE"
+    REFUND_ESCROW = "REFUND_ESCROW"
+    """An operator asks to return the undisbursed escrow balance to the buyer.
+    Money-moving; REJECT leaves the money and the deal where they are."""
     CONFIRM_TRADE_COMPLIANCE = "CONFIRM_TRADE_COMPLIANCE"
     """Trade-compliance REVIEW before the Proforma Invoice (product export
     policy, destination, unscreened party, related parties, off-market price)

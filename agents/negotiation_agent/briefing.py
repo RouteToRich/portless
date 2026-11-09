@@ -295,7 +295,7 @@ def buyer_terms() -> str:
 def supplier_terms() -> str:
     return (
         "Price basis: FOB Indian port, per MT (INR or USD). Payment security: we place the purchase order only "
-        "after the overseas buyer's money is already deposited in a neutral escrow account, and the supplier is "
+        "after the overseas buyer has paid into a neutral escrow account, and the supplier is "
         "paid from those funds in stages as they are released — a production advance when the purchase order is "
         "placed, then after the inspection passes and as the shipment clears (exact supplier split agreed on the "
         "purchase order; never quote percentages). No open credit, no letter-of-credit "

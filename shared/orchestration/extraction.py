@@ -111,6 +111,25 @@ def _grade(text: str) -> str | None:
     return " ".join(hints[:3]) or None
 
 
+_DESTINATION_PORT = re.compile(
+    r"\b(?:(?i:destination\s+port|port\s+of\s+(?:discharge|destination)|POD)\s*(?i:is|will\s+be|:|-)?\s*"
+    r"|(?:CIF|CFR|CNF|C&F|DAP|DDP|CPT|CIP)\s+)"
+    r"([A-Z][a-zA-Z]+(?: [A-Z][a-zA-Z]+){0,2})"
+)
+_NOT_A_PORT = {"your", "our", "the", "destination", "port", "price", "basis", "terms", "incoterm", "incoterms", "to", "at"}
+
+
+def parse_destination_port(text: str | None) -> str | None:
+    """The port named outright in *text* ("destination port is X", "CIF X",
+    "port of discharge: X"). Stricter than the requirement parse: this value
+    is printed on a Proforma Invoice, so a loose "to Monday" must not match."""
+    for match in _DESTINATION_PORT.finditer(text or ""):
+        port = match.group(1).strip()
+        if port.split()[0].lower() not in _NOT_A_PORT:
+            return port
+    return None
+
+
 def parse_buyer(text: str) -> dict[str, Any]:
     """Deterministic buyer-requirement parse (the gateway-down fallback)."""
     t = text or ""

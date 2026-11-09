@@ -28,11 +28,13 @@ import json
 import logging
 from typing import Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .notification import deregister_sse_client, get_recent_events, register_sse_client
+from shared.auth.dependencies import AuthUser, require_portless
+
+from .notification import deregister_sse_client, get_recent_events, notify, register_sse_client
 from .schemas import (
     ApprovalResponse,
     CreateApprovalRequest,
@@ -40,6 +42,7 @@ from .schemas import (
 )
 from .service import (
     ApprovalAlreadyResolved,
+    ApproverNotProvenError,
     ComplianceBlockedError,
     SameApproverError,
     ApprovalNotFoundError,
@@ -175,6 +178,30 @@ async def api_get_approval(approval_id: str) -> ApprovalResponse:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
+async def _apply_signed_in_approver(req: ResolveApprovalRequest, request: Request) -> bool:
+    """Who decided is the signed-in caller, never a name in the request body.
+
+    The monolith's AuthMiddleware has already identified the caller; a
+    standalone service checks the token itself. Returns whether the approver
+    is proven: the service refuses a two-approver gate when it is not."""
+    caller = getattr(request.state, "user", None)
+    if caller is not None:
+        req.resolved_by = caller.email or caller.user_id
+        return True
+    from services.auth.organization import is_portless_user
+    from shared.auth.dependencies import bearer_token
+    from shared.auth.identity import IdentityError, resolve
+
+    try:
+        identity = await resolve(request.headers, bearer_token(request))
+    except IdentityError:
+        return False
+    if not is_portless_user(identity.email):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Only Portless platform staff can decide approvals.")
+    req.resolved_by = identity.email
+    return True
+
+
 @router.post("/approvals/{approval_id}/resolve", response_model=ApprovalResponse)
 async def api_resolve_approval(
     approval_id: str,
@@ -186,19 +213,46 @@ async def api_resolve_approval(
     APPROVE → saga callback executed; emits approval.resolved.
     REJECT  → emits deal.exception + approval.resolved.
     """
-    # Who decided is the signed-in caller, never a name in the request body —
-    # four-eyes depends on it.
-    caller = getattr(request.state, "user", None)
-    if caller is not None:
-        req.resolved_by = caller.email or caller.user_id
+    approver_proven = await _apply_signed_in_approver(req, request)
     try:
-        return await resolve_approval(approval_id, req)
+        return await resolve_approval(approval_id, req, approver_proven=approver_proven)
+    except ApproverNotProvenError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))
     except ApprovalNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except ApprovalAlreadyResolved as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
     except (SameApproverError, ComplianceBlockedError) as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Kill Switch (global pause)
+# ---------------------------------------------------------------------------
+
+class KillSwitchRequest(BaseModel):
+    paused: bool
+    reason: str = Field(min_length=3)
+
+
+@router.get("/kill-switch")
+async def api_kill_switch_status() -> dict[str, Any]:
+    """Is the platform paused, since when, by whom — plus the recent history."""
+    from shared.orchestration import kill_switch
+    return await kill_switch.status()
+
+
+@router.post("/kill-switch")
+async def api_kill_switch_set(body: KillSwitchRequest, user: AuthUser = Depends(require_portless)) -> dict[str, Any]:
+    """Pause or resume every outward action (staff only, reason required, audited)."""
+    from shared.orchestration import kill_switch
+    by = user.email or user.user_id
+    try:
+        result = await (kill_switch.pause if body.paused else kill_switch.resume)(by, body.reason.strip())
+    except kill_switch.KillSwitchStoreError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    await notify("platform_paused" if body.paused else "platform_resumed", result)
+    return result
 
 
 # ---------------------------------------------------------------------------

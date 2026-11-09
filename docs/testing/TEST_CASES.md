@@ -388,6 +388,7 @@ Feature: Authentication and access on every endpoint
       | POST   | /escrow-guard/escrows/ESC-1/open-window |
       | POST   | /escrow-guard/escrows/ESC-1/clear-dispute |
       | POST   | /escrow-guard/escrows/ESC-1/refund    |
+      | POST   | /escrow-guard/escrows/ESC-1/request-refund |
       | POST   | /escrow-guard/payouts                 |
       | GET    | /escrow-guard/payouts/PAY-1           |
       | GET    | /escrow-guard/deals/{D}/summary       |
@@ -1680,6 +1681,25 @@ Feature: Negotiation sessions and rounds
     Given a negotiation "N" in status "ROUND" idle past its limit
     When the sweep "negotiation_stale" runs
     Then the negotiation "N" has status "FAILED"
+
+  @TC-NEG-019 @P0 @email @positive
+  Scenario: An acceptance with no price accepts our last offer, for a person to confirm
+    Given a deal "D" at status "NEGOTIATING" from fixture "FX-STD" with an offer of 1294.09 sent to the buyer
+    When the buyer replies "We accept your offer and wish to proceed." from the known address
+    Then a pending gate "CONFIRM_NEGOTIATION_AGREEMENT" exists at level "L0"
+    And the gate "CONFIRM_NEGOTIATION_AGREEMENT" amount is 1294.09
+
+  @TC-NEG-020 @P0 @email @negative
+  Scenario: A reply with no price that is not an acceptance goes to a person
+    Given a deal "D" at status "NEGOTIATING" from fixture "FX-STD" with an offer of 1294.09 sent to the buyer
+    When the buyer replies "Could you tell us more about the packaging?" from the known address
+    Then a pending gate "PARSE_INBOUND_EMAIL" exists at level "L0"
+
+  @TC-NEG-021 @P0 @positive
+  Scenario: A draft saying escrow money is already there waits for a person
+    Given a negotiation draft saying "The buyer's funds are already deposited in escrow."
+    Then the gate "SEND_NEGOTIATION_EMAIL" has risk flag "premature_funds_claim"
+    And a pending gate "SEND_NEGOTIATION_EMAIL" exists at level "L0"
 ```
 
 ```gherkin
@@ -2044,15 +2064,61 @@ Feature: Proforma Invoice issue and acceptance
       """
     Then the response status is 404
 
-  @TC-PI-009 @P0 @money @decision-needed @needs:time
-  Scenario: An expired PI can still be accepted (today's behaviour)
+  @TC-PI-009 @P0 @money @negative @needs:time
+  Scenario: An expired PI cannot be accepted
     Given a deal "D" at status "PI_SENT" from fixture "FX-STD"
     And "expires_at" of the deal's PI was set 1 days ago
     When I call "POST /dealmaker/pi/{PI}/accept" with body:
       """
       {}
       """
+    Then the response status is 422
+    And deal "D" has status "PI_SENT"
+
+  @TC-PI-019 @P0 @money @positive @needs:time
+  Scenario: An extended PI can be accepted
+    Given a deal "D" at status "PI_SENT" from fixture "FX-STD"
+    And "expires_at" of the deal's PI was set 1 days ago
+    When I call "POST /dealmaker/pi/{PI}/extend" with body:
+      """
+      {"validity_days":5,"reason":"buyer asked for more time"}
+      """
     Then the response status is 200
+    When I call "POST /dealmaker/pi/{PI}/accept" with body:
+      """
+      {}
+      """
+    Then the response status is 200
+
+  @TC-PI-020 @P1 @negative
+  Scenario: An extension needs a reason
+    Given a deal "D" at status "PI_SENT" from fixture "FX-STD"
+    When I call "POST /dealmaker/pi/{PI}/extend" with body:
+      """
+      {"validity_days":5,"reason":""}
+      """
+    Then the response status is 422
+
+  @TC-PI-021 @P0 @email @exception @needs:time
+  Scenario: A buyer's acceptance after expiry goes to a person
+    Given a deal "D" at status "PI_SENT" from fixture "FX-STD"
+    And "expires_at" of the deal's PI was set 1 days ago
+    When the buyer replies "We accept the Proforma Invoice" from the known address
+    Then no gate "CONFIRM_PI_ACCEPTANCE" exists
+    And the gate "PARSE_INBOUND_EMAIL" has risk flag "pi_expired"
+
+  @TC-PI-022 @P0 @positive
+  Scenario: The PI prints the port the buyer named
+    Given a deal "D" at status "NEGOTIATION_AGREED" from fixture "FX-STD"
+    And the buyer has written "Our destination port is Jebel Ali, UAE."
+    When the Proforma Invoice is issued
+    Then the response field "port_of_destination" is "Jebel Ali, AE"
+
+  @TC-PI-023 @P1 @edge
+  Scenario: The PI says the port is open when the buyer never named one
+    Given a deal "D" at status "NEGOTIATION_AGREED" from fixture "FX-STD"
+    When the Proforma Invoice is issued
+    Then the response field "port_of_destination" is "Port to be confirmed by buyer, AE"
 
   @TC-PI-010 @P0 @email @positive
   Scenario: The buyer's e-mailed acceptance needs operator confirmation
@@ -2423,14 +2489,14 @@ Feature: Purchase Order and the first release
       | 1000  | 1000     | 422  |
       | 1000  | 1100     | 422  |
 
-  @TC-PO-004 @P0 @money @decision-needed
-  Scenario: The margin guard is skipped when the buyer price is unset (today's behaviour)
-    Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD" with no buyer target price
+  @TC-PO-004 @P0 @money @negative
+  Scenario: A PO with no buyer price to check its margin against is refused
+    Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD" with no buyer target price and no PI
     When I call "POST /dealmaker/po" with body:
       """
       {"deal_id":"{D}","agreed_price":5000,"quantity_mt":20,"port_of_loading":"Chennai, IN","delivery_deadline":"2027-01-31","payment_terms":"Staged"}
       """
-    Then the response status is 201
+    Then the response status is 422
 
   @TC-PO-005 @P0 @negative
   Scenario Outline: A PO needs funded money
@@ -2738,7 +2804,7 @@ Feature: Inspection booking, result and supervised loading
   @TC-QC-020 @P0 @money @positive
   Scenario: Refund after a failed inspection returns only undisbursed money
     Given a deal "D" at status "DISPUTE" from fixture "FX-STD" with T1 released
-    When I call "POST /escrow-guard/escrows/{ESC}/refund" with body:
+    When I call with its approved gate "POST /escrow-guard/escrows/{ESC}/refund" with body:
       """
       {"reason":"failed inspection"}
       """
@@ -2998,19 +3064,23 @@ Feature: Freight, customs and carrier milestones
       | {}                  | 422  |
       | {"deal_id":"NOPE"}  | 404  |
 
-  @TC-FRT-010 @P0 @compliance @decision-needed
-  Scenario Outline: Customs filing has no status check (today's behaviour)
+  @TC-FRT-010 @P0 @compliance
+  Scenario Outline: Customs is filed only between QC pass and clearance
     Given a deal "D" at status "<status>" from fixture "FX-STD"
     When I call "POST /shield-link/cha" with body:
       """
       {"deal_id":"{D}"}
       """
-    Then the response status is 201
+    Then the response status is <code>
 
     Examples:
-      | status    |
-      | MATCHING  |
-      | CANCELLED |
+      | status     | code |
+      | MATCHING   | 422  |
+      | CANCELLED  | 422  |
+      | PAID       | 422  |
+      | QC_PASSED  | 201  |
+      | IN_TRANSIT | 201  |
+      | CLEARED    | 201  |
 
   @TC-FRT-011 @P0 @positive
   Scenario Outline: Carrier milestones
@@ -3092,7 +3162,7 @@ Feature: Freight, customs and carrier milestones
   @TC-FRT-018 @P0 @compliance @money @positive
   Scenario: A refund stays possible during a block
     Given a deal "D" at status "DISPUTE" from fixture "FX-STD" with an open "seal_mismatch" hold
-    When I call "POST /escrow-guard/escrows/{ESC}/refund" with body:
+    When I call with its approved gate "POST /escrow-guard/escrows/{ESC}/refund" with body:
       """
       {"reason":"seal"}
       """
@@ -3420,7 +3490,8 @@ Feature: Staged release and the buyer's acceptance window
       | NOPE   | dispute       | {"reason":"x"}     | 404  |
       | NOPE   | open-window   | {}                 | 404  |
       | NOPE   | clear-dispute | {}                 | 404  |
-      | NOPE   | refund        | {}                 | 404  |
+      | NOPE   | refund        | {}                 | 403  |
+      | {ESC}  | refund        | {"reason":"x"}     | 403  |
       | {ESC}  | accept        | {}                 | 403  |
       | {ESC}  | dispute       | {"reason":"x"}     | 422  |
       | {ESC}  | dispute       | {}                 | 422  |
@@ -3429,7 +3500,7 @@ Feature: Staged release and the buyer's acceptance window
   @TC-REL-021 @P0 @positive
   Scenario: Refund is limited to the undisbursed balance
     Given a deal "D" at status "DISPUTE" from fixture "FX-STD" with T1 and T2 released
-    When I call "POST /escrow-guard/escrows/{ESC}/refund" with body:
+    When I call with its approved gate "POST /escrow-guard/escrows/{ESC}/refund" with body:
       """
       {"reason":"cancelled"}
       """
@@ -3439,7 +3510,7 @@ Feature: Staged release and the buyer's acceptance window
   @TC-REL-022 @P1 @edge
   Scenario: A second refund changes nothing
     Given a deal "D" at status "REFUNDED" from fixture "FX-STD"
-    When I call "POST /escrow-guard/escrows/{ESC}/refund" with body:
+    When I call with its approved gate "POST /escrow-guard/escrows/{ESC}/refund" with body:
       """
       {}
       """
@@ -3449,7 +3520,7 @@ Feature: Staged release and the buyer's acceptance window
   @TC-REL-023 @P1 @negative
   Scenario: A fully released escrow has nothing to refund
     Given a deal "D" at status "PAID" from fixture "FX-STD" fully settled
-    When I call "POST /escrow-guard/escrows/{ESC}/refund" with body:
+    When I call with its approved gate "POST /escrow-guard/escrows/{ESC}/refund" with body:
       """
       {}
       """
@@ -4015,6 +4086,99 @@ Feature: Approval gates, autonomy and four-eyes
       | GET /hitl-approval/digest   |
       | POST /hitl-approval/digest/send |
       | GET /hitl-approval/learning |
+
+  @TC-HIT-025 @P0 @money @negative
+  Scenario: A direct refund is refused
+    Given a deal "D" at status "DISPUTE" from fixture "FX-STD" with T1 released
+    When I call "POST /escrow-guard/escrows/{ESC}/refund" with body:
+      """
+      {"reason":"failed inspection"}
+      """
+    Then the response status is 403
+    And the ledger field "refunded_total" is 0
+
+  @TC-HIT-026 @P0 @money @positive
+  Scenario: A refund is requested, approved, then paid
+    Given a deal "D" at status "DISPUTE" from fixture "FX-STD" with T1 released
+    When I call "POST /escrow-guard/escrows/{ESC}/request-refund" with body:
+      """
+      {"reason":"failed inspection"}
+      """
+    Then the response status is 202
+    And a pending gate "REFUND_ESCROW" exists at level "L0"
+    When "staff" approves the pending "REFUND_ESCROW" gate
+    Then the ledger field "refunded_total" is 17500
+    And deal "D" has status "REFUNDED"
+
+  @TC-HIT-027 @P1 @negative
+  Scenario: A refund request needs a reason
+    Given a deal "D" at status "DISPUTE" from fixture "FX-STD" with T1 released
+    When I call "POST /escrow-guard/escrows/{ESC}/request-refund" with body:
+      """
+      {"reason":" "}
+      """
+    Then the response status is 422
+
+  @TC-HIT-028 @P0 @money @exception
+  Scenario: Rejecting a refund changes nothing
+    Given a deal "D" at status "DISPUTE" from fixture "FX-STD" with T1 released
+    And a refund for the deal has been requested
+    When "staff" rejects the pending "REFUND_ESCROW" gate
+    Then the ledger field "refunded_total" is 0
+    And deal "D" has status "DISPUTE"
+
+  @TC-HIT-029 @P0 @money @negative
+  Scenario: A standalone approval service refuses a two-approver gate without a token
+    Given the setting "FOUR_EYES_THRESHOLD_USD" is "100"
+    And the standalone approval service is running without sign-in middleware
+    And a pending "RELEASE_SUPPLIER_PAYOUT" gate of 500 USD exists
+    When an anonymous caller approves it signing as "alice"
+    Then the response status is 401
+    And the gate has no signatures
+
+  @TC-HIT-030 @P0 @exception
+  Scenario Outline: The Kill Switch stops what would leave PortLess
+    Given the platform is paused by "staff" with reason "bank incident"
+    When I call with its approved gate "<method> <path>" with body:
+      """
+      <body>
+      """
+    Then the response status is 423
+
+    Examples:
+      | method | path                                 | body                                    |
+      | POST   | /escrow-guard/escrows/{ESC}/release  | {"tranche_id":"T1"}                     |
+      | POST   | /escrow-guard/escrows/{ESC}/refund   | {"reason":"x"}                          |
+      | POST   | /shield-link/cha                     | {"deal_id":"{D}"}                       |
+      | POST   | /email-gateway/send                  | {"to_address":"a@b.invalid","subject":"s","body":"b"} |
+
+  @TC-HIT-031 @P0 @exception
+  Scenario: While paused no gate approves itself and approving is refused
+    Given the platform is paused by "staff" with reason "bank incident"
+    When I call "POST /hitl-approval/approvals" with body:
+      """
+      {"deal_id":"{D}","action":"SEND_DEAL_NOTIFICATION","autonomy_level":"L2","idempotency_key":"p1","callback_payload":{}}
+      """
+    Then the response field "status" is "PENDING"
+    And the gate "SEND_DEAL_NOTIFICATION" has risk flag "platform_paused"
+    When "staff" approves the pending "SEND_DEAL_NOTIFICATION" gate
+    Then the response status is 423
+    And a pending gate "SEND_DEAL_NOTIFICATION" exists at level "L0"
+
+  @TC-HIT-032 @P0 @negative
+  Scenario Outline: Only staff with a reason can use the Kill Switch
+    Given I am "<persona>"
+    When I call "POST /hitl-approval/kill-switch" with body:
+      """
+      <body>
+      """
+    Then the response status is <code>
+
+    Examples:
+      | persona | body                             | code |
+      | org     | {"paused":true,"reason":"abc"}   | 403  |
+      | staff   | {"paused":true,"reason":""}      | 422  |
+      | staff   | {"paused":true,"reason":"abc"}   | 200  |
 ```
 
 ### Phase 13: Exceptions
@@ -5059,7 +5223,8 @@ Feature: Whole deals from matching to cash
   @TC-E2E-005 @P0 @exception
   Scenario: Failed inspection ending in a refund
     Given a deal "D" at status "DISPUTE" from fixture "FX-STD" with T1 released
-    When the undisbursed balance is refunded in the console
+    When the undisbursed balance is sent for refund in the console
+    And "staff" approves the pending "REFUND_ESCROW" gate
     Then deal "D" has status "REFUNDED"
     And the ledger field "refunded_total" is 17500
     And the ledger field "reconciled" is "true"
@@ -5119,10 +5284,15 @@ These came from reading the code. They are not changes already made.
 | DEF-07 | Defect | Customs filing for an unknown deal answered 201. | TC-DOC-013 | Fixed: answers 404 |
 | DEC-01 | Decision | `PATCH /deals/{id}/status` could mark a deal funded or paid. | TC-FSM-005, TC-FSM-006 | Fixed: only operator statuses can be set by hand |
 | DEC-02 | Decision | Staff could release, pay out or accept directly. | TC-REL-006, TC-REL-025 to TC-REL-028 | Fixed: an approved gate is required |
-| DEC-03 | Decision | An expired PI can still be accepted. | TC-PI-009 | Open |
-| DEC-04 | Decision | The margin guard is skipped when the buyer's price is unset. | TC-PO-004 | Open |
-| DEC-05 | Decision | Customs filing has no deal-status check. | TC-FRT-010 | Open |
-| DEC-06 | Decision | The console's Kill Switch is an unused component with no backend command. | TC-EVT-005 | Open |
+| DEC-03 | Decision | An expired PI could still be accepted. | TC-PI-009, TC-PI-019 to TC-PI-021 | Fixed: refused until staff extend it |
+| DEC-04 | Decision | The margin guard was skipped when the buyer's price was unset. | TC-PO-004 | Fixed: uses the PI price, refused with neither |
+| DEC-05 | Decision | Customs filing had no deal-status check. | TC-FRT-010 | Fixed: only QC_PASSED, IN_TRANSIT, CLEARED |
+| DEC-06 | Decision | The console's Kill Switch had no backend command. | TC-HIT-030 to TC-HIT-032 | Fixed: pauses every outward action |
+| DEC-07 | Decision | Staff could refund directly. | TC-HIT-025 to TC-HIT-028 | Fixed: REFUND_ESCROW gate |
+| DEF-08 | Defect, money | Four-eyes identity was checked only on the monolith. | TC-HIT-029 | Fixed: a standalone service checks the token |
+| DEF-09 | Defect, document | The PI printed "Destination Port, AE". | TC-PI-022, TC-PI-023 | Fixed: the buyer's port, or says it is open |
+| DEF-10 | Defect, wording | A draft could say escrow money was already there. | TC-NEG-021 | Fixed: prompt rule and a flag that forces review |
+| DEF-11 | Workflow | "We accept your offer" with no price stopped at an operator. | TC-NEG-019, TC-NEG-020 | Fixed: accepts our last offer, still confirmed by a person |
 
 Before automating, check these expected results against a running system, because the exact value could not be confirmed from the route alone: request body shapes for `/sourcing/verify/{id}`, `/shield-link/qc/quote`, `/shield-link/freight/quote`, `/trade-min/scan` and `/trade-min/catalogue`; console labels for "Scan", "Enrich", "Re-check", "Re-score", "Send", "Sign in" and "Sign out"; reminder timings that depend on `DEAL_*_AFTER_HOURS`.
 

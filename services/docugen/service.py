@@ -559,6 +559,18 @@ async def file_customs(req: CustomsFilingRequest) -> CustomsFilingResponse:
     the system can proceed without a live ICEGATE connection.  Wire in the real
     ICEGATE HTTP call when the API key is available.
     """
+    from services.shield_link.service import CUSTOMS_FILING_STATUSES  # type: ignore[import]
+    from shared.orchestration import kill_switch
+
+    await kill_switch.assert_running(f"Customs filing for deal {req.deal_id}")
+    deal_for_status = await _fetch_deal(req.deal_id)
+    deal_status = getattr(deal_for_status.status, "value", str(deal_for_status.status))
+    if deal_status not in CUSTOMS_FILING_STATUSES:
+        raise DocuGenError(
+            f"Deal {req.deal_id!r} is {deal_status!r}; customs can be filed only at "
+            f"{' or '.join(sorted(CUSTOMS_FILING_STATUSES))}"
+        )
+
     # Try to load a pre-generated Shipping Bill; create one on-the-fly if absent
     repo = get_repository()
     sb_doc: DocumentRecord | None = None

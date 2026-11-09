@@ -197,6 +197,11 @@ async def _emit(topic: EventTopic, deal_id: str, payload: dict) -> None:
         logger.warning("EscrowGuard: emit %s failed: %s", topic, exc)
 
 
+async def _assert_platform_running(what: str) -> None:
+    from shared.orchestration import kill_switch
+    await kill_switch.assert_running(what)
+
+
 # ---------------------------------------------------------------------------
 # Connector factory
 # ---------------------------------------------------------------------------
@@ -553,6 +558,7 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
     Guard: deal must have a FUNDED escrow hold (funds are in escrow).
     Idempotent on ``idempotency_key`` — exactly-once payout guarantee.
     """
+    await _assert_platform_running(f"Supplier payout for deal {req.deal_id}")
     repo = get_repository()
 
     # Idempotency
@@ -882,6 +888,7 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
     the authenticated proof refs (CRF hash, shipping-bill no., BL) — the release
     is authorized by that proof, not by PortLess's word (target spec §5.4).
     """
+    await _assert_platform_running(f"Tranche release from escrow {escrow_id}")
     repo = get_repository()
     hold = await repo.get_hold(escrow_id)
     if hold is None:
@@ -1010,21 +1017,9 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
     return EscrowResponse.from_record(updated)
 
 
-async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
-    """Refund the **undisbursed** balance to the buyer (dispute / failure path).
-
-    Already-released tranches cannot be clawed back — only ``amount -
-    released_total`` is refundable (target spec §6.4).
-    """
-    repo = get_repository()
-    hold = await repo.get_hold(escrow_id)
-    if hold is None:
-        raise HoldNotFoundError(escrow_id)
-    if hold.status == "REFUNDED":  # idempotent
-        return EscrowResponse.from_record(hold)
+def _undisbursed_or_refuse(hold: EscrowHoldRecord) -> float:
     if hold.status not in ("FUNDED", "RELEASED", "PARTIALLY_FUNDED"):
         raise InvalidDealState(hold.deal_id, f"escrow={hold.status}", "escrow=FUNDED")
-
     received = hold.funded_amount if hold.funded_amount is not None else hold.amount
     undisbursed = round(received - hold.released_total, 2)
     if undisbursed <= _FUNDING_TOLERANCE:
@@ -1033,6 +1028,59 @@ async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
             f"nothing left to refund (received {received:.2f}, released {hold.released_total:.2f})",
             "undisbursed > 0",
         )
+    return undisbursed
+
+
+async def request_refund(escrow_id: str, req: RefundRequest) -> dict[str, Any]:
+    """Open the REFUND_ESCROW gate for an operator's refund request. Reuses a
+    gate that is already waiting. Never auto-approved by a value threshold."""
+    hold = await get_repository().get_hold(escrow_id)
+    if hold is None:
+        raise HoldNotFoundError(escrow_id)
+    undisbursed = _undisbursed_or_refuse(hold)
+
+    from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
+    from services.hitl_approval.service import create_approval, list_approvals  # type: ignore[import]
+    from shared.orchestration.autonomy_policy import resolve_gate
+
+    waiting = [a for a in await list_approvals(status="PENDING", deal_id=hold.deal_id)
+               if a.action == "REFUND_ESCROW"]
+    if waiting:
+        return {"approval_id": waiting[0].approval_id, "status": waiting[0].status,
+                "deal_id": hold.deal_id, "escrow_id": escrow_id}
+    spec = resolve_gate("REFUND_ESCROW", amount=undisbursed, conditions_ok=False)
+    approval = await create_approval(CreateApprovalRequest(
+        deal_id=hold.deal_id,
+        action="REFUND_ESCROW",
+        summary=(f"{req.requested_by or 'An operator'} asks to refund {undisbursed:,.2f} {hold.currency} "
+                 f"of escrow {escrow_id} to the buyer. Reason: {req.reason[:300]}"),
+        financial_impact_usd=undisbursed,
+        risk_flags=["money_movement", "refund_requested_by_operator"],
+        autonomy_level=spec.level,
+        expires_at=spec.expires_at_iso(),
+        default_on_timeout=spec.default_on_timeout,
+        callback_payload={"deal_id": hold.deal_id, "escrow_id": escrow_id, "reason": req.reason,
+                          "requested_by": req.requested_by},
+        idempotency_key=f"refund-request-{escrow_id}-{uuid4().hex[:8]}",
+    ))
+    return {"approval_id": approval.approval_id, "status": approval.status,
+            "deal_id": hold.deal_id, "escrow_id": escrow_id}
+
+
+async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
+    """Refund the **undisbursed** balance to the buyer (dispute / failure path).
+
+    Already-released tranches cannot be clawed back — only ``amount -
+    released_total`` is refundable (target spec §6.4).
+    """
+    await _assert_platform_running(f"Refund of escrow {escrow_id}")
+    repo = get_repository()
+    hold = await repo.get_hold(escrow_id)
+    if hold is None:
+        raise HoldNotFoundError(escrow_id)
+    if hold.status == "REFUNDED":  # idempotent
+        return EscrowResponse.from_record(hold)
+    undisbursed = _undisbursed_or_refuse(hold)
     connector = _payment_connector(hold.provider)
     try:
         result = await connector.refund({  # type: ignore[union-attr]
@@ -1211,6 +1259,7 @@ async def accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowRespo
     ``release_tranche``. Escrow must be FUNDED and not under dispute. Idempotent
     once accepted.
     """
+    await _assert_platform_running(f"Acceptance release from escrow {escrow_id}")
     repo = get_repository()
     hold = await repo.get_hold(escrow_id)
     if hold is None:
@@ -1337,6 +1386,9 @@ async def check_inspection_windows(now: datetime | None = None) -> int:
     """Auto-release final tranches whose inspection window has lapsed with no
     dispute (silence = consent). Returns the number of escrows auto-released.
     Safe to call repeatedly (idempotent per escrow)."""
+    from shared.orchestration import kill_switch
+    if await kill_switch.is_paused():
+        return 0
     repo = get_repository()
     now = now or datetime.now(timezone.utc)
     released = 0

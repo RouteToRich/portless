@@ -18,6 +18,7 @@ from services.dealmaker.service import (
     DealNotFoundError,
     InvalidDealState,
     MarginGuardError,
+    MarginUnknownError,
     PiNotFoundError,
     PiStateError,
     accept_pi,
@@ -363,18 +364,16 @@ class TestIssuePo:
 
         assert r1.po_id == r2.po_id
 
-    def test_po_margin_skipped_when_buyer_price_absent(self, tmp_path, _repo):
-        """When buyer_target_price_usd is None the margin guard is skipped."""
+    def test_po_refused_when_no_buyer_price_exists(self, tmp_path, _repo):
+        """With no target price and no PI the margin cannot be checked."""
         deal = _mock_deal(status="ESCROW_FUNDED", buyer_target_price=None)
         with (
             patch("services.dealmaker.service._fetch_deal", AsyncMock(return_value=deal)),
             patch("services.dealmaker.service._transition_deal", AsyncMock()),
             patch("services.dealmaker.service._emit", AsyncMock()),
         ):
-            resp = run(issue_po(_po_request()))
-
-        assert resp.po_id.startswith("PO-")
-        assert resp.net_margin_pct is None
+            with pytest.raises(MarginUnknownError):
+                run(issue_po(_po_request()))
 
 
 # ---------------------------------------------------------------------------

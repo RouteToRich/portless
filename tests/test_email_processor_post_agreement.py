@@ -83,6 +83,7 @@ def wiring(monkeypatch):
     dm_repo = AsyncMock()
     dm_repo.get_pi_by_deal = AsyncMock(return_value=SimpleNamespace(
         pi_id="PI-1", status="SENT", total_value=30000.0, currency="USD",
+        expires_at=__import__("datetime").datetime(2099, 1, 1, tzinfo=__import__("datetime").timezone.utc),
     ))
     monkeypatch.setattr("services.dealmaker.repository.get_repository", lambda: dm_repo)
     yield SimpleNamespace(

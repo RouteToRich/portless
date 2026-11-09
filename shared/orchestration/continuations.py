@@ -1107,6 +1107,47 @@ async def pi_after_compliance(
     return await issue_pi_for_deal(deal_id, agreed_price=agreed_price, quantity_mt=quantity_mt, market=market)
 
 
+PORT_TO_BE_CONFIRMED = "Port to be confirmed by buyer"
+
+
+async def _buyer_destination_port(deal_id: str) -> str | None:
+    """The port the buyer itself named: its latest e-mail that says so, else
+    the requirement read from its outreach reply. None when it never said."""
+    from agents.negotiation_agent.email_history import EmailDirection, get_email_repository
+    from agents.negotiation_agent.guards import _new_reply_text
+    from shared.orchestration.extraction import parse_destination_port
+
+    try:
+        emails = await get_email_repository().list_by_deal(deal_id)
+        for mail in sorted(emails, key=lambda m: m.created_at, reverse=True):
+            if mail.direction == EmailDirection.INBOUND and mail.party == "buyer":
+                port = parse_destination_port(_new_reply_text(mail.body))
+                if port:
+                    return port
+        from services.deals.service import get_deal  # type: ignore[import]
+        deal = await get_deal(deal_id)
+        for cand in getattr(deal, "buyer_candidates", None) or []:
+            port = getattr(getattr(cand, "requirement", None), "destination_port", None)
+            if port and str(getattr(cand, "status", "")) == "selected":
+                return port
+    except Exception as exc:  # noqa: BLE001 — the PI still goes out, saying the port is open
+        logger.warning("Continuation: could not read the buyer's port for deal %s: %s", deal_id, exc)
+    return None
+
+
+async def _pi_destination_port(deal_id: str) -> str | None:
+    """The destination printed on the deal's PI, when the buyer has named one."""
+    try:
+        from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
+        pi = await _dm_repo().get_pi_by_deal(deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Continuation: could not read the PI of deal %s: %s", deal_id, exc)
+        return None
+    if pi is None or pi.port_of_destination.startswith(PORT_TO_BE_CONFIRMED):
+        return None
+    return pi.port_of_destination
+
+
 async def issue_pi_for_deal(
     deal_id: str, *, agreed_price: float, quantity_mt: float | None, market: str | None,
 ):
@@ -1117,11 +1158,13 @@ async def issue_pi_for_deal(
 
     if not quantity_mt:
         _, quantity_mt = await _negotiation_numbers(deal_id)
+    port = await _buyer_destination_port(deal_id)
+    place = port or PORT_TO_BE_CONFIRMED
     return await issue_pi(IssuePiRequest(
         deal_id=deal_id,
         agreed_price=float(agreed_price),
         quantity_mt=float(quantity_mt),
-        port_of_destination=f"Destination Port, {market or 'TBD'}",
+        port_of_destination=f"{place}, {market}" if market else place,
         payment_terms=payment_terms_for(),
         idempotency_key=f"auto-pi-{deal_id}",
     ))
@@ -1542,11 +1585,13 @@ async def _qc_tranche_and_freight(deal, payload: dict[str, Any], loading=None) -
     try:
         seal_text = (f" — container {', '.join(loading.container_numbers)} sealed "
                      f"{', '.join(loading.seal_numbers)}") if loading else ""
+        destination_port = await _pi_destination_port(deal_id)
         await _create_gate(
             deal_id, "BOOK_FREIGHT",
             summary=f"QC passed — book freight for deal {deal_id}{seal_text}",
             financial_impact_usd=None,
             callback_payload={"deal_id": deal_id, "provider": "cogoport", "incoterm": "FOB",
+                              **({"destination_port": destination_port} if destination_port else {}),
                               **({"container_numbers": loading.container_numbers,
                                   "seal_numbers": loading.seal_numbers} if loading else {})},
             idempotency_key=f"auto-freight-gate-{deal_id}",

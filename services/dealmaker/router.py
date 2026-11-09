@@ -1,15 +1,17 @@
 """HTTP routes for the DealMaker service."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
+from shared.auth.dependencies import AuthUser, require_portless
 from shared.connectors.google_drive import GoogleDriveError
 
 from . import service
 from .schemas import (
     AcceptPiRequest,
     DealDocumentsResponse,
+    ExtendPiRequest,
     IssuePiRequest,
     IssuePoRequest,
     PiResponse,
@@ -19,6 +21,8 @@ from .service import (
     DealNotFoundError,
     InvalidDealState,
     MarginGuardError,
+    MarginUnknownError,
+    PiExpiredError,
     PiNotFoundError,
     PiStateError,
     PoNotFoundError,
@@ -54,9 +58,22 @@ async def accept_pi(pi_id: str, payload: AcceptPiRequest) -> PiResponse:
         return await service.accept_pi(pi_id, payload)
     except PiNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except PiStateError as exc:
+    except (PiStateError, PiExpiredError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (DealNotFoundError, InvalidDealState) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/pi/{pi_id}/extend", response_model=PiResponse)
+async def extend_pi(
+    pi_id: str, payload: ExtendPiRequest, user: AuthUser = Depends(require_portless),
+) -> PiResponse:
+    """Give an unaccepted PI a new validity (staff only, reason required, audited)."""
+    try:
+        return await service.extend_pi(pi_id, payload, user.email or user.user_id)
+    except PiNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (PiStateError, DealNotFoundError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
@@ -82,7 +99,7 @@ async def issue_po(payload: IssuePoRequest) -> PoResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidDealState as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except MarginGuardError as exc:
+    except (MarginGuardError, MarginUnknownError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 

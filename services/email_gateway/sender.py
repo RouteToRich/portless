@@ -55,6 +55,8 @@ async def send_email(req: SendEmailRequest) -> SendEmailResult:
     Raises EmailSendError when credentials are configured but the SMTP send
     fails, so the caller can record a FAILED status.
     """
+    from shared.orchestration import kill_switch
+    await kill_switch.assert_running(f"E-mail to {req.to_address}")
     message_id = _build_message_id(req.email_id, req.negotiation_id)
     enabled = bool(settings.gmail_sender_address and settings.gmail_app_password)
 

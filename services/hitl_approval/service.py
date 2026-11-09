@@ -91,6 +91,13 @@ class SameApproverError(Exception):
         self.approver = approver
 
 
+class ApproverNotProvenError(Exception):
+    """A two-approver gate was decided by a caller with no proven identity."""
+
+    def __init__(self, approval_id: str) -> None:
+        super().__init__(f"Approval {approval_id!r} needs two signed-in approvers — sign in to decide it")
+
+
 class ComplianceBlockedError(Exception):
     """A money-release gate cannot be approved while a block-level hold is open."""
 
@@ -127,7 +134,7 @@ def four_eyes_required(action: str, financial_impact_usd: float | None) -> bool:
         cls = next((c for c in ACTION_CLASSES if c.action == action), None)
         money = bool(cls and getattr(cls, "money_moving", False))
     except Exception:  # noqa: BLE001
-        money = action in ("RELEASE_ESCROW_TRANCHE", "RELEASE_SUPPLIER_PAYOUT", "CONFIRM_BUYER_ACCEPTANCE")
+        money = action in ("RELEASE_ESCROW_TRANCHE", "RELEASE_SUPPLIER_PAYOUT", "CONFIRM_BUYER_ACCEPTANCE", "REFUND_ESCROW")
     return money and float(financial_impact_usd) >= threshold
 
 
@@ -207,6 +214,13 @@ async def create_approval(req: CreateApprovalRequest) -> ApprovalResponse:
             )
             autonomy_level = "L0"
             expires_at = None
+
+    # Paused platform: nothing approves itself; the gate waits for a person.
+    from shared.orchestration import kill_switch
+    if autonomy_level != "L0" and await kill_switch.is_paused():
+        risk_flags.append("platform_paused")
+        autonomy_level = "L0"
+        expires_at = None
 
     # ---------------------------------------------------------------------------
     # L2 / L3: auto-approve immediately, skip human gate
@@ -309,11 +323,14 @@ async def create_approval(req: CreateApprovalRequest) -> ApprovalResponse:
 async def resolve_approval(
     approval_id: str,
     req: ResolveApprovalRequest,
+    *,
+    approver_proven: bool = True,
 ) -> ApprovalResponse:
     """Human operator approves or rejects a PENDING approval.
 
     APPROVE → execute saga callback, emit approval.resolved
     REJECT  → emit deal.exception + approval.resolved
+    ``approver_proven=False``: the HTTP caller's identity could not be checked.
     """
     repo = get_repository()
     record = await repo.get(approval_id)
@@ -321,9 +338,13 @@ async def resolve_approval(
         raise ApprovalNotFoundError(approval_id)
     if record.status != "PENDING":
         raise ApprovalAlreadyResolved(approval_id, record.status)
+    if record.required_approvals > 1 and not approver_proven:
+        raise ApproverNotProvenError(approval_id)
 
     # Refused before any signature is taken, so the gate stays open for a retry.
-    from shared.orchestration import compliance
+    from shared.orchestration import compliance, kill_switch
+    if req.decision == "APPROVE":
+        await kill_switch.assert_running(f"Approving {record.action}")
     if req.decision == "APPROVE" and record.action in compliance.MONEY_RELEASE_ACTIONS:
         blocks = await compliance.open_blocks(record.deal_id)
         if blocks:
@@ -490,6 +511,9 @@ async def run_timeout_watcher() -> None:
     while True:
         try:
             await asyncio.sleep(poll)
+            from shared.orchestration import kill_switch
+            if await kill_switch.is_paused():
+                continue
             now_iso = datetime.now(timezone.utc).isoformat()
             repo = get_repository()
             expired = await repo.list_pending_expired(now_iso)

@@ -317,6 +317,8 @@ async def _process_inbound(
 
     # ── Extract counter-price ──────────────────────────────────────────────
     price = counter_price_override or await _extract_price(raw.body_text)
+    if price is None:
+        price = await _price_of_bare_acceptance(mapping.negotiation_id, mapping.party, raw.body_text)
 
     if price is None:
         record = record.model_copy(update={
@@ -401,6 +403,31 @@ async def _process_inbound(
             negotiation_id=mapping.negotiation_id,
             message=f"run_round() failed: {exc}",
         )
+
+
+async def _price_of_bare_acceptance(negotiation_id: str, party: str, body: str) -> float | None:
+    """"We accept your offer" names no price: it accepts the last price we put
+    to that party. Returns it, so the round runs and the agreement reaches its
+    CONFIRM_NEGOTIATION_AGREEMENT gate. None for anything that is not an
+    acceptance, or when we never offered that party a price."""
+    try:
+        from agents.negotiation_agent.graph import _INTENT_UNAVAILABLE, classify_inbound_intent  # type: ignore[import]
+        from agents.negotiation_agent.guards import is_explicit_acceptance  # type: ignore[import]
+        from agents.negotiation_agent.repository import get_repository as neg_repo  # type: ignore[import]
+
+        session = await neg_repo().get_session(negotiation_id)
+        offered = None
+        if session is not None:
+            offered = session.last_offer_to_buyer if party == "buyer" else session.last_offer_to_supplier
+        if not offered:
+            return None
+        verdict = await classify_inbound_intent(party, body, offered)
+        intent = verdict["intent"]
+        accepted = is_explicit_acceptance(body) if intent == _INTENT_UNAVAILABLE else intent == "ACCEPT"
+        return float(offered) if accepted else None
+    except Exception as exc:  # noqa: BLE001 — an operator reads it instead
+        logger.warning("Bare-acceptance check failed for negotiation %s: %s", negotiation_id, exc)
+        return None
 
 
 _SENDER_REASON = {
@@ -638,12 +665,18 @@ async def _handle_post_agreement_reply(
     except Exception:  # noqa: BLE001
         accepted = False
 
+    pi_expired = False
+    if pi is not None and pi.status == "SENT":
+        from services.dealmaker.service import is_pi_expired  # type: ignore[import]
+        pi_expired = is_pi_expired(pi)
+
     if (
         mapping.party == "buyer"
         and deal_status == "PI_SENT"
         and pi is not None
         and pi.status == "SENT"
         and accepted
+        and not pi_expired
     ):
         hitl_id = await _create_pi_acceptance_hitl(record, pi)
         record = record.model_copy(update={
@@ -677,9 +710,10 @@ async def _handle_post_agreement_reply(
         summary=(
             f"Post-agreement reply from {record.party or 'counterparty'} "
             f"{record.from_address} (deal {deal_status or 'unknown'}) — read and act. "
-            f"Preview: {record.body_text[:200]}"
+            + (f"PI {pi.pi_id} has expired: extend it before an acceptance can be recorded. " if pi_expired else "")
+            + f"Preview: {record.body_text[:200]}"
         ),
-        risk_flags=["post_agreement_reply"],
+        risk_flags=["post_agreement_reply", *(["pi_expired"] if pi_expired else [])],
     )
     record = record.model_copy(update={
         "status": InboundEmailStatus.NEEDS_OPERATOR,

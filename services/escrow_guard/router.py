@@ -61,6 +61,7 @@ from .service import (
     release_tranche,
     request_buyer_acceptance,
     request_payout,
+    request_refund,
 )
 
 logger = logging.getLogger(__name__)
@@ -224,9 +225,27 @@ async def api_clear_dispute(escrow_id: str, req: DisputeEscrowRequest) -> Escrow
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
+@router.post("/escrows/{escrow_id}/request-refund", status_code=status.HTTP_202_ACCEPTED)
+async def api_request_refund(escrow_id: str, req: RefundRequest, request: Request) -> dict[str, Any]:
+    """An operator asks to refund the undisbursed balance: opens the
+    REFUND_ESCROW gate. Approving it sends the money back to the buyer."""
+    if not req.reason.strip():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A refund needs a reason")
+    caller = getattr(request.state, "user", None)
+    if caller is not None:
+        req.requested_by = caller.email or caller.user_id
+    try:
+        return await request_refund(escrow_id, req)
+    except HoldNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
 @router.post("/escrows/{escrow_id}/refund", response_model=EscrowResponse)
 async def api_refund_escrow(escrow_id: str, req: RefundRequest) -> EscrowResponse:
-    """Refund the undisbursed balance to the buyer (dispute / failure path)."""
+    """Retry the refund of an approved REFUND_ESCROW gate (403 without one)."""
+    await _require_approved_gate(req.approval_id, "REFUND_ESCROW", {"escrow_id": escrow_id})
     try:
         return await refund(escrow_id, req)
     except HoldNotFoundError as exc:

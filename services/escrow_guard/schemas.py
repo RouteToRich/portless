@@ -209,6 +209,9 @@ class DisputeEscrowRequest(BaseModel):
 class RefundRequest(BaseModel):
     """Refund the undisbursed balance to the buyer (dispute / failure path)."""
     reason: str = ""
+    approval_id: str | None = None
+    """The approved REFUND_ESCROW gate this call carries out (HTTP retry only)."""
+    requested_by: str | None = None
 
 
 class EscrowFundedWebhookPayload(BaseModel):
