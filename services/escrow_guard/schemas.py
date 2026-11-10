@@ -387,8 +387,18 @@ class DealLedger(BaseModel):
     """Supplier's total entitlement (Purchase Order value) when known."""
     supplier_balance_due: float | None = None
     """supplier_owed − payouts_total (None when the PO value is unknown)."""
+    portless_costs: dict[str, float] = Field(default_factory=dict)
+    """What PortLess pays to move and protect the goods, per cost line, once
+    incurred (inspection booked → inspection; freight booked → ocean freight +
+    marine insurance; customs filed → customs agent + documents; PO issued for
+    an ex-works supplier → inland transport + origin handling)."""
+    portless_costs_basis: dict[str, str] = Field(default_factory=dict)
+    """Per line: ``actual`` (from the provider order) or ``estimate`` (cost sheet)."""
+    portless_costs_total: float = 0.0
+    margin_before_costs: float | None = None
+    """net_to_portless − payouts_total (the spread, before PortLess's own costs)."""
     realized_margin: float | None = None
-    """net_to_portless − payouts_total — PortLess's realised margin so far."""
+    """net_to_portless − payouts_total − portless_costs_total — PortLess's real profit so far."""
     tranches: list[TrancheSpec] = Field(default_factory=list)
     payouts: list[PayoutResponse] = Field(default_factory=list)
     inspection_deadline: datetime | None = None

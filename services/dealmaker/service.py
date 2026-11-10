@@ -546,7 +546,7 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
 
     Margin calculation:
       net_margin_pct = (buyer_price - po_price) / buyer_price * 100
-      buyer_price is the deal's target price, else the PI's agreed price.
+      buyer_price is the PI's agreed price, else the deal's target price.
       With neither the margin cannot be checked and the PO is refused.
 
     Side-effects:
@@ -582,14 +582,33 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
         raise InvalidDealState(req.deal_id, deal_status, "ESCROW_FUNDED")
 
     # ── Margin guard ──────────────────────────────────────────────────────
+    # The PI's agreed price is what the buyer actually pays into escrow, so it
+    # is the revenue this PO is measured against. The deal's target price is
+    # only the buyer's opening wish: checking against it blocked profitable
+    # POs when the agreed price was higher, and — worse — passed losing POs
+    # when the buyer had negotiated below the target.
     floor = settings.po_margin_floor_pct
-    buyer_price: float | None = getattr(deal, "buyer_target_price_usd", None)
+    pi = await repo.get_pi_by_deal(req.deal_id)
+    buyer_price: float | None = pi.agreed_price if pi is not None else None
     if not buyer_price or buyer_price <= 0:
-        pi = await repo.get_pi_by_deal(req.deal_id)
-        buyer_price = pi.agreed_price if pi is not None else None
+        buyer_price = getattr(deal, "buyer_target_price_usd", None)
     if not buyer_price or buyer_price <= 0:
         raise MarginUnknownError(req.deal_id)
-    net_margin_pct = (buyer_price - req.agreed_price) / buyer_price * 100.0
+    # Net of every PortLess cost (freight, inspection, customs, documents,
+    # insurance, escrow fee) when the negotiation worked out a cost sheet;
+    # the gross spread otherwise.
+    sheet = None
+    try:
+        from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+        session = await _neg_repo().get_session_by_deal(req.deal_id)
+        sheet = getattr(session, "cost_sheet", None) if session is not None else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("DealMaker: cost sheet lookup for %s failed: %s", req.deal_id, exc)
+    if sheet:
+        from shared.orchestration import trade_costs
+        net_margin_pct = trade_costs.net_margin_pct(sheet, buyer_price, req.agreed_price)
+    else:
+        net_margin_pct = (buyer_price - req.agreed_price) / buyer_price * 100.0
 
     if net_margin_pct < floor:
         raise MarginGuardError(req.deal_id, net_margin_pct, floor)
@@ -700,22 +719,36 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
 
 
 async def _patch_deal_est_margin(deal_id: str, po: PoRecord) -> None:
-    """Write est_margin_usd onto the deal once both contract values are known.
+    """Write est_margin_usd / est_margin_pct onto the deal once both contract values are known.
 
-    Estimated margin = PI total (buyer revenue) − PO total (supplier cost) —
-    fills the Deal Board's "Est. Margin" metric card, which otherwise stays
-    empty for the whole deal lifecycle. Best-effort: a failure here must never
-    block PO issuance."""
+    Estimated margin = PI total (buyer revenue) − PO total (supplier cost) −
+    PortLess's own estimated costs from the deal's cost sheet (freight,
+    inspection, customs, documents, insurance, escrow fee; the contingency is a
+    pricing buffer, not a cost) — the same basis as the realised margin, so the
+    two cards compare like with like. ``est_margin_pct`` is that profit as a %
+    of the PI total. Best-effort: a failure here must never block PO issuance."""
     try:
         pi = await get_repository().get_pi_by_deal(deal_id)
         if pi is None:
             return
-        est = round(pi.total_value - po.total_value, 2)
+        costs = 0.0
+        try:
+            from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+            from shared.orchestration import trade_costs
+            session = await _neg_repo().get_session_by_deal(deal_id)
+            sheet = getattr(session, "cost_sheet", None) if session is not None else None
+            if sheet and pi.quantity_mt:
+                lines = trade_costs.cost_usd(sheet, pi.total_value / pi.quantity_mt, pi.quantity_mt)
+                costs = sum(v for k, v in lines.items() if k != "contingency")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("DealMaker: cost sheet for est margin of %s unavailable: %s", deal_id, exc)
+        est = round(pi.total_value - po.total_value - costs, 2)
+        pct = round(est / pi.total_value * 100.0, 2) if pi.total_value else None
         from services.deals.schemas import UpdateFinancialsRequest  # type: ignore[import]
         from services.deals.service import update_financials  # type: ignore[import]
 
-        await update_financials(deal_id, UpdateFinancialsRequest(est_margin_usd=est))
-        logger.info("DealMaker: est_margin_usd=%.2f patched onto deal %s", est, deal_id)
+        await update_financials(deal_id, UpdateFinancialsRequest(est_margin_usd=est, est_margin_pct=pct))
+        logger.info("DealMaker: est_margin_usd=%.2f (%.2f%%) patched onto deal %s", est, pct or 0.0, deal_id)
     except Exception as exc:
         logger.warning("DealMaker: could not patch est margin for deal %s: %s", deal_id, exc)
 

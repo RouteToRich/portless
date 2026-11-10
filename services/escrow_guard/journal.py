@@ -43,6 +43,14 @@ ACCOUNTS: dict[str, str] = {
     "sales_revenue": "Sales revenue",
     "cogs": "Cost of goods (supplier)",
     "supplier_payable": "Supplier payable (liability)",
+    "trade_costs": "Freight, inspection, insurance, customs and documents (expense)",
+    "service_payables": "Payable to freight, inspection, insurance and customs providers (liability)",
+}
+
+_COST_LABELS = {
+    "ocean_freight": "Ocean freight", "marine_insurance": "Marine cargo insurance", "inspection": "Pre-shipment inspection",
+    "customs_agent": "Export customs agent (CHA)", "export_documents": "Export documents and certificates",
+    "inland_transport": "Inland transport to port", "origin_handling": "Origin terminal handling",
 }
 
 _TOLERANCE = 0.01
@@ -148,6 +156,12 @@ def journal_from(hold: Any, ledger: Any, *, po_issued_at: datetime | None = None
             refund_at = hold.updated_at if hold.status == "REFUNDED" else None
         b.add(refund_at, "refund_to_buyer", "buyer_deposits", "escrow_trust", hold.refunded_total,
               memo="Undisbursed balance refunded to the buyer")
+
+    # PortLess's own costs of moving and protecting the goods, as incurred.
+    basis = getattr(ledger, "portless_costs_basis", None) or {}
+    for key, usd in (getattr(ledger, "portless_costs", None) or {}).items():
+        b.add(None, f"trade_cost:{key}", "trade_costs", "service_payables", usd,
+              memo=f"{_COST_LABELS.get(key, key)} ({basis.get(key, 'estimate')})")
 
     for p in sorted((getattr(ledger, "payouts", None) or []), key=lambda p: (p.completed_at or p.created_at)):
         if p.status != "COMPLETED":

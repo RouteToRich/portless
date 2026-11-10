@@ -60,6 +60,8 @@ class Deal(BaseModel):
     margin_floor_pct: float | None = None
     est_margin_usd: float | None = None
     realized_margin_usd: float | None = None
+    est_margin_pct: float | None = None
+    realized_margin_pct: float | None = None
     parties: list[Party] = Field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None

@@ -130,7 +130,7 @@ async def _sender_check(negotiation_id: str, party: str | None, from_address: st
             from agents.negotiation_agent.email_history import get_email_repository  # type: ignore[import]
             for r in await get_email_repository().list_by_negotiation(negotiation_id):
                 if (r.direction.value == "outbound" and r.party in addrs
-                        and r.status.value in ("sent", "modified_sent")):
+                        and r.status.value in ("sent", "modified_sent", "logged_only")):
                     addrs[r.party].add(r.to_address.strip().lower())
         except Exception:  # noqa: BLE001
             pass

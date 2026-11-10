@@ -77,6 +77,10 @@ class ApprovalAction(str, Enum):
     CONFIRM_PI_ACCEPTANCE = "CONFIRM_PI_ACCEPTANCE"
     """Buyer's email reply to the Proforma Invoice reads as an acceptance →
     confirm it (callback: DealMaker accept_pi)."""
+    CONFIRM_SUPPLIER_ORDER = "CONFIRM_SUPPLIER_ORDER"
+    """The supplier's reply to the firm order request reads as a confirmation →
+    record the committed price and issue the buyer's Proforma Invoice
+    (shared/orchestration/supplier_commitment.py)."""
     RELEASE_ESCROW_TRANCHE = "RELEASE_ESCROW_TRANCHE"
     """A tranche trigger (PO_ISSUED / QC_PASSED / CLEARED) was reached with
     its proof → release that escrow tranche. Money-moving."""

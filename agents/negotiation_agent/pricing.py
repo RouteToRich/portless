@@ -85,10 +85,15 @@ def buyer_band(
     last_offer_to_buyer: float | None,
     round_no: int,
     max_rounds: int,
+    pct_costs: float = 0.0,
 ) -> PriceBand:
-    """Band for an e-mail to the BUYER (we want the price high)."""
-    walk = (supplier_price + costs) / max(1.0 - floor_pct / 100.0, 0.01)
-    ideal = (supplier_price + costs) / max(1.0 - target_pct / 100.0, 0.01)
+    """Band for an e-mail to the BUYER (we want the price high).
+
+    ``costs`` are per-MT costs on top of the supplier's price; ``pct_costs`` the
+    ones that scale with the buyer's price (insurance, escrow fee, contingency),
+    so the floor and the ideal price are net of them too."""
+    walk = (supplier_price + costs) / max(1.0 - (floor_pct + pct_costs) / 100.0, 0.01)
+    ideal = (supplier_price + costs) / max(1.0 - (target_pct + pct_costs) / 100.0, 0.01)
     ideal = max(ideal, walk)
     c = buyer_offer
     low = max(walk, c)
@@ -114,6 +119,21 @@ def buyer_band(
     # the buyer's own target is good news, not an ultimatum.
     final = final or bool(last_offer_to_buyer and (high - low) <= max(1.0, 0.002 * high))
     return PriceBand(_up(low), _up(high), _up(rec), final, basis)
+
+
+def indicative_range(band: PriceBand, floor: float | None = None) -> tuple[float, float]:
+    """The range the buyer's FIRST priced e-mail shows instead of a firm price.
+
+    The top is the recommended price; the bottom is halfway down to our margin
+    floor (``floor`` — the lowest price that keeps the margin; ``band.low`` when
+    not given), so a buyer who anchors on the low end still leaves PortLess
+    above its floor. Both ends rounded up to USD 5 (the low end never below the floor)."""
+    step = 5.0
+    base = floor if floor is not None else band.low
+    high = math.ceil(band.recommended / step) * step
+    low = math.ceil(max(base, band.recommended - (band.recommended - base) / 2.0) / step) * step
+    low = min(low, high)
+    return float(low), float(high)
 
 
 def supplier_band(

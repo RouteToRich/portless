@@ -387,6 +387,27 @@ class TestPoMargin:
         with pytest.raises(dealmaker.MarginGuardError):
             await dealmaker.issue_po(self._po(1000.0))
 
+    async def test_agreed_price_below_the_target_is_what_counts(self, repo, monkeypatch):
+        # Target 1,250 would show 16 %; the buyer agreed 1,100, so the real margin is 4.5 %.
+        self._deal(monkeypatch, target=1250.0)
+        await repo.save_pi(_pi(agreed_price=1100.0))
+        with pytest.raises(dealmaker.MarginGuardError):
+            await dealmaker.issue_po(self._po(1050.0))
+
+    async def test_agreed_price_above_the_target_lets_a_profitable_po_through(self, repo, monkeypatch):
+        # UC-01 run 2026-11-10: target 1,250, agreed 1,454.84, supplier 1,180 → 18.9 %, not 5.6 %.
+        self._deal(monkeypatch, target=1250.0)
+        await repo.save_pi(_pi(agreed_price=1454.84))
+        dealmaker_settings_floor = dealmaker.settings.po_margin_floor_pct
+        po_price = 1180.0
+        assert (1454.84 - po_price) / 1454.84 * 100 >= dealmaker_settings_floor
+        try:
+            await dealmaker.issue_po(self._po(po_price))
+        except dealmaker.MarginGuardError as exc:  # pragma: no cover - the regression
+            pytest.fail(f"margin measured against the target, not the agreed PI price: {exc}")
+        except Exception:  # noqa: BLE001 — later steps (rendering, deal transition) are not under test
+            pass
+
 
 class TestCustomsStatus:
     @pytest.mark.parametrize("deal_status", ["MATCHING", "PI_SENT", "ESCROW_FUNDED", "QC_FAILED", "CANCELLED", "PAID"])

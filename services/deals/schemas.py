@@ -220,6 +220,8 @@ class DealRecord(BaseModel):
     margin_floor_pct: float | None = None
     est_margin_usd: float | None = None
     realized_margin_usd: float | None = None
+    est_margin_pct: float | None = None
+    realized_margin_pct: float | None = None
 
     # ── Parties ───────────────────────────────────────────────────────────
     parties: list[Party] = Field(default_factory=list)
@@ -265,6 +267,8 @@ DealResponse = DealRecord
 class UpdateFinancialsRequest(BaseModel):
     est_margin_usd: float | None = None
     realized_margin_usd: float | None = None
+    est_margin_pct: float | None = None
+    realized_margin_pct: float | None = None
     buyer_target_price_usd: float | None = None
     winning_supplier_id: str | None = None
     winning_cms: float | None = None

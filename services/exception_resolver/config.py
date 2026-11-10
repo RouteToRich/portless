@@ -32,7 +32,8 @@ class ExceptionResolverSettings(BaseSettings):
     # LLM caller tag for request tracking
     llm_caller_tag: str = "exception_resolver"
     # Autonomy level for ESCALATE HITL approvals raised by the agent
-    escalation_autonomy_level: str = "L1"
+    escalation_autonomy_level: str = "L0"
+    """An escalation waits for a person; a timer must not close it."""
     # Max tokens for LLM analysis response
     llm_max_tokens: int = 1024
 

@@ -24,6 +24,7 @@ _PRICE = re.compile(
     r"(?:USD|US\$|\$)\s?([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:/|per)?\s*(MT|metric ton(?:ne)?s?|tons?|tonnes?|kg|kilo(?:gram)?s?)?"
     r"|([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:USD|US\$|\$)\s*(?:/|per)?\s*(MT|metric ton(?:ne)?s?|tons?|tonnes?|kg|kilo(?:gram)?s?)?",
     re.IGNORECASE)
+_BARE_PRICE = re.compile(r"\b([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:/|per)\s*(MT|metric ton(?:ne)?s?|tons?|tonnes?|kg|kilo(?:gram)?s?)\b", re.IGNORECASE)
 _QTY = re.compile(r"\b([0-9][0-9,]*(?:\.[0-9]+)?)\s*(MT|metric ton(?:ne)?s?|tons?|tonnes?|containers?|FCLs?|x\s?20'?|kg)\b",
                   re.IGNORECASE)
 _MOQ = re.compile(r"\b(?:MOQ|minimum order(?: quantity)?)\D{0,15}([0-9][0-9,]*(?:\.[0-9]+)?)\s*(MT|tons?|tonnes?|containers?|kg)?",
@@ -88,6 +89,11 @@ def _first_price(text: str) -> float | None:
         value = _num(m.group(1) or m.group(3) or "")
         unit = m.group(2) or m.group(4)
         price = _price_per_mt(value, unit)
+        if price and 20 <= price <= 200000:
+            return price
+    # "We can pay 1200 per MT": no currency, but only a price reads that way.
+    for m in _BARE_PRICE.finditer(text):
+        price = _price_per_mt(_num(m.group(1)), m.group(2))
         if price and 20 <= price <= 200000:
             return price
     return None

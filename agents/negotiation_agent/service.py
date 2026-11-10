@@ -25,15 +25,18 @@ import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 
 from shared.bus.publisher import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 
 from .config import settings
 from .email_history import (
+    history_time,
     EmailDirection,
     EmailHistoryRecord,
     EmailStatus,
+    ISSUED_STATUSES,
     get_email_repository,
 )
 from .graph import NegotiationGraphState, build_negotiation_graph
@@ -261,7 +264,7 @@ def _format_history(records: list[EmailHistoryRecord], party: str) -> str:
             (r.direction == EmailDirection.INBOUND and r.status == EmailStatus.RECEIVED)
             or (
                 r.direction == EmailDirection.OUTBOUND
-                and r.status in (EmailStatus.SENT, EmailStatus.MODIFIED_SENT)
+                and r.status in ISSUED_STATUSES
             )
         )
     ]
@@ -294,6 +297,105 @@ async def _build_conversation_history(negotiation_id: str) -> dict[str, str]:
         "buyer": _format_history(records, "buyer"),
         "supplier": _format_history(records, "supplier"),
     }
+
+
+_EX_WORKS = re.compile(r"\b(?:ex[- ]?works|exw|ex[- ]?factory|ex[- ]?mill|ex[- ]?godown|at our (?:factory|mill|warehouse))\b",
+                       re.IGNORECASE)
+_FOB = re.compile(r"\b(?:fob|free on board)\b", re.IGNORECASE)
+
+
+def supplier_basis_from(text: str | None, current: str = "FOB") -> str:
+    """The supplier's price basis as its own e-mail states it (FOB unless it says ex-works)."""
+    t = text or ""
+    if _EX_WORKS.search(t) and not _FOB.search(t):
+        return "EXW"
+    if _FOB.search(t):
+        return "FOB"
+    return current
+
+
+def _key_set(*names: str) -> bool:
+    import os
+    return any(os.getenv(n, "").strip() for n in names)
+
+
+async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
+    """Work out every PortLess cost for this deal before anything is drafted.
+    Never raises — on failure the session keeps its previous sheet."""
+    from shared.orchestration import trade_costs
+    try:
+        address = None
+        market = session.buyer_country_code
+        try:
+            from services.deals.service import get_deal  # type: ignore[import]
+            deal = await get_deal(session.deal_id)
+            market = getattr(deal, "market", None) or market
+            supplier = next((p for p in (deal.parties or [])
+                             if (getattr(p.role, "value", p.role) or "").lower() == "supplier"), None)
+            address = getattr(supplier, "address", None) if supplier else None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Cost sheet: deal lookup for %s failed: %s", session.deal_id, exc)
+        fee_pct = None
+        try:
+            from services.escrow_guard.config import settings as eg_settings  # type: ignore[import]
+            from services.escrow_guard.service import _provider_fee_pct  # type: ignore[import]
+            fee_pct = await _provider_fee_pct(eg_settings.escrow_default_provider)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Cost sheet: escrow fee lookup failed: %s", exc)
+        rate = None
+        try:
+            rate = await get_usd_inr_rate()
+        except Exception:  # noqa: BLE001
+            rate = None
+        qc = float(session.cost_envelope.qc_cost) if session.cost_envelope and session.cost_envelope.qc_cost else None
+        sheet = trade_costs.build(
+            quantity_mt=session.quantity_mt, market=market,
+            freight_usd_per_mt=session.logistics_cost_usd,
+            freight_is_quote=_key_set("COGOPORT_API_KEY", "FREIGHTOS_API_KEY"),
+            qc_usd_per_mt=qc,
+            qc_is_quote=_key_set("SGS_API_KEY", "QIMA_API_KEY", "BUREAU_VERITAS_API_KEY", "INTERTEK_API_KEY", "TUV_SUD_API_KEY"),
+            supplier_address=address, supplier_price_basis=session.supplier_price_basis,
+            escrow_fee_pct=fee_pct, usd_inr_rate=rate,
+        )
+        session.cost_sheet = sheet.model_dump(mode="json")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Cost sheet for negotiation %s not refreshed: %s", session.negotiation_id, exc)
+    return session
+
+
+async def _market_check_for(session: NegotiationSession) -> dict[str, Any] | None:
+    """The deal's pre-trade market check (latest news, judged once per product
+    and market and cached) — background for the drafts, never a price source."""
+    try:
+        from shared.orchestration import market_check
+        check = await market_check.for_deal(session.deal_id, session.product_code, session.buyer_country_code)
+        return check.model_dump(mode="json") if check else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Market check for %s unavailable: %s", session.deal_id, exc)
+        return None
+
+
+async def _awaiting_reply_from(negotiation_id: str, party: str) -> bool:
+    """True when our latest e-mail to *party* (sent, or drafted and waiting for
+    approval) is newer than anything they wrote back — i.e. they owe us a reply
+    and a fresh e-mail to them would be a second one in a row."""
+    try:
+        records = await get_email_repository().list_by_negotiation(negotiation_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not load e-mail records for %s: %s", negotiation_id, exc)
+        return False
+    live_out = (*ISSUED_STATUSES, EmailStatus.PENDING_APPROVAL, EmailStatus.DRAFT)
+    thread = [
+        r for r in records
+        if r.party == party and (
+            (r.direction == EmailDirection.OUTBOUND and r.status in live_out)
+            or (r.direction == EmailDirection.INBOUND and r.status == EmailStatus.RECEIVED)
+        )
+    ]
+    if not thread:
+        return False
+    latest = max(thread, key=history_time)
+    return latest.direction == EmailDirection.OUTBOUND
 
 
 _PLACEHOLDER_PATTERN = re.compile(r"\[[A-Za-z][A-Za-z0-9 _/.-]{0,40}\]")
@@ -351,7 +453,8 @@ def _resolve_gate_level(action: str) -> str:
 
 _FORCE_L0_FLAGS = (
     "degraded_llm_fallback", "unresolved_placeholders", "price_out_of_band",
-    "counterparty_leak", "no_real_address", "premature_funds_claim",
+    "counterparty_leak", "no_real_address", "premature_funds_claim", "false_target_claim",
+    "unverified_market_claim", "internal_terms", "market_check_avoid",
 )
 
 
@@ -447,6 +550,18 @@ async def _create_and_gate_email(
             quality_note = "⚠ Contains unresolved [placeholders] — edit before sending. "
         elif "price_out_of_band" in flags:
             quality_note = "⚠ Draft quoted a price outside the allowed range — check the figure in the text. "
+        elif "false_target_claim" in flags:
+            quality_note = ("⚠ The draft said our price meets the buyer's target; it does not, so that sentence "
+                            "was removed — read it before sending. ")
+        elif "market_check_avoid" in flags:
+            quality_note = ("⛔ The pre-trade market check says AVOID this trade now (see GET /deals/{id}/market-check) "
+                            "— decide before this first e-mail goes out. ")
+        elif "internal_terms" in flags:
+            quality_note = ("⚠ The draft used internal pricing words ('allowed range', 'floor', 'margin'); "
+                            "that sentence was removed — read it before sending. ")
+        elif "unverified_market_claim" in flags:
+            quality_note = ("⚠ The draft compared our price to 'the market' / 'the benchmark' with no verified "
+                            "figure; that sentence was removed — read it before sending. ")
         approval_req = CreateApprovalRequest(
             deal_id=session.deal_id,
             action="SEND_NEGOTIATION_EMAIL",
@@ -802,10 +917,14 @@ async def start_negotiation(payload: StartNegotiationRequest) -> NegotiationResp
         created_at=now,
         updated_at=now,
     )
+    # Before a single price goes out: every cost between supplier and buyer.
+    session = await refresh_cost_sheet(session)
     await repo.save_session(session)
+    market_check = await _market_check_for(session)
 
     initial_state: NegotiationGraphState = {
         "session": session,
+        "market_check": market_check,
         "logistics_cost": session.logistics_cost_usd or 0.0,
         "is_first_round": True,
         "party": "init",
@@ -943,17 +1062,24 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
         if mention and mention != session.qc_provider:
             await _apply_buyer_qc_choice(session, mention)
 
-    history, market_context, usd_inr_rate = await asyncio.gather(
+    if request.party == "supplier":
+        session.supplier_price_basis = supplier_basis_from(request.inbound_message, session.supplier_price_basis)
+    session = await refresh_cost_sheet(session)
+    history, market_context, usd_inr_rate, buyer_awaiting, market_check = await asyncio.gather(
         _build_conversation_history(negotiation_id),
         fetch_both(session.product_code, session.buyer_country_code),
         get_usd_inr_rate(),
+        _awaiting_reply_from(negotiation_id, "buyer") if request.party == "supplier" else asyncio.sleep(0, False),
+        _market_check_for(session),
     )
 
     state: NegotiationGraphState = {
         "session": session,
+        "market_check": market_check,
         "logistics_cost": session.logistics_cost_usd or 0.0,
         "is_first_round": False,
         "party": request.party,
+        "buyer_awaiting_reply": bool(buyer_awaiting),
         "inbound_message": request.inbound_message,
         "inbound_price": effective_price,
         "operator_override_price": request.operator_override_price,
@@ -1032,10 +1158,13 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
         channel=request.channel,
         inbound_price=effective_price,
         inbound_message=request.inbound_message,
-        outbound_message=(
-            final_state.get("buyer_outbound_message", "")
-            if request.party == "supplier"
-            else final_state.get("supplier_outbound_message", "")
+        outbound_message="\n\n".join(
+            f"[to {side}] {msg}" if final_state.get("routing") == "CALL_BOTH_AGENTS" else msg
+            for side, msg in (
+                ("supplier", final_state.get("supplier_outbound_message", "")),
+                ("buyer", final_state.get("buyer_outbound_message", "")),
+            )
+            if msg
         ),
         negotiated_terms=final_state.get("buyer_terms", {}) or final_state.get("supplier_terms", {}),
         orchestrator_routing=final_state.get("routing"),
@@ -1111,24 +1240,27 @@ async def _send_preflight(record: EmailHistoryRecord) -> list[str]:
     return preflight(record, session, deal, thread)
 
 
-async def send_approved_email(email_id: str, modified_body: str | None = None) -> None:
+async def send_approved_email(email_id: str, modified_body: str | None = None) -> EmailStatus | None:
     """Send an operator-approved email draft.
 
     Called by the HITL SEND_NEGOTIATION_EMAIL callback on APPROVE.
     If *modified_body* is provided the operator has edited the draft; the
     original body is preserved in ``EmailHistoryRecord.original_body``.
+    Returns the record's resulting status (SENT / MODIFIED_SENT / LOGGED_ONLY /
+    FAILED), the unchanged status when it was not sent again, or None when the
+    record does not exist.
     """
     repo = get_email_repository()
     record = await repo.get(email_id)
     if not record:
         logger.error("send_approved_email: email %s not found", email_id)
-        return
+        return None
 
     # Idempotent: a callback retry / redelivered event must never send twice.
     if record.status not in (EmailStatus.DRAFT, EmailStatus.PENDING_APPROVAL):
         logger.warning("send_approved_email: email %s is already %s — not sent again",
                        email_id, record.status.value)
-        return
+        return record.status
 
     body_to_send = modified_body or record.body
 
@@ -1154,7 +1286,7 @@ async def send_approved_email(email_id: str, modified_body: str | None = None) -
         from services.email_gateway.sender import send_email  # type: ignore[import]
         from services.email_gateway.schemas import SendEmailRequest  # type: ignore[import]
 
-        await send_email(SendEmailRequest(
+        result = await send_email(SendEmailRequest(
             to_address=record.to_address,
             subject=record.subject,
             body=body_to_send,
@@ -1163,19 +1295,30 @@ async def send_approved_email(email_id: str, modified_body: str | None = None) -
             email_id=record.email_id,
         ))
         now = datetime.now(timezone.utc)
-        new_status = EmailStatus.MODIFIED_SENT if modified_body else EmailStatus.SENT
-        updates: dict = {"status": new_status, "sent_at": now, "updated_at": now}
+        outcome = str(getattr(getattr(result, "outcome", None), "value", getattr(result, "outcome", "")) or "")
+        updates: dict = {"sent_at": now, "updated_at": now, "delivery_note": None}
+        if outcome == "logged":
+            # No mailbox: composed and logged, never delivered — say so.
+            new_status = EmailStatus.LOGGED_ONLY
+            updates["delivery_note"] = (getattr(result, "detail", None)
+                                        or "No outbound mailbox configured — logged only, not delivered.")
+        else:
+            new_status = EmailStatus.MODIFIED_SENT if modified_body else EmailStatus.SENT
+        updates["status"] = new_status
         if modified_body:
             updates["original_body"] = record.body
             updates["body"] = modified_body
         await repo.save(record.model_copy(update=updates))
-        logger.info("Email %s dispatched (status=%s)", email_id, new_status)
+        logger.info("Email %s dispatched (status=%s)", email_id, new_status.value)
+        return new_status
     except Exception as exc:
         logger.error("Email %s send failed: %s", email_id, exc)
         await repo.save(record.model_copy(update={
             "status": EmailStatus.FAILED,
+            "delivery_note": str(exc)[:500] or exc.__class__.__name__,
             "updated_at": datetime.now(timezone.utc),
         }))
+        return EmailStatus.FAILED
 
 
 async def reject_email(email_id: str) -> None:
@@ -1319,8 +1462,18 @@ async def reject_agreement(negotiation_id: str) -> None:
 
 
 async def list_email_history(negotiation_id: str) -> list[EmailHistoryRecord]:
-    """Return all email records for the given negotiation, oldest first."""
-    return await get_email_repository().list_by_negotiation(negotiation_id)
+    """The whole conversation of this negotiation's deal, oldest first: the
+    introductions and RFQs that came before it, then its own e-mails."""
+    session = await get_repository().get_session(negotiation_id)
+    return await _merged_history(negotiation_id, session.deal_id if session else None)
+
+
+async def _merged_history(negotiation_id: str, deal_id: str | None) -> list[EmailHistoryRecord]:
+    repo = get_email_repository()
+    records = list(await repo.list_by_negotiation(negotiation_id))
+    if deal_id:
+        records += [r for r in await repo.list_by_deal(deal_id) if not r.negotiation_id]
+    return sorted(records, key=history_time)
 
 
 async def get_email_threads(
@@ -1339,12 +1492,12 @@ async def get_email_threads(
         return []
 
     email_lists = await asyncio.gather(
-        *[get_email_repository().list_by_negotiation(s.negotiation_id) for s in sessions]
+        *[_merged_history(s.negotiation_id, s.deal_id) for s in sessions]
     )
 
     threads = []
     for session, emails in zip(sessions, email_lists):
-        sorted_emails = sorted(emails, key=lambda e: e.created_at)
+        sorted_emails = emails
         pending = sum(
             1 for e in sorted_emails
             if e.status == EmailStatus.PENDING_APPROVAL
@@ -1585,12 +1738,15 @@ async def _retry_round_zero(session: NegotiationSession) -> None:
     graph invocation but reuses the existing session/repo instead of creating
     a new one."""
     repo = get_repository()
-    market_context, usd_inr_rate = await asyncio.gather(
+    session = await refresh_cost_sheet(session)
+    market_context, usd_inr_rate, market_check = await asyncio.gather(
         fetch_both(session.product_code, session.buyer_country_code),
         get_usd_inr_rate(),
+        _market_check_for(session),
     )
     initial_state: NegotiationGraphState = {
         "session": session,
+        "market_check": market_check,
         "logistics_cost": session.logistics_cost_usd or 0.0,
         "is_first_round": True,
         "party": "init",
@@ -1687,7 +1843,7 @@ async def _fail_stale_negotiation(session: NegotiationSession) -> None:
 # No-reply follow-ups — drafted (L0-gated) when a party goes quiet
 # ---------------------------------------------------------------------------
 
-_ACTUALLY_SENT = (EmailStatus.SENT, EmailStatus.MODIFIED_SENT)
+_ACTUALLY_SENT = ISSUED_STATUSES
 _OUTSTANDING = (EmailStatus.DRAFT, EmailStatus.PENDING_APPROVAL)
 
 
@@ -1714,13 +1870,14 @@ async def _draft_followup_body(
     from .graph import _chat_json
     from .prompts import FOLLOWUP_AGENT_SYSTEM_PROMPT
 
+    from shared import company_profile
+
     template = (
         "Dear Sir or Madam,\n\n"
-        f"We wanted to follow up on our earlier message regarding the HS "
-        f"{session.product_code} product, as we have not yet heard back from you. "
-        "Our previous note and the terms it outlined still stand, and we would "
-        "be glad to continue the discussion whenever convenient.\n\n"
-        "Best regards,\nPortLess Trade Team"
+        "I hope this message finds you well. I wanted to make sure our earlier note regarding the HS "
+        f"{session.product_code} product reached you. The offer and terms it set out still stand, and "
+        "we would be glad to continue the discussion at your convenience.\n\n"
+        "Should you have any questions, I would be happy to answer them."
     )
     payload = {
         "party": party,
@@ -1734,7 +1891,7 @@ async def _draft_followup_body(
         fallback={"outbound_message": template, "reasoning": "template fallback"},
     )
     body = str(result.get("outbound_message") or "").strip() or template
-    return body, bool(result.get("_degraded"))
+    return company_profile.with_signature(body), bool(result.get("_degraded"))
 
 
 async def _maybe_followup_party(

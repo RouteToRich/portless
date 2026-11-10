@@ -11,6 +11,10 @@ buyer/supplier is stored here.  The record progresses through:
         → BLOCKED           (approved, but the send-time safety check refused it:
                              wrong / stale recipient, other party named, thread
                              moved on — see email_safety.preflight)
+        → LOGGED_ONLY       (approved, no outbound mailbox configured: composed
+                             and logged, NOT delivered)
+
+SKIPPED records a deal notification that could not be drafted at all.
 
 Inbound emails (received from buyer/supplier) start at RECEIVED and are
 terminal — they are audit records only.
@@ -44,6 +48,20 @@ class EmailStatus(str, Enum):
     BLOCKED = "blocked"
     """Approved, but the send-time safety check (email_safety.preflight) refused it."""
     RECEIVED = "received"
+    LOGGED_ONLY = "logged_only"
+    """Approved and composed, but no outbound mailbox is configured — the gateway
+    only logged it; the counterparty did NOT receive it."""
+    SKIPPED = "skipped"
+    """A deal notification that could not even be drafted (no negotiation thread,
+    no address on file for that party). Recorded so the console shows the gap."""
+
+
+ISSUED_STATUSES: tuple[EmailStatus, ...] = (EmailStatus.SENT, EmailStatus.MODIFIED_SENT, EmailStatus.LOGGED_ONLY)
+"""Outbound e-mails PortLess issued (delivered, or composed with no mailbox).
+Negotiation logic — drafting history, preflight, reply matching — treats them
+alike so a dev / automation run without a mailbox behaves as a live one; only
+the display tells them apart."""
+ISSUED_VALUES: tuple[str, ...] = tuple(s.value for s in ISSUED_STATUSES)
 
 
 class EmailHistoryRecord(BaseModel):
@@ -63,8 +81,13 @@ class EmailHistoryRecord(BaseModel):
     status: EmailStatus
     kind: str = "negotiation"
     """``negotiation`` (agent round draft) · ``followup`` · ``notification`` (templated deal e-mail)."""
+    notice_kind: str | None = None
+    """For ``kind == "notification"``: which deal notice (pi_issued, escrow_funded, qc_passed …)."""
     block_reason: str | None = None
     """Why the send-time safety check refused it (status BLOCKED)."""
+    delivery_note: str | None = None
+    """Why it did not reach the counterparty: LOGGED_ONLY (no mailbox), SKIPPED
+    (no thread / address), FAILED (the transport's error)."""
     sent_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -150,6 +173,38 @@ class MongoEmailHistoryRepository:
             {"deal_id": deal_id}, {"_id": 0}
         ).sort("created_at", 1)
         return [EmailHistoryRecord(**d) async for d in cursor]
+
+
+async def record_deal_email(
+    *, deal_id: str, direction: str, party: str, to_address: str, from_address: str, subject: str, body: str,
+    kind: str, delivered: bool = True,
+) -> None:
+    """Put a pre-negotiation e-mail (buyer introduction, RFQ, indicative offer and
+    their replies) in the deal's history. These belong to no negotiation yet, so
+    they carry an empty negotiation id and the drafting agents never read them.
+    Best-effort: the record must never stop the e-mail itself."""
+    try:
+        from uuid import uuid4
+
+        now = datetime.now(timezone.utc)
+        outbound = direction == EmailDirection.OUTBOUND.value
+        status = (EmailStatus.SENT if delivered else EmailStatus.LOGGED_ONLY) if outbound else EmailStatus.RECEIVED
+        await get_email_repository().save(EmailHistoryRecord(
+            email_id=f"EMAIL-{uuid4().hex[:10].upper()}", negotiation_id="", deal_id=deal_id, round_no=0,
+            direction=EmailDirection(direction), party=party, to_address=to_address, from_address=from_address,
+            subject=subject, body=body, status=status, kind=kind,
+            delivery_note=None if delivered or not outbound
+            else "No outbound mailbox configured; the e-mail was logged, not delivered.",
+            sent_at=now if outbound and delivered else None, created_at=now, updated_at=now,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("E-mail history: could not record a %s e-mail for deal %s: %s", kind, deal_id, exc)
+
+
+def history_time(record: EmailHistoryRecord) -> datetime:
+    """When the e-mail actually went or arrived; a draft counts from when it was written."""
+    when = record.sent_at or record.created_at
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------

@@ -173,7 +173,8 @@ class TestLookups:
         await repo.save_session(_session(updated_at=NOW))
         await repo.save_session(_session(negotiation_id="N2", deal_id="D2", updated_at=NOW.replace(year=2030)))
         email = make(EmailHistoryRecord, email_id="E1", negotiation_id="N1", status="pending_approval")
-        emails = MagicMock(list_by_negotiation=AsyncMock(side_effect=lambda nid: [email] if nid == "N1" else []))
+        emails = MagicMock(list_by_negotiation=AsyncMock(side_effect=lambda nid: [email] if nid == "N1" else []),
+                           list_by_deal=AsyncMock(return_value=[]))
         with patch.object(svc, "get_email_repository", return_value=emails):
             threads = await svc.get_email_threads()
         assert [t.negotiation_id for t in threads] == ["N2", "N1"] and threads[1].pending_approval_count == 1
@@ -337,7 +338,8 @@ class TestWatcher:
 
     async def test_followup_uses_the_model(self):
         with patch("agents.negotiation_agent.graph._chat_json", new=AsyncMock(return_value={"outbound_message": "Following up"})):
-            assert await svc._draft_followup_body(_session(), "buyer", "h", "S", 3.0) == ("Following up", False)
+            body, degraded = await svc._draft_followup_body(_session(), "buyer", "h", "S", 3.0)
+            assert body.startswith("Following up\n\nKind regards,") and degraded is False
 
     async def test_followup_template_when_degraded(self):
         with patch("agents.negotiation_agent.graph._chat_json", new=AsyncMock(return_value={"_degraded": True})):

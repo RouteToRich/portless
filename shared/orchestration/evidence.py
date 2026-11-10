@@ -340,7 +340,7 @@ def render_evidence_html(pack: dict[str, Any]) -> str:
         "<h2>Money</h2>",
         _kv(ledger, ["escrow_id", "provider", "status", "principal", "funded_amount", "shortfall", "released_total",
                      "refunded_total", "outstanding", "fees_total", "net_to_portless", "payouts_total",
-                     "supplier_owed", "supplier_balance_due", "realized_margin", "reconciled", "issues"]),
+                     "supplier_owed", "supplier_balance_due", "portless_costs", "portless_costs_total", "margin_before_costs", "realized_margin", "reconciled", "issues"]),
         "<h3>Tranches</h3>",
         _table(ledger.get("tranches") or [], ["tranche_id", "trigger", "pct", "amount", "status", "released_at", "proof_refs", "ext_ref"]),
         "<h3>Payouts</h3>",

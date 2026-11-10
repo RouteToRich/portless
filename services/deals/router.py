@@ -321,6 +321,176 @@ async def deal_compliance_clear_hold(
 
 
 # ---------------------------------------------------------------------------
+# What a price rests on: cost sheet + pre-trade market check
+# ---------------------------------------------------------------------------
+
+@router.get("/{deal_id}/cost-sheet")
+async def deal_cost_sheet(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Every PortLess cost between the supplier and the buyer's port, with its
+    source and who pays it, plus the lowest buyer price that keeps the margin floor."""
+    await _org_deal(deal_id, user)
+    from agents.negotiation_agent.repository import get_repository as neg_repo  # type: ignore[import]
+    from shared.orchestration import trade_costs
+    session = await neg_repo().get_session_by_deal(deal_id)
+    if session is None or not session.cost_sheet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no cost sheet yet — the negotiation has not started")
+    supplier = session.supplier_last_quote or session.supplier_quote_price
+    floor = session.policy.margin_floor_pct
+    return {
+        **session.cost_sheet,
+        "supplier_price_usd_per_mt": supplier,
+        "margin_floor_pct": floor,
+        "min_buyer_price_usd_per_mt": round(trade_costs.min_buyer_price(session.cost_sheet, supplier, floor), 2) if supplier else None,
+        "agreed_price_usd_per_mt": session.agreed_price,
+        "net_margin_at_agreed_pct": (round(trade_costs.net_margin_pct(session.cost_sheet, session.agreed_price, supplier), 2)
+                                     if session.agreed_price and supplier else None),
+    }
+
+
+_PROFIT_LABELS = {
+    "ocean_freight": "Ocean freight", "inspection": "Pre-shipment inspection", "marine_insurance": "Marine insurance",
+    "customs_agent": "Export customs agent (CHA)", "export_documents": "Export documents and certificates",
+    "inland_transport": "Inland transport to port", "origin_handling": "Origin terminal handling",
+    "escrow_fee": "Escrow provider fee",
+}
+
+
+@router.get("/{deal_id}/profit")
+async def deal_profit(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """From sale value to PortLess's profit, line by line: sale (PI) − supplier
+    (PO) = gross spread, minus every PortLess cost (actual where a provider
+    order reported one or the escrow charged it, otherwise the cost sheet's
+    estimate), = net profit and its % of the sale."""
+    await _org_deal(deal_id, user)
+    from agents.negotiation_agent.repository import get_repository as neg_repo  # type: ignore[import]
+    from services.dealmaker.repository import get_repository as dm_repo  # type: ignore[import]
+    from shared.orchestration import trade_costs
+
+    session = await neg_repo().get_session_by_deal(deal_id)
+    pi = await dm_repo().get_pi_by_deal(deal_id)
+    po = await dm_repo().get_po_by_deal(deal_id)
+    qty = float((pi.quantity_mt if pi else None) or (session.quantity_mt if session else None) or 0.0)
+    buyer_price = (pi.agreed_price if pi else None) or (session.agreed_price if session else None)
+    supplier_price = (po.agreed_price if po else None) or (
+        (session.supplier_last_quote or session.supplier_quote_price) if session else None)
+    if not qty or not buyer_price or not supplier_price:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="no agreed buyer and supplier price yet — nothing to break down")
+    sale = round(pi.total_value if pi else buyer_price * qty, 2)
+    supplier = round(po.total_value if po else supplier_price * qty, 2)
+    gross = round(sale - supplier, 2)
+
+    sheet = session.cost_sheet if session else None
+    estimates = trade_costs.cost_usd(sheet, sale / qty, qty) if sheet else {}
+    ledger = None
+    try:
+        from services.escrow_guard.service import get_deal_ledger  # type: ignore[import]
+        ledger = await get_deal_ledger(deal_id)
+    except Exception:  # noqa: BLE001 — no escrow yet: estimates only
+        ledger = None
+    incurred = getattr(ledger, "portless_costs", None) or {}
+    basis = getattr(ledger, "portless_costs_basis", None) or {}
+
+    lines = []
+    for key, est in estimates.items():
+        if key == "contingency":
+            continue  # a pricing buffer, not a cost
+        if key == "escrow_fee" and ledger is not None and getattr(ledger, "settled", False) and ledger.fees_total:
+            usd, state = round(float(ledger.fees_total), 2), "actual"
+        elif key in incurred:
+            usd, state = incurred[key], ("actual" if basis.get(key) == "actual" else "incurred")
+        else:
+            usd, state = est, "estimate"
+        lines.append({"key": key, "label": _PROFIT_LABELS.get(key, key), "usd": usd,
+                      "per_mt": round(usd / qty, 2), "pct_of_sale": round(usd / sale * 100, 2), "status": state})
+    total = round(sum(l["usd"] for l in lines), 2)
+    net = round(gross - total, 2)
+    return {
+        "deal_id": deal_id, "quantity_mt": qty, "currency": "USD",
+        "sale_value": sale, "buyer_price_per_mt": buyer_price, "sale_basis": "PI" if pi else "agreed price",
+        "supplier_cost": supplier, "supplier_price_per_mt": supplier_price, "supplier_basis": "PO" if po else "supplier quote",
+        "gross_spread": gross, "gross_spread_pct": round(gross / sale * 100, 2),
+        "costs": lines, "costs_total": total, "costs_pct": round(total / sale * 100, 2),
+        "net_profit": net, "net_profit_pct": round(net / sale * 100, 2),
+        "realized_margin": getattr(ledger, "realized_margin", None),
+        "estimates_left": sum(1 for l in lines if l["status"] == "estimate"),
+    }
+
+
+@router.get("/{deal_id}/market-check")
+async def deal_market_check(deal_id: str, refresh: bool = False, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Should PortLess trade this product into this market now? Latest news,
+    India's export policy for the HS code, verdict, reasons and sourced facts."""
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import market_check
+    check = await market_check.for_deal(deal_id, deal.hs_code, deal.market, refresh=refresh)
+    if check is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="market check is switched off")
+    return check.model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# Supplier commitment (firm order before the PI, PO acknowledgement)
+# ---------------------------------------------------------------------------
+
+class OperatorNote(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    reason: str = Field(min_length=10, description="What the supplier said, how and when")
+
+
+@router.get("/{deal_id}/supplier-commitment")
+async def supplier_commitment_status(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Which supplier holds the firm order request, who was asked before and
+    why standby suppliers were passed over, and the PO acknowledgement."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import supplier_commitment
+    rec = await supplier_commitment.get(deal_id)
+    return rec.model_dump(mode="json") if rec else {"deal_id": deal_id, "status": "none"}
+
+
+@router.post("/{deal_id}/supplier-commitment/confirm")
+async def supplier_commitment_confirm(
+    deal_id: str, body: OperatorNote, user: AuthUser = Depends(require_portless),
+) -> dict:
+    """The supplier confirmed outside e-mail (phone, WhatsApp): open the
+    CONFIRM_SUPPLIER_ORDER approval exactly as an e-mailed confirmation does."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import supplier_commitment
+    rec = await supplier_commitment.get(deal_id)
+    if rec is None or rec.status != "requested" or rec.current is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no open supplier order request")
+    await supplier_commitment._gate_confirmation(rec, f"operator:{user.email or user.user_id}", body.reason)
+    return {"deal_id": deal_id, "status": "approval_requested", "supplier_id": rec.current.supplier_id}
+
+
+@router.post("/{deal_id}/supplier-commitment/next")
+async def supplier_commitment_next(
+    deal_id: str, body: OperatorNote, user: AuthUser = Depends(require_portless),
+) -> dict:
+    """The current supplier said no outside e-mail: ask the next-ranked supplier now."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import supplier_commitment
+    outcome = await supplier_commitment.mark_and_advance(
+        deal_id, "declined", note=f"{user.email or user.user_id}: {body.reason}",
+    )
+    return {"deal_id": deal_id, "status": outcome}
+
+
+@router.post("/{deal_id}/supplier-commitment/po-ack")
+async def supplier_commitment_po_ack(
+    deal_id: str, body: OperatorNote, user: AuthUser = Depends(require_portless),
+) -> dict:
+    """The supplier acknowledged the PO outside e-mail: record it and book the inspection."""
+    deal = await _org_deal(deal_id, user)
+    if (getattr(deal.status, "value", deal.status)) != "PO_ISSUED":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="deal is not at PO_ISSUED")
+    from shared.orchestration import supplier_commitment
+    tpo = await supplier_commitment.acknowledge_po(deal_id, by=f"{user.email or user.user_id}: {body.reason}")
+    return {"deal_id": deal_id, "status": "acknowledged", "qc_order": getattr(tpo, "tpo_id", None)}
+
+
+# ---------------------------------------------------------------------------
 # Timeline + evidence pack
 # ---------------------------------------------------------------------------
 
@@ -336,6 +506,20 @@ async def deal_timeline(
         return await build_timeline(deal_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/{deal_id}/notifications")
+async def deal_notifications(
+    deal_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> dict:
+    """Correspondence log: every e-mail to / from the buyer and the supplier
+    (status notices, negotiation, outreach, RFQ) with its delivery outcome —
+    delivered, logged_only (no mailbox), pending, skipped (no address / thread),
+    failed, blocked — newest first, plus per-party counts."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration.notifications import deal_correspondence_log
+    return await deal_correspondence_log(deal_id)
 
 
 @router.get("/{deal_id}/evidence-pack")
@@ -511,8 +695,11 @@ async def request_match(deal_id: str, ref: _PairRef, user: AuthUser = Depends(ge
     _, pair = await _pair(deal, ref)
     if pair.blockers:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=pair.blockers[0])
-    if not pair.buyer_price.value or not pair.supplier_price.value:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="both prices are needed")
+    if not pair.buyer_price.value or not pair.supplier_price.value or not pair.firm:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="both prices are needed: one the buyer stated and the supplier's own quote, not a market estimate",
+        )
     from shared.orchestration import matchmaking
     gid = await matchmaking.propose_match(deal, pair)
     return {"deal_id": deal_id, "approval_id": gid}

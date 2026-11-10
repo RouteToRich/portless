@@ -145,26 +145,26 @@ def rfq_email_body(company_name: str | None, message: str) -> str:
     exactly what to send back. Payment wording follows the escrow model
     (purchase order only once the buyer's money is in escrow; production
     advance at PO) — the same terms the negotiation agent states later."""
+    from shared import company_profile as cp
+
     greeting = f"Dear {company_name} team," if company_name else "Dear Sir or Madam,"
     return (
         f"{greeting}\n\n{message}\n\n"
-        "Why this order is worth quoting for:\n"
-        "  - Payment secured up front: we place the purchase order only after the overseas buyer's money "
-        "is deposited in a neutral escrow account, and you are paid from it in stages, starting with a "
-        "production advance when the order is placed. No credit risk, no letter-of-credit paperwork.\n"
-        "  - We bring the overseas buyer and book the ocean freight; you deliver FOB Indian port.\n"
-        "  - Independent pre-shipment inspection (SGS, QIMA, Bureau Veritas, Intertek or TÜV SÜD) at your "
-        "facility, so quality is settled before dispatch, not argued about after arrival.\n"
-        "  - Repeat orders follow when the first shipment goes well.\n\n"
+        f"About us: {cp.one_line()}\n\n"
+        "Why manufacturers work with us:\n"
+        f"{cp.bullets(cp.supplier_reasons())}\n\n"
+        "How an order works:\n"
+        f"{cp.bullets(cp.supplier_steps(), numbered=True)}\n\n"
         "To quote, please reply with:\n"
-        "  1. Your best FOB price per MT (INR or USD) and how long it is valid\n"
+        "  1. Your best FOB price per MT (INR or USD) and its validity\n"
         "  2. Grade / specification and packaging\n"
-        "  3. Minimum order and monthly capacity (MT)\n"
-        "  4. Lead time from purchase order to goods at the port, and port of loading\n"
-        "  5. Certificates you can provide (COA, ISO, FSSAI, Halal…)\n"
-        "  6. Your GSTIN and IEC, so we can verify them before the purchase order\n\n"
-        "Please keep the reference in the subject line so your quotation reaches the right desk.\n\n"
-        "Best regards,\nPortLess Trade Operations\n"
+        "  3. Minimum order quantity and monthly capacity (MT)\n"
+        "  4. Lead time from purchase order to goods at port, and your port of loading\n"
+        "  5. Certificates you can provide (COA, ISO, FSSAI, Halal, etc.)\n"
+        "  6. Your GSTIN and IEC, so we can complete verification before the purchase order\n\n"
+        "Please keep the reference in the subject line so that your quotation reaches the right desk. "
+        "We look forward to your offer and to building a long-term export partnership with you."
+        + cp.signature()
     )
 
 
@@ -284,6 +284,10 @@ async def _dispatch_by_email(
         ))
         outcome = getattr(result, "outcome", None)
         outcome_val = getattr(outcome, "value", outcome)
+        from agents.negotiation_agent.email_history import record_deal_email  # type: ignore[import]
+        await record_deal_email(deal_id=payload.deal_id, direction="outbound", party="supplier", to_address=supplier.email or "",
+                                from_address="PortLess", subject=rfq_subject(rfq_id, payload.hs_code, payload.quantity_mt),
+                                body=body, kind="rfq", delivered=str(outcome_val) != "logged")
         if str(outcome_val) == "logged":
             logger.warning("RFQ %s to %s (%s) NOT delivered — no outbound mailbox configured",
                            rfq_id, supplier.email, supplier.supplier_id)
@@ -333,6 +337,10 @@ async def receive_quote_by_email(
         # price taken as a quote) corrupts the match. The processor parks it
         # for an operator, who resubmits it naming the supplier.
         raise QuoteNotFoundError(f"{rfq_id}:sender:{from_address}")
+
+    from agents.negotiation_agent.email_history import record_deal_email  # type: ignore[import]
+    await record_deal_email(deal_id=rfq.deal_id, direction="inbound", party="supplier", to_address="PortLess", from_address=from_address,
+                            subject=f"Quotation for {rfq_id}", body=body_text or "", kind="rfq_reply")
 
     gstin = _find_pattern(body_text, r"\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b")
     iec = _find_pattern(body_text, r"\bIEC[\s:#-]*([A-Z0-9]{10})\b", group=1)

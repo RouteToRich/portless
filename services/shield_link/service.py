@@ -721,7 +721,8 @@ async def record_loading(deal_id: str, req: LoadingRecordRequest) -> dict[str, A
 async def poll_tracking(deal_id: str) -> dict[str, Any]:
     """Ask the carrier-tracking actor where the deal's container is and record
     the latest milestone. Returns ``{"status": ...}`` — ``no_booking`` /
-    ``no_reference`` / ``stub`` (actor not configured) / ``unchanged`` / ``ok``.
+    ``no_reference`` / ``stub`` (actor not configured) / ``source_refused`` (the
+    Apify plan cannot run the carrier Actors) / ``no_event`` / ``unchanged`` / ``ok``.
     Never raises: a tracking failure must not break the watcher sweep."""
     repo = get_repository()
     orders = await repo.list_by_deal(deal_id)
@@ -737,12 +738,16 @@ async def poll_tracking(deal_id: str) -> dict[str, Any]:
             "container_number": tpo.container_number,
             "booking_ref": tpo.ext_ref,
             "carrier": tpo.provider_payload.get("carrier") or tpo.provider,
+            "reference": deal_id,
         })
     except Exception as exc:  # noqa: BLE001
         logger.warning("ShieldLink: tracking poll failed for deal %s: %s", deal_id, exc)
         return {"status": "error", "deal_id": deal_id, "error": str(exc)}
     if result.get("stub"):
         return {"status": "stub", "deal_id": deal_id, "tpo_id": tpo.tpo_id}
+    if result.get("source_refused"):
+        return {"status": "source_refused", "deal_id": deal_id, "tpo_id": tpo.tpo_id,
+                "detail": result.get("detail")}
     shipment = next((s for s in result.get("shipments") or [] if s.get("milestone")), None)
     if shipment is None:
         return {"status": "no_event", "deal_id": deal_id, "tpo_id": tpo.tpo_id}

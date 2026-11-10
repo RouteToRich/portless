@@ -258,7 +258,7 @@ def preflight(record: Any, session: Any | None, deal: Any | None, thread: list[A
                 break
             if (str(getattr(r.direction, "value", r.direction)) == "outbound" and not is_notification(r)
                     and r.created_at > created
-                    and str(getattr(r.status, "value", r.status)) in ("sent", "modified_sent")):
+                    and str(getattr(r.status, "value", r.status)) in ("sent", "modified_sent", "logged_only")):
                 reasons.append(f"a newer e-mail to the {party} was already sent")
                 break
     return reasons

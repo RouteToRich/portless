@@ -333,7 +333,10 @@ def test_acceptance_price_consistent():
 # ---------------------------------------------------------------------------
 
 def test_orchestrator_converged_agrees():
-    session = _session(policy=_policy(margin_floor_pct=0.0), current_bid=500.0, current_ask=499.95)
+    # The supplier itself quoted 499.95 (convergence is judged on the price the
+    # supplier stated, never on PortLess's own unanswered counter).
+    session = _session(policy=_policy(margin_floor_pct=0.0), current_bid=500.0, current_ask=499.95,
+                       supplier_last_quote=499.95)
     result = run(orchestrator_node(_state(session, current_bid=500.0, current_ask=499.95)))
     assert result["routing"] == "NEGOTIATION_AGREED"
     assert result["agreed_price"] is not None
@@ -359,6 +362,23 @@ def test_orchestrator_explicit_acceptance_agrees():
     assert result["routing"] == "NEGOTIATION_AGREED"
     assert result["agreed_price"] == 500.0  # the buyer's accepted price, not a bid/ask midpoint
     assert result["hitl_required"] is True  # agreement still needs operator confirmation
+
+
+def test_a_supplier_saying_yes_never_closes_the_sale():
+    # Found by the real-LLM journey: "we look forward to your PO" was read as an
+    # acceptance, closed the negotiation and priced the buyer's PI at our cost.
+    session = _session(round_no=2, current_bid=1316.0, current_ask=1010.0)
+    state = _state(
+        session,
+        party="supplier",
+        inbound_message="FOB Chennai is USD 1,010 per MT. We look forward to your PO.",
+        current_bid=1316.0,
+        current_ask=1010.0,
+    )
+    with patch("agents.negotiation_agent.graph._chat", _intent_chat("ACCEPT")):
+        result = run(orchestrator_node(state))
+    assert result["routing"] != "NEGOTIATION_AGREED"
+    assert result["agreed_price"] is None
 
 
 def test_orchestrator_conditional_counter_is_not_agreed():
@@ -493,22 +513,68 @@ def test_orchestrator_first_round_drafts_with_hitl():
 
 
 def test_orchestrator_healthy_margin_routes_without_hitl():
-    session = _session(round_no=2, current_bid=500.0, current_ask=440.0)  # 12% margin
+    session = _session(round_no=2, current_bid=500.0, current_ask=440.0, supplier_last_quote=440.0)  # 12% margin
     state = _state(session, is_first_round=False, party="buyer", current_bid=500.0, current_ask=440.0)
     with patch("agents.negotiation_agent.graph._chat", _orch_chat("CALL_SUPPLIER_AGENT", 12.0)):
         result = run(orchestrator_node(state))
-    assert result["routing"] == "CALL_SUPPLIER_AGENT"
+    assert result["routing"] == "CALL_BOTH_AGENTS"  # a buyer reply works both sides
     assert result["hitl_required"] is False
 
 
 def test_orchestrator_clamps_terminal_llm_routing_to_agent():
     # If the LLM returns a non-agent routing on a non-terminal pass, the orchestrator
-    # must still route to an agent so a message gets drafted (party=buyer → supplier).
+    # must still route to an agent so a message gets drafted (party=buyer → both sides).
     session = _session(round_no=2, current_bid=500.0, current_ask=440.0)
     state = _state(session, is_first_round=False, party="buyer", current_bid=500.0, current_ask=440.0)
     with patch("agents.negotiation_agent.graph._chat", _orch_chat("HITL_APPROVAL", 12.0)):
         result = run(orchestrator_node(state))
-    assert result["routing"] == "CALL_SUPPLIER_AGENT"
+    assert result["routing"] == "CALL_BOTH_AGENTS"
+
+
+def test_orchestrator_buyer_reply_works_both_sides_when_llm_is_down():
+    # Gateway down: the old fallback wrote only to the buyer, so the supplier
+    # was never asked for a better price. A buyer reply now always reaches both.
+    session = _session(round_no=2, current_bid=500.0, current_ask=440.0)
+    state = _state(session, is_first_round=False, party="buyer", current_bid=500.0, current_ask=440.0)
+
+    async def down(*_a, **_k):
+        raise RuntimeError("LLM Gateway call failed: [500 http_error]")
+
+    with patch("agents.negotiation_agent.graph._chat", down):
+        result = run(orchestrator_node(state))
+    assert result["routing"] == "CALL_BOTH_AGENTS"
+
+
+def test_orchestrator_supplier_reply_still_goes_to_buyer_only():
+    session = _session(round_no=2, current_bid=500.0, current_ask=440.0)
+    state = _state(session, is_first_round=False, party="supplier", current_bid=500.0, current_ask=440.0)
+    with patch("agents.negotiation_agent.graph._chat", _orch_chat("CALL_BUYER_AGENT", 12.0)):
+        result = run(orchestrator_node(state))
+    assert result["routing"] == "CALL_BUYER_AGENT"
+
+
+def test_graph_buyer_reply_drafts_supplier_then_buyer():
+    from agents.negotiation_agent.graph import build_negotiation_graph
+
+    session = _session(round_no=2, current_bid=500.0, current_ask=440.0)
+    state = _state(session, is_first_round=False, party="buyer", current_bid=500.0, current_ask=440.0,
+                   inbound_message="Still too high, we can do USD 480.")
+    order: list[str] = []
+
+    async def fake_supplier(st):
+        order.append("supplier")
+        return {**st, "supplier_outbound_message": "Could you improve your price?", "reasoning": "ask supplier"}
+
+    async def fake_buyer(st):
+        order.append("buyer")
+        return {**st, "buyer_outbound_message": "Our best is USD 495."}
+
+    with patch("agents.negotiation_agent.graph._chat", _orch_chat("CALL_SUPPLIER_AGENT", 12.0)), \
+         patch("agents.negotiation_agent.graph.supplier_agent_node", fake_supplier), \
+         patch("agents.negotiation_agent.graph.buyer_agent_node", fake_buyer):
+        result = run(build_negotiation_graph().ainvoke(state))
+    assert order == ["supplier", "buyer"]
+    assert result["supplier_outbound_message"] and result["buyer_outbound_message"]
 
 
 # ---------------------------------------------------------------------------

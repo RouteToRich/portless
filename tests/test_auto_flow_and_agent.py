@@ -456,13 +456,13 @@ ctx = {"deal_id": "D1", "supplier_name": None, "buyer_name": None, "name": None,
 ])
 def test_templates_name_the_deal_and_have_a_safe_greeting(template, greeting):
     subject, body = getattr(nf, template)(ctx)
-    assert "D1" in subject and body.startswith(f"Dear {greeting},")
+    assert "D1" in subject and body.startswith("Dear Sir or Madam,")  # no name known → neutral greeting
 
 
 @pytest.mark.parametrize("template", ["_tpl_funding_shortfall", "_tpl_inspection_window_open"])
 def test_escrow_templates(template):
     subject, body = getattr(nf, template)({**ctx, "escrow": _escrow(600.0)})
-    assert "D1" in subject and body.startswith("Dear Buyer,") and "ESC-1" in body + subject + "ESC-1"
+    assert "D1" in subject and body.startswith("Dear Sir or Madam,") and "ESC-1" in body + subject + "ESC-1"
 
 
 class TestEscrowReminder:

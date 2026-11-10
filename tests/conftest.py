@@ -39,3 +39,14 @@ os.environ["COMPLIANCE_LOADING_CHECK_REQUIRED"] = "false"
 # every payout amount; the money-chain tests pin the payout arithmetic around
 # it. tests/test_supplier_retention.py turns it on per test.
 os.environ["SUPPLIER_RETENTION_ENABLED"] = "false"
+
+# The supplier confirms the order before the PI, and acknowledges the PO before
+# the inspection (shared/orchestration/supplier_commitment.py). Both are on by
+# default and add a supplier reply to every fixture's path; the pipeline tests
+# exercise the flow around them. tests/test_supplier_commitment.py turns them on.
+os.environ["SUPPLIER_CONFIRMATION_REQUIRED"] = "false"
+os.environ["PO_ACK_REQUIRED"] = "false"
+
+# The pre-trade market check searches the web; the suite never goes online.
+# tests/test_trade_costs.py exercises it with a mocked search.
+os.environ["MARKET_CHECK_ENABLED"] = "false"

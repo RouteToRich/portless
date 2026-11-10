@@ -109,7 +109,9 @@ class TestNotifyParty:
 
         await _settle()  # L2 callback runs as a background task → log-only SMTP
         record = await wiring.email.get(email_id)
-        assert record.status == EmailStatus.SENT
+        # No mailbox in tests: composed + logged, shown honestly as not delivered.
+        assert record.status == EmailStatus.LOGGED_ONLY
+        assert "logged" in (record.delivery_note or "").lower() and record.notice_kind == "pi_issued"
         assert record.sent_at is not None
 
     @pytest.mark.asyncio
@@ -171,7 +173,7 @@ class TestNotifyParty:
         email_id = await notifications.notify_escrow_opened(_deal(), escrow, "PI-1")
         body = (await wiring.email.get(email_id)).body
         assert "https://pay.example/abc" in body
-        assert "T1: 30% released on PO_ISSUED" in body
+        assert "30% when the purchase order is placed with the manufacturer" in body and "PO_ISSUED" not in body
         assert "Dear Acme Imports GmbH" in body
 
     @pytest.mark.asyncio

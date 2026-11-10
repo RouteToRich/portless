@@ -165,11 +165,36 @@ async def _emit(topic: EventTopic, deal_id: str, payload: dict) -> None:
 # Create approval
 # ---------------------------------------------------------------------------
 
+# One lock per idempotency key while an approval is being created. The same
+# event often arrives twice at once (e.g. customs_cleared from Shield-Link and
+# from the Deals status emitter): without the lock both callers read "no
+# approval with this key yet" before either saves, and the operator sees the
+# same payout gate twice.
+_key_locks: dict[str, asyncio.Lock] = {}
+_key_waiters: dict[str, int] = {}
+
+
 async def create_approval(req: CreateApprovalRequest) -> ApprovalResponse:
     """Create a HITL approval request, applying autonomy-level gate logic.
 
-    Idempotent on ``idempotency_key``.
+    Idempotent on ``idempotency_key``, also when two callers race with the same key.
     """
+    key = req.idempotency_key
+    if not key:
+        return await _create_approval(req)
+    lock = _key_locks.setdefault(key, asyncio.Lock())
+    _key_waiters[key] = _key_waiters.get(key, 0) + 1
+    try:
+        async with lock:
+            return await _create_approval(req)
+    finally:
+        _key_waiters[key] -= 1
+        if _key_waiters[key] <= 0:
+            _key_waiters.pop(key, None)
+            _key_locks.pop(key, None)
+
+
+async def _create_approval(req: CreateApprovalRequest) -> ApprovalResponse:
     repo = get_repository()
 
     # Idempotency
@@ -207,9 +232,9 @@ async def create_approval(req: CreateApprovalRequest) -> ApprovalResponse:
         required_approvals = 2
         if "four_eyes_required" not in risk_flags:
             risk_flags.append("four_eyes_required")
-        if autonomy_level in ("L2", "L3"):
+        if autonomy_level != "L0":  # L1 too: a timeout must never stand in for two people
             logger.info(
-                "HitlApproval: %s for deal %s (%.2f USD) needs two approvers — %s auto-approval overridden to L0",
+                "HitlApproval: %s for deal %s (%.2f USD) needs two approvers — %s overridden to L0",
                 req.action, req.deal_id, req.financial_impact_usd or 0.0, autonomy_level,
             )
             autonomy_level = "L0"

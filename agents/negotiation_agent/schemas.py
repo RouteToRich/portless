@@ -36,6 +36,8 @@ NegotiationStatus = Literal[
 AgentRouting = Literal[
     "CALL_BUYER_AGENT",
     "CALL_SUPPLIER_AGENT",
+    # After a buyer reply: ask the supplier for a better price AND counter the buyer.
+    "CALL_BOTH_AGENTS",
     "HITL_APPROVAL",
     "NEGOTIATION_AGREED",
     "NEGOTIATION_FAILED",
@@ -191,6 +193,12 @@ class NegotiationSession(BaseModel):
     logistics_cost_usd: float | None = None
     """Per-unit ocean-freight cost included in the margin math (quoted via
     Shield-Link at start, or caller-supplied). None → 0 in the formula."""
+    cost_sheet: dict[str, Any] | None = None
+    """Every PortLess cost between supplier and buyer (shared/orchestration/
+    trade_costs.py) — refreshed before each drafting pass; the margin maths
+    and the price bands use it."""
+    supplier_price_basis: str = "FOB"
+    """FOB (inland transport inside the supplier's price) or EXW (PortLess pays it)."""
     batna: str | None = None
     buyer_email: str | None = None
     seller_email: str | None = None

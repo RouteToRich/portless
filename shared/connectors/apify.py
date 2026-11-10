@@ -412,6 +412,7 @@ class ApifyActorConnector(Connector):
                 run = poll.json().get("data") or {}
                 status = run.get("status")
 
+            self.last_run = run
             if status == "FAILED":
                 raise ApifyError(f"Apify run {run_id} of {self.actor_ref} FAILED: {run.get('statusMessage')}")
 
@@ -430,6 +431,27 @@ class ApifyActorConnector(Connector):
                 return []
             logger.info("Apify: %s run %s → %d row(s) (status %s)", self.actor_ref, run_id, len(rows), status)
             return [r for r in rows if isinstance(r, dict)]
+
+    last_run: dict[str, Any] | None = None
+    """The last finished run of this connector instance (set by ``run``)."""
+
+    async def run_output(self) -> dict[str, Any] | None:
+        """The ``OUTPUT`` record of the last run (the actors write ``ok`` /
+        ``outcome`` / ``sourceError`` there) — None when unavailable."""
+        store = (self.last_run or {}).get("defaultKeyValueStoreId")
+        if not store or not self.configured:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(f"{self._base_url}/key-value-stores/{store}/records/OUTPUT",
+                                        headers=self._headers())
+            if resp.status_code not in range(200, 300):
+                return None
+            data = resp.json()
+            return data if isinstance(data, dict) else None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Apify: OUTPUT read failed for %s: %s", self.actor_ref, exc)
+            return None
 
     # -- Connector interface -------------------------------------------------
 
@@ -1312,66 +1334,152 @@ def carrier_milestone(raw_status: Any) -> str | None:
     return None
 
 
+# multi-carrier-tracking-ai's container status (its dataset schema) -> milestone.
+_TRACKER_STATUS: dict[str, str | None] = {
+    "BOOKED": None,
+    "IN_TRANSIT": "IN_TRANSIT",
+    "ARRIVED": "ARRIVED",
+    "DISCHARGED": "ARRIVED",
+    "DELIVERED": "DELIVERED",
+    "EMPTY_RETURNED": "DELIVERED",
+}
+# DCSA event codes (``milestone`` on a row) that settle an UNKNOWN status.
+_DCSA_MILESTONE: dict[str, str] = {
+    "LOAD": "DEPARTED", "DEPA": "DEPARTED", "ARRI": "ARRIVED", "DISC": "ARRIVED",
+    "GTOT": "ARRIVED", "STRP": "DELIVERED", "DROP": "DELIVERED",
+}
+# Freight forwarders / platforms are not ocean carriers: the tracker routes by
+# the container owner prefix instead of a forwarder name.
+_NOT_CARRIERS = {"cogoport", "freightos", "stub", "manual", "operator", ""}
+
+_last_tracking_outcome: dict[str, Any] = {}
+
+
+def last_tracking_outcome() -> dict[str, Any]:
+    """What the last carrier-tracking call ended with (for readiness / the UI)."""
+    return dict(_last_tracking_outcome)
+
+
+def _note_tracking(status: str, detail: str = "") -> None:
+    from datetime import datetime, timezone
+    _last_tracking_outcome.clear()
+    _last_tracking_outcome.update({"status": status, "detail": detail,
+                                   "at": datetime.now(timezone.utc).isoformat()})
+
+
 class ApifyCarrierTrackingConnector(ApifyActorConnector):
-    """``container-tracking-ai`` — carrier milestones for a booked shipment.
+    """``multi-carrier-tracking-ai`` -- carrier milestones for a booked shipment.
 
     quote(request): ``container_number`` / ``bl_number`` / ``booking_ref`` (at
-    least one), ``carrier`` (SCAC or name, optional). Returns
-    ``{"shipments": [{"ref", "carrier", "milestone", "raw_status", "location",
-    "timestamp", "eta", "delivered", "events"}]}`` with ``milestone`` normalised
-    through ``carrier_milestone``.
+    least one), ``carrier`` (SCAC or line name, optional; a forwarder name is
+    ignored -- the actor routes by the container owner prefix), ``reference``
+    (ours, echoed back). Returns ``{"shipments": [{"ref", "carrier",
+    "milestone", "raw_status", "location", "timestamp", "eta", "delivered",
+    "events"}], "not_tracked": [...]}`` with ``milestone`` in the shield-link
+    vocabulary (DEPARTED / IN_TRANSIT / ARRIVED / DELIVERED).
 
-    This is the pipeline's external slot: the actor is built and published
-    outside ``/actor-pipeline`` (it is not part of the pool's automatic
-    research → implement → deploy loop). Until it exists on the account the
-    call returns the stub, the watcher's tracking poll is a no-op and the
-    delivery-triggered inspection window falls back to
+    The actor looks numbers up through the public carrier Actors (MSC, Maersk,
+    CMA CGM ...) in ``live`` mode. An Apify plan that cannot run public Store
+    Actors ends the run SUCCEEDED with 0 rows and ``OUTPUT.ok: false`` --
+    returned here as ``source_refused`` (never raised), so the watcher's poll
+    reports it and the acceptance window falls back to
     ``INSPECTION_WINDOW_FALLBACK_DAYS`` after customs clearance.
     """
 
     name = "apify_carrier_tracking"
     actor_key = "CARRIER_TRACKING"
-    default_slug = "container-tracking-ai"
+    default_slug = "multi-carrier-tracking-ai"
     empty_key = "shipments"
-    external = True
+
+    @staticmethod
+    def _milestone(row: dict[str, Any]) -> tuple[str | None, Any]:
+        status = str(row.get("status") or "").strip()
+        description = row.get("milestoneDescription")
+        raw = description or status or row.get("latestEvent") or row.get("lastEvent")
+        if isinstance(raw, dict):
+            raw = _first(raw.get("status"), raw.get("description"), raw.get("event"))
+        key = status.upper().replace(" ", "_")
+        if key in _TRACKER_STATUS:
+            return _TRACKER_STATUS[key], raw
+        code = str(row.get("milestone") or "").upper()
+        if code in _DCSA_MILESTONE and row.get("milestoneIsActual") is not False:
+            return _DCSA_MILESTONE[code], raw
+        raw_text = raw if isinstance(raw, str) else ""
+        return (carrier_milestone(status) or carrier_milestone(description)
+                or carrier_milestone(raw_text) or carrier_milestone(code)), raw
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
-        refs = {k: str(request.get(k) or "").strip() for k in ("container_number", "bl_number", "booking_ref")}
-        refs = {k: v for k, v in refs.items() if v}
+        refs = [str(request.get(k) or "").strip().upper().replace(" ", "")
+                for k in ("container_number", "bl_number", "booking_ref")]
+        refs = list(dict.fromkeys(r for r in refs if r))
         if not refs:
             raise ValueError("apify_carrier_tracking: container_number, bl_number or booking_ref required")
+        carrier = str(request.get("carrier") or "").strip()
+        if carrier.lower() in _NOT_CARRIERS:
+            carrier = ""
+        reference = str(request.get("reference") or "").replace(",", " ").strip()
+        # One line per number: "NUMBER, carrier, reference" (the actor's format).
+        lines = [", ".join([r, carrier, reference]).rstrip(", ") if (carrier or reference) else r for r in refs]
         actor_input: dict[str, Any] = {
             **self._common_input(len(refs)),
-            "sourceMode": "actor",
-            "containerNumbers": [refs["container_number"]] if "container_number" in refs else [],
-            "blNumbers": [refs["bl_number"]] if "bl_number" in refs else [],
-            "bookingRefs": [refs["booking_ref"]] if "booking_ref" in refs else [],
-            "carrier": str(request.get("carrier") or ""),
+            "sourceMode": "live",
+            "autoSwitchToLive": False,
+            "trackingNumbers": lines,
             "includeEvents": True,
+            "minScore": 0,            # every container, not only the ones "needing attention"
+            "pollPolicy": "every",    # PortLess decides when to stop polling
+            "failOnSourceError": False,
+            "enableAi": False,        # tracking is deterministic -- no scoring tier
         }
-        actor_input["enableAi"] = False  # tracking is deterministic — no scoring tier
         rows = await self.run(actor_input, max_items=len(refs))
         if not rows and not self.configured:
             return self._empty()
-        shipments = []
+        if not rows:
+            out = await self.run_output() or {}
+            if out.get("ok") is False or out.get("outcome") == "source_refused":
+                detail = str(out.get("sourceError") or out.get("outcome") or "carrier source refused")
+                if "plan" in detail.lower() and "public" in detail.lower():
+                    detail = ("the Apify plan cannot run the public carrier Actors (MSC, Maersk ...) that "
+                              "multi-carrier-tracking-ai calls -- upgrade the plan, take milestones from the "
+                              "forwarder webhook, or record them by hand")
+                logger.warning("Apify carrier tracking: %s", detail)
+                _note_tracking("source_refused", detail)
+                return {"shipments": [], "total": 0, "actor": self.actor_ref,
+                        "source_refused": True, "detail": detail}
+        shipments: list[dict[str, Any]] = []
+        not_tracked: list[dict[str, Any]] = []
         for r in rows:
-            raw_status = _first(r.get("status"), r.get("latestEvent"), r.get("lastEvent"), r.get("milestone"))
-            if isinstance(raw_status, dict):
-                raw_status = _first(raw_status.get("status"), raw_status.get("description"), raw_status.get("event"))
-            milestone = carrier_milestone(raw_status)
+            ref = _first(r.get("trackingNumber"), r.get("containerNumber"), r.get("blNumber"),
+                         r.get("bookingRef"), r.get("name"), r.get("ref"))
+            if r.get("problem"):
+                not_tracked.append({"ref": ref, "problem": r.get("problem"),
+                                    "detail": r.get("problemDetail")})
+                continue
+            milestone, raw_status = self._milestone(r)
             delivered = bool(r.get("delivered")) or milestone == "DELIVERED"
+            pod = r.get("pod") if isinstance(r.get("pod"), dict) else {}
             shipments.append({
-                "ref": _first(r.get("containerNumber"), r.get("blNumber"), r.get("bookingRef"), r.get("ref")),
-                "carrier": _first(r.get("carrier"), r.get("carrierName"), r.get("scac")),
+                "ref": ref,
+                "carrier": _first(r.get("carrier"), r.get("carrierName"), r.get("carrierScac"), r.get("scac")),
                 "milestone": "DELIVERED" if delivered else milestone,
                 "raw_status": raw_status,
-                "location": _first(r.get("location"), r.get("lastLocation"), r.get("currentLocation")),
-                "timestamp": _first(r.get("eventAt"), r.get("lastEventAt"), r.get("timestamp"), r.get("updatedAt")),
-                "eta": _first(r.get("eta"), r.get("estimatedArrival")),
+                "location": _first(r.get("milestoneLocation"), r.get("location"), r.get("lastLocation"),
+                                   r.get("currentLocation")),
+                "timestamp": _first(r.get("milestoneTime"), r.get("eventAt"), r.get("lastEventAt"),
+                                    r.get("timestamp"), r.get("checkedAt")),
+                "eta": _first(r.get("etaUtc"), r.get("eta"), r.get("estimatedArrival")),
+                "ata": r.get("ata"),
+                "port_of_discharge": pod.get("name") if pod else None,
+                "vessel": r.get("vessel"),
+                "voyage": r.get("voyage"),
+                "tracking_url": r.get("url"),
                 "delivered": delivered,
                 "events": r.get("events") if isinstance(r.get("events"), list) else [],
             })
-        return {"shipments": shipments, "total": len(shipments), "actor": self.actor_ref}
+        _note_tracking("ok" if shipments else ("not_tracked" if not_tracked else "no_event"),
+                       "; ".join(f"{n['ref']}: {n.get('detail') or n['problem']}" for n in not_tracked))
+        return {"shipments": shipments, "not_tracked": not_tracked, "total": len(shipments),
+                "actor": self.actor_ref}
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,7 @@ from services.hitl_approval.router import router as hitl_approval_router
 from services.exception_resolver.router import router as exception_resolver_router
 from services.email_processor.router import router as email_processor_router
 from services.email_gateway.router import router as email_gateway_router
+from services.automation.router import router as automation_router
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ _SERVICE_ROUTERS = [
     exception_resolver_router,
     email_processor_router,
     email_gateway_router,
+    automation_router,
 ]
 
 

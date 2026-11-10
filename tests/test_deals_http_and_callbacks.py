@@ -65,9 +65,9 @@ def _board(*pairs, offers=()):
     return SimpleNamespace(pairs=list(pairs), offers=list(offers), model_dump=lambda mode="json": {"pairs": len(pairs)})
 
 
-def _pair(candidate="C1", offer="O1", basis="quoted", landed=True, blockers=(), buyer=900.0, supplier=700.0):
+def _pair(candidate="C1", offer="O1", basis="quoted", landed=True, blockers=(), buyer=900.0, supplier=700.0, firm=True):
     return SimpleNamespace(
-        candidate_id=candidate, offer_id=offer, landed=landed, blockers=list(blockers),
+        candidate_id=candidate, offer_id=offer, landed=landed, blockers=list(blockers), firm=firm,
         supplier_price=SimpleNamespace(basis=basis, value=supplier), buyer_price=SimpleNamespace(value=buyer),
     )
 

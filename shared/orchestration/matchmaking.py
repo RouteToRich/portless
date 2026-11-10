@@ -429,7 +429,8 @@ def indicative_range(pair: PairScore, buyer_est: pricebook.PriceEstimate | None 
 
 def draft_indicative(deal: Any, cand: Any, pair: PairScore, low: float, high: float,
                      lead_time_days: int | None = None) -> tuple[str, str]:
-    from shared.orchestration.outreach import _entity, _greeting, _product_label, subject_token
+    from shared import company_profile as cp
+    from shared.orchestration.outreach import _greeting, _product_label, subject_token
     from shared.product_label import product_title
     product = _product_label(deal)
     req = getattr(cand, "requirement", None)
@@ -441,17 +442,20 @@ def draft_indicative(deal: Any, cand: Any, pair: PairScore, low: float, high: fl
     subject = f"Re: {title} — indicative {inc} price {subject_token(deal.deal_id, cand.candidate_id)}"
     body = (
         f"{_greeting(cand)}\n\n"
-        f"Thank you for your reply. For {pair.quantity_mt:g} MT of {product}"
+        "Thank you for your reply and for the details you shared.\n\n"
+        f"For {pair.quantity_mt:g} MT of {product}"
         + (f" ({grade})" if grade else "")
         + f", our indicative price is USD {low:,.0f}–{high:,.0f} per MT {inc}"
         + (f" {port}" if port else "")
-        + f", from a GST- and IEC-verified Indian manufacturer, inspection by the agency you choose "
-        f"included.{lead} You pay into a neutral escrow, not to us: a production advance is released when "
-        "the order is placed, the rest only after the inspection passes, the goods clear and you accept them.\n\n"
-        "Does this range work for you? If you have a target price, tell me and I will see how close we "
-        "can get. The indicative price is valid for 7 days; a firm proforma invoice follows once you "
-        "confirm grade, quantity and port.\n\n"
-        f"Best regards,\n{_entity()} — Trade Operations\n"
+        + f". This is supplied by a GST- and IEC-verified Indian manufacturer, and the pre-shipment "
+        f"inspection by the agency you choose is included.{lead}\n\n"
+        "Your payment is protected throughout: you pay into a neutral escrow account, not to us. A "
+        "production advance is released when the order is placed, and the balance only after the "
+        "inspection passes, the goods clear customs and you accept them.\n\n"
+        "Does this range work for you? If you have a target price, please let me know and I will see how "
+        "close we can come. This indicative price is valid for 7 days; a firm proforma invoice follows as "
+        "soon as you confirm the grade, quantity and destination port."
+        + cp.signature()
     )
     return subject, body
 
@@ -514,6 +518,9 @@ async def send_indicative_offer(deal_id: str, payload: dict[str, Any]) -> dict[s
     result = await send_email(SendEmailRequest(to_address=payload["to_address"], subject=payload["subject"],
                                                body=payload["body"], negotiation_id="", round_no=0, email_id=email_id))
     outcome = str(getattr(getattr(result, "outcome", None), "value", getattr(result, "outcome", "sent")))
+    from agents.negotiation_agent.email_history import record_deal_email  # type: ignore[import]
+    await record_deal_email(deal_id=deal_id, direction="outbound", party="buyer", to_address=payload["to_address"], from_address="PortLess",
+                            subject=payload["subject"], body=payload["body"], kind="indicative_offer", delivered=outcome != "logged")
     if outcome == "logged":
         await update_buyer_candidate(deal_id, cid, {"send_error": NOT_DELIVERED})
         logger.warning("Matchmaking: indicative offer to %s for %s NOT delivered", payload["to_address"], deal_id)

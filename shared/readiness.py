@@ -143,12 +143,20 @@ def evaluate() -> dict[str, Any]:
         fail_detail="APIFY_TOKEN unset — no named buyers / supplier contacts / sanctions screening; parties stay unchecked",
     ))
     tracking = next((a for a in apify.get("actors", []) if a.get("connector") == "apify_carrier_tracking"), {})
+    try:
+        from shared.connectors.apify import last_tracking_outcome
+        last_tracking = last_tracking_outcome()
+    except Exception:  # noqa: BLE001
+        last_tracking = {}
+    refused = last_tracking.get("status") == "source_refused"
+    fallback = (f"the acceptance window opens by operator entry or "
+                f"{os.getenv('INSPECTION_WINDOW_FALLBACK_DAYS', '21')} days after clearance (INSPECTION_WINDOW_FALLBACK_DAYS)")
     checks.append(_check(
         "carrier_tracking", "operations", "Carrier tracking (delivery → acceptance window)",
-        bool(apify.get("token_present")) and bool(tracking), warn_only=True,
-        ok_detail=f"{tracking.get('actor', 'container-tracking-ai')} polled every TRACKING_POLL_HOURS; DELIVERED opens the buyer's window",
-        fail_detail=(f"no carrier-tracking actor — the acceptance window opens by operator entry or "
-                     f"{os.getenv('INSPECTION_WINDOW_FALLBACK_DAYS', '21')} days after clearance (INSPECTION_WINDOW_FALLBACK_DAYS)"),
+        bool(apify.get("token_present")) and bool(tracking) and not refused, warn_only=True,
+        ok_detail=f"{tracking.get('actor', 'multi-carrier-tracking-ai')} polled every TRACKING_POLL_HOURS; DELIVERED opens the buyer's window",
+        fail_detail=(f"last tracking poll refused: {last_tracking.get('detail')} — {fallback}" if refused
+                     else f"no carrier-tracking actor — {fallback}"),
     ))
     cap = os.getenv("APIFY_MAX_RUNS_PER_DAY", "").strip()
     checks.append(_check(

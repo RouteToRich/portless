@@ -13,9 +13,10 @@ _BACKEND_ENV = Path(__file__).parent.parent.parent / ".env"
 # {product}, {quantity}, {hs_code}, {deal_id}, {validity_days} — and, for
 # custom templates only, {quantity_mt} / {target_price_usd}.
 _DEFAULT_RFQ_MSG = (
-    "We are sourcing {quantity} of {product} (HS {hs_code}) for an overseas buyer and "
-    "would like your best quotation. Our reference: {deal_id}. A reply within "
-    "{validity_days} days keeps you in this order."
+    "We are sourcing {quantity} of {product} (HS {hs_code}) for an overseas buyer and would "
+    "like to invite your company to quote. We are looking for a reliable Indian manufacturer for "
+    "this and future orders. Our reference is {deal_id}; a quotation within {validity_days} days "
+    "keeps you in consideration for this order."
 )
 
 

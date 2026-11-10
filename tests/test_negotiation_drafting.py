@@ -183,7 +183,7 @@ def test_buyer_who_answered_the_introduction_is_not_cold():
     assert p["product_name"] == "crude glycerine" and p["pricing"]["recommended_price_usd_per_mt"] == 980.0
     assert p["pricing"]["meets_buyer_target"] is True and p["pricing"]["is_final_offer"] is False
     assert "760" not in json.dumps(p)          # supplier price never reaches the buyer agent
-    assert out["buyer_outbound_message"] == "Dear team\nok"
+    assert out["buyer_outbound_message"].startswith("Dear team\nok\n\nKind regards,")
     assert out["buyer_stage"] == briefing.AFTER_INTRO and out["buyer_draft_flags"] == []
 
 
@@ -252,9 +252,9 @@ def test_outreach_names_the_product_and_describes_escrow_truthfully():
     deal = SimpleNamespace(deal_id="DEAL-D1", hs_code="1520", quantity_mt=20.0)
     cand = SimpleNamespace(legal_name="Glaconchemie", pitch_angle="", candidate_id="c1", quantity_mt=None)
     subject, body = outreach.draft(deal, cand)
-    assert subject.startswith("Crude glycerine from India") and "Hs " not in subject
+    assert subject.startswith("Crude glycerine from verified Indian manufacturers") and "Hs " not in subject
     assert body.startswith("Dear Glaconchemie team,")
     assert "production advance" in body and "never pay for goods" not in body
     unknown = SimpleNamespace(deal_id="DEAL-D1", hs_code="9999", quantity_mt=None)
     s2, b2 = outreach.draft(unknown, cand)
-    assert s2.startswith("HS 9999 from India") and "the HS 9999 product" in b2
+    assert s2.startswith("HS 9999 from verified Indian manufacturers") and "the HS 9999 product" in b2

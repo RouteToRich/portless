@@ -131,6 +131,14 @@ async def _rcb_send_buyer_outreach(deal_id: str, payload: dict[str, Any]) -> dic
     return await skip_candidate(deal_id, payload["candidate_id"], "operator declined outreach")
 
 
+def _email_status(result: Any, default: str) -> str:
+    """The e-mail record's status after a send (sent / logged_only / failed …)."""
+    from enum import Enum
+    if isinstance(result, Enum):
+        return str(result.value)
+    return result if isinstance(result, str) and result else default
+
+
 async def _cb_send_negotiation_email(deal_id: str, payload: dict[str, Any]) -> dict | None:
     """Send the operator-approved negotiation email draft.
 
@@ -142,9 +150,8 @@ async def _cb_send_negotiation_email(deal_id: str, payload: dict[str, Any]) -> d
 
     email_id: str = payload["email_id"]
     modified_body: str | None = payload.get("modified_body")
-    await send_approved_email(email_id, modified_body)
-    status = "modified_sent" if modified_body else "sent"
-    return {"email_id": email_id, "status": status}
+    result = await send_approved_email(email_id, modified_body)
+    return {"email_id": email_id, "status": _email_status(result, "modified_sent" if modified_body else "sent")}
 
 
 async def _cb_confirm_negotiation_agreement(deal_id: str, payload: dict[str, Any]) -> dict | None:
@@ -235,6 +242,16 @@ async def _cb_confirm_pi_acceptance(deal_id: str, payload: dict[str, Any]) -> di
     return {"pi_id": pi_id, "status": result.status}
 
 
+async def _cb_confirm_supplier_order(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """The supplier confirmed the firm order → committed price recorded, PI issued."""
+    from shared.orchestration import supplier_commitment
+    pi = await supplier_commitment.record_confirmed(
+        deal_id, supplier_id=payload["supplier_id"], price=float(payload["price"]),
+    )
+    return {"deal_id": deal_id, "supplier_id": payload["supplier_id"],
+            "pi_id": getattr(pi, "pi_id", None), "status": "confirmed"}
+
+
 async def _cb_release_escrow_tranche(deal_id: str, payload: dict[str, Any]) -> dict | None:
     """Release one staged escrow tranche against its proof refs."""
     from services.escrow_guard.schemas import ReleaseTrancheRequest  # type: ignore[import]
@@ -259,8 +276,8 @@ async def _cb_send_deal_notification(deal_id: str, payload: dict[str, Any]) -> d
     from agents.negotiation_agent.service import send_approved_email  # type: ignore[import]
 
     email_id: str = payload["email_id"]
-    await send_approved_email(email_id, payload.get("modified_body"))
-    return {"email_id": email_id, "kind": payload.get("kind"), "status": "sent"}
+    result = await send_approved_email(email_id, payload.get("modified_body"))
+    return {"email_id": email_id, "kind": payload.get("kind"), "status": _email_status(result, "sent")}
 
 
 async def _cb_confirm_counterparty_risk(deal_id: str, payload: dict[str, Any]) -> dict | None:
@@ -380,6 +397,7 @@ _CALLBACK_MAP = {
     "DISPATCH_RFQ": _cb_dispatch_rfq,
     "CONFIRM_SUPPLIER_SELECTION": _cb_confirm_supplier_selection,
     "CONFIRM_PI_ACCEPTANCE": _cb_confirm_pi_acceptance,
+    "CONFIRM_SUPPLIER_ORDER": _cb_confirm_supplier_order,
     "RELEASE_ESCROW_TRANCHE": _cb_release_escrow_tranche,
     "SEND_DEAL_NOTIFICATION": _cb_send_deal_notification,
     "PARSE_INBOUND_EMAIL": _cb_parse_inbound_email,
@@ -460,6 +478,8 @@ _REJECT_CALLBACK_MAP = {
     "DISPATCH_RFQ": _rcb_log_only,
     "CONFIRM_SUPPLIER_SELECTION": _rcb_log_only,
     "CONFIRM_PI_ACCEPTANCE": _rcb_log_only,
+    # "Not really a confirmation" — the request stays open; silence moves it on.
+    "CONFIRM_SUPPLIER_ORDER": _rcb_log_only,
     "PARSE_INBOUND_EMAIL": _rcb_log_only,
     # "Not actually an acceptance" — the inspection window keeps running.
     "CONFIRM_BUYER_ACCEPTANCE": _rcb_log_only,

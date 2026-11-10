@@ -163,6 +163,7 @@ def draft(deal: Any, cand: Any, *, followup: bool = False) -> tuple[str, str]:
     answers are precisely what a CIF offer needs → a concrete promise (firm
     offer in two working days) → an easy opt-out.
     """
+    from shared import company_profile as cp
     from shared.product_label import product_title
 
     product = _product_label(deal)
@@ -171,42 +172,43 @@ def draft(deal: Any, cand: Any, *, followup: bool = False) -> tuple[str, str]:
     qty = getattr(cand, "quantity_mt", None) or getattr(deal, "quantity_mt", None)
     token = subject_token(deal.deal_id, getattr(cand, "candidate_id"))
     if followup:
-        subject = f"Re: {title} from India — quick follow-up {token}"
+        subject = f"Re: {title} supply from India — following up {token}"
         body = (
             f"{_greeting(cand)}\n\n"
-            f"Following up on my note about {product} supply from India. If the timing is not right, a "
-            "one-line reply is enough and I will close the file. If it is, send me the grade, quantity and "
-            "destination port, and you will have a firm CIF offer within two working days — with payment "
-            "into escrow and an inspection by the agency you choose.\n\n"
-            f"Best regards,\n{_entity()} — Trade Operations\n"
+            f"I am following up on my earlier note about supplying {product} from verified Indian "
+            "manufacturers. I appreciate how busy your team is, so I will keep this short.\n\n"
+            "If you are sourcing now or planning your next purchase, simply send us the grade, quantity and "
+            "destination port. You will receive a firm CIF offer within two working days, with your payment "
+            "protected in a neutral escrow account and the goods inspected before shipment by the agency you "
+            "choose.\n\n"
+            "If the timing is not right, a one-line reply is enough and I will not follow up again."
+            + cp.signature()
         )
         return subject, body
-    subject = f"{title} from India — inspected before shipment, paid through escrow {token}"
+    subject = f"{title} from verified Indian manufacturers — inspected before shipment, paid via escrow {token}"
     opener = pitch or (
-        f"I am writing because your company buys {product}, and we can offer a lower-risk way to buy it "
-        "directly from Indian manufacturers."
+        f"I am reaching out because your company imports {product}, and we would like to offer you a "
+        "reliable, low-risk way to buy it directly from verified manufacturers in India."
     )
     body = (
         f"{_greeting(cand)}\n\n"
         f"{opener}\n\n"
-        f"{_entity()} is an Indian merchant exporter. What that means for you:\n"
-        "  - You choose the inspector. SGS, QIMA, Bureau Veritas, Intertek or TÜV SÜD checks every lot "
-        "before it ships and you get the photo-documented report; the inspection cost is in our price.\n"
-        "  - Your money is protected. You pay into a neutral escrow account, not to us. A production advance "
-        "is released when the order is placed with the manufacturer; the rest only after the inspection "
-        "passes, the goods clear customs and you accept them.\n"
-        f"  - Verified manufacturers only (GST and IEC checked), with freight and export documents handled "
-        "by us — one CIF price to your port.\n\n"
-        + (f"We can supply lots of {qty:g} MT or multiples. " if qty else "Typical lots are 20–40 MT. ")
-        + "If this is relevant, a short reply with these is all I need to send you a firm offer within "
-        "two working days:\n"
-        "  1. grade / specification and packaging\n"
-        "  2. quantity (MT) and when you need it delivered\n"
-        "  3. destination port\n"
-        "  4. your target price per MT, if you have one\n"
-        "  5. certificates or documents you need at destination\n\n"
-        f"Best regards,\n{_entity()} — Trade Operations\n\n"
-        "If you would rather not hear from us, reply \"not interested\" and we will not write again.\n"
+        f"{cp.one_line()} Importers work with us because the usual risks of buying from a new overseas "
+        "supplier are removed:\n\n"
+        f"{cp.bullets(cp.buyer_reasons())}\n\n"
+        "How an order works:\n"
+        f"{cp.bullets(cp.buyer_steps(), numbered=True)}\n\n"
+        + (f"We can supply lots of {qty:g} MT or multiples. " if qty else "We typically supply lots of 20–40 MT. ")
+        + "If this is of interest, a short reply with the following is all we need to send you a firm offer "
+        "within two working days:\n"
+        "  1. Grade / specification and packaging\n"
+        "  2. Quantity (MT) and required delivery date\n"
+        "  3. Destination port\n"
+        "  4. Your target price per MT, if you have one\n"
+        "  5. Certificates or documents required at destination\n\n"
+        "I would be glad to answer any questions, and I look forward to the possibility of working with you."
+        + cp.signature()
+        + "\nIf you would prefer not to hear from us, simply reply \"not interested\" and we will not write again.\n"
     )
     return subject, body
 
@@ -286,6 +288,9 @@ async def send_outreach(deal_id: str, candidate_id: str, to_address: str, subjec
     ))
     outcome = getattr(getattr(result, "outcome", None), "value", getattr(result, "outcome", "sent"))
     now = datetime.now(timezone.utc)
+    from agents.negotiation_agent.email_history import record_deal_email  # type: ignore[import]
+    await record_deal_email(deal_id=deal_id, direction="outbound", party="buyer", to_address=to_address, from_address=_entity(),
+                            subject=subject, body=body, kind=f"outreach_{kind}", delivered=str(outcome) != "logged")
     updates: dict[str, Any] = {"email_id": email_id}
     if str(outcome) == "logged":
         # No outbound mailbox: the e-mail was written to the log, nobody received
@@ -369,6 +374,9 @@ async def handle_reply(deal_id: str, candidate_id: str | None, from_address: str
                        cand.candidate_id, getattr(cand, "email", None), from_address)
         return {"verdict": verdict, "candidate_id": cand.candidate_id, "matched": False, "sender_mismatch": True}
 
+    from agents.negotiation_agent.email_history import record_deal_email  # type: ignore[import]
+    await record_deal_email(deal_id=deal_id, direction="inbound", party="buyer", to_address=_entity(), from_address=from_address,
+                            subject=f"Reply from {cand.legal_name}", body=body, kind="outreach_reply")
     from shared.orchestration import matchmaking
     if matchmaking.enabled():
         # Prospect matching: the reply fills the buyer's requirement and the match

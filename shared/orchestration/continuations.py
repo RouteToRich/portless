@@ -80,6 +80,7 @@ purely manual/auto-flow-driven progression.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Awaitable
@@ -1158,6 +1159,15 @@ async def issue_pi_for_deal(
 
     if not quantity_mt:
         _, quantity_mt = await _negotiation_numbers(deal_id)
+    # The supplier commits before PortLess commits to the buyer: the PI waits
+    # for the supplier's confirmation of a firm order request (or a standby
+    # supplier's) — shared/orchestration/supplier_commitment.py.
+    from shared.orchestration import supplier_commitment
+    if not await supplier_commitment.ready_for_pi(
+        deal_id, agreed_price=float(agreed_price), quantity_mt=quantity_mt, market=market,
+    ):
+        logger.info("Continuation: PI for deal %s waits for the supplier's order confirmation", deal_id)
+        return None
     port = await _buyer_destination_port(deal_id)
     place = port or PORT_TO_BE_CONFIRMED
     return await issue_pi(IssuePiRequest(
@@ -1359,6 +1369,9 @@ async def on_escrow_funded(event: DomainEvent) -> None:
     deal = await _get_deal_in_status(deal_id, "ESCROW_FUNDED", "ESCROW_FUNDED→PO_GATE")
     if deal is None:
         return
+    from shared.orchestration import notifications
+    await _best_effort("ESCROW_FUNDED→NOTIFY_BUYER", deal_id,
+                       notifications.notify_escrow_funded(deal, event.payload or {}))
     from shared.orchestration import compliance
     if compliance.enabled():
         # Third-party payments are the classic laundering route: the money
@@ -1396,31 +1409,46 @@ async def on_escrow_funded(event: DomainEvent) -> None:
 # PO_ISSUED → QC booking (+ PO to supplier, tranche T1)
 # ---------------------------------------------------------------------------
 
+async def book_qc_for_deal(deal_id: str, deal=None):
+    """Book the QC inspection with the buyer-opted provider (idempotent per deal)."""
+    if deal is None:
+        deal = await _get_deal_in_status(deal_id, "PO_ISSUED", "PO_ACK→QC")
+        if deal is None:
+            return None
+    _, quantity_mt = await _negotiation_numbers(deal_id, deal)
+    from services.shield_link.schemas import QcBookingRequest  # type: ignore[import]
+    from services.shield_link.service import book_qc  # type: ignore[import]
+    tpo = await book_qc(QcBookingRequest(
+        deal_id=deal_id,
+        quantity_mt=quantity_mt,
+        hs_code=getattr(deal, "hs_code", None),
+        idempotency_key=f"auto-qc-{deal_id}",
+    ))
+    logger.info("Continuation: QC booked %s (provider=%s) for deal %s", tpo.tpo_id, tpo.provider, deal_id)
+    return tpo
+
+
 async def on_po_issued(event: DomainEvent) -> None:
-    """PO_ISSUED → book the QC inspection with the buyer-opted provider, email
-    the PO to the supplier, and gate the PO_ISSUED escrow tranche."""
+    """PO_ISSUED → email the PO to the supplier, gate the PO_ISSUED escrow
+    tranche, and book the QC inspection — at once, or (``PO_ACK_REQUIRED``)
+    when the supplier acknowledges the PO, so an inspector is never sent to a
+    factory that has not accepted the order."""
     if not _enabled():
         return
     deal_id = event.deal_id
     deal = await _get_deal_in_status(deal_id, "PO_ISSUED", "PO_ISSUED→QC")
     if deal is None:
         return
-    try:
+    from shared.orchestration import supplier_commitment
+    if supplier_commitment.po_ack_required():
         _, quantity_mt = await _negotiation_numbers(deal_id, deal)
-        from services.shield_link.schemas import QcBookingRequest  # type: ignore[import]
-        from services.shield_link.service import book_qc  # type: ignore[import]
-        tpo = await book_qc(QcBookingRequest(
-            deal_id=deal_id,
-            quantity_mt=quantity_mt,
-            hs_code=getattr(deal, "hs_code", None),
-            idempotency_key=f"auto-qc-{deal_id}",
-        ))
-        logger.info(
-            "Continuation: QC booked %s (provider=%s) for deal %s (event %s)",
-            tpo.tpo_id, tpo.provider, deal_id, event.event_id,
-        )
-    except Exception as exc:
-        await _emit_exception(deal_id, "PO_ISSUED→QC_BOOKED", exc)
+        await _best_effort("PO_ISSUED→AWAIT_ACK", deal_id, supplier_commitment.await_po_ack(deal_id, quantity_mt))
+        logger.info("Continuation: deal %s — inspection is booked once the supplier acknowledges the PO", deal_id)
+    else:
+        try:
+            await book_qc_for_deal(deal_id, deal)
+        except Exception as exc:
+            await _emit_exception(deal_id, "PO_ISSUED→QC_BOOKED", exc)
 
     po_id = (event.payload or {}).get("po_id")
 
@@ -1474,6 +1502,7 @@ async def on_qc_booked(event: DomainEvent) -> None:
 # ---------------------------------------------------------------------------
 
 _SHIPPING_DOCS = ("CI", "PL", "CoO", "SDF", "SHIPPING_BILL")
+_document_pack_locks: dict[str, asyncio.Lock] = {}
 
 
 async def _generate_documents(deal_id: str) -> list[str]:
@@ -1483,18 +1512,21 @@ async def _generate_documents(deal_id: str) -> list[str]:
     from shared.domain.enums import DocumentType
 
     doc_ids: list[str] = []
-    for dt in (
-        DocumentType.COMMERCIAL_INVOICE, DocumentType.PACKING_LIST,
-        DocumentType.CERTIFICATE_OF_ORIGIN, DocumentType.SDF, DocumentType.SHIPPING_BILL,
-    ):
-        try:
-            doc = await generate_document(GenerateDocumentRequest(
-                deal_id=deal_id, doc_type=dt,
-                idempotency_key=f"auto-doc-{deal_id}-{dt.value}",
-            ))
-            doc_ids.append(doc.doc_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Continuation[DOCS]: %s for deal %s failed: %s", dt.value, deal_id, exc)
+    # The status echo and the provider's event both arrive here: one at a time,
+    # or both miss the idempotency check and render the pack twice.
+    async with _document_pack_locks.setdefault(deal_id, asyncio.Lock()):
+        for dt in (
+            DocumentType.COMMERCIAL_INVOICE, DocumentType.PACKING_LIST,
+            DocumentType.CERTIFICATE_OF_ORIGIN, DocumentType.SDF, DocumentType.SHIPPING_BILL,
+        ):
+            try:
+                doc = await generate_document(GenerateDocumentRequest(
+                    deal_id=deal_id, doc_type=dt,
+                    idempotency_key=f"auto-doc-{deal_id}-{dt.value}",
+                ))
+                doc_ids.append(doc.doc_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Continuation[DOCS]: %s for deal %s failed: %s", dt.value, deal_id, exc)
     if doc_ids:
         logger.info("Continuation[DOCS]: %d document(s) ready for deal %s", len(doc_ids), deal_id)
     return doc_ids
@@ -1510,6 +1542,8 @@ async def on_qc_passed(event: DomainEvent) -> None:
     if deal is None:
         return
     payload = event.payload or {}
+    from shared.orchestration import notifications
+    await _best_effort("QC_PASSED→NOTIFY_BUYER", deal_id, notifications.notify_qc_result(deal, payload, passed=True))
     await _best_effort("QC_PASSED→DOCS", deal_id, _generate_documents(deal_id))
     from shared.orchestration import compliance
     if compliance.loading_check_required():
@@ -1645,6 +1679,8 @@ async def on_qc_failed(event: DomainEvent) -> None:
     except Exception as exc:
         await _emit_exception(deal_id, "QC_FAILED→DISPUTE", exc)
         return
+    from shared.orchestration import notifications
+    await _best_effort("QC_FAILED→NOTIFY_BUYER", deal_id, notifications.notify_qc_result(deal, payload, passed=False))
     await _publish_exception(
         deal_id, "QC_FAILED",
         f"QC inspection failed: {payload.get('notes') or 'no notes'}",
@@ -1871,6 +1907,12 @@ async def on_payout_completed(event: DomainEvent) -> None:
         return
     deal_id = event.deal_id
     payload = event.payload or {}
+    if deal_id and payload.get("amount"):
+        async def _notify_payout() -> None:
+            from services.deals.service import get_deal  # type: ignore[import]
+            from shared.orchestration import notifications
+            await notifications.notify_payout_sent(await get_deal(deal_id), payload)
+        await _best_effort("PAYOUT_COMPLETED→NOTIFY_SUPPLIER", deal_id, _notify_payout())
     if payload.get("fully_paid") is False and deal_id:
         try:
             from services.deals.service import get_deal  # type: ignore[import]
@@ -1910,6 +1952,14 @@ async def on_escrow_tranche_released(event: DomainEvent) -> None:
         logger.error("Continuation[TRANCHE_RELEASED]: deal %s lookup failed: %s", deal_id, exc)
         return
     status = _status_of(deal)
+
+    if payload.get("amount"):
+        async def _notify_release() -> None:
+            from services.escrow_guard.repository import get_repository as _eg_repo  # type: ignore[import]
+            from shared.orchestration import notifications
+            hold = await _eg_repo().get_hold_by_deal(deal_id)
+            await notifications.notify_tranche_released(deal, payload, getattr(hold, "amount", None))
+        await _best_effort("TRANCHE_RELEASED→NOTIFY_BUYER", deal_id, _notify_release())
 
     if payload.get("inspection_window_opened"):
         async def _notify_window() -> None:
@@ -1970,6 +2020,12 @@ async def on_freight_milestone(event: DomainEvent) -> None:
                  "findings": [finding.model_dump()],
                  "action_required": "inspect_container_before_release"},
             )
+    if deal_id and milestone == "DELIVERED":
+        async def _notify_delivered() -> None:
+            from services.deals.service import get_deal  # type: ignore[import]
+            from shared.orchestration import notifications
+            await notifications.notify_goods_delivered(await get_deal(deal_id), payload)
+        await _best_effort("FREIGHT_DELIVERED→NOTIFY_SUPPLIER", deal_id, _notify_delivered())
     if not deal_id or milestone not in _inspection_window_milestones():
         return
     try:

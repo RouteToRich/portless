@@ -267,7 +267,7 @@ CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
     # email-list-qualifier-ai: deliverability check of a counterparty address.
     ApifyEmailQualifierConnector.name: ApifyEmailQualifierConnector,
 
-    # container-tracking-ai (external slot): carrier milestones for a booked
+    # multi-carrier-tracking-ai: carrier milestones for a booked
     # shipment → DELIVERED opens the buyer's acceptance window.
     ApifyCarrierTrackingConnector.name: ApifyCarrierTrackingConnector,
 }

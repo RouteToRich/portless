@@ -26,10 +26,20 @@ def verify_payout_and_margin(
     supplier_price: float,
     logistics_cost: float = 0.0,
 ) -> tuple[bool, float]:
-    """Return (margin_ok, margin_pct). margin_ok iff margin_pct >= floor."""
-    margin = compute_net_margin(
-        buyer_price, supplier_price, logistics_cost, session.cost_envelope
-    )
+    """Return (margin_ok, margin_pct). margin_ok iff margin_pct >= floor.
+
+    With a cost sheet (every PortLess cost: freight, inspection, customs,
+    documents, insurance, escrow fee, contingency — shared/orchestration/
+    trade_costs.py) the margin is the real net margin; without one, the
+    legacy freight + cost-envelope formula."""
+    sheet = getattr(session, "cost_sheet", None)
+    if sheet:
+        from shared.orchestration import trade_costs
+        margin = trade_costs.net_margin_pct(sheet, buyer_price, supplier_price)
+    else:
+        margin = compute_net_margin(
+            buyer_price, supplier_price, logistics_cost, session.cost_envelope
+        )
     floor = session.policy.margin_floor_pct
     return (margin >= floor, margin)
 

@@ -88,6 +88,9 @@ _FUNDING_TOLERANCE = 0.01
 
 # Deal statuses in which no money may leave the escrow towards PortLess.
 _RELEASE_BLOCKING_DEAL_STATUSES = {"DISPUTE", "CANCELLED", "REFUNDED", "QC_FAILED"}
+_REFUND_NOTICED_BY_CANCELLATION = {"PI_SENT", "PI_ACCEPTED", "ESCROW_PENDING", "CANCELLED"}
+"""Deal statuses where a refund belongs to the cancel_unfunded playbook, whose
+deal_cancelled notice already tells the buyer about the refund."""
 
 # Provider fee (% of each release) when the connector cannot quote one.
 _DEFAULT_FEE_PCT = {"tazapay": 1.0, "escrow_com": 0.89, "stripe": 2.9, "stripe_treasury": 2.9}
@@ -1102,6 +1105,8 @@ async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
 
     # A refund closes the dispute path: DISPUTE → REFUNDED (terminal). Any other
     # deal status is left alone — the refund is recorded on the hold either way.
+    deal = None
+    deal_status = ""
     try:
         deal = await _fetch_deal(hold.deal_id)
         deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
@@ -1112,6 +1117,15 @@ async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
             )
     except Exception as exc:  # noqa: BLE001 — the refund itself already committed
         logger.error("EscrowGuard: REFUNDED transition failed for deal %s: %s", hold.deal_id, exc)
+
+    # Tell the buyer — except on the unfunded-deal cancellation path (the
+    # playbook's own cancellation notice already names the refund).
+    if deal is not None and deal_status not in _REFUND_NOTICED_BY_CANCELLATION and undisbursed > 0:
+        try:
+            from shared.orchestration import notifications
+            await notifications.notify_escrow_refunded(deal, escrow_id, undisbursed, hold.currency, req.reason)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("EscrowGuard: refund notice failed for deal %s: %s", hold.deal_id, exc)
 
     await _emit(EventTopic.DEAL_EXCEPTION, hold.deal_id, {
         "source": "escrow_guard",
@@ -1550,18 +1564,82 @@ async def _patch_deal_realized_margin(deal_id: str) -> None:
         payouts_total, _ = _payout_totals(payouts)
         # Realised margin = cash actually received from the escrow (released
         # tranches net of provider fees; the funded principal for a legacy
-        # Stripe hold) minus everything paid to the supplier.
-        realized = round(_net_received(hold) - payouts_total, 2)
+        # Stripe hold) minus everything paid to the supplier, minus PortLess's
+        # own costs (freight, inspection, insurance, customs, documents).
+        costs, _basis = await _portless_costs(deal_id, hold.amount)
+        realized = round(_net_received(hold) - payouts_total - sum(costs.values()), 2)
+        # As a % of what the buyer pays (the escrow principal = the PI total).
+        pct = round(realized / hold.amount * 100.0, 2) if hold.amount else None
 
         from services.deals.schemas import UpdateFinancialsRequest  # type: ignore[import]
         from services.deals.service import update_financials  # type: ignore[import]
 
-        await update_financials(deal_id, UpdateFinancialsRequest(realized_margin_usd=realized))
+        await update_financials(deal_id, UpdateFinancialsRequest(realized_margin_usd=realized, realized_margin_pct=pct))
         logger.info("EscrowGuard: realized_margin_usd=%.2f patched onto deal %s", realized, deal_id)
     except Exception as exc:
         logger.warning(
             "EscrowGuard: could not patch realized margin for deal %s: %s", deal_id, exc
         )
+
+
+# Cost lines that become real when a provider order exists for the deal.
+_COSTS_BY_ORDER = {
+    "QC": ("inspection",),
+    "FREIGHT": ("ocean_freight", "marine_insurance"),
+    "CHA": ("customs_agent", "export_documents"),
+}
+# The fee the provider order itself reports, when it does (else the cost sheet's estimate).
+_ORDER_FEE_KEYS = {"inspection": ("fee_usd", "total_usd"), "ocean_freight": ("total_freight_usd", "total_usd", "amount_usd"),
+                   "customs_agent": ("fee_usd", "total_usd")}
+
+
+async def _portless_costs(deal_id: str, principal: float) -> tuple[dict[str, float], dict[str, str]]:
+    """PortLess's own costs for the deal so far: each cost-sheet line once its
+    provider order exists, at the order's reported fee or the sheet's estimate.
+    The escrow fee is excluded (already in ``fees_total``) and so is the
+    contingency (a pricing buffer, not a cost). Never raises."""
+    costs: dict[str, float] = {}
+    basis: dict[str, str] = {}
+    try:
+        from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+        session = await _neg_repo().get_session_by_deal(deal_id)
+        sheet = getattr(session, "cost_sheet", None) if session is not None else None
+        if not sheet:
+            return costs, basis
+        qty = float(session.quantity_mt or sheet.get("quantity_mt") or 0.0)
+        if qty <= 0:
+            return costs, basis
+        from shared.orchestration import trade_costs
+        per_line = trade_costs.cost_usd(sheet, principal / qty, qty)
+        incurred: set[str] = set()
+        fees: dict[str, float] = {}
+        try:
+            from services.shield_link.service import list_deal_orders  # type: ignore[import]
+            for order in (await list_deal_orders(deal_id)).orders:
+                if order.status in ("FAILED", "CANCELLED"):
+                    continue
+                for key in _COSTS_BY_ORDER.get(order.order_type.upper(), ()):
+                    incurred.add(key)
+                    payload = getattr(order, "provider_payload", None) or {}
+                    for fk in _ORDER_FEE_KEYS.get(key, ()):
+                        if isinstance(payload.get(fk), (int, float)) and payload[fk] > 0:
+                            fees[key] = fees.get(key, 0.0) + float(payload[fk])
+                            break
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("EscrowGuard: provider orders for %s unavailable: %s", deal_id, exc)
+        from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
+        if await _dm_repo().get_po_by_deal(deal_id) is not None:
+            incurred.update({"inland_transport", "origin_handling"})
+        for key, usd in per_line.items():
+            if key in ("escrow_fee", "contingency") or key not in incurred:
+                continue
+            if key in fees:
+                costs[key], basis[key] = round(fees[key], 2), "actual"
+            else:
+                costs[key], basis[key] = usd, "estimate"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("EscrowGuard: PortLess costs for %s not computed: %s", deal_id, exc)
+    return costs, basis
 
 
 async def get_deal_ledger(deal_id: str) -> DealLedger:
@@ -1594,6 +1672,9 @@ async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> De
         owed = await _supplier_owed(hold.deal_id)
     retained = _retained_until_acceptance(hold, owed)
     payable_ceiling = min(net, owed - retained) if retained else net
+    costs, basis = await _portless_costs(hold.deal_id, hold.amount)
+    costs_total = round(sum(costs.values()), 2)
+    has_margin = bool((hold.tranches and hold.released_total) or completed)
     return DealLedger(
         deal_id=hold.deal_id,
         currency=hold.currency,
@@ -1614,7 +1695,11 @@ async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> De
         retained_until_acceptance=retained,
         supplier_owed=owed,
         supplier_balance_due=(round(owed - completed, 2) if owed is not None else None),
-        realized_margin=round(net - completed, 2) if (hold.tranches and hold.released_total) or completed else None,
+        portless_costs=costs,
+        portless_costs_basis=basis,
+        portless_costs_total=costs_total,
+        margin_before_costs=round(net - completed, 2) if has_margin else None,
+        realized_margin=round(net - completed - costs_total, 2) if has_margin else None,
         tranches=hold.tranches,
         payouts=[PayoutResponse.from_record(p) for p in payouts],
         inspection_deadline=hold.inspection_deadline,

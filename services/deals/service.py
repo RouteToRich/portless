@@ -590,6 +590,10 @@ async def update_financials(deal_id: str, payload: UpdateFinancialsRequest) -> D
         updates["est_margin_usd"] = payload.est_margin_usd
     if payload.realized_margin_usd is not None:
         updates["realized_margin_usd"] = payload.realized_margin_usd
+    if payload.est_margin_pct is not None:
+        updates["est_margin_pct"] = payload.est_margin_pct
+    if payload.realized_margin_pct is not None:
+        updates["realized_margin_pct"] = payload.realized_margin_pct
     if payload.buyer_target_price_usd is not None:
         updates["buyer_target_price_usd"] = payload.buyer_target_price_usd
     if payload.winning_supplier_id is not None:

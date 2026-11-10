@@ -152,6 +152,13 @@ ACTION_CLASSES: tuple[ActionClass, ...] = (
         default="L0",
     ),
     ActionClass(
+        "CONFIRM_SUPPLIER_ORDER", "Supplier Order Confirmation",
+        "The supplier's reply to the firm order request reads as a confirmation — record its "
+        "committed price and send the buyer the Proforma Invoice. A decline or silence moves "
+        "the order to the next-ranked supplier automatically.",
+        default="L0", default_timeout_seconds=_DAY, default_on_timeout="APPROVE",
+    ),
+    ActionClass(
         "CONFIRM_PI_ACCEPTANCE", "PI Acceptance",
         "Accept the Proforma Invoice when the buyer's email reply reads as an acceptance.",
         default="L0", default_timeout_seconds=_DAY, default_on_timeout="APPROVE",

@@ -101,31 +101,68 @@ async def _usd_inr_rate() -> float:
         return 96.0
 
 
-async def _extract_price(body: str) -> float | None:
+# Words that mark a figure as the sender's OWN counter rather than an echo of
+# ours ("your price of USD 1,316 is too high — we can counter at USD 1,200").
+_COUNTER_CONTEXT = re.compile(
+    r"\b(?:counter(?:[- ]?offer)?|(?:can|could|will|would)\s+(?:do|go|pay|offer|accept|proceed|agree)|"
+    r"willing\s+to\s+(?:pay|go|accept)|propos\w*|proceed\s+at|accept\s+at|agree\s+(?:at|to)|revised|improve\w*|"
+    r"our\s+(?:offer|target|budget|counter|best)|budget\s+(?:is|of)|best\s+(?:price|offer)\s+(?:is|of)|"
+    r"we\s+offer|i\s+offer|offer\s+you)\b",
+    re.IGNORECASE,
+)
+
+
+async def _extract_price(body: str, ignore_price: float | None = None) -> float | None:
     """Extract the counter price from an email body, normalised to USD.
+
+    Every price in the new part of the reply is a candidate (quoted history is
+    dropped first). A figure equal to ``ignore_price`` — our own last offer to
+    this party, which counterparties usually repeat ("your USD 1,316.43 is above
+    our budget") — is skipped when the reply holds another figure, and a figure
+    introduced as their counter ("we can counter at …", "we can offer …") beats
+    the rest. Otherwise the first figure in the text wins.
 
     Amounts denominated in INR (₹/INR/Rs near the number) are converted to USD
     at the current rate before the USD plausibility bounds are applied, so a
     rupee-quoted supplier reply doesn't read as a ~96× USD figure.
     """
+    try:
+        from agents.negotiation_agent.guards import _new_reply_text  # type: ignore[import]
+        text = _new_reply_text(body) or body
+    except Exception:  # noqa: BLE001
+        text = body
+    if "[PRICE:" in body:  # the manual endpoint's marker is authoritative
+        text = body
+
+    rate: float | None = None
+    found: dict[int, tuple[float, bool]] = {}  # number start → (USD value, counter context)
     for pattern in _PRICE_PATTERNS:
-        m = pattern.search(body)
-        if not m:
-            continue
-        try:
-            value = float(m.group(1).replace(",", ""))
-        except ValueError:
-            continue
-        if _looks_like_inr(body, m):
-            rate = await _usd_inr_rate()
-            usd = round(value / rate, 4)
-            logger.info(
-                "Extracted INR price ₹%s → $%.4f USD (rate %.2f)", value, usd, rate
-            )
-            value = usd
-        if settings.price_extraction_min <= value <= settings.price_extraction_max:
-            return value
-    return None
+        for m in pattern.finditer(text):
+            start = m.start(1)
+            if start in found:
+                continue
+            try:
+                value = float(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if _looks_like_inr(text, m):
+                rate = rate or await _usd_inr_rate()
+                usd = round(value / rate, 4)
+                logger.info("Extracted INR price ₹%s → $%.4f USD (rate %.2f)", value, usd, rate)
+                value = usd
+            if not settings.price_extraction_min <= value <= settings.price_extraction_max:
+                continue
+            before = text[max(0, m.start() - 45):start]
+            found[start] = (value, bool(_COUNTER_CONTEXT.search(before)) or "[PRICE:" in m.group(0))
+    if not found:
+        return None
+    ordered = [found[k] for k in sorted(found)]
+    if ignore_price:
+        others = [c for c in ordered if abs(c[0] - ignore_price) > 0.01]
+        if others:
+            ordered = others
+    countered = [v for v, ctx in ordered if ctx]
+    return countered[0] if countered else ordered[0][0]
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +353,16 @@ async def _process_inbound(
         return await _handle_post_agreement_reply(record, raw, mapping)
 
     # ── Extract counter-price ──────────────────────────────────────────────
-    price = counter_price_override or await _extract_price(raw.body_text)
+    our_last_offer = None
+    try:
+        from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+        _session = await _neg_repo().get_session(mapping.negotiation_id)
+        if _session is not None:
+            our_last_offer = (_session.last_offer_to_buyer if mapping.party == "buyer"
+                              else _session.last_offer_to_supplier)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("last-offer lookup (non-fatal): %s", exc)
+    price = counter_price_override or await _extract_price(raw.body_text, ignore_price=our_last_offer)
     if price is None:
         price = await _price_of_bare_acceptance(mapping.negotiation_id, mapping.party, raw.body_text)
 
@@ -704,6 +750,29 @@ async def _handle_post_agreement_reply(
         outcome = await _handle_delivery_reply(record, raw, accepted)
         if outcome is not None:
             return outcome
+
+    # The supplier answers the firm order request (before the PI) or
+    # acknowledges the Purchase Order (before the inspection is booked).
+    if mapping.party == "supplier" and record.deal_id and deal_status:
+        try:
+            from shared.orchestration import supplier_commitment
+            message = await supplier_commitment.handle_supplier_reply(
+                record.deal_id, deal_status, raw.body_text or "", record.inbound_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — a person reads it instead
+            logger.warning("Supplier reply %s: commitment handling failed: %s", record.inbound_id, exc)
+            message = None
+        if message:
+            record = record.model_copy(update={
+                "status": InboundEmailStatus.PROCESSED,
+                "processed_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            })
+            await repo.save(record)
+            return ProcessingResult(
+                inbound_id=record.inbound_id, status=InboundEmailStatus.PROCESSED,
+                negotiation_id=record.negotiation_id, message=message,
+            )
 
     hitl_id = await _create_price_hitl(
         record,

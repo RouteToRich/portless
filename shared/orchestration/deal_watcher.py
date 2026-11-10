@@ -171,7 +171,7 @@ async def _sweep_escrow_pending(deal: Any, now: datetime, counts: dict[str, int]
             deal.deal_id, "ESCROW_PENDING:unfunded",
             f"escrow {hold.escrow_id} ({hold.amount} {hold.currency}) unfunded after "
             f"{_reminder_max()} reminder(s)",
-            {"escrow_id": hold.escrow_id, "amount": hold.amount},
+            {"escrow_id": hold.escrow_id, "amount": hold.amount, "since": opened_at.isoformat(), "category": "PAYMENT_FAILED"},
         ):
             counts["exceptions"] += 1
 
@@ -309,6 +309,15 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
                 await _sweep_generic(deal, status, now, counts)
         except Exception as exc:  # noqa: BLE001 — one bad deal must not stop the sweep
             logger.error("DealWatcher: sweep failed for deal %s (%s): %s", deal.deal_id, status, exc)
+
+    # Firm order requests nobody answered in time → the next-ranked supplier.
+    try:
+        from shared.orchestration import supplier_commitment
+        moved = await supplier_commitment.sweep(now)
+        if moved:
+            counts["supplier_standby"] = moved
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: supplier confirmation sweep failed: %s", exc)
 
     # Buyer outreach follow-ups (MATCHING / NEGOTIATING deals waiting for a buyer).
     try:

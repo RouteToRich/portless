@@ -29,8 +29,9 @@ on events.
 
 Status: every module is implemented and tested; the pipeline runs end to end locally with
 stub connectors and in-memory stores. Live operation needs credentials (escrow provider,
-payout rail, inspectors, forwarder, e-mail, Apify) and the two external Apify actors
-(`india-supplier-finder-ai`, `container-tracking-ai`) — see
+payout rail, inspectors, forwarder, e-mail, Apify), the external Apify actor
+`india-supplier-finder-ai`, and an Apify plan that can run public Actors for carrier
+tracking (`multi-carrier-tracking-ai`) — see
 [PRODUCTION_TRACKER.md](PRODUCTION_TRACKER.md).
 
 ---

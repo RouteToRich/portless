@@ -73,6 +73,51 @@ def silence_side_effects(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Idempotency under concurrency
+# ---------------------------------------------------------------------------
+
+class _SlowLookupRepo(InMemoryHitlApprovalRepository):
+    """The key lookup yields like a database round-trip, so two callers
+    overlap between "no approval with this key" and the save."""
+
+    async def get_by_idempotency_key(self, key):
+        found = await super().get_by_idempotency_key(key)
+        await asyncio.sleep(0.01)  # the answer travels back while the other caller reads too
+        return found
+
+
+class TestConcurrentIdempotency:
+    @pytest.mark.asyncio
+    async def test_same_key_at_the_same_time_creates_one_approval(self):
+        import services.hitl_approval.repository as repo_mod
+        repo = _SlowLookupRepo()
+        repo_mod._repository = repo
+        req = CreateApprovalRequest(deal_id="DEAL-01", action="RELEASE_SUPPLIER_PAYOUT", autonomy_level="L0",
+                                    financial_impact_usd=17726.10, idempotency_key="auto-payout-gate-DEAL-01")
+        a, b = await asyncio.gather(create_approval(req), create_approval(req))
+        assert a.approval_id == b.approval_id
+        assert len(await repo.list_by_deal("DEAL-01")) == 1
+
+    @pytest.mark.asyncio
+    async def test_different_keys_are_not_serialised_into_one(self):
+        import services.hitl_approval.repository as repo_mod
+        repo = _SlowLookupRepo()
+        repo_mod._repository = repo
+        reqs = [CreateApprovalRequest(deal_id="DEAL-02", action="BOOK_FREIGHT", autonomy_level="L0", idempotency_key=k)
+                for k in ("k1", "k2")]
+        a, b = await asyncio.gather(*(create_approval(r) for r in reqs))
+        assert a.approval_id != b.approval_id
+        assert len(await repo.list_by_deal("DEAL-02")) == 2
+
+    @pytest.mark.asyncio
+    async def test_locks_are_released_after_use(self):
+        from services.hitl_approval import service as hitl
+        await create_approval(CreateApprovalRequest(deal_id="DEAL-03", action="BOOK_FREIGHT",
+                                                    autonomy_level="L0", idempotency_key="k3"))
+        assert "k3" not in hitl._key_locks and "k3" not in hitl._key_waiters
+
+
+# ---------------------------------------------------------------------------
 # Create approval — L0
 # ---------------------------------------------------------------------------
 

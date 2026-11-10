@@ -21,6 +21,7 @@ from .guards import (
     acceptance_price_consistent,
     check_convergence,
     compute_midpoint_price,
+    extract_usd_prices,
     is_explicit_acceptance,
     is_near_margin_floor,
     missing_agreement_info,
@@ -28,13 +29,14 @@ from .guards import (
 )
 from . import briefing
 from .llm import get_llm_client
-from .pricing import PriceBand, buyer_band, supplier_band
+from .pricing import PriceBand, buyer_band, indicative_range, supplier_band
 from .prompts import (
     BUYER_AGENT_SYSTEM_PROMPT,
     INTENT_CLASSIFIER_SYSTEM_PROMPT,
     ORCHESTRATOR_SYSTEM_PROMPT,
     SUPPLIER_AGENT_SYSTEM_PROMPT,
 )
+from shared import company_profile
 from shared.product_label import product_label, product_phrase
 
 from .schemas import (
@@ -64,6 +66,8 @@ class NegotiationGraphState(TypedDict, total=False):
     buyer_market_context: str      # live web-search market color for buyer-side drafting (may be empty)
     supplier_market_context: str   # live web-search market color for supplier-side drafting (may be empty)
     usd_inr_rate: float            # USD/INR rate for supplier-side INR pricing (live fetch or fallback)
+    buyer_awaiting_reply: bool     # our last buyer e-mail is still unanswered (set on supplier replies)
+    market_check: dict[str, Any] | None  # pre-trade market check (shared/orchestration/market_check.py)
 
     # Mutable per-node outputs
     current_bid: float | None
@@ -165,6 +169,82 @@ def clean_outbound(text: str | None) -> str:
     t = _MD_BULLET.sub(r"\1- ", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
+
+
+_TARGET_CLAIM = re.compile(
+    r"\b(?:meets?|meeting|matches|matching|match|within|in line with|at or below)\s+"
+    r"(?:your|the buyer's)\s+(?:own\s+|stated\s+|indicated\s+|latest\s+|last\s+)?"
+    r"(?:target|budget|counter[- ]?offer|counter|offer|request|price expectation)\b",
+    re.IGNORECASE,
+)
+# Our pricing vocabulary must never reach a counterparty: "within our allowed
+# range", "above our floor price" tell the reader how the price is built.
+_INTERNAL_TERMS = re.compile(
+    r"\b(?:allowed\s+(?:range|limits?|band)|(?:lowest|highest)\s+allowed|floor\s+price|our\s+floor|"
+    r"price\s+band|recommended\s+price|(?:our|the)\s+margin|margin\s+floor|concession\s+budget)\b",
+    re.IGNORECASE,
+)
+_SENTENCE = re.compile(r"[^.!?\n]*[.!?]?")
+# "This price meets the standard benchmark…", "reflects the current market…" —
+# PortLess has no verified market figure in the draft, so the claim is invented.
+_MARKET_CLAIM = re.compile(
+    r"\b(?:reflects?|meets?|matches|in\s+line\s+with|below|under|competitive\s+(?:with|against))\s+"
+    r"(?:the\s+)?(?:current\s+|standard\s+|prevailing\s+|international\s+|global\s+)*"
+    r"(?:market|benchmark|going\s+rate)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_sentences(text: str, pattern: re.Pattern[str]) -> tuple[str, bool]:
+    if not text or not pattern.search(text):
+        return text, False
+    kept = []
+    for line in text.split("\n"):
+        if pattern.search(line):
+            line = "".join(s for s in _SENTENCE.findall(line) if not pattern.search(s)).strip()
+            line = re.sub(r"\s{2,}", " ", line)
+        kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip(), True
+
+
+def strip_false_target_claim(text: str) -> tuple[str, bool]:
+    """Remove every sentence claiming our price meets the buyer's target/budget.
+
+    Used when code says it does NOT (pricing.meets_buyer_target is false): the
+    model has written "our price meets your target" against a lower counter."""
+    return _strip_sentences(text, _TARGET_CLAIM)
+
+
+def strip_market_claim(text: str) -> tuple[str, bool]:
+    """Remove sentences comparing our price to "the market" or "the benchmark"."""
+    return _strip_sentences(text, _MARKET_CLAIM)
+
+
+def strip_internal_terms(text: str) -> tuple[str, bool]:
+    """Remove sentences that use PortLess's internal pricing words."""
+    return _strip_sentences(text, _INTERNAL_TERMS)
+
+
+_PRICE_IN_TEXT = re.compile(r"\b(?:USD|INR|US\$|Rs\.?)\s?[\d,]{3,}|[₹$]\s?[\d,]{3,}", re.IGNORECASE)
+_BASIS_WORDS = re.compile(r"\b(?:includ\w*|cover\w*|reflect\w*|based on|because|due to|given|basis)\b", re.IGNORECASE)
+
+
+def _quotes_price_without_basis(text: str | None) -> bool:
+    """A price in the e-mail with no word explaining what it rests on."""
+    t = text or ""
+    return bool(_PRICE_IN_TEXT.search(t)) and not _BASIS_WORDS.search(t)
+
+
+def _market_facts(state: Any, audience: str) -> list[dict[str, str]]:
+    """Dated, sourced facts from the pre-trade market check that this side may
+    be told (never a price PortLess has not verified, never the other side)."""
+    check = state.get("market_check") or {}
+    return [f for f in (check.get("facts") or []) if audience in (f.get("audience") or ["buyer", "supplier"])][:4]
+
+
+def _dear(company: str | None) -> str:
+    name = (company or "").strip()
+    return f"Dear {name} team," if name else "Dear Sir or Madam,"
 
 
 def _num(x: float | None) -> float | int | None:
@@ -452,9 +532,15 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
     ask = _current_ask(state)
     policy = session.policy
 
-    # Deterministic guards — evaluated before any LLM call
-    converged = check_convergence(session, bid, ask, logistics)
-    margin_ok, margin_pct = verify_payout_and_margin(session, bid, ask, logistics)
+    # Deterministic guards — evaluated before any LLM call. The margin is
+    # judged on the price the SUPPLIER itself stated (its last quote, else its
+    # RFQ quote) — never on our own counter to it, which the supplier may not
+    # have accepted: the PO is written at the supplier's price (UC-01 run
+    # 2026-11-10 agreed at "8.81 %" against our 957 counter while the PO went
+    # out at the supplier's 1,010 — a real margin of about 3 %).
+    supplier_committed = session.supplier_last_quote or session.supplier_quote_price or ask
+    converged = check_convergence(session, bid, supplier_committed, logistics)
+    margin_ok, margin_pct = verify_payout_and_margin(session, bid, supplier_committed, logistics)
     near_floor = is_near_margin_floor(session, margin_pct, settings.hitl_margin_warning_pct)
 
     # A counterpart that outright accepts the last quoted price (rather than
@@ -472,10 +558,10 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
     if (
         not converged
         and margin_ok
-        and party in ("buyer", "supplier")
+        and party == "buyer"  # a supplier saying yes fixes our cost; only the buyer can close the sale
         and state.get("inbound_message")
     ):
-        reference_price = bid if party == "buyer" else ask
+        reference_price = bid
         explicit_accept, accept_detail, classified_qc = await _detect_explicit_acceptance(
             state, party, reference_price
         )
@@ -519,7 +605,7 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
                 f"gap={abs(ask - bid):.4f} margin={margin_pct:.2f}%"
             )
         else:
-            agreed = bid if party == "buyer" else ask
+            agreed = bid
             reasoning = (
                 f"Explicit acceptance detected from {party} ({accept_detail}) — "
                 f"agreed_price={agreed} margin={margin_pct:.2f}% "
@@ -609,8 +695,20 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
     # is drafted. If the LLM returned a terminal/HITL routing, fall back to a
     # deterministic buyer/supplier choice based on the last inbound party.
     routing = decision.action_routing
-    if routing not in ("CALL_BUYER_AGENT", "CALL_SUPPLIER_AGENT"):
+    if routing not in ("CALL_BUYER_AGENT", "CALL_SUPPLIER_AGENT", "CALL_BOTH_AGENTS"):
         routing = "CALL_SUPPLIER_AGENT" if state.get("party") == "buyer" else "CALL_BUYER_AGENT"
+    # Both sides are negotiated: a buyer's reply always gets a counter AND the
+    # supplier is asked to improve its price. Decided here, not by the LLM, so
+    # the supplier is still worked when the gateway is down (the LLM-failure
+    # fallback above would otherwise only ever write to the buyer).
+    if state.get("party") == "buyer":
+        routing = "CALL_BOTH_AGENTS"
+    # A supplier reply while the buyer still owes us an answer: keep working the
+    # supplier thread. A second buyer e-mail in a row would only repeat the offer
+    # the buyer already has; the supplier's better price reaches the buyer in
+    # our answer to the buyer's next reply.
+    elif state.get("party") == "supplier" and state.get("buyer_awaiting_reply"):
+        routing = "CALL_SUPPLIER_AGENT"
 
     return {
         **state,
@@ -660,12 +758,20 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
     # quote), not from our counter to it — see pricing.py for why that keeps
     # the margin floor on any pair of prices the two agents can quote.
     supplier_price = session.supplier_last_quote or session.supplier_quote_price or ask
-    denom = max(1.0 - floor_pct / 100.0, 0.01)
-    floor_price = round((supplier_price + logistics + env_total) / denom, 2)
+    # Every PortLess cost (freight, inspection, customs, documents, insurance,
+    # escrow fee, contingency) from the cost sheet; legacy freight + envelope without one.
+    from shared.orchestration import trade_costs
+    if session.cost_sheet:
+        fixed_costs, pct_costs = trade_costs._nums(session.cost_sheet)
+    else:
+        fixed_costs, pct_costs = logistics + env_total, 0.0
+    denom = max(1.0 - (floor_pct + pct_costs) / 100.0, 0.01)
+    floor_price = round((supplier_price + fixed_costs) / denom, 2)
     band = buyer_band(
         buyer_offer=session.buyer_last_offer or bid,
         supplier_price=supplier_price,
-        costs=logistics + env_total,
+        costs=fixed_costs,
+        pct_costs=pct_costs,
         floor_pct=floor_pct,
         target_pct=session.policy.target_margin_pct,
         last_offer_to_buyer=session.last_offer_to_buyer,
@@ -688,6 +794,16 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
     # The introduction / indicative offer went out before the negotiation thread
     # existed — a buyer who answered it is not a cold contact any more.
     is_first_contact = brief["stage"] == briefing.COLD
+    meets_target = _buyer_named_price(session, brief, band.recommended)
+    # The first price a buyer sees is a range, not a firm figure: the firm price
+    # goes into the proforma invoice once the manufacturer has confirmed the
+    # order (supplier_commitment). Meeting the buyer's own target is said plainly.
+    indicative = None
+    if brief["stage"] in (briefing.COLD, briefing.AFTER_INTRO) and not meets_target:
+        low, high = indicative_range(band, floor=floor_price)
+        if low < high:
+            indicative = {"low_usd_per_mt": int(low), "high_usd_per_mt": int(high),
+                          "text": f"USD {low:,.0f}–{high:,.0f}"}
 
     payload = {
         "buyer_id": session.buyer_id,
@@ -707,9 +823,15 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
             # strongest line an e-mail can carry ("we can meet your target").
             # Only when the buyer really named that price (in a reply or a
             # counter) — a scan benchmark is OUR estimate, not "your target".
-            "meets_buyer_target": _buyer_named_price(session, brief, band.recommended),
+            "meets_buyer_target": meets_target,
+            "indicative_range": indicative,
         },
         "portless_terms": briefing.buyer_terms(),
+        "portless_profile": company_profile.for_llm("buyer"),
+        # Why the price is what it is — what the CIF price includes (never an
+        # amount) and dated, sourced market facts from the pre-trade check.
+        "price_basis": trade_costs.buyer_price_basis(session.cost_sheet, session.qc_provider),
+        "market_facts": _market_facts(state, "buyer"),
         "current_bid": bid,
         "floor_price": floor_price,
         "round_no": session.round_no,
@@ -733,8 +855,21 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
         fallback={
             "counter_price_usd": band.recommended,
             "outbound_message": (
-                f"We can offer {product_phrase(session.product_code)} at USD {band.recommended:,.2f} per MT "
-                "CIF your destination port, with independent pre-shipment inspection and escrow-protected payment."
+                f"{_dear(brief.get('company_name'))}\n\n"
+                + ("Thank you for your message. " if inbound_from_buyer else
+                   (f"{company_profile.one_line()}\n\n" if is_first_contact else ""))
+                + (f"Our indicative price for {product_phrase(session.product_code)} is "
+                   f"USD {indicative['low_usd_per_mt']:,.0f}–{indicative['high_usd_per_mt']:,.0f} per MT CIF your "
+                   "destination port; the firm price follows in our proforma invoice once the manufacturer has "
+                   "confirmed the order. "
+                   if indicative else
+                   f"We can offer {product_phrase(session.product_code)} at USD {band.recommended:,.2f} per MT "
+                   "CIF your destination port. ")
+                + "The price includes ocean freight and marine insurance to your port, export clearance and "
+                "certificates, and an independent pre-shipment inspection by the agency you choose; your payment "
+                "is protected in a neutral escrow account.\n\n"
+                "Please let us know the grade, quantity and destination port, and we will send you the "
+                "proforma invoice."
             ),
             "negotiated_terms": {"unit_price": band.recommended, "currency": "USD"},
             "reasoning": "LLM parse fallback",
@@ -742,15 +877,45 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
     )
 
     new_bid, flags = _settle_price(result, band, "buyer")
+    if is_first_contact and (state.get("market_check") or {}).get("verdict") == "avoid":
+        flags = flags + ["market_check_avoid"]  # the news argues against this trade: a person decides
+    if _quotes_price_without_basis(result.get("outbound_message", "")):
+        flags = flags + ["price_without_basis"]
+    # A figure above the highest price we may quote never goes out unseen —
+    # e.g. a range the model copied from somewhere instead of indicative_range.
+    ceiling = max(band.high, (indicative or {}).get("high_usd_per_mt") or 0.0)
+    # (a figure several times the ceiling is a shipment total, not a per-MT price)
+    above = [p for p in extract_usd_prices(result.get("outbound_message", "")) if ceiling + 1.0 < p < ceiling * 3]
+    if above and "price_out_of_band" not in flags:
+        logger.warning("Buyer draft states USD %s above the highest allowed %.2f", above, ceiling)
+        flags = flags + ["price_out_of_band"]
+    body = clean_outbound(result.get("outbound_message", ""))
+    if not payload["pricing"]["meets_buyer_target"] or abs(new_bid - band.recommended) >= 0.01:
+        body, claimed = strip_false_target_claim(body)
+        if claimed:
+            logger.warning("Buyer draft claimed to meet the buyer's target at %.2f — sentence removed", new_bid)
+            flags = flags + ["false_target_claim"]
+    body, market = strip_market_claim(body)
+    if market:
+        logger.warning("Buyer draft compared our price to the market/benchmark — sentence removed")
+        flags = flags + ["unverified_market_claim"]
+    body, internal = strip_internal_terms(body)
+    if internal:
+        logger.warning("Buyer draft used internal pricing terms — sentence removed")
+        flags = flags + ["internal_terms"]
+    reasoning = f"[price: {band.basis}] {result.get('reasoning', '')}".strip()
+    if state.get("routing") == "CALL_BOTH_AGENTS" and state.get("reasoning"):
+        # The supplier agent drafted first in this pass — keep its reasoning too.
+        reasoning = f"[supplier] {state['reasoning']} | [buyer] {reasoning}"
     return {
         **state,
         "current_bid": new_bid,
-        "buyer_outbound_message": clean_outbound(result.get("outbound_message", "")),
+        "buyer_outbound_message": company_profile.with_signature(body),
         "buyer_draft_degraded": bool(result.get("_degraded")),
         "buyer_draft_flags": flags,
         "buyer_stage": brief["stage"],
         "buyer_terms": result.get("negotiated_terms", {}),
-        "reasoning": f"[price: {band.basis}] {result.get('reasoning', '')}".strip(),
+        "reasoning": reasoning,
     }
 
 
@@ -767,7 +932,13 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
     # Ceiling from what the buyer itself offered (not our counter to it); the
     # supplier is never offered more than its own last quote (pricing.py).
     buyer_offer = session.buyer_last_offer or session.buyer_target_price or bid
-    implied_max = buyer_offer * (1 - session.policy.margin_floor_pct / 100) - logistics - env_total
+    from shared.orchestration import trade_costs
+    if session.cost_sheet:
+        # Net of every PortLess cost; for an ex-works supplier the inland
+        # transport to the port is one of them, so its ceiling is lower.
+        implied_max = trade_costs.max_supplier_price(session.cost_sheet, buyer_offer, session.policy.margin_floor_pct)
+    else:
+        implied_max = buyer_offer * (1 - session.policy.margin_floor_pct / 100) - logistics - env_total
     supplier_own = session.supplier_last_quote or ask
     # Computed here, not by the LLM: a bare "communicate in INR" instruction
     # with no rate supplied previously sent the model into a token-burning
@@ -814,6 +985,10 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
         "missing_information": brief["missing_information"],
         "pricing": _band_payload(band, usd_inr_rate),
         "portless_terms": briefing.supplier_terms(),
+        "portless_profile": company_profile.for_llm("supplier"),
+        "price_basis": trade_costs.supplier_price_basis(session.cost_sheet),
+        "supplier_price_basis": session.supplier_price_basis,
+        "market_facts": _market_facts(state, "supplier"),
         "current_ask_usd": round(ask, 4),
         "current_ask_inr": ask_inr,
         "implied_max_supplier_price_usd": round(implied_max, 4),
@@ -839,9 +1014,16 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
         fallback={
             "counter_price_usd": band.recommended,
             "outbound_message": (
-                f"For {product_phrase(session.product_code)} we can place the order at INR "
-                f"{band.recommended * usd_inr_rate:,.0f} per MT FOB (USD {band.recommended:,.2f}), "
-                "with the buyer's payment secured in escrow before the purchase order."
+                f"{_dear(brief.get('company_name'))}\n\n"
+                + ("Thank you for your quotation. " if inbound_from_supplier else
+                   (f"{company_profile.one_line()}\n\n" if is_first_contact else ""))
+                + f"For {product_phrase(session.product_code)} we can place the order at INR "
+                f"{band.recommended * usd_inr_rate:,.0f} per MT FOB (USD {band.recommended:,.2f}). "
+                "This is based on FOB delivery at your port of loading: PortLess pays the ocean freight, insurance, "
+                "export documents and inspection. We issue the purchase order only after the overseas buyer has paid "
+                "into a neutral escrow account, and you are paid from those funds in stages, starting with a "
+                "production advance.\n\n"
+                "Please confirm, and we will issue the purchase order."
             ),
             "negotiated_terms": {"unit_price": band.recommended, "currency": "USD"},
             "reasoning": "LLM parse fallback",
@@ -849,10 +1031,22 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
     )
 
     new_ask, flags = _settle_price(result, band, "supplier")
+    if is_first_contact and (state.get("market_check") or {}).get("verdict") == "avoid":
+        flags = flags + ["market_check_avoid"]  # the news argues against this trade: a person decides
+    if _quotes_price_without_basis(result.get("outbound_message", "")):
+        flags = flags + ["price_without_basis"]
+    supplier_body, market = strip_market_claim(clean_outbound(result.get("outbound_message", "")))
+    if market:
+        logger.warning("Supplier draft compared our price to the market/benchmark — sentence removed")
+        flags = flags + ["unverified_market_claim"]
+    supplier_body, internal = strip_internal_terms(supplier_body)
+    if internal:
+        logger.warning("Supplier draft used internal pricing terms — sentence removed")
+        flags = flags + ["internal_terms"]
     return {
         **state,
         "current_ask": new_ask,
-        "supplier_outbound_message": clean_outbound(result.get("outbound_message", "")),
+        "supplier_outbound_message": company_profile.with_signature(supplier_body),
         "supplier_draft_degraded": bool(result.get("_degraded")),
         "supplier_draft_flags": flags,
         "supplier_stage": brief["stage"],
@@ -870,11 +1064,16 @@ def route_after_orchestrator(state: NegotiationGraphState) -> str:
     mapping = {
         "CALL_BUYER_AGENT": "buyer_agent",
         "CALL_SUPPLIER_AGENT": "supplier_agent",
+        "CALL_BOTH_AGENTS": "supplier_agent",  # supplier first, then buyer_agent
         "HITL_APPROVAL": "__end__",
         "NEGOTIATION_AGREED": "__end__",
         "NEGOTIATION_FAILED": "__end__",
     }
     return mapping.get(routing, "__end__")
+
+
+def route_after_supplier(state: NegotiationGraphState) -> str:
+    return "buyer_agent" if state.get("routing") == "CALL_BOTH_AGENTS" else "__end__"
 
 
 # ---------------------------------------------------------------------------
@@ -904,10 +1103,15 @@ def build_negotiation_graph() -> Any:
             "__end__": END,
         },
     )
-    # One inbound → one outbound per graph pass: after an agent drafts its message
-    # the pass ends (it does not loop back to the orchestrator for another internal
-    # round). Convergence is re-evaluated on the next run_round() call, once a real
-    # counter-offer has arrived.
+    # One inbound → at most one outbound per party per graph pass: after drafting
+    # the pass ends (it never loops back to the orchestrator for another internal
+    # round). A buyer reply (CALL_BOTH_AGENTS) drafts the supplier e-mail, then the
+    # buyer e-mail. Convergence is re-evaluated on the next run_round() call, once
+    # a real counter-offer has arrived.
     graph.add_edge("buyer_agent", END)
-    graph.add_edge("supplier_agent", END)
+    graph.add_conditional_edges(
+        "supplier_agent",
+        route_after_supplier,
+        {"buyer_agent": "buyer_agent", "__end__": END},
+    )
     return graph.compile()

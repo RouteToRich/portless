@@ -110,7 +110,7 @@ class TestOutreachBasics:
         assert "They import Indian pepper every quarter." in body and "20 MT" in body
         assert "not interested" in body
         fsubject, fbody = outreach.draft(deal, _cand("c1", "c1@x.de"), followup=True)
-        assert fsubject.startswith("Re:") and "[BUY:DEAL-OUT-1:c1]" in fsubject and "Following up" in fbody
+        assert fsubject.startswith("Re:") and "[BUY:DEAL-OUT-1:c1]" in fsubject and "following up" in fbody.lower()
 
 
 class TestOutreachFlow:
@@ -359,7 +359,8 @@ class TestApifyBudgetAndTracking:
         from shared.connectors.apify import ApifyCarrierTrackingConnector
         from shared.connectors.registry import get_connector
         conn = get_connector("apify_carrier_tracking")
-        assert isinstance(conn, ApifyCarrierTrackingConnector) and conn.describe()["external"] is True
+        assert isinstance(conn, ApifyCarrierTrackingConnector) and conn.describe()["external"] is False
+        assert conn.actor_ref.endswith("multi-carrier-tracking-ai")  # the actor that exists on the account
         stub = await conn.quote({"container_number": "MSKU1234567"})
         assert stub["stub"] is True and stub["shipments"] == []
         with pytest.raises(ValueError):
@@ -371,6 +372,71 @@ class TestApifyBudgetAndTracking:
         out = await conn.quote({"container_number": "MSKU1234567", "carrier": "MAEU"})
         assert out["total"] == 1 and out["shipments"][0]["milestone"] == "DELIVERED"
         assert out["shipments"][0]["delivered"] is True and out["shipments"][0]["location"] == "Hamburg"
+
+    @pytest.mark.asyncio
+    async def test_tracking_input_matches_the_actor(self, monkeypatch):
+        """multi-carrier-tracking-ai takes one "NUMBER, carrier, ref" line per box in
+        live mode; a forwarder name is not a carrier and is left out."""
+        from shared.connectors.apify import ApifyCarrierTrackingConnector
+        run = AsyncMock(return_value=[])
+        monkeypatch.setattr(ApifyCarrierTrackingConnector, "configured", property(lambda self: True))
+        monkeypatch.setattr(ApifyCarrierTrackingConnector, "run", run)
+        monkeypatch.setattr(ApifyCarrierTrackingConnector, "run_output", AsyncMock(return_value={"ok": True}))
+        conn = ApifyCarrierTrackingConnector()
+        await conn.quote({"container_number": "mscu 1234566", "booking_ref": "BK-9", "carrier": "cogoport",
+                          "reference": "DEAL-1"})
+        sent = run.await_args.args[0]
+        assert sent["sourceMode"] == "live" and sent["enableAi"] is False and sent["minScore"] == 0
+        assert sent["trackingNumbers"] == ["MSCU1234566, , DEAL-1", "BK-9, , DEAL-1"]
+        await conn.quote({"container_number": "MSCU1234566", "carrier": "MSC"})
+        assert run.await_args.args[0]["trackingNumbers"] == ["MSCU1234566, MSC"]
+
+    @pytest.mark.asyncio
+    async def test_tracking_maps_actor_schema_rows(self, monkeypatch):
+        from shared.connectors.apify import ApifyCarrierTrackingConnector, last_tracking_outcome
+        rows = [
+            {"trackingNumber": "MSCU1234566", "carrier": "MSC", "status": "DISCHARGED", "milestone": "DISC",
+             "milestoneDescription": "Discharged from vessel", "milestoneLocation": "NLRTM",
+             "milestoneTime": "2026-10-21T08:00:00Z", "etaUtc": "2026-10-20T00:00:00Z",
+             "pod": {"name": "Rotterdam", "unlocode": "NLRTM"}, "vessel": "MSC ANNA", "url": "https://x"},
+            {"trackingNumber": "MAEU7654321", "carrier": "Maersk", "status": "EMPTY_RETURNED"},
+            {"trackingNumber": "CMAU1111111", "status": "UNKNOWN", "milestone": "DEPA", "milestoneIsActual": True},
+            {"trackingNumber": "CMAU2222222", "status": "BOOKED"},
+            {"trackingNumber": "XXXU0000000", "problem": "invalidNumber", "problemDetail": "bad check digit"},
+        ]
+        import shared.connectors.apify as _apify_mod
+        monkeypatch.setattr(_apify_mod, "_last_tracking_outcome", {})
+        monkeypatch.setattr(ApifyCarrierTrackingConnector, "configured", property(lambda self: True))
+        monkeypatch.setattr(ApifyCarrierTrackingConnector, "run", AsyncMock(return_value=rows))
+        out = await ApifyCarrierTrackingConnector().quote({"container_number": "MSCU1234566"})
+        by_ref = {s["ref"]: s for s in out["shipments"]}
+        assert by_ref["MSCU1234566"]["milestone"] == "ARRIVED"
+        assert by_ref["MSCU1234566"]["location"] == "NLRTM" and by_ref["MSCU1234566"]["port_of_discharge"] == "Rotterdam"
+        assert by_ref["MSCU1234566"]["raw_status"] == "Discharged from vessel"
+        assert by_ref["MAEU7654321"]["milestone"] == "DELIVERED" and by_ref["MAEU7654321"]["delivered"] is True
+        assert by_ref["CMAU1111111"]["milestone"] == "DEPARTED"
+        assert by_ref["CMAU2222222"]["milestone"] is None
+        assert out["not_tracked"] == [{"ref": "XXXU0000000", "problem": "invalidNumber", "detail": "bad check digit"}]
+        assert last_tracking_outcome()["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_tracking_plan_refusal_is_reported(self, monkeypatch):
+        """0 rows + OUTPUT.ok false (plan cannot run the public carrier Actors) →
+        source_refused with a plain reason; readiness shows it."""
+        from shared import readiness
+        from shared.connectors.apify import ApifyCarrierTrackingConnector, last_tracking_outcome
+        import shared.connectors.apify as _apify_mod
+        monkeypatch.setattr(_apify_mod, "_last_tracking_outcome", {})
+        monkeypatch.setattr(ApifyCarrierTrackingConnector, "configured", property(lambda self: True))
+        monkeypatch.setattr(ApifyCarrierTrackingConnector, "run", AsyncMock(return_value=[]))
+        monkeypatch.setattr(ApifyCarrierTrackingConnector, "run_output", AsyncMock(return_value={
+            "ok": False, "outcome": "source_refused",
+            "sourceError": "You cannot run this public Actor. Your current plan does not support running public Actors."}))
+        out = await ApifyCarrierTrackingConnector().quote({"container_number": "MSCU1234566"})
+        assert out["source_refused"] is True and "Apify plan" in out["detail"] and "stub" not in out
+        assert last_tracking_outcome()["status"] == "source_refused"
+        check = next(c for c in readiness.evaluate()["checks"] if c["id"] == "carrier_tracking")
+        assert check["status"] != "ok" and "refused" in check["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +508,12 @@ class TestMilestones:
         assert first["status"] == "ok" and first["milestone"] == "ARRIVED" and first["tpo_id"] == tpo.tpo_id
         assert second["status"] == "unchanged"
         assert conn.quote.await_args.args[0]["booking_ref"] == tpo.ext_ref
+        assert conn.quote.await_args.args[0]["reference"] == "DEAL-ML-2"
+        refused = SimpleNamespace(quote=AsyncMock(return_value={"shipments": [], "source_refused": True,
+                                                                "detail": "plan refuses public Actors"}))
+        with patch("shared.connectors.registry.get_connector", return_value=refused):
+            res = await poll_tracking("DEAL-ML-2")
+        assert res["status"] == "source_refused" and res["detail"] == "plan refuses public Actors"
 
     @pytest.mark.asyncio
     async def test_reinspection_booking_needs_dispatch_ready_and_skips_transition(self):
