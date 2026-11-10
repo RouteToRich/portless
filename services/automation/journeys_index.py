@@ -14,4 +14,6 @@ JOURNEYS: list[dict[str, str]] = [
     {"id": "UC-10", "fn": "uc_conditional_pi", "title": "A conditional answer to the Proforma Invoice"},
     {"id": "UC-11", "fn": "uc_complaint", "title": "A damaged-goods complaint after delivery"},
     {"id": "UC-12", "fn": "uc_bypass_attempts", "title": "Staff trying to go around the approval gates"},
+    {"id": "UC-13", "fn": "uc_supplier_declines", "title": "The supplier declines the firm order; standby suppliers until one confirms"},
+    {"id": "UC-14", "fn": "uc_supplier_silent", "title": "The supplier stays silent; the standby is asked, then nobody is left"},
 ]

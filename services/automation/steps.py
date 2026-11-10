@@ -820,7 +820,7 @@ async def journal_balanced(ctx: Ctx) -> None:
     assert journal.get("balanced", True), f"journal not balanced: {journal.get('issues')}"
 
 
-from . import steps2, steps3, steps4  # noqa: E402,F401 — registers the remaining steps
+from . import steps2, steps3, steps4, steps5  # noqa: E402,F401 — registers the remaining steps
 
 
 def _assign_test_organisations() -> None:

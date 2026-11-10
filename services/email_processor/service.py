@@ -753,12 +753,17 @@ async def _handle_post_agreement_reply(
 
     # The supplier answers the firm order request (before the PI) or
     # acknowledges the Purchase Order (before the inspection is booked).
+    replaced_supplier = False
     if mapping.party == "supplier" and record.deal_id and deal_status:
         try:
             from shared.orchestration import supplier_commitment
             message = await supplier_commitment.handle_supplier_reply(
                 record.deal_id, deal_status, raw.body_text or "", record.inbound_id,
+                from_address=record.from_address,
             )
+            if message is None:
+                replaced_supplier = await supplier_commitment.sent_by_replaced_supplier(
+                    record.deal_id, record.from_address)
         except Exception as exc:  # noqa: BLE001 — a person reads it instead
             logger.warning("Supplier reply %s: commitment handling failed: %s", record.inbound_id, exc)
             message = None
@@ -780,9 +785,12 @@ async def _handle_post_agreement_reply(
             f"Post-agreement reply from {record.party or 'counterparty'} "
             f"{record.from_address} (deal {deal_status or 'unknown'}) — read and act. "
             + (f"PI {pi.pi_id} has expired: extend it before an acceptance can be recorded. " if pi_expired else "")
+            + ("This supplier no longer holds the order request: the order moved to a standby supplier. "
+               if replaced_supplier else "")
             + f"Preview: {record.body_text[:200]}"
         ),
-        risk_flags=["post_agreement_reply", *(["pi_expired"] if pi_expired else [])],
+        risk_flags=["post_agreement_reply", *(["pi_expired"] if pi_expired else []),
+                    *(["supplier_replaced"] if replaced_supplier else [])],
     )
     record = record.model_copy(update={
         "status": InboundEmailStatus.NEEDS_OPERATOR,

@@ -300,12 +300,40 @@ async def read_order_reply(body: str, requested_price: float) -> tuple[str, floa
     return "unclear", other
 
 
-async def handle_supplier_reply(deal_id: str, deal_status: str, body: str, inbound_id: str) -> str | None:
+def _from_current(rec: Commitment, from_address: str | None) -> bool:
+    """True when the e-mail comes from the supplier that holds the order request.
+
+    After a switch to a standby supplier the first supplier's address is still a
+    known supplier address of the negotiation thread, so the sender check alone
+    would let its late "we confirm" stand for the standby's confirmation. No
+    address to compare (an operator relay, an older caller) → True."""
+    cur = rec.current
+    if not from_address or cur is None or not cur.email:
+        return True
+    from agents.negotiation_agent.email_safety import same_owner  # type: ignore[import]
+    return same_owner(from_address, cur.email)
+
+
+async def sent_by_replaced_supplier(deal_id: str, from_address: str | None) -> bool:
+    """The sender is a supplier this deal asked earlier and has since moved on from."""
+    rec = await get(deal_id)
+    if rec is None or not from_address or _from_current(rec, from_address):
+        return False
+    from agents.negotiation_agent.email_safety import same_owner  # type: ignore[import]
+    return any(a.email and same_owner(from_address, a.email) for a in rec.attempts[:-1])
+
+
+async def handle_supplier_reply(deal_id: str, deal_status: str, body: str, inbound_id: str,
+                                from_address: str | None = None) -> str | None:
     """The supplier wrote after the agreement. Returns a short outcome for the
     caller, or None when this module has nothing to say (the caller then routes
     the e-mail to an operator)."""
     rec = await get(deal_id)
     if rec is None:
+        return None
+    if not _from_current(rec, from_address):
+        logger.warning("SupplierCommitment: deal %s — reply from %s, but %s holds the order request; "
+                       "left for an operator", deal_id, from_address, rec.current.supplier_id if rec.current else None)
         return None
     if deal_status == "NEGOTIATION_AGREED" and rec.status == "requested" and rec.current:
         cur = rec.current

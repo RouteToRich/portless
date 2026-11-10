@@ -195,6 +195,25 @@ async def test_silence_past_the_deadline_moves_on(wired, monkeypatch):
     assert rec.attempts[0].outcome == "no_reply" and rec.current.supplier_id == "SUP-3"
 
 
+async def test_late_confirmation_from_the_replaced_supplier_is_left_for_an_operator(wired):
+    wired.deal.supplier_offers = [_offer("SUP-3", "Mill Three", 990.0, "s3@three.invalid")]
+    await _ask(wired)
+    await sc.handle_supplier_reply("D1", "NEGOTIATION_AGREED", "We regret we cannot supply.", "IN-1",
+                                   from_address="sales@mill-one.invalid")
+    assert (await sc.get("D1")).current.supplier_id == "SUP-3"
+    # Mill One changes its mind after the order moved: it no longer holds the request.
+    out = await sc.handle_supplier_reply("D1", "NEGOTIATION_AGREED", "We confirm the order.", "IN-2",
+                                         from_address="Sales <sales@mill-one.invalid>")
+    assert out is None
+    wired.gate.assert_not_awaited()
+    assert await sc.sent_by_replaced_supplier("D1", "sales@mill-one.invalid") is True
+    assert await sc.sent_by_replaced_supplier("D1", "s3@three.invalid") is False
+    # The standby itself can still confirm.
+    await sc.handle_supplier_reply("D1", "NEGOTIATION_AGREED", "We confirm the order.", "IN-3",
+                                   from_address="s3@three.invalid")
+    assert wired.gate.await_args.kwargs["callback_payload"]["supplier_id"] == "SUP-3"
+
+
 async def test_operator_set_supplier_is_not_replaced(wired, monkeypatch):
     wired.deal.supplier_offers = [_offer("SUP-3", "Mill Three", 990.0, "s3@three.invalid")]
 

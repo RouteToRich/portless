@@ -245,6 +245,24 @@ Then tranche "<T1..T4>" has status "<STATUS>"
 Then the compliance hold "<code>" is open
 Then the compliance hold "<code>" is not open
 Then the collection "<name>" has <n> records for the deal
+Then exactly <n> exception(s) is/are recorded with "<field>" equal to "<value>"
+
+SUPPLIER COMMITMENT (supplier "A" is the fixture's supplier)
+Given standby supplier "<KEY>" quotes <usd> with score <n> [and no e-mail address]
+When the PI leg runs for deal "<alias>"
+When supplier "<KEY>" replies "<text>" from its own address
+When the supplier order sweep runs <n> hour(s) later
+Then the order request is "<requested|confirmed|exhausted>"
+Then there is no order request
+Then supplier "<KEY>" holds the order request
+Then the order request to supplier "<KEY>" is "<requested|declined|no_reply|confirmed>"
+Then supplier "<KEY>" is skipped with a reason containing "<text>"
+Then an order request is composed for supplier "<KEY>" at its own price
+Then no order request is composed for supplier "<KEY>"
+Then no order request names the buyer or the buyer's price
+Then the deal's supplier is supplier "<KEY>"
+Then the gate "<ACTION>" is for supplier "<KEY>"
+Then the committed supplier is "<KEY>" at its own price
 
 UI
 Given the browser is signed in as "<persona>"
@@ -2204,6 +2222,139 @@ Feature: Proforma Invoice issue and acceptance
     And an e-mail is composed for both parties
 ```
 
+```gherkin
+@phase:pi @flow @email
+Feature: The supplier commits before the buyer gets a PI
+  When the buyer agrees, the chosen supplier gets a firm order request at its own stated price and
+  the PI waits. A decline, or no reply within SUPPLIER_CONFIRMATION_HOURS (24), sends the request
+  to the next-ranked standby supplier whose own price still clears the margin floor. Only one
+  supplier holds the request at a time. Supplier "A" is the fixture's supplier (1000); the standbys
+  are ranked by score: "B" breaks the 8% floor, "E" has no e-mail address.
+
+  Background:
+    Given I am "staff"
+    And the setting "SUPPLIER_CONFIRMATION_REQUIRED" is "true"
+    And the setting "COMPLIANCE_ENABLED" is "false"
+    And a deal "D" at status "NEGOTIATION_AGREED" from fixture "FX-STD"
+    And standby supplier "B" quotes 1240 with score 90
+    And standby supplier "C" quotes 900 with score 85
+    And standby supplier "E" quotes 880 with score 80 and no e-mail address
+    And standby supplier "D" quotes 890 with score 75
+
+  @TC-SUP-001 @P0 @positive @money
+  Scenario: The buyer's agreement sends the supplier a firm order request and holds the PI
+    When the PI leg runs for deal "D"
+    Then the order request is "requested"
+    And supplier "A" holds the order request
+    And an order request is composed for supplier "A" at its own price
+    And no order request names the buyer or the buyer's price
+    And deal "D" has status "NEGOTIATION_AGREED"
+    And the collection "proforma_invoices" has 0 records for the deal
+
+  @TC-SUP-002 @P0 @positive @money
+  Scenario: The supplier's confirmation needs an operator, then the PI goes out
+    When the PI leg runs for deal "D"
+    And supplier "A" replies "We confirm the order at USD 1,000 per MT FOB." from its own address
+    Then a pending gate "CONFIRM_SUPPLIER_ORDER" exists at level "L0"
+    And the gate "CONFIRM_SUPPLIER_ORDER" is for supplier "A"
+    And deal "D" has status "NEGOTIATION_AGREED"
+    When "staff" approves the pending "CONFIRM_SUPPLIER_ORDER" gate
+    Then deal "D" has status "PI_SENT"
+    And the committed supplier is "A" at its own price
+
+  @TC-SUP-003 @P0 @positive
+  Scenario: A decline moves the order to the best standby that keeps the margin
+    When the PI leg runs for deal "D"
+    And supplier "A" replies "We regret we cannot supply this order, our stock is committed." from its own address
+    Then the order request to supplier "A" is "declined"
+    And supplier "B" is skipped with a reason containing "floor"
+    And supplier "C" holds the order request
+    And the deal's supplier is supplier "C"
+    And an order request is composed for supplier "C" at its own price
+    And no order request is composed for supplier "B"
+    And no order request names the buyer or the buyer's price
+    And deal "D" has status "NEGOTIATION_AGREED"
+    And the collection "proforma_invoices" has 0 records for the deal
+
+  @TC-SUP-004 @P1 @negative
+  Scenario: A new price or a question is read by an operator, not as a confirmation
+    When the PI leg runs for deal "D"
+    And supplier "A" replies "Could you do USD 1,050 per MT instead?" from its own address
+    Then the inbound record has status "NEEDS_OPERATOR"
+    And no gate "CONFIRM_SUPPLIER_ORDER" exists
+    And supplier "A" holds the order request
+
+  @TC-SUP-005 @P0 @negative @security @money
+  Scenario: A late confirmation from the replaced supplier is left for an operator
+    When the PI leg runs for deal "D"
+    And supplier "A" replies "We regret we cannot supply this order, our stock is committed." from its own address
+    Then supplier "C" holds the order request
+    When supplier "A" replies "We have reconsidered: we confirm the order at USD 1,000 per MT FOB." from its own address
+    Then no gate "CONFIRM_SUPPLIER_ORDER" exists
+    And supplier "C" holds the order request
+    And the inbound record has status "NEEDS_OPERATOR"
+    And the gate "PARSE_INBOUND_EMAIL" has risk flag "supplier_replaced"
+
+  @TC-SUP-006 @P0 @positive @money
+  Scenario: Two declines, a standby with no address passed over, the third supplier confirms
+    When the PI leg runs for deal "D"
+    And supplier "A" replies "We regret we cannot supply this order, our stock is committed." from its own address
+    And supplier "C" replies "We regret we cannot take this order, the mill is fully booked." from its own address
+    Then the order request to supplier "C" is "declined"
+    And supplier "E" is skipped with a reason containing "e-mail"
+    And supplier "D" holds the order request
+    And an order request is composed for supplier "D" at its own price
+    When supplier "D" replies "We confirm the order at USD 890 per MT FOB." from its own address
+    Then the gate "CONFIRM_SUPPLIER_ORDER" is for supplier "D"
+    When "staff" approves the pending "CONFIRM_SUPPLIER_ORDER" gate
+    Then deal "D" has status "PI_SENT"
+    And the committed supplier is "D" at its own price
+    And no order request is composed for supplier "B"
+
+  @TC-SUP-007 @P1 @positive @needs:time
+  Scenario: Silence past the reply window moves the order to the standby
+    When the PI leg runs for deal "D"
+    And the supplier order sweep runs 1 hour later
+    Then supplier "A" holds the order request
+    When the supplier order sweep runs 25 hours later
+    Then the order request to supplier "A" is "no_reply"
+    And supplier "C" holds the order request
+    And an order request is composed for supplier "C" at its own price
+
+  @TC-SUP-008 @P0 @exception @money
+  Scenario: Nobody left: one exception, the PI stays back
+    When the PI leg runs for deal "D"
+    And supplier "A" replies "We regret we cannot supply this order, our stock is committed." from its own address
+    And supplier "C" replies "We regret we cannot take this order, the mill is fully booked." from its own address
+    And supplier "D" replies "We regret we are unable to supply, sorry." from its own address
+    Then the order request is "exhausted"
+    And exactly 1 exception is recorded with "stage" equal to "SUPPLIER:no_confirmation"
+    And deal "D" has status "NEGOTIATION_AGREED"
+    And the collection "proforma_invoices" has 0 records for the deal
+    When the supplier order sweep runs 100 hours later
+    Then exactly 1 exception is recorded with "stage" equal to "SUPPLIER:no_confirmation"
+
+  @TC-SUP-009 @P1 @negative @money
+  Scenario: A confirmation after the request ran out issues no PI
+    When the PI leg runs for deal "D"
+    And the supplier order sweep runs 25 hours later
+    And the supplier order sweep runs 50 hours later
+    And the supplier order sweep runs 75 hours later
+    Then the order request is "exhausted"
+    When supplier "D" replies "Sorry for the delay: we confirm the order at USD 890 per MT FOB." from its own address
+    Then no gate "CONFIRM_SUPPLIER_ORDER" exists
+    And the inbound record has status "NEEDS_OPERATOR"
+    And the collection "proforma_invoices" has 0 records for the deal
+
+  @TC-SUP-010 @P1 @positive
+  Scenario: Switched off, the PI goes out without an order request
+    Given the setting "SUPPLIER_CONFIRMATION_REQUIRED" is "false"
+    When the PI leg runs for deal "D"
+    Then deal "D" has status "PI_SENT"
+    And there is no order request
+    And no e-mail containing "Order confirmation" is composed
+```
+
 ### Phase 5: Escrow funding
 
 ```gherkin
@@ -2246,7 +2397,7 @@ Feature: Opening and funding the escrow
     Examples:
       | status             |
       | NEGOTIATION_AGREED |
-      | PI_SENT            |
+      | PI_SENT            |
 
   @TC-ESC-004 @P1 @negative
   Scenario: An escrow for an unknown deal answers 404

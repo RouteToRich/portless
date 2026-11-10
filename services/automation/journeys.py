@@ -10,7 +10,7 @@ import os
 import re
 import traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -764,6 +764,222 @@ async def uc_bypass_attempts():
     check(s, "after resume the waiting gates are still there", bool(waiting) and bool(await pending(deal_id, "RELEASE_SUPPLIER_PAYOUT")))
     opened = await base.eg.request_refund(hold.escrow_id, RefundRequest(reason="use-case check", requested_by="staff@qa.invalid"))
     check(s, "a refund request opens a gate and moves nothing", bool(await pending(deal_id, "REFUND_ESCROW")) and (await eg_repo().get_hold_by_deal(deal_id)).refunded_total == 0, str(opened))
+
+
+# ---------------------------------------------------------------------------
+# Supplier commitment: the firm order request, the standby supplier, nobody left
+# ---------------------------------------------------------------------------
+
+async def agreed_with_standbys(name: str, standbys: list[dict[str, Any]]) -> tuple[str, dict, dict[str, dict]]:
+    """A negotiation agreed at 1,250 with the first supplier at 1,000, plus standby
+    suppliers (Match Engine SOURCE results, best first, and their received quotes).
+    Returns the deal, the ``who`` map for replies, and every supplier by key."""
+    from services.deals.schemas import SupplierOffer
+    deal_id = await base.seed(name, 1250, 1000)
+    first = {"key": "A", "supplier_id": f"SUP-{name}", "price": 1000.0,
+             "company": f"Cauvery Rice Mills {name} Pvt Ltd", "mail": f"sales.{name}@cauverymills-{name}.invalid"}
+    suppliers = {"A": first}
+    matches, offers = [], []
+    for row in standbys:
+        sid = f"SUP-{name}-{row['key']}"
+        mail = f"export.{name}{row['key'].lower()}@{row['domain']}-{name}.invalid" if row.get("mail", True) else None
+        suppliers[row["key"]] = {"key": row["key"], "supplier_id": sid, "price": row["price"], "company": row["company"], "mail": mail}
+        matches.append(MatchResult(match_id=f"M-{sid}", supplier_id=sid, company_name=row["company"],
+                                   composite_score=row["score"], gatekeeper_passed=True, arbitrage_score=80.0,
+                                   proximity_score=80.0, reliability_score=80.0, decision="SOURCE", fob_price_usd=row["price"]))
+        if mail:
+            offers.append(SupplierOffer(offer_id=f"OFF-{sid}", supplier_id=sid, company_name=row["company"], email=mail,
+                                        fob_price_usd_per_mt=row["price"], gst_verified=True, iec_active=True,
+                                        source="quote", received_at=datetime.now(timezone.utc)))
+    record = await get_deal(deal_id)
+    await deals_repo().save(record.model_copy(update={"match_results": matches, "supplier_offers": offers}))
+    note(f"\n\n# Use case {name}\n\nDeal `{deal_id}` agreed at 1,250 with {first['company']} (1,000). Standby suppliers: "
+         + ", ".join(f"{s['company']} {s['price']:,.0f}{'' if s['mail'] else ' (no e-mail)'}" for k, s in suppliers.items() if k != "A") + "\n")
+    await approve(deal_id, "CONFIRM_COUNTERPARTY_RISK")
+    await approve(deal_id, "CONFIRM_TRADE_COMPLIANCE")
+    await slow_settle()
+    session = await neg_repo().get_session_by_deal(deal_id)
+    who = {"name": name, "buyer_company": f"Gulf Staples Trading {name} LLC", "buyer_mail": f"buyer.{name}@gulfstaples-{name}.invalid",
+           "supplier_company": first["company"], "supplier_mail": first["mail"], "supplier_ask": 1000.0,
+           "negotiation_id": session.negotiation_id if session else None}
+    return deal_id, who, suppliers
+
+
+def as_supplier(who: dict, supplier: dict) -> dict:
+    """The ``who`` map with one supplier speaking (its company, its mailbox)."""
+    return {**who, "supplier_company": supplier["company"], "supplier_mail": supplier["mail"], "supplier_ask": supplier["price"]}
+
+
+def order_requests(who: dict) -> list[dict[str, Any]]:
+    """Firm order requests composed for this deal's suppliers, oldest first."""
+    deal_ref = who["name"]
+    return [e for e in base.EMAILS if "Order confirmation" in e.get("subject", "") and deal_ref in e.get("to", "")]
+
+
+async def commitment_of(deal_id: str):
+    from shared.orchestration import supplier_commitment
+    return await supplier_commitment.get(deal_id)
+
+
+async def holder(deal_id: str) -> str | None:
+    rec = await commitment_of(deal_id)
+    return rec.current.supplier_id if rec is not None and rec.current is not None and rec.status == "requested" else None
+
+
+def requests_clean(s: str, who: dict, mails: list[dict[str, Any]]) -> None:
+    leaks = [m["to"] for m in mails if any(w.lower() in m["body"].lower() for w in (who["buyer_company"], who["buyer_mail"], "1,250"))]
+    check(s, "no order request names the buyer or the buyer's price", not leaks, str(leaks))
+
+
+async def uc_supplier_declines():
+    s = "UC-13"
+    say(f"\n{s}: the supplier declines the firm order — standby suppliers until one confirms")
+    deal_id, who, sup = await agreed_with_standbys("uc13", [
+        {"key": "B", "company": "Kaveri Agro Exports uc13", "domain": "kaveriagro", "price": 1240.0, "score": 90},   # breaks the 8 % floor
+        {"key": "C", "company": "Thanjavur Grains uc13", "domain": "tanjoregrains", "price": 900.0, "score": 85},
+        {"key": "E", "company": "Delta Paddy Traders uc13", "domain": "deltapaddy", "price": 880.0, "score": 80, "mail": False},
+        {"key": "D", "company": "Madurai Rice Exports uc13", "domain": "madurairice", "price": 890.0, "score": 75},
+    ])
+    A, B, C, D, E = (sup[k] for k in "ABCDE")
+    rec = await commitment_of(deal_id)
+    check(s, "the buyer's agreement sends the chosen supplier a firm order request, no PI yet",
+          rec is not None and await holder(deal_id) == A["supplier_id"] and await status(deal_id) == "NEGOTIATION_AGREED",
+          f"{await status(deal_id)}; holder {await holder(deal_id)}")
+    if rec is None:
+        return
+
+    # 1. The chosen supplier declines → the best standby that keeps the margin is asked.
+    await reply(deal_id, as_supplier(who, A), "supplier",
+                "Say you regret that you cannot supply this order now because your stock is already committed. "
+                "Do NOT use the words confirm, accept, agree or proceed, and do not mention any price.")
+    rec = await commitment_of(deal_id)
+    skipped = {x["supplier_id"]: x["reason"] for x in rec.skipped}
+    check(s, "the decline is recorded against the first supplier", rec.attempts[0].outcome == "declined", rec.attempts[0].outcome)
+    check(s, "the standby whose price breaks the margin floor is skipped, with the reason", "floor" in skipped.get(B["supplier_id"], ""), str(skipped))
+    check(s, "the best standby that keeps the margin now holds the request", await holder(deal_id) == C["supplier_id"], str(await holder(deal_id)))
+    deal = await get_deal(deal_id)
+    party = next((p for p in deal.parties if (getattr(p.role, "value", p.role) or "").lower() == "supplier"), None)
+    session = await neg_repo().get_session_by_deal(deal_id)
+    check(s, "the deal's supplier and the negotiation's seller switch to the standby",
+          party is not None and party.party_id == C["supplier_id"] and session.seller_email == C["mail"],
+          f"party {party.party_id if party else None}, seller {session.seller_email}")
+    check(s, "no PI while the standby has not confirmed", await status(deal_id) == "NEGOTIATION_AGREED"
+          and await base.dm_repo().get_pi_by_deal(deal_id) is None, await status(deal_id))
+
+    # 2. The first supplier changes its mind after the order moved: a person decides.
+    result, _ = await reply(deal_id, as_supplier(who, A), "supplier",
+                            "Say you have reconsidered and state clearly: we confirm the order at USD 1,000 per MT FOB.",
+                            from_address=A["mail"])
+    late = await pending(deal_id, "PARSE_INBOUND_EMAIL")
+    check(s, "a late confirmation from the replaced supplier opens no order confirmation",
+          not await pending(deal_id, "CONFIRM_SUPPLIER_ORDER") and await holder(deal_id) == C["supplier_id"],
+          f"holder {await holder(deal_id)}; gates {[g.action for g in await pending(deal_id)]}")
+    check(s, "it goes to an operator, marked as the replaced supplier",
+          result.status.value == "needs_operator" and any("supplier_replaced" in g.risk_flags or "sender_not_verified" in g.risk_flags for g in late),
+          f"{result.status.value}; flags {[g.risk_flags for g in late]}")
+    for gate in late:  # the operator reads it and closes it
+        await resolve_approval(gate.approval_id, ResolveApprovalRequest(decision="REJECT", resolved_by="operator@qa.invalid"))
+    await settle()
+
+    # 3. The standby declines too → a standby with no address is passed over → the next one is asked.
+    await reply(deal_id, as_supplier(who, C), "supplier",
+                "Say you regret you cannot take this order this month because your mill is fully booked. "
+                "Do NOT use the words confirm, accept, agree or proceed, and do not mention any price.")
+    rec = await commitment_of(deal_id)
+    skipped = {x["supplier_id"]: x["reason"] for x in rec.skipped}
+    check(s, "the second decline moves on again", [a.outcome for a in rec.attempts][:2] == ["declined", "declined"],
+          str([a.outcome for a in rec.attempts]))
+    check(s, "a standby with no e-mail address is skipped", "e-mail" in skipped.get(E["supplier_id"], ""), str(skipped))
+    check(s, "the third supplier holds the request", await holder(deal_id) == D["supplier_id"], str(await holder(deal_id)))
+
+    # 4. The third supplier confirms → the operator approves → the PI goes out.
+    asked = rec.current.price_usd_per_mt if rec.current else None
+    check(s, "each request is at that supplier's own price", asked == D["price"], f"asked {asked}")
+    await reply(deal_id, as_supplier(who, D), "supplier",
+                f"Say clearly: we confirm the order at USD {D['price']:,.0f} per MT FOB. Port of loading Chennai, ready 25 days after the purchase order.")
+    gates = await pending(deal_id, "CONFIRM_SUPPLIER_ORDER")
+    check(s, "the standby's confirmation needs an operator's approval",
+          bool(gates) and gates[0].callback_payload.get("supplier_id") == D["supplier_id"], str([g.callback_payload for g in gates]))
+    await approve(deal_id, "CONFIRM_SUPPLIER_ORDER", by="operator@qa.invalid")
+    await slow_settle()
+    # A newly named supplier is screened again before the PI; the operator clears what it raises.
+    await approve(deal_id, "CONFIRM_TRADE_COMPLIANCE", by="operator@qa.invalid")
+    await approve(deal_id, "CONFIRM_COUNTERPARTY_RISK", by="operator@qa.invalid")
+    await slow_settle()
+    rec = await commitment_of(deal_id)
+    pi = await base.dm_repo().get_pi_by_deal(deal_id)
+    session = await neg_repo().get_session_by_deal(deal_id)
+    check(s, "the PI goes out at the price the buyer agreed", await status(deal_id) == "PI_SENT" and pi is not None
+          and abs(pi.agreed_price - 1250) < 0.01, f"{await status(deal_id)}; PI {pi.agreed_price if pi else None}")
+    check(s, "the committed supplier and price are the standby's (the PO is written at it)",
+          rec.status == "confirmed" and rec.confirmed_supplier_id == D["supplier_id"] and rec.confirmed_price == D["price"]
+          and session.supplier_last_quote == D["price"],
+          f"{rec.status} {rec.confirmed_supplier_id} {rec.confirmed_price}; session {session.supplier_last_quote}")
+
+    mails = order_requests(who)
+    sent_to = [m["to"] for m in mails]
+    check(s, "order requests went to the first supplier and the two standbys asked, in order — never to a skipped one",
+          sent_to == [A["mail"], C["mail"], D["mail"]], str(sent_to))
+    check(s, "each request quotes that supplier's own price",
+          all(f"{p:,.0f}" in m["body"] for m, p in zip(mails, (A["price"], C["price"], D["price"]))), "")
+    requests_clean(s, who, mails)
+    for m in mails:
+        note(f"\n**PortLess → {m['to']}** (template)\n\n> {m['subject']}\n")
+
+
+async def uc_supplier_silent():
+    s = "UC-14"
+    say(f"\n{s}: the supplier stays silent — the standby is asked, then nobody is left")
+    from shared.orchestration import supplier_commitment
+    deal_id, who, sup = await agreed_with_standbys("uc14", [
+        {"key": "B", "company": "Kaveri Agro Exports uc14", "domain": "kaveriagro", "price": 1240.0, "score": 90},   # breaks the 8 % floor
+        {"key": "C", "company": "Thanjavur Grains uc14", "domain": "tanjoregrains", "price": 900.0, "score": 85},
+    ])
+    A, C = sup["A"], sup["C"]
+    check(s, "the chosen supplier holds the firm order request", await holder(deal_id) == A["supplier_id"], str(await holder(deal_id)))
+    hours = supplier_commitment.confirm_hours()
+    now = datetime.now(timezone.utc)
+
+    # 1. Inside the reply window nothing moves; past it the standby is asked.
+    await supplier_commitment.sweep(now + timedelta(hours=1))
+    await settle()
+    check(s, f"an hour of silence changes nothing (window {hours:g} h)", await holder(deal_id) == A["supplier_id"], str(await holder(deal_id)))
+    await supplier_commitment.sweep(now + timedelta(hours=hours + 1))
+    await slow_settle()
+    rec = await commitment_of(deal_id)
+    check(s, "silence past the window is recorded as no reply", rec.attempts[0].outcome == "no_reply", rec.attempts[0].outcome)
+    check(s, "the standby that keeps the margin is asked", await holder(deal_id) == C["supplier_id"], str(await holder(deal_id)))
+    check(s, "the standby that breaks the floor is skipped", any(x["supplier_id"] == sup["B"]["supplier_id"] for x in rec.skipped), str(rec.skipped))
+
+    # 2. The standby is silent too → nobody is left: one exception, the PI stays back.
+    await supplier_commitment.sweep(now + timedelta(hours=2 * hours + 2))
+    await slow_settle()
+    rec = await commitment_of(deal_id)
+    excs = [e for e in await base.exceptions_of(deal_id) if "no_confirmation" in str(e.model_dump())]
+    check(s, "with every standby tried the request is exhausted", rec.status == "exhausted" and [a.outcome for a in rec.attempts] == ["no_reply", "no_reply"],
+          f"{rec.status}; {[a.outcome for a in rec.attempts]}")
+    check(s, "exactly one SUPPLIER:no_confirmation exception is raised", len(excs) == 1, str(len(excs)))
+    check(s, "no PI is issued and the deal stays agreed", await status(deal_id) == "NEGOTIATION_AGREED"
+          and await base.dm_repo().get_pi_by_deal(deal_id) is None, await status(deal_id))
+
+    # 3. Another sweep does not raise it again.
+    await supplier_commitment.sweep(now + timedelta(hours=4 * hours))
+    await slow_settle()
+    excs = [e for e in await base.exceptions_of(deal_id) if "no_confirmation" in str(e.model_dump())]
+    check(s, "a later sweep does not raise it twice", len(excs) == 1, str(len(excs)))
+
+    # 4. The standby confirms after the request lapsed: a person decides, no PI.
+    result, _ = await reply(deal_id, as_supplier(who, C), "supplier",
+                            f"Apologise for the late reply and state clearly: we confirm the order at USD {C['price']:,.0f} per MT FOB.",
+                            from_address=C["mail"])
+    check(s, "a confirmation after the request lapsed opens no order confirmation and no PI",
+          not await pending(deal_id, "CONFIRM_SUPPLIER_ORDER") and await status(deal_id) == "NEGOTIATION_AGREED",
+          f"{await status(deal_id)}; gates {[g.action for g in await pending(deal_id)]}")
+    check(s, "it goes to an operator", result.status.value == "needs_operator", result.status.value)
+    mails = order_requests(who)
+    check(s, "order requests went to the first supplier and the standby only", [m["to"] for m in mails] == [A["mail"], C["mail"]],
+          str([m["to"] for m in mails]))
+    requests_clean(s, who, mails)
 
 
 def _trust_webhooks() -> None:
