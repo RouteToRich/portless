@@ -28,7 +28,7 @@ from uuid import uuid4
 from shared.bus import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 
-from . import directory, ranking
+from . import directory, pair_match, ranking
 from .cache import cache_get, cache_set, make_cache_key
 from .config import DEFAULT_CONFIG, TradeMinConfig, settings
 from .repository import get_repository
@@ -1110,6 +1110,7 @@ async def _phase5_assemble_and_persist(
         confidence_score=confidence,
         expires_at=expires_at,
     )
+    pair_match.attach(opp)
 
     try:
         repo = await get_repository()
@@ -1312,7 +1313,7 @@ async def list_opportunities(
         key = (o.hs_code, o.market)
         if key not in latest or o.scanned_at > latest[key].scanned_at:
             latest[key] = o
-    return [o for o in opps if latest[(o.hs_code, o.market)] is o][:limit]
+    return [pair_match.attach(o) for o in [o for o in opps if latest[(o.hs_code, o.market)] is o][:limit]]
 
 
 async def _opportunity_id_for(hs_code: str, market: str) -> str:
@@ -1333,7 +1334,8 @@ async def _opportunity_id_for(hs_code: str, market: str) -> str:
 
 async def get_opportunity(opportunity_id: str) -> EnrichedOpportunity | None:
     repo = await get_repository()
-    return await repo.get(opportunity_id)
+    opp = await repo.get(opportunity_id)
+    return pair_match.attach(opp) if opp else None
 
 
 async def get_match_seed(opportunity_id: str) -> MatchEngineSeed | None:

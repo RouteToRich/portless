@@ -17,6 +17,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .pair_match import PairMatch
+
 # ---------------------------------------------------------------------------
 # Primitive type aliases
 # ---------------------------------------------------------------------------
@@ -327,6 +329,11 @@ class EnrichedOpportunity(BaseModel):
     arbitrage_rank: float
     confidence_score: float = Field(ge=0.0, le=100.0)
     expires_at: datetime | None = None
+
+    # ── Buyer × seller pair matching (pair_match.py) ──────────────────────
+    pair_matches: list[PairMatch] = Field(default_factory=list)
+    """Scored buyer × seller pairs, one-to-one recommended pairs first."""
+    best_match_score: float | None = None
 
 
 # ---------------------------------------------------------------------------
