@@ -1,20 +1,15 @@
-INFO:     Will watch for changes in these directories: ['C:\\workArea\\pandian\\RouteToRich\\portless\\backend']
+INFO:     Will watch for changes in these directories: ['C:\\workArea\\pandian\\RouteToRich\\portless']
 INFO:     Uvicorn running on http://127.0.0.1:8081 (Press CTRL+C to quit)
-INFO:     Started reloader process [1864] using WatchFiles
+INFO:     Started reloader process [21968] using WatchFiles
 C:\Users\sunda\AppData\Roaming\Python\Python313\site-packages\langgraph\cache\base\__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
   from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-INFO:     Started server process [22600]
+INFO:     Started server process [3568]
 INFO:     Waiting for application startup.
-Readiness[dev] FAIL — MongoDB configured: MONGO_URI unset — every service runs on an in-memory store (data lost on restart)
 Readiness[dev] warn — Durable event bus (NATS JetStream): in-process bus — an event published during a crash is lost (deal watcher catches the stall later)
 Readiness[dev] FAIL — Neutral escrow provider (Tazapay / Escrow.com): no escrow credentials — create_escrow returns a stub and the funding link in the buyer e-mail is fake
 Readiness[dev] FAIL — Money webhook signatures enforced: escrow-funded / payout webhooks are accepted unsigned when their *_WEBHOOK_SECRET is unset
 Readiness[dev] FAIL — Supplier payout rail (Payoneer): PAYONEER_CLIENT_ID unset — supplier payouts are stubbed (no money moves)
-Readiness[dev] warn — Apify actors (buyer/seller identification + screening): APIFY_TOKEN unset — no named buyers / supplier contacts / sanctions screening; parties stay unchecked
-Readiness[dev] warn — Carrier tracking (delivery → acceptance window): no carrier-tracking actor — the acceptance window opens by operator entry or 21 days after clearance (INSPECTION_WINDOW_FALLBACK_DAYS)
-Readiness[dev] warn — Apify daily run budget: APIFY_MAX_RUNS_PER_DAY unset — nothing caps actor spend if a schedule misfires
 Readiness[dev] warn — Product catalogue / corridors: catalogue empty — the scanner runs the built-in sample HS codes / markets (PUT /trade-min/catalogue)
-Readiness[dev] FAIL — Live demand data (Comtrade / Census): no Comtrade / Census key and no Apify token — opportunities fall back to simulated demand numbers
 Readiness[dev] FAIL — Outbound e-mail configured: GMAIL_SENDER_ADDRESS/GMAIL_APP_PASSWORD unset — every PI, PO and negotiation e-mail is log-only
 Readiness[dev] warn — Inbound e-mail polling configured: IMAP_USER unset — counterparty replies must be pasted in by hand
 Readiness[dev] warn — Own sending domain: sender is not on PORTLESS_EMAIL_DOMAIN — buyers see a personal mailbox (deliverability / trust)
@@ -23,546 +18,129 @@ Readiness[dev] FAIL — Exporter identity on PI/PO (IEC + GSTIN): DEALMAKER_PORT
 Readiness[dev] warn — QC inspection provider: no inspector API key — QC bookings are stubs; the deal waits at SUPPLIER_DISPATCH_READY for a manual result
 Readiness[dev] warn — Freight forwarder: no Cogoport / Freightos key — bookings are stubs and no ARRIVED milestone ever arrives
 Readiness[dev] warn — Customs filing (ICEGATE): ICEGATE_API_KEY unset — the Shipping Bill / LEO is a stub
-Readiness[dev] warn — LLM gateway key: no LLM key — negotiation e-mails are degraded templates (always L0) and the resolver escalates everything
-Readiness[dev]: NOT production-ready — 7 failing check(s); the pipeline runs on stubs/fallbacks (GET /health/readiness)
-TRADE_MONGO_URI is not set — Trade-Min running with in-memory storage. Opportunities will be lost on process restart. Set TRADE_MONGO_URI in backend/.env for durable persistence.
-DEALS_MONGO_URI not set — Deals service falling back to in-memory store. Data will not survive a process restart.
-SOURCING_MONGO_URI not set — Sourcing service falling back to in-memory store. Data will not survive a process restart.
-Seeding 5 mock negotiation scenarios...
-Mock negotiation seed complete (5 sessions, 15 emails)
-DEALMAKER_MONGO_URI not set — DealMaker falling back to in-memory store. Data will not survive a process restart.
-DOCUGEN_MONGO_URI not set — DocuGen falling back to in-memory store. Data will not survive a process restart.
-SHIELD_LINK_MONGO_URI not set — using in-memory fallback
-ESCROW_GUARD_MONGO_URI not set — using in-memory fallback
-HITL_APPROVAL_MONGO_URI not set — using in-memory fallback
-EXCEPTION_RESOLVER_MONGO_URI not set — falling back to in-memory store. Data will not survive a process restart.
-Neither AUTH_MONGO_URI nor MONGO_URI is set — Auth falling back to in-memory user/organization store. Data will not survive a restart.
-C:\Users\sunda\AppData\Roaming\Python\Python313\site-packages\pymongo\client_options.py:36: UserWarning: Failed to use the installed version of PyOpenSSL. Falling back to stdlib ssl, disabling OCSP support. This is likely caused by incompatible versions of PyOpenSSL < 23.2.0 and cryptography >= 42.0.0. Try updating PyOpenSSL >= 23.2.0 to enable OCSP.
-  from pymongo.ssl_support import get_ssl_context
-RAG module startup index check failed: module 'lib' has no attribute 'GEN_EMAIL'
+Readiness[dev]: NOT production-ready — 5 failing check(s); the pipeline runs on stubs/fallbacks (GET /health/readiness)
+C:\Users\sunda\AppData\Roaming\Python\Python313\site-packages\pymongo\pyopenssl_context.py:352: CryptographyDeprecationWarning: Parsed a serial number which wasn't positive (i.e., it was negative or zero), which is disallowed by RFC 5280. Loading this certificate will cause an exception in a future release of cryptography.
+  _crypto.X509.from_cryptography(x509.load_der_x509_certificate(cert))
 INFO:     Application startup complete.
-INFO:     127.0.0.1:62222 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:62224 - "POST /auth/register HTTP/1.1" 201 Created
-INFO:     127.0.0.1:62227 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:62227 - "POST /auth/register HTTP/1.1" 409 Conflict
-INFO:     127.0.0.1:62227 - "POST /auth/login HTTP/1.1" 200 OK
-StaleWatcher: negotiation NEG-STEEL-001 (deal DEAL-2024-STEEL-001) marked FAILED after cooling period (round_no=2, idle past threshold)
-Could not sync deal DEAL-2024-STEEL-001 to NEGOTIATION_FAILED from negotiation NEG-STEEL-001: Deal 'DEAL-2024-STEEL-001' not found
-StaleWatcher: negotiation NEG-TEX-002 (deal DEAL-2024-TEX-002) marked FAILED after cooling period (round_no=1, idle past threshold)
-Could not sync deal DEAL-2024-TEX-002 to NEGOTIATION_FAILED from negotiation NEG-TEX-002: Deal 'DEAL-2024-TEX-002' not found
-WARNING:  WatchFiles detected changes in 'services\trade_min\service.py'. Reloading...
- Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Apify: APIFY_TOKEN not set (and no ~/.apify/auth.json) — actor rich_minds~export-market-finder-ai skipped; buyer/seller identification runs on the remaining sources
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063000&enddatetime=20261024063000&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063001&enddatetime=20261024063001&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: All connection attempts failed
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063005&enddatetime=20261024063005&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063002&enddatetime=20261024063002&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021063003&enddatetime=20261024063003&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123004&enddatetime=20261024123004&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123007&enddatetime=20261024123007&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123014&enddatetime=20261024123014&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123002&enddatetime=20261024123002&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123015&enddatetime=20261024123015&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123017&enddatetime=20261024123017&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123018&enddatetime=20261024123018&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123009&enddatetime=20261024123009&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123010&enddatetime=20261024123010&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021123005&enddatetime=20261024123005&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021183005&enddatetime=20261024183005&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021183008&enddatetime=20261024183008&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021183001&enddatetime=20261024183001&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021183000&enddatetime=20261024183000&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021183008&enddatetime=20261024183008&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021183007&enddatetime=20261024183007&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021183004&enddatetime=20261024183004&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021183002&enddatetime=20261024183002&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021183003&enddatetime=20261024183003&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'comtrade' skipped — missing env var "Unknown connector: 'comtrade'". Add the credential to backend/.env to enable this data source.
-Connector 'census' skipped — missing env var "Unknown connector: 'census'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'alibaba_rfq' skipped — missing env var "Unknown connector: 'alibaba_rfq'". Add the credential to backend/.env to enable this data source.
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'eu_ted' quote() failed: Expecting value: line 1 column 1 (char 0)
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203013&enddatetime=20261024203013&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203016&enddatetime=20261024203016&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203014&enddatetime=20261024203014&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203017&enddatetime=20261024203017&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203009&enddatetime=20261024203009&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203011&enddatetime=20261024203011&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203007&enddatetime=20261024203007&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203002&enddatetime=20261024203002&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22China%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22glycerol+alcohol%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203012&enddatetime=20261024203012&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Russia%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22wheat+grain%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203006&enddatetime=20261024203006&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203005&enddatetime=20261024203005&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: 
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203004&enddatetime=20261024203004&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203001&enddatetime=20261024203001&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'gdelt_disruption' quote() failed: Client error '429 Too Many Requests' for url 'https://api.gdeltproject.org/api/v2/doc/doc?query=%22Vietnam%22+export+ban+OR+export+restriction+OR+port+strike+OR+supply+shortage+OR+trade+sanction+OR+embargo+OR+logistics+disruption+OR+supply+chain+disruption+%22ground+pepper+spices%22&mode=artlist&maxrecords=25&format=json&startdatetime=20261021203003&enddatetime=20261024203003&sort=DateDesc'
-For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
-Connector 'wits_tariff' quote() failed: 
-Connector 'indiamart' skipped — missing env var "Unknown connector: 'indiamart'". Add the credential to backend/.env to enable this data source.
-Connector 'tradeindia' skipped — missing env var "Unknown connector: 'tradeindia'". Add the credential to backend/.env to enable this data source.
+INFO:     127.0.0.1:62804 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62809 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65023 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54572 - "GET /health HTTP/1.1" 200 OK
+Auth: could not reach the gateway to check a token: 
+INFO:     127.0.0.1:61326 - "GET /automation/view/negotiation-agent/negotiations/92e46ebb-a4bd-4d9f-ad70-4e12157b73d4/emails HTTP/1.1" 503 Service Unavailable
+Auth: could not reach the gateway to check a token: 
+INFO:     127.0.0.1:54573 - "GET /identity/me HTTP/1.1" 503 Service Unavailable
+Auth: could not reach the gateway to check a token: 
+INFO:     127.0.0.1:54565 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 503 Service Unavailable
+Auth: could not reach the gateway to check a token: 
+INFO:     127.0.0.1:54567 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 503 Service Unavailable
+Auth: could not reach the gateway to check a token: 
+INFO:     127.0.0.1:61325 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 503 Service Unavailable
+Auth: could not reach the gateway to check a token: 
+INFO:     127.0.0.1:54570 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 503 Service Unavailable
+Auth: could not reach the gateway to check a token: 
+INFO:     127.0.0.1:61322 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60074 - "GET /identity/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58167 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51314 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58165 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:49811 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64478 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62536 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56525 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56526 - "GET /identity/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62464 - "GET /identity/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56520 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56524 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56519 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57244 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:59174 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:55753 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:62924 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63259 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64410 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64415 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64419 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61598 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56189 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52420 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52421 - "GET /identity/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52415 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62816 - "GET /identity/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52416 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:52419 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60367 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:59277 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59279 - "GET /identity/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52704 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59423 - "GET /identity/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59273 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:59276 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63173 - "GET /automation/view/deals/DEAL-F1BE6A52EFCA HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:52692 - "GET /automation/view/hitl-approval/approvals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52887 - "GET /automation/view/deals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61325 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59399 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64669 - "GET /automation/view/deals/DEAL-A78E36EA20DE HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61305 - "GET /automation/view/match-engine/scores/DEAL-A78E36EA20DE HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:61304 - "GET /automation/view/deals/DEAL-A78E36EA20DE/compliance HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59901 - "GET /automation/view/negotiation-agent/negotiations?deal_id=DEAL-A78E36EA20DE HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59902 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51764 - "GET /automation/view/negotiation-agent/negotiations/01c8e66b-6792-42e7-b2dd-0f30ef1082b3/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51763 - "GET /automation/view/negotiation-agent/negotiations/01c8e66b-6792-42e7-b2dd-0f30ef1082b3/rounds HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64131 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55578 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52199 - "GET /automation/view/negotiation-agent/negotiations/01c8e66b-6792-42e7-b2dd-0f30ef1082b3/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59270 - "GET /automation/view/negotiation-agent/negotiations/01c8e66b-6792-42e7-b2dd-0f30ef1082b3/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54277 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60412 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51023 - "GET /automation/view/negotiation-agent/negotiations/01c8e66b-6792-42e7-b2dd-0f30ef1082b3/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49328 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64456 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62286 - "GET /automation/view/negotiation-agent/negotiations/01c8e66b-6792-42e7-b2dd-0f30ef1082b3/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58568 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58946 - "GET /automation/view/negotiation-agent/negotiations/01c8e66b-6792-42e7-b2dd-0f30ef1082b3/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52620 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60903 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58080 - "GET /automation/view/negotiation-agent/negotiations/01c8e66b-6792-42e7-b2dd-0f30ef1082b3/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51006 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55512 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58642 - "GET /automation/view/negotiation-agent/negotiations/01c8e66b-6792-42e7-b2dd-0f30ef1082b3/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58079 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49739 - "GET /automation/view/deals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53038 - "GET /automation/view/deals/DEAL-3B98BC020576 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59736 - "GET /automation/view/match-engine/scores/DEAL-3B98BC020576 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:59735 - "GET /automation/view/deals/DEAL-3B98BC020576/compliance HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60044 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58128 - "GET /automation/view/negotiation-agent/negotiations?deal_id=DEAL-3B98BC020576 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58129 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56974 - "GET /automation/view/negotiation-agent/negotiations/ddca3b8b-690e-454c-973c-ab3f97b908a1/rounds HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56975 - "GET /automation/view/negotiation-agent/negotiations/ddca3b8b-690e-454c-973c-ab3f97b908a1/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62652 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65150 - "GET /automation/view/negotiation-agent/negotiations/ddca3b8b-690e-454c-973c-ab3f97b908a1/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52681 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54179 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51049 - "GET /automation/view/negotiation-agent/negotiations/ddca3b8b-690e-454c-973c-ab3f97b908a1/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63432 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60526 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58238 - "GET /automation/view/negotiation-agent/negotiations/ddca3b8b-690e-454c-973c-ab3f97b908a1/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62963 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56911 - "GET /automation/view/negotiation-agent/negotiations/ddca3b8b-690e-454c-973c-ab3f97b908a1/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52791 - "GET /automation/view/deals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50571 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55744 - "GET /automation/view/deals/DEAL-70B59EC9150D HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52876 - "GET /automation/view/match-engine/scores/DEAL-70B59EC9150D HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51475 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52875 - "GET /automation/view/deals/DEAL-70B59EC9150D/compliance HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56645 - "GET /automation/view/negotiation-agent/negotiations?deal_id=DEAL-70B59EC9150D HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49486 - "GET /automation/view/negotiation-agent/negotiations/24100243-960b-41cd-8e58-2ddbecc7cec1/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49485 - "GET /automation/view/negotiation-agent/negotiations/24100243-960b-41cd-8e58-2ddbecc7cec1/rounds HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52565 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55177 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50156 - "GET /automation/view/negotiation-agent/negotiations/24100243-960b-41cd-8e58-2ddbecc7cec1/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62821 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64761 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50077 - "GET /automation/view/negotiation-agent/negotiations/24100243-960b-41cd-8e58-2ddbecc7cec1/emails HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53706 - "GET /automation/view/hitl-approval/approvals?status=PENDING HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64428 - "GET /automation/view/hitl-approval/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49900 - "GET /automation/view/negotiation-agent/negotiations/24100243-960b-41cd-8e58-2ddbecc7cec1/emails HTTP/1.1" 200 OK
