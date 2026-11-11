@@ -1,0 +1,48 @@
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Inspection Order{% endblock %}
+{% block kind_sub %}<div class="kind-sub">Pre-shipment inspection, supervised loading and sealing</div>{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block chip %}{% if qc_ref %}<div class="chip">Booking {{ qc_ref }}</div>{% endif %}{% endblock %}
+{% block facts %}
+  {{ m.fact("Order date", doc_date | date) }}
+  {{ m.fact("Inspection agency", qc_provider_name) }}
+  {{ m.fact("Goods ready by", ready_by | date) }}
+  {{ m.fact("Deal reference", deal_id, mono=True) }}
+{% endblock %}
+{% block content %}
+<h2>Parties</h2>
+<div class="grid-2">
+  {{ m.exporter_card(exporter, "Applicant / Client") }}
+  {{ m.party("Inspection site — supplier", supplier.legal_name, [supplier.address, supplier.phone], {"GSTIN": supplier.gstin}) }}
+</div>
+
+<h2>Goods to inspect</h2>
+<table>
+  <thead><tr><th>Commodity</th><th>HS code</th><th class="num">Ordered (MT)</th><th>Tolerance</th><th>Purchase order</th></tr></thead>
+  <tbody><tr>
+    <td><strong>{{ product }}</strong><div class="small muted">{{ quality_spec }}</div></td>
+    <td class="mono">{{ hs_code }}</td>
+    <td class="num">{{ quantity_mt | qty }}</td>
+    <td>± {{ tolerance_pct }}%</td>
+    <td class="mono">{{ po_id or "—" }}</td>
+  </tr></tbody>
+</table>
+
+<h2>Scope</h2>
+<ol class="clauses">
+  <li><strong>Quality.</strong> Draw representative samples per the agency's standard sampling plan and test against the specification above. Report every parameter with its result.</li>
+  <li><strong>Quantity and weight.</strong> Verify the number of packages and net / gross weight; report the loaded quantity in MT.</li>
+  <li><strong>Packing and marks.</strong> Confirm new, export-worthy packing and the marks <span class="mono">{{ marks }}</span>. No supplier name, price or invoice in or on the packages.</li>
+  <li><strong>Container.</strong> Check the container is clean, dry, odour-free and seaworthy before stuffing; photograph inside and out.</li>
+  <li><strong>Supervised loading and sealing.</strong> Supervise the stuffing of all goods and affix the seal. Report container number(s), seal number(s), the loaded HS heading and photographs of the sealed doors.</li>
+  <li><strong>Result.</strong> Issue a certificate of quality and quantity stating PASS or FAIL. Goods may not be released from the site before a PASS.</li>
+</ol>
+
+<div class="notice accent">Results go to {{ exporter.name }} only{% if exporter.email %} ({{ exporter.email }}){% endif %}, through the agency's report and webhook, quoting <span class="mono">{{ deal_id }}</span>.</div>
+
+<div class="signs">
+  {{ m.exporter_sign(exporter, "For the Applicant") }}
+  {{ m.sign("Accepted — " ~ qc_provider_name, "", "Inspector name and date") }}
+</div>
+{% endblock %}

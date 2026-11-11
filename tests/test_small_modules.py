@@ -83,10 +83,13 @@ class TestGateway:
 
 
 class TestQcProviderHttp:
+    """The generic JSON adapter (Intertek / TÜV SÜD). SGS and BV are booked
+    through their portals and QIMA has its own contract (tests/test_qc_inspection.py)."""
+
     @pytest.fixture
     def connector(self, monkeypatch):
-        monkeypatch.setenv("SGS_API_KEY", "K")
-        return qc.SgsConnector()
+        monkeypatch.setenv("INTERTEK_API_KEY", "K")
+        return qc.IntertekConnector()
 
     @pytest.mark.parametrize(("operation", "arg"), [("quote", {"quantity_mt": 20}), ("book", {}), ("status", "R")])
     async def test_live(self, connector, http, operation, arg):
@@ -99,8 +102,8 @@ class TestQcProviderHttp:
             await getattr(connector, operation)(arg)
 
     async def test_stub_status(self, monkeypatch):
-        monkeypatch.delenv("SGS_API_KEY", raising=False)
-        result = await qc.SgsConnector().status("R")
+        monkeypatch.delenv("INTERTEK_API_KEY", raising=False)
+        result = await qc.IntertekConnector().status("R")
         assert result["stub"] is True and result["status"] == "BOOKED"
 
 

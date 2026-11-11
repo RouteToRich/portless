@@ -126,10 +126,12 @@ async def _run(args: argparse.Namespace, guard: NetworkGuard) -> int:
             # supplier had to confirm the order and acknowledge the PO; like the
             # pytest suite it runs without those two steps. The LLM journeys run
             # the real flow with both on.
-            commitment_env = {k: os.environ.get(k) for k in ("SUPPLIER_CONFIRMATION_REQUIRED", "PO_ACK_REQUIRED")}
+            commitment_env = {k: os.environ.get(k) for k in ("SUPPLIER_CONFIRMATION_REQUIRED", "PO_ACK_REQUIRED",
+                                                             "QC_READINESS_DATE_REQUIRED")}
             if cases:
                 os.environ["SUPPLIER_CONFIRMATION_REQUIRED"] = "false"
                 os.environ["PO_ACK_REQUIRED"] = "false"
+                os.environ["QC_READINESS_DATE_REQUIRED"] = "false"
             for case in cases:
                 if case.layer == "ui":
                     for i, row in enumerate(case.iterations()):

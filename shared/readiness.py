@@ -230,11 +230,24 @@ def evaluate() -> dict[str, Any]:
     ))
 
     # ── Operations partners ────────────────────────────────────────────────
-    qc_live = any(_set(f"{p}_API_KEY") for p in ("SGS", "QIMA", "BUREAU_VERITAS", "INTERTEK", "TUV_SUD"))
+    qima_live = (_set("QIMA_ACCOUNT") and (_set("QIMA_API_ACCESS_TOKEN") or _set("QIMA_API_KEY"))
+                 and (_set("QIMA_PASSWORD") or _set("QIMA_PASSWORD_MD5")))
+    portal_desks = [p for p in ("SGS", "BUREAU_VERITAS") if _set(f"{p}_BOOKING_EMAIL")]
+    generic = [p for p in ("INTERTEK", "TUV_SUD") if _set(f"{p}_API_KEY")]
+    qc_live = qima_live or bool(portal_desks) or bool(generic)
+    qc_detail = ", ".join(filter(None, ["QIMA API" if qima_live else "",
+                                        *[f"{p} booking desk" for p in portal_desks], *[f"{p} API" for p in generic]]))
     checks.append(_check(
         "qc_provider", "operations", "QC inspection provider", qc_live, warn_only=not prod,
-        ok_detail="at least one inspector API configured",
-        fail_detail="no inspector API key — QC bookings are stubs; the deal waits at SUPPLIER_DISPATCH_READY for a manual result",
+        ok_detail=f"inspection bookings reach: {qc_detail}",
+        fail_detail="no inspector configured (QIMA_API_ACCESS_TOKEN + QIMA_ACCOUNT + QIMA_PASSWORD, or "
+                    "SGS_BOOKING_EMAIL / BUREAU_VERITAS_BOOKING_EMAIL) — QC bookings are stubs or wait for an operator",
+    ))
+    sandbox = os.getenv("QC_SANDBOX_PROVIDERS", "").strip()
+    checks.append(_check(
+        "qc_sandbox", "operations", "QC providers are real (no sandbox)", not sandbox, warn_only=not prod,
+        ok_detail="QC_SANDBOX_PROVIDERS unset",
+        fail_detail=f"QC_SANDBOX_PROVIDERS={sandbox} — those inspection bookings go to the simulator, not the provider",
     ))
     checks.append(_check(
         "freight_provider", "operations", "Freight forwarder", _set("COGOPORT_API_KEY") or _set("FREIGHTOS_API_KEY"),
@@ -297,6 +310,19 @@ def evaluate() -> dict[str, Any]:
         (os.getenv("COMPLIANCE_UNCHECKED_SCREENING") or "review").strip().lower() in ("review", "block"),
         ok_detail="a party whose sanctions screening never ran needs an operator before the PI",
         fail_detail="COMPLIANCE_UNCHECKED_SCREENING=allow — a PI can go to a never-screened buyer",
+    ))
+    from shared.documents import issuer
+    missing_export = issuer.missing(("address", "iec", "gstin", "lut_arn", "ad_code"))
+    checks.append(_check(
+        "documents_exporter", "documents", "Exporter details on trade documents", not missing_export,
+        ok_detail="PI, invoice, shipping bill and SDF carry PortLess's address, IEC, GSTIN, LUT and AD code",
+        fail_detail="missing " + ", ".join(missing_export) + " — those documents are issued as DRAFT",
+    ))
+    checks.append(_check(
+        "documents_contract_law", "documents", "Governing law on the sales contract", _set("PORTLESS_CONTRACT_LAW"),
+        warn_only=True,
+        ok_detail="the sales contract states the governing law and dispute forum",
+        fail_detail="PORTLESS_CONTRACT_LAW is not set — the sales contract is issued as DRAFT",
     ))
 
     failures = [c for c in checks if c["status"] == "fail"]

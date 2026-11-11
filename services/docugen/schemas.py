@@ -63,6 +63,10 @@ class DocumentRecord(BaseModel):
     # Raw template context snapshot (for audit / re-render)
     context_snapshot: dict[str, Any] = Field(default_factory=dict)
 
+    # A required fact was missing: the document carries a DRAFT banner and must not be used
+    draft: bool = False
+    draft_reasons: list[str] = Field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Generate request
@@ -122,6 +126,14 @@ class GenerateDocumentRequest(BaseModel):
     rodtep_declaration: bool = True
     draw_back_claim: bool = False
 
+    # Remittance advice / credit note / acceptance certificate
+    payout_id: str | None = None
+    """The supplier payout a REMITTANCE_ADVICE is for."""
+    refund_amount: float | None = None
+    refund_reason: str | None = None
+    acceptance_basis: str | None = None
+    """``buyer_accepted`` | ``window_lapsed`` — how the final tranche was released."""
+
     # Idempotency
     idempotency_key: str | None = None
 
@@ -141,6 +153,8 @@ class DocumentResponse(BaseModel):
     content_hash: str | None = None
     created_at: datetime
     rendered_at: datetime | None = None
+    draft: bool = False
+    draft_reasons: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_record(cls, r: DocumentRecord) -> "DocumentResponse":
@@ -153,6 +167,8 @@ class DocumentResponse(BaseModel):
             content_hash=r.content_hash,
             created_at=r.created_at,
             rendered_at=r.rendered_at,
+            draft=r.draft,
+            draft_reasons=list(r.draft_reasons),
         )
 
 

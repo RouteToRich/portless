@@ -1,0 +1,54 @@
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Shipping Instructions{% endblock %}
+{% block kind_sub %}<div class="kind-sub">For the bill of lading</div>{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block chip %}{% if booking_ref %}<div class="chip">Booking {{ booking_ref }}</div>{% endif %}{% endblock %}
+{% block facts %}
+  {{ m.fact("Date", doc_date | date) }}
+  {{ m.fact("Carrier / forwarder", freight_provider) }}
+  {{ m.fact("Freight", "Prepaid" if incoterm in ("CIF", "CFR", "CIP", "CPT") else "Collect") }}
+  {{ m.fact("ETD / ETA", (etd | date) ~ " / " ~ (eta | date)) }}
+{% endblock %}
+{% block content %}
+<h2>Bill of lading parties</h2>
+<div class="grid-3">
+  {{ m.exporter_card(exporter, "Shipper") }}
+  {{ m.party("Consignee", buyer.legal_name, [buyer.address, buyer.country, buyer.phone]) }}
+  {{ m.party("Notify party", notify_party or "Same as consignee", []) }}
+</div>
+
+<h2>Routing</h2>
+<div class="grid-2">
+  {{ m.kv([("Place of receipt", place_of_receipt), ("Port of loading", port_of_loading), ("Port of discharge", port_of_destination),
+           ("Place of delivery", port_of_destination)]) }}
+  {{ m.kv([("Vessel / voyage", (vessel ~ (" / " ~ voyage if voyage else "")) if vessel else "As booked"), ("Service", "FCL / FCL, CY / CY"),
+           ("Incoterms® 2020", incoterm ~ " " ~ (port_of_destination or ""))]) }}
+</div>
+
+<h2>Cargo</h2>
+<table>
+  <thead><tr><th>Container</th><th>Seal</th><th>Marks</th><th>Description of goods</th><th class="num">Packages</th><th class="num">Net (MT)</th><th class="num">Gross (MT)</th></tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr><td class="mono">{{ row.container or "—" }}</td><td class="mono">{{ row.seal or "—" }}</td><td>{{ marks }}</td>
+      <td><strong>{{ product }}</strong><div class="small muted">HS {{ hs_code }}</div></td>
+      <td class="num">{{ row.packages or "—" }}</td><td class="num">{{ row.net | qty }}</td><td class="num">{{ row.gross | qty if row.gross else "—" }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Bill of lading</h2>
+<ul class="checks">
+  <li>Clean on board, "Freight {{ 'prepaid' if incoterm in ('CIF', 'CFR', 'CIP', 'CPT') else 'collect' }}"</li>
+  <li>{{ bl_release }}</li>
+  <li>Goods description exactly as above; no prices, no supplier name</li>
+  <li>Show the HS code and the commercial invoice number <span class="mono">{{ invoice_ref or "—" }}</span></li>
+  <li>Send the draft B/L to {{ exporter.email or exporter.name }} for approval before issue</li>
+</ul>
+
+<div class="signs">
+  {{ m.exporter_sign(exporter, "For the Shipper") }}
+  <div></div>
+</div>
+{% endblock %}

@@ -2974,6 +2974,196 @@ Feature: Inspection booking, result and supervised loading
     Then the response status is 404
 ```
 
+#### Inspection providers: QIMA by API, SGS and BV by portal
+
+QIMA publishes a REST API (developers.qima.com): the booking goes to `POST /v1.0/inspection`, the status and the report are polled, and the report PDF is downloaded. SGS SMART and BV OneSource Connect are portals with no public API: the booking request goes to the provider's booking desk, and the confirmation and report come back on the signed QC webhook or from staff. The automation worker runs these providers on the in-process sandbox (`services/qc_sandbox`, `QC_SANDBOX_PROVIDERS`). The sandbox uses QIMA's documented requests and responses, and PortLess's own webhook contract for the portals. `{READY_DATE}` is a working day 8 to 10 days out, set by the Given step.
+
+```gherkin
+@phase:qc @api @flow
+Feature: Inspection providers, the goods-ready date and the inspection status
+
+  Background:
+    Given I am "staff"
+
+  @TC-QC-023 @P0 @positive @sandbox
+  Scenario: A QIMA booking sends QIMA's documented order for the supplier's ready date
+    Given a deal "D" at status "PO_ISSUED" from fixture "FX-STD"
+    When the inspection is booked with "qima" for goods ready in 8 working days
+    Then deal "D" has status "SUPPLIER_DISPATCH_READY"
+    And the QC order has provider status "REQUESTED"
+    And the QC order is booked for the goods-ready date
+    And QIMA received the booking with the deal's PO number and the supplier's name
+    And an e-mail containing "Pre-shipment inspection booked" is composed for the "supplier"
+
+  @TC-QC-024 @P0 @positive @sandbox
+  Scenario: QIMA's validation and passing report reach the deal by polling
+    Given a deal "D" whose "qima" inspection is booked
+    When QIMA validates the order for the inspection date
+    And the QC status is polled
+    Then the QC order has provider status "CONFIRMED"
+    When QIMA reports "PASS" for the order
+    And the QC status is polled
+    Then deal "D" has status "QC_PASSED"
+    And the QC order has provider status "REPORT_ISSUED"
+    And the QC order keeps 1 report PDF whose hash is the CRF hash
+
+  @TC-QC-025 @P0 @negative @sandbox
+  Scenario: A failing QIMA report opens a dispute
+    Given a deal "D" whose "qima" inspection is booked
+    When QIMA reports "FAIL" for the order
+    And the QC status is polled
+    Then deal "D" has status "DISPUTE"
+    And an exception is recorded with "category" equal to "QC_FAILED"
+
+  @TC-QC-026 @P1 @exception @sandbox
+  Scenario: A QIMA report that leaves the decision to the client goes to a person
+    Given a deal "D" whose "qima" inspection is booked
+    When QIMA reports "PENDING" for the order
+    And the QC status is polled
+    Then deal "D" has status "SUPPLIER_DISPATCH_READY"
+    And an exception is recorded with "source_event" equal to "QC_RESULT_PENDING"
+
+  @TC-QC-027 @P1 @positive @sandbox
+  Scenario: A repeated poll after the report changes nothing
+    Given a deal "D" whose "qima" inspection is booked
+    When QIMA reports "PASS" for the order
+    And the QC status is polled
+    And the QC status is polled
+    Then deal "D" has status "QC_PASSED"
+    And the QC order keeps 1 report PDF whose hash is the CRF hash
+
+  @TC-QC-028 @P0 @positive @sandbox
+  Scenario Outline: A portal provider confirms and reports by signed webhook
+    Given a deal "D" whose "<provider>" inspection is booked
+    When the "<provider>" desk confirms the booking by webhook
+    Then the response status is 200
+    And the QC order has provider status "CONFIRMED"
+    When the "<provider>" desk reports "PASS" with container "SBXU0000001" and seal "SEAL-1" by webhook
+    Then deal "D" has status "QC_PASSED"
+    And the QC order keeps 1 report PDF whose hash is the CRF hash
+
+    Examples:
+      | provider |
+      | sgs      |
+      | bv       |
+
+  @TC-QC-029 @P1 @negative @sandbox
+  Scenario: A portal webhook with a wrong signature is refused
+    Given a deal "D" whose "sgs" inspection is booked
+    When the "sgs" desk confirms the booking by webhook with a wrong signature
+    Then the response status is 401
+    And the QC order has provider status "REQUESTED"
+
+  @TC-QC-030 @P1 @positive
+  Scenario: Staff relay the result read on the provider's portal
+    Given a deal "D" whose "bv" inspection is booked
+    When I call "POST /shield-link/qc/{QC}/status" with body:
+      """
+      {"status":"REPORT_ISSUED","result":"FAIL","notes":"broken grains above the limit"}
+      """
+    Then the response status is 200
+    And deal "D" has status "DISPUTE"
+
+  @TC-QC-031 @P1 @negative
+  Scenario Outline: Status relay validation
+    Given a deal "D" whose "bv" inspection is booked
+    When I call "POST /shield-link/qc/<ref>/status" with body:
+      """
+      <body>
+      """
+    Then the response status is <code>
+
+    Examples:
+      | ref  | body                        | code |
+      | {QC} | {"status":"REPORT_ISSUED"}  | 422  |
+      | {QC} | {"status":"DONE"}           | 422  |
+      | NOPE | {"status":"CONFIRMED"}      | 404  |
+
+  @TC-QC-032 @P0 @positive
+  Scenario: The PO acknowledgement names the goods-ready date and the inspection is booked for it
+    Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
+    And the supplier must acknowledge the PO and give a goods-ready date
+    When "staff" approves the pending "ISSUE_PO" gate
+    Then deal "D" has status "PO_ISSUED"
+    And an e-mail containing "100% produced" is composed for the "supplier"
+    When the supplier replies "We acknowledge the purchase order. The goods will be ready for inspection on {READY_DATE}." from the known address
+    Then deal "D" has status "SUPPLIER_DISPATCH_READY"
+    And the QC order is booked for the goods-ready date
+
+  @TC-QC-033 @P0 @positive
+  Scenario: An acknowledgement without a date is followed by the date question
+    Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
+    And the supplier must acknowledge the PO and give a goods-ready date
+    When "staff" approves the pending "ISSUE_PO" gate
+    And the supplier replies "We acknowledge the purchase order." from the known address
+    Then deal "D" has status "PO_ISSUED"
+    And no QC order exists for the deal
+    And an e-mail containing "ready for inspection" is composed for the "supplier"
+    When the supplier replies "The lot will be packed and ready on {READY_DATE}." from the known address
+    Then deal "D" has status "SUPPLIER_DISPATCH_READY"
+    And the QC order is booked for the goods-ready date
+
+  @TC-QC-034 @P1 @positive
+  Scenario: Staff record a goods-ready date heard by phone
+    Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
+    And the supplier must acknowledge the PO and give a goods-ready date
+    When "staff" approves the pending "ISSUE_PO" gate
+    And I call "POST /shield-link/deals/{D}/qc-readiness" with body:
+      """
+      {"ready_date":"{READY_DATE}","packed_pct":90}
+      """
+    Then the response status is 200
+    And the response field "status" is "booked"
+    And deal "D" has status "SUPPLIER_DISPATCH_READY"
+    And the QC order is booked for the goods-ready date
+
+  @TC-QC-035 @P1 @negative
+  Scenario Outline: Goods-ready date validation
+    Given a deal "D" at status "PO_ISSUED" from fixture "FX-STD"
+    When I call "POST /shield-link/deals/<deal>/qc-readiness" with body:
+      """
+      <body>
+      """
+    Then the response status is <code>
+
+    Examples:
+      | deal | body                                          | code |
+      | {D}  | {"ready_date":"soon"}                         | 422  |
+      | {D}  | {"ready_date":"2026-12-01","packed_pct":150}  | 422  |
+      | {D}  | {}                                            | 422  |
+      | NOPE | {"ready_date":"2026-12-01"}                   | 404  |
+
+  @TC-QC-036 @P1 @positive @sandbox
+  Scenario: Moving the inspection cancels the QIMA order and books the new date
+    Given a deal "D" whose "qima" inspection is booked
+    When I call "POST /shield-link/qc/{QC}/reschedule" with body:
+      """
+      {"inspection_date":"{READY_DATE}","reason":"supplier delayed packing"}
+      """
+    Then the response status is 201
+    And QIMA cancelled the first order with reason "supplier delayed packing"
+    And deal "D" has status "SUPPLIER_DISPATCH_READY"
+    And 2 QC orders exist for the deal
+
+  @TC-QC-037 @P1 @positive
+  Scenario: The deal's inspection view
+    Given a deal "D" whose "qima" inspection is booked
+    When I call "GET /shield-link/deals/{D}/qc"
+    Then the response status is 200
+    And the response field "orders.0.provider" is "qima"
+    And the response field "orders.0.provider_status" is "REQUESTED"
+    And the response field "orders.0.channel" is "sandbox"
+
+  @TC-QC-038 @P2 @positive @sandbox
+  Scenario: The kept report is served as a PDF
+    Given a deal "D" whose "qima" inspection is booked
+    When QIMA reports "PASS" for the order
+    And the QC status is polled
+    And I call "GET /shield-link/qc/{QC}/documents/0"
+    Then the response status is 200
+    And the response is a PDF
+```
+
 ### Phase 8: Documents
 
 ```gherkin

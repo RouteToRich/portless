@@ -40,9 +40,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from shared.bus import get_publisher
+from shared.documents.render import environment as document_environment, render_document
 from shared.connectors.google_drive import GoogleDriveError, get_connector as get_drive_connector
 from shared.domain.events import DomainEvent, EventTopic
 from shared.domain.state_machine import can_transition
@@ -64,10 +64,31 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
-_jinja_env = Environment(
-    loader=FileSystemLoader(str(_TEMPLATES_DIR)),
-    autoescape=select_autoescape(["html", "j2"]),
-)
+_jinja_env = document_environment(_TEMPLATES_DIR)
+
+# What a PI / PO cannot be issued without: the document is rendered DRAFT otherwise.
+_PI_EXPORTER_FIELDS = ("address", "iec")
+_PO_EXPORTER_FIELDS = ("address", "gstin")
+_QTY_TOLERANCE_PCT = 5
+
+
+def _render_pi(*, pi_id: str, deal_id: str, deal: Any, buyer_name: str, buyer_address: str, buyer_vat_number: str | None,
+               product_description: str, quantity_mt: float, agreed_price: float, currency: str,
+               total_value: float, incoterm: str, port_of_destination: str, payment_terms: str,
+               validity_days: int, issued_at: datetime, expires_at: datetime,
+               qc_provider: str | None, escrow_provider: str | None) -> str:
+    from shared.documents.facts import party
+    buyer = party(deal, "buyer")
+    return render_document(_jinja_env, "pi.html.j2", {
+        "pi_id": pi_id, "deal_id": deal_id, "buyer_name": buyer_name, "buyer_address": buyer_address,
+        "buyer_country": buyer.get("country") or "", "buyer_vat_number": buyer_vat_number or "",
+        "hs_code": deal.hs_code, "product_description": product_description, "quantity_mt": quantity_mt,
+        "agreed_price": agreed_price, "currency": currency, "total_value": total_value, "incoterm": incoterm,
+        "port_of_destination": port_of_destination, "port_of_loading": getattr(deal, "port_of_loading", "") or "",
+        "payment_terms": payment_terms, "validity_days": validity_days, "issued_at": issued_at,
+        "expires_at": expires_at, "qc_provider": qc_provider, "escrow_provider": escrow_provider,
+        "tolerance_pct": _QTY_TOLERANCE_PCT,
+    }, exporter_fields=_PI_EXPORTER_FIELDS, required={"buyer address": buyer_address})
 
 
 # ---------------------------------------------------------------------------
@@ -344,30 +365,13 @@ async def issue_pi(req: IssuePiRequest) -> PiResponse:
     expires_at = now + timedelta(days=req.validity_days)
 
     # ── Render template ───────────────────────────────────────────────────
-    tmpl = _jinja_env.get_template("pi.html.j2")
-    html = tmpl.render(
-        pi_id=pi_id,
-        deal_id=req.deal_id,
-        seller_name=settings.portless_entity_name,
-        seller_address=settings.portless_entity_address,
-        seller_iec=settings.portless_entity_iec or "",
-        seller_gstin=settings.portless_entity_gstin or "",
-        buyer_name=buyer_name,
-        buyer_address=buyer_address,
-        buyer_vat_number=buyer_vat_number or "",
-        hs_code=deal.hs_code,
-        product_description=product_description,
-        quantity_mt=req.quantity_mt,
-        agreed_price=req.agreed_price,
-        currency=req.currency,
-        total_value=total_value,
-        incoterm=req.incoterm,
-        port_of_destination=req.port_of_destination,
-        port_of_loading=getattr(deal, "port_of_loading", ""),
-        payment_terms=req.payment_terms,
-        validity_days=req.validity_days,
-        issued_at=now.strftime("%Y-%m-%d"),
-        expires_at=expires_at.strftime("%Y-%m-%d"),
+    html = _render_pi(
+        pi_id=pi_id, deal_id=req.deal_id, deal=deal, buyer_name=buyer_name, buyer_address=buyer_address,
+        buyer_vat_number=buyer_vat_number, product_description=product_description,
+        quantity_mt=req.quantity_mt, agreed_price=req.agreed_price, currency=req.currency,
+        total_value=total_value, incoterm=req.incoterm, port_of_destination=req.port_of_destination,
+        payment_terms=req.payment_terms, validity_days=req.validity_days, issued_at=now,
+        expires_at=expires_at, qc_provider=req.qc_provider, escrow_provider=req.escrow_provider,
     )
 
     content_hash = _sha256(html)
@@ -484,29 +488,13 @@ async def extend_pi(pi_id: str, req: ExtendPiRequest, by: str) -> PiResponse:
     deal = await _fetch_deal(pi.deal_id)
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(days=req.validity_days)
-    html = _jinja_env.get_template("pi.html.j2").render(
-        pi_id=pi.pi_id,
-        deal_id=pi.deal_id,
-        seller_name=settings.portless_entity_name,
-        seller_address=settings.portless_entity_address,
-        seller_iec=settings.portless_entity_iec or "",
-        seller_gstin=settings.portless_entity_gstin or "",
-        buyer_name=pi.buyer_name,
-        buyer_address=pi.buyer_address,
-        buyer_vat_number=pi.buyer_vat_number or "",
-        hs_code=deal.hs_code,
-        product_description=_hs_description(deal.hs_code),
-        quantity_mt=pi.quantity_mt,
-        agreed_price=pi.agreed_price,
-        currency=pi.currency,
-        total_value=pi.total_value,
-        incoterm=pi.incoterm,
-        port_of_destination=pi.port_of_destination,
-        port_of_loading=getattr(deal, "port_of_loading", ""),
-        payment_terms=pi.payment_terms,
-        validity_days=req.validity_days,
-        issued_at=pi.issued_at.strftime("%Y-%m-%d"),
-        expires_at=expires_at.strftime("%Y-%m-%d"),
+    html = _render_pi(
+        pi_id=pi.pi_id, deal_id=pi.deal_id, deal=deal, buyer_name=pi.buyer_name, buyer_address=pi.buyer_address,
+        buyer_vat_number=pi.buyer_vat_number, product_description=_hs_description(deal.hs_code),
+        quantity_mt=pi.quantity_mt, agreed_price=pi.agreed_price, currency=pi.currency,
+        total_value=pi.total_value, incoterm=pi.incoterm, port_of_destination=pi.port_of_destination,
+        payment_terms=pi.payment_terms, validity_days=req.validity_days, issued_at=pi.issued_at,
+        expires_at=expires_at, qc_provider=pi.qc_provider, escrow_provider=pi.escrow_provider,
     )
     storage_uri = await _write_document(pi.deal_id, f"{pi.pi_id}.html", html)
     updated = pi.model_copy(update={
@@ -632,29 +620,16 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
     )
 
     # ── Render template ───────────────────────────────────────────────────
-    tmpl = _jinja_env.get_template("po.html.j2")
-    html = tmpl.render(
-        po_id=po_id,
-        deal_id=req.deal_id,
-        buyer_name=buyer_name,
-        buyer_address=settings.portless_entity_address,
-        supplier_name=supplier_name,
-        supplier_address=supplier_address,
-        supplier_gstin=supplier_gstin or "",
-        supplier_iec=supplier_iec or "",
-        hs_code=deal.hs_code,
-        product_description=product_description,
-        quantity_mt=req.quantity_mt,
-        agreed_price=req.agreed_price,
-        currency=req.currency,
-        total_value=total_value,
-        incoterm=req.incoterm,
-        port_of_loading=req.port_of_loading,
-        payment_terms=req.payment_terms,
-        delivery_deadline=delivery_deadline_str,
-        quality_spec=req.quality_spec or "",
-        issued_at=now.strftime("%Y-%m-%d"),
-    )
+    html = render_document(_jinja_env, "po.html.j2", {
+        "po_id": po_id, "deal_id": req.deal_id, "buyer_name": buyer_name,
+        "supplier_name": supplier_name, "supplier_address": supplier_address,
+        "supplier_gstin": supplier_gstin or "", "supplier_iec": supplier_iec or "",
+        "hs_code": deal.hs_code, "product_description": product_description,
+        "quantity_mt": req.quantity_mt, "agreed_price": req.agreed_price, "currency": req.currency,
+        "total_value": total_value, "incoterm": req.incoterm, "port_of_loading": req.port_of_loading,
+        "payment_terms": req.payment_terms, "delivery_deadline": req.delivery_deadline,
+        "quality_spec": req.quality_spec or "", "issued_at": now,
+    }, exporter_fields=_PO_EXPORTER_FIELDS, required={"supplier address": supplier_address})
 
     content_hash = _sha256(html)
     storage_uri = await _write_document(req.deal_id, f"{po_id}.html", html)
@@ -862,5 +837,5 @@ _HS_DESCRIPTIONS: dict[str, str] = {
 
 
 def _hs_description(hs_code: str) -> str:
-    prefix = re.sub(r"\D", "", hs_code)[:4]
-    return _HS_DESCRIPTIONS.get(prefix, f"Commodity (HS {hs_code})")
+    from shared.documents.facts import product_name
+    return product_name(hs_code)

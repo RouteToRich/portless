@@ -1,110 +1,60 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Commercial Invoice {{ doc_id }}</title>
-<style>
-  body { font-family: Arial, sans-serif; font-size: 12px; color: #222; margin: 40px; }
-  h1 { font-size: 22px; margin: 0; }
-  .header { display: flex; justify-content: space-between; border-bottom: 2px solid #333; padding-bottom: 12px; margin-bottom: 20px; }
-  .meta-block div { margin-bottom: 4px; }
-  .meta-block strong { display: inline-block; width: 160px; }
-  .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
-  .party-box { border: 1px solid #ccc; padding: 12px; border-radius: 4px; }
-  .party-box h3 { margin: 0 0 8px 0; font-size: 13px; color: #555; text-transform: uppercase; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-  th { background: #333; color: #fff; padding: 8px; text-align: left; }
-  td { padding: 8px; border-bottom: 1px solid #ddd; }
-  .total-row td { font-weight: bold; background: #f5f5f5; }
-  .terms { background: #fafafa; border: 1px solid #e0e0e0; padding: 12px; border-radius: 4px; margin-bottom: 20px; }
-  .footer { margin-top: 40px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
-  .sig-box { border-top: 1px solid #333; padding-top: 8px; }
-</style>
-</head>
-<body>
-
-<div class="header">
-  <div>
-    <h1>COMMERCIAL INVOICE</h1>
-    <p style="margin:4px 0; color:#555;">No. {{ doc_id }}</p>
-  </div>
-  <div style="text-align:right;">
-    <strong>{{ exporter_name }}</strong><br>
-    {{ exporter_address }}<br>
-    {% if exporter_gstin %}GSTIN: {{ exporter_gstin }}<br>{% endif %}
-    {% if exporter_iec %}IEC: {{ exporter_iec }}<br>{% endif %}
-  </div>
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Commercial Invoice{% endblock %}
+{% block kind_sub %}<div class="kind-sub">Export invoice</div>{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block facts %}
+  {{ m.fact("Invoice date", doc_date | date) }}
+  {{ m.fact("Proforma Invoice", pi_id, mono=True) }}
+  {{ m.fact("Incoterms® 2020", incoterm ~ " " ~ (port_of_destination or "")) }}
+  {{ m.fact("Country of origin", "India") }}
+{% endblock %}
+{% block content %}
+<h2>Parties</h2>
+<div class="grid-3">
+  {{ m.exporter_card(exporter, "Exporter / Shipper") }}
+  {{ m.party("Consignee / Buyer", buyer.legal_name, [buyer.address, buyer.country], {"VAT / Tax ID": buyer.vat_number}) }}
+  {{ m.party("Notify party", notify_party or "Same as consignee", []) }}
 </div>
 
-<div class="meta-block" style="margin-bottom:16px;">
-  <div><strong>Invoice Date:</strong> {{ invoice_date }}</div>
-  <div><strong>Deal Reference:</strong> {{ deal_id }}</div>
-  <div><strong>Payment Terms:</strong> {{ payment_terms }}</div>
-  <div><strong>Country of Origin:</strong> {{ country_of_origin }}</div>
+<h2>Shipment</h2>
+<div class="grid-2">
+  {{ m.kv([("Port of loading", port_of_loading), ("Port of discharge", port_of_destination), ("Final destination", destination_country),
+           ("Vessel / voyage", (vessel ~ (" / " ~ voyage if voyage else "")) if vessel else None)]) }}
+  {{ m.kv([("Bill of lading", bl_number), ("Container(s)", containers | join(", ")), ("Seal(s)", seals | join(", ")),
+           ("Pre-carriage", "Road")]) }}
 </div>
 
-<div class="parties">
-  <div class="party-box">
-    <h3>Exporter (Seller)</h3>
-    <strong>{{ exporter_name }}</strong><br>
-    {{ exporter_address }}<br>
-    {% if exporter_gstin %}GSTIN: {{ exporter_gstin }}<br>{% endif %}
-    {% if exporter_iec %}IEC: {{ exporter_iec }}<br>{% endif %}
-    {% if exporter_pan %}PAN: {{ exporter_pan }}<br>{% endif %}
-  </div>
-  <div class="party-box">
-    <h3>Importer (Consignee)</h3>
-    <strong>{{ buyer_name }}</strong><br>
-    {{ buyer_address }}<br>
-    {% if buyer_vat_number %}VAT: {{ buyer_vat_number }}<br>{% endif %}
-  </div>
-</div>
-
+<h2>Goods</h2>
 <table>
-  <thead>
-    <tr>
-      <th>HS Code</th>
-      <th>Description</th>
-      <th>Qty (MT)</th>
-      <th>Unit Price {{ incoterm }} ({{ currency }})</th>
-      <th>Amount ({{ currency }})</th>
-    </tr>
-  </thead>
+  <thead><tr><th>#</th><th>Marks & description</th><th>HS code</th><th class="num">Quantity (MT)</th><th class="num">Unit price ({{ currency }}/MT)</th><th class="num">Amount ({{ currency }})</th></tr></thead>
   <tbody>
     <tr>
-      <td>{{ hs_code }}</td>
-      <td>{{ description }}</td>
-      <td>{{ "%.3f"|format(quantity_mt) }}</td>
-      <td>{{ "%.4f"|format(unit_price) }}</td>
-      <td>{{ "%.2f"|format(total_value) }}</td>
-    </tr>
-    <tr class="total-row">
-      <td colspan="4" style="text-align:right;">TOTAL {{ incoterm }} {{ port_of_destination }}</td>
-      <td>{{ currency }} {{ "%.2f"|format(total_value) }}</td>
+      <td>1</td>
+      <td><strong>{{ product }}</strong>
+        <div class="small muted">Marks: {{ marks }}{% if packages %} · {{ packages }} {{ package_type or "packages" }}{% endif %}</div>
+        {% if quantity_note %}<div class="small muted">{{ quantity_note }}</div>{% endif %}</td>
+      <td class="mono">{{ hs_code }}</td>
+      <td class="num">{{ shipped_quantity_mt | qty }}</td>
+      <td class="num">{{ unit_price | money(None, 2) }}</td>
+      <td class="num">{{ total_value | money }}</td>
     </tr>
   </tbody>
 </table>
+{{ m.totals([], "Total " ~ incoterm ~ " " ~ (port_of_destination or ""), total_value, currency) }}
 
-<div class="terms">
-  <strong>Incoterm:</strong> {{ incoterm }} — {{ port_of_destination }}<br>
-  <strong>Port of Loading:</strong> {{ port_of_loading }}<br>
-  <strong>Payment Terms:</strong> {{ payment_terms }}<br>
-  <strong>Country of Origin:</strong> {{ country_of_origin }}
+<h2>Payment</h2>
+<p>{{ payment_terms }}</p>
+{% if escrow_id %}<p class="small muted">Paid into neutral escrow — reference <span class="mono">{{ escrow_id }}</span>.</p>{% endif %}
+
+<div class="notice accent">
+  {% if exporter.lut_arn %}Supply meant for export under Letter of Undertaking (ARN <span class="mono">{{ exporter.lut_arn }}</span>) without payment of IGST.
+  {% else %}Supply meant for export under Letter of Undertaking without payment of IGST.{% endif %}
 </div>
+<p class="small" style="margin-top:12px">We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.</p>
 
-<p style="font-size:11px; color:#555;">
-  We hereby certify that the information on this invoice is true and correct and
-  that the goods were produced in {{ country_of_origin }}.
-</p>
-
-<div class="footer">
-  <div class="sig-box">
-    <p>Authorised Signatory<br><strong>{{ exporter_name }}</strong></p>
-  </div>
-  <div class="sig-box">
-    <p>For and on behalf of<br><strong>{{ exporter_name }}</strong><br>Date: {{ invoice_date }}</p>
-  </div>
+<div class="signs">
+  {{ m.exporter_sign(exporter) }}
+  <div></div>
 </div>
-
-</body>
-</html>
+{% endblock %}

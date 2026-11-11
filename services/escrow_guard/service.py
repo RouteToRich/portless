@@ -1126,6 +1126,13 @@ async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
             await notifications.notify_escrow_refunded(deal, escrow_id, undisbursed, hold.currency, req.reason)
         except Exception as exc:  # noqa: BLE001
             logger.error("EscrowGuard: refund notice failed for deal %s: %s", hold.deal_id, exc)
+    if undisbursed > 0:
+        try:
+            from shared.orchestration.continuations import _issue_document
+            await _issue_document(hold.deal_id, "CREDIT_NOTE", suffix=escrow_id,
+                                  refund_amount=round(undisbursed, 2), refund_reason=req.reason)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("EscrowGuard: credit note failed for deal %s: %s", hold.deal_id, exc)
 
     await _emit(EventTopic.DEAL_EXCEPTION, hold.deal_id, {
         "source": "escrow_guard",

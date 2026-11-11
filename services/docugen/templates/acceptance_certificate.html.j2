@@ -1,0 +1,40 @@
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Delivery & Acceptance Certificate{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block chip %}<div class="chip ok">{{ "Accepted by the buyer" if basis == "buyer_accepted" else "Deemed accepted — window lapsed" }}</div>{% endblock %}
+{% block facts %}
+  {{ m.fact("Delivered", delivered_at | date) }}
+  {{ m.fact("Accepted", accepted_at | date) }}
+  {{ m.fact("Sales contract / PI", pi_id, mono=True) }}
+  {{ m.fact("Deal reference", deal_id, mono=True) }}
+{% endblock %}
+{% block content %}
+<h2>Parties</h2>
+<div class="grid-2">
+  {{ m.exporter_card(exporter, "Seller") }}
+  {{ m.party("Buyer", buyer.legal_name, [buyer.address, buyer.country]) }}
+</div>
+
+<h2>Goods delivered</h2>
+<table>
+  <thead><tr><th>Commodity</th><th>HS code</th><th class="num">Quantity (MT)</th><th>Container(s)</th><th>Bill of lading</th></tr></thead>
+  <tbody><tr>
+    <td><strong>{{ product }}</strong></td><td class="mono">{{ hs_code }}</td><td class="num">{{ shipped_quantity_mt | qty }}</td>
+    <td class="mono">{{ containers | join(", ") or "—" }}</td><td class="mono">{{ bl_number or "—" }}</td>
+  </tr></tbody>
+</table>
+
+<h2>Acceptance</h2>
+{% if basis == "buyer_accepted" %}
+<p>The buyer confirmed in writing that the goods were received and are accepted.{% if acceptance_ref %} Reference: <span class="mono">{{ acceptance_ref }}</span>.{% endif %}</p>
+{% else %}
+<p>The goods were delivered on {{ delivered_at | date }}. No claim was raised within the {{ acceptance_hours // 24 }}-day acceptance window, so under the Sales Contract the goods are deemed accepted.</p>
+{% endif %}
+<div class="notice accent">With this acceptance the final escrow tranche ({{ final_pct | pct }}, {{ final_amount | money(currency) }}) is released and title to the goods has passed to the buyer.</div>
+
+<div class="signs">
+  {{ m.exporter_sign(exporter) }}
+  {{ m.sign("Buyer — " ~ (buyer.legal_name or ""), "", "Signature optional — acceptance recorded " ~ (accepted_at | date)) }}
+</div>
+{% endblock %}

@@ -1,0 +1,57 @@
+{% macro fact(label, value, mono=False) -%}
+<div class="fact"><div class="l">{{ label }}</div><div class="v{% if mono %} mono{% endif %}">{{ value if value not in (None, "") else "—" }}</div></div>
+{%- endmacro %}
+
+{% macro party(role, name, lines=[], ids={}) -%}
+<div class="card">
+  <div class="role">{{ role }}</div>
+  <div class="name">{{ name or "—" }}</div>
+  {% for l in lines if l %}<div class="line">{{ l }}</div>{% endfor %}
+  {% set shown = ids.items() | selectattr(1) | list %}
+  {% if shown %}<div class="ids">{% for k, v in shown %}<span>{{ k }} <span class="mono">{{ v }}</span></span>{% endfor %}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro exporter_card(exporter, role="Exporter / Seller") -%}
+{{ party(role, exporter.name, [exporter.address, exporter.country, exporter.email, exporter.phone],
+         {"IEC": exporter.iec, "GSTIN": exporter.gstin, "PAN": exporter.pan}) }}
+{%- endmacro %}
+
+{% macro kv(rows) -%}
+<table class="kv"><tbody>
+{% for label, value in rows if value not in (None, "") %}<tr><td>{{ label }}</td><td>{{ value }}</td></tr>{% endfor %}
+</tbody></table>
+{%- endmacro %}
+
+{% macro totals(rows, grand_label, grand_value, currency, words=True) -%}
+<div class="totals">
+  {% for label, value in rows %}<div class="row"><span>{{ label }}</span><span>{{ value }}</span></div>{% endfor %}
+  <div class="row grand"><span>{{ grand_label }}</span><span>{{ grand_value | money(currency) }}</span></div>
+</div>
+{% if words %}<div class="words">Amount in words: <strong>{{ grand_value | words(currency) }}</strong></div>{% endif %}
+{%- endmacro %}
+
+{% macro timeline(tranches, total=None, currency="USD", released=[]) -%}
+<div class="timeline">
+{% for t in tranches %}
+  <div class="seg{% if t.id in released %} done{% endif %}" style="flex: 1 1 0">
+    <div class="p">{{ t.pct | pct }}</div>
+    <div class="t">{{ t.label }}</div>
+    {% if total %}<div class="a">{{ (total * t.pct) | money(currency) }}</div>{% endif %}
+  </div>
+{% endfor %}
+</div>
+{%- endmacro %}
+
+{% macro sign(label, who="", what="", note="") -%}
+<div class="sign">
+  <div class="space"></div>
+  <div class="who">{{ who or " " }}</div>
+  <div class="what">{{ label }}{% if what %} · {{ what }}{% endif %}</div>
+  {% if note %}<div class="what">{{ note }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro exporter_sign(exporter, label="For and on behalf of the Exporter") -%}
+{{ sign(label ~ " — " ~ exporter.name, exporter.signatory, exporter.signatory_title) }}
+{%- endmacro %}

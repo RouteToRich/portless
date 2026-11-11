@@ -189,15 +189,17 @@ async def fund(deal_id: str, amount: float, payer: str, country: str, event_id: 
     return res
 
 
-async def to_qc_ready(s: str, deal_id: str, supplier_ack=None) -> None:
-    """PO gate → PO → (supplier acknowledges the PO) → QC booked → T1 tranche.
-    ``supplier_ack`` plays the supplier's acknowledgement by e-mail; without it
-    an operator records the acknowledgement, as the staff endpoint does."""
-    say(f"\n[{s}] PO gate → PO → PO acknowledged → QC booked → T1 tranche")
+async def to_qc_ready(s: str, deal_id: str, supplier_ack=None, ready_date=None) -> None:
+    """PO gate → PO → (supplier acknowledges the PO and names its goods-ready
+    date) → QC booked for that date → T1 tranche. ``supplier_ack`` plays the
+    supplier's acknowledgement by e-mail; without it an operator records the
+    acknowledgement, as the staff endpoint does. When the acknowledgement names
+    no date, the operator records ``ready_date`` (default: ten days out)."""
+    say(f"\n[{s}] PO gate → PO → PO acknowledged + goods-ready date → QC booked → T1 tranche")
     await approve(deal_id, "ISSUE_PO")
     po = await dm_repo().get_po_by_deal(deal_id)
     check(s, "PO issued", po is not None, f"{po.po_id} total={po.total_value}" if po else "")
-    from shared.orchestration import supplier_commitment
+    from shared.orchestration import qc_schedule, supplier_commitment
     if supplier_commitment.po_ack_required() and await status(deal_id) == "PO_ISSUED":
         qc_before = [o for o in await sl_repo().list_by_deal(deal_id) if o.order_type == "QC"]
         check(s, "no inspection is booked before the supplier acknowledges the PO", not qc_before, str(len(qc_before)))
@@ -206,6 +208,21 @@ async def to_qc_ready(s: str, deal_id: str, supplier_ack=None) -> None:
         else:
             await supplier_commitment.acknowledge_po(deal_id, by="operator@qa.invalid: acknowledged by phone")
         await settle()
+    if qc_schedule.readiness_required() and await status(deal_id) == "PO_ISSUED":
+        rec = await supplier_commitment.get(deal_id)
+        asked = [m for m in EMAILS if "ready for inspection" in m["subject"].lower()]
+        check(s, "the supplier is asked for its goods-ready date before any inspection is booked",
+              bool(rec and rec.qc_ready_status == "awaiting") and bool(asked),
+              f"status={rec.qc_ready_status if rec else None}, asked={len(asked)}")
+        when = ready_date or (qc_schedule.today() + timedelta(days=10))
+        await supplier_commitment.record_qc_readiness(deal_id, when, by="operator@qa.invalid: date given by phone")
+        await settle()
+    rec = await supplier_commitment.get(deal_id)
+    qc = [o for o in await sl_repo().list_by_deal(deal_id) if o.order_type == "QC"]
+    if qc and rec and rec.qc_ready_date:
+        check(s, "the inspection is booked for the supplier's goods-ready date (or the first day the agency can attend)",
+              qc[-1].inspection_date == qc_schedule.inspection_date_for(rec.qc_ready_date).isoformat(),
+              f"ready {rec.qc_ready_date}, booked {qc[-1].inspection_date}")
     check(s, "deal reaches SUPPLIER_DISPATCH_READY", await status(deal_id) == "SUPPLIER_DISPATCH_READY",
           await status(deal_id))
     await approve(deal_id, "RELEASE_ESCROW_TRANCHE")
@@ -543,10 +560,21 @@ async def uc_whole_deal():
     check(s, "funding by the buyer shows no payer warning", bool(po_gate) and not [f for f in po_gate[0].risk_flags if "payer_" in f],
           str(po_gate[0].risk_flags if po_gate else "no gate"))
 
+    ready_on = datetime.now(timezone.utc).date() + timedelta(days=12)
+    ready_text = f"{ready_on.day} {ready_on:%B %Y}"
+
     async def supplier_acknowledges_po():
-        await reply(deal_id, who, "supplier", "Say clearly: we acknowledge the purchase order and will start production on Monday.")
+        await reply(deal_id, who, "supplier",
+                    "Say clearly: we acknowledge the purchase order and will start production on Monday. Also say "
+                    f"that the goods will be fully produced and packed, ready for inspection on {ready_text} — write "
+                    "that date exactly as given.")
 
     await base.to_qc_ready(s, deal_id, supplier_ack=supplier_acknowledges_po)
+    from shared.orchestration import supplier_commitment as _sc
+    rec = await _sc.get(deal_id)
+    check(s, "the supplier's own e-mail gave the goods-ready date the inspection is booked for",
+          bool(rec and rec.qc_ready_date == ready_on.isoformat() and "e-mail" in (rec.qc_ready_by or "")),
+          f"ready {rec.qc_ready_date if rec else None} by {rec.qc_ready_by if rec else None}")
     await base.to_in_transit(s, deal_id)
     await base.milestone(deal_id, "ARRIVED")
     await slow_settle()

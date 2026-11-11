@@ -172,7 +172,8 @@ async def seed_deal(status: str, fixture: str = "FX-STD", *, released: list[str]
                     market: str = MARKET, provider: str = "tazapay", funded: float | None = None, loading: bool | None = None,
                     window_open: bool = False, po: bool = True, target_price: float | None | str = "fixture",
                     qc_provider: str = "sgs", disputed: bool = False, settled: bool = False,
-                    pi_key: str | None = None, escrow_key: str | None = None, with_hold: bool = True) -> dict[str, Any]:
+                    pi_key: str | None = None, escrow_key: str | None = None, with_hold: bool = True,
+                    buyer_price: float | None = None, supplier_price: float | None = None) -> dict[str, Any]:
     """Create the deal and every record that exists at ``status``. Returns its ids."""
     from agents.negotiation_agent.repository import get_repository as neg_repo
     from agents.negotiation_agent.schemas import NegotiationPolicy, NegotiationSession
@@ -189,7 +190,11 @@ async def seed_deal(status: str, fixture: str = "FX-STD", *, released: list[str]
     from shared.domain.enums import DealStatus
     from shared.orchestration import compliance
 
-    buyer_price, supplier_price, qty = FIXTURES[fixture]
+    # ``buyer_price`` / ``supplier_price`` override the fixture's prices on every
+    # record that carries them (deal target, negotiation, PI, escrow, PO).
+    fx_buyer, fx_supplier, qty = FIXTURES[fixture]
+    buyer_price = fx_buyer if buyer_price is None else buyer_price
+    supplier_price = fx_supplier if supplier_price is None else supplier_price
     uid = uuid4().hex[:8]
     now = datetime.now(timezone.utc)
     buyer, supplier, who = parties(uid, market)

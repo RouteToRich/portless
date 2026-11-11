@@ -39,6 +39,7 @@ WebhookVerifyError    401 — webhook signature invalid
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -240,14 +241,92 @@ async def _buyer_opted_qc_provider(deal_id: str) -> str | None:
 # QC booking
 # ---------------------------------------------------------------------------
 
-async def book_qc(req: QcBookingRequest, *, reinspection: bool = False) -> ThirdPartyOrderResponse:
+def _supplier_facts(deal: Any) -> dict[str, Any]:
+    """The inspection site: the supplier party of the deal."""
+    for p in getattr(deal, "parties", None) or []:
+        role = getattr(p, "role", "")
+        if (getattr(role, "value", role) or "").lower() == "supplier":
+            address = getattr(p, "address", None) or ""
+            parts = [s.strip() for s in address.split(",") if s.strip()]
+            pin = next(iter(re.findall(r"\b\d{6}\b", address)), None)
+            return {
+                "name": getattr(p, "legal_name", None), "contact_name": getattr(p, "legal_name", None),
+                "email": getattr(p, "email", None), "phone": getattr(p, "phone", None), "address": address or None,
+                "city": parts[-2] if len(parts) >= 2 else None, "postcode": pin,
+                "country_code": (getattr(p, "country", None) or "IN").upper()[:2],
+            }
+    return {"country_code": "IN"}
+
+
+async def _po_number(deal_id: str) -> str | None:
+    try:
+        from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
+        po = await _dm_repo().get_po_by_deal(deal_id)
+        return po.po_id if po else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _product_name(hs_code: str | None) -> str:
+    try:
+        from shared.documents.facts import product_name
+        return product_name(hs_code or "") or f"HS {hs_code}"
+    except Exception:  # noqa: BLE001
+        return f"HS {hs_code}"
+
+
+async def _email_booking_desk(connector: Any, tpo_id: str, deal_id: str, booking: dict[str, Any]) -> dict[str, Any]:
+    """Portal providers: the booking request goes to the provider's booking desk
+    (``<PREFIX>_BOOKING_EMAIL``). Without one an operator enters it on the portal."""
+    to = getattr(connector, "booking_email", "")
+    if not to:
+        return {"outcome": "operator", "detail": f"no {connector.env_prefix}_BOOKING_EMAIL — enter the request on {connector.portal_name}"}
+    site = booking.get("inspection_site") or {}
+    product = booking.get("product") or {}
+    sampling = booking.get("sampling") or {}
+    body = (
+        f"Dear {connector.display_name} booking team,\n\n"
+        f"Please book the inspection below and confirm the date and your job number by reply, quoting "
+        f"our reference {booking['portless_ref']}.\n\n"
+        f"  Our reference      : {booking['portless_ref']} (deal {deal_id}, PO {booking.get('po_number') or '-'})\n"
+        f"  Services           : {', '.join(booking.get('services') or [])}\n"
+        f"  Inspection date    : {booking.get('inspection_date')}\n"
+        f"  Goods ready        : {booking.get('goods_ready_date') or booking.get('inspection_date')}\n"
+        f"  Product            : {product.get('description')} (HS {product.get('hs_code')}), {product.get('quantity_mt')} MT\n"
+        f"  Inspection site    : {site.get('company')}, {site.get('address') or '-'}, {site.get('country') or ''}\n"
+        f"  Site contact       : {site.get('contact') or '-'} {site.get('phone') or ''} {site.get('email') or ''}\n"
+        f"  Sampling           : {sampling.get('standard')} level {sampling.get('level')}, AQL critical "
+        f"{sampling.get('aql_critical')} / major {sampling.get('aql_major')} / minor {sampling.get('aql_minor')}\n"
+        f"  Readiness          : 100% produced, at least {(booking.get('readiness') or {}).get('packed_pct_min', 80)}% packed\n\n"
+        "Please send the report (PDF with photos) and, for loading supervision, the container and seal numbers "
+        "to this address.\n\nPortLess Trade Desk"
+    )
+    try:
+        from services.email_gateway.schemas import SendEmailRequest  # type: ignore[import]
+        from services.email_gateway.sender import send_email  # type: ignore[import]
+        res = await send_email(SendEmailRequest(
+            to_address=to, subject=f"Inspection booking request {booking['portless_ref']} — {product.get('description')}",
+            body=body, email_id=f"QC-{tpo_id}",
+        ))
+        return {"outcome": str(getattr(res.outcome, "value", res.outcome)), "to": to, "message_id": res.message_id}
+    except Exception as exc:  # noqa: BLE001 — the booking is recorded; an operator re-sends it
+        logger.error("ShieldLink: booking request e-mail to %s failed (deal %s): %s", to, deal_id, exc)
+        return {"outcome": "failed", "to": to, "detail": str(exc)}
+
+
+async def book_qc(req: QcBookingRequest, *, reinspection: bool = False,
+                  previous: ThirdPartyOrderRecord | None = None) -> ThirdPartyOrderResponse:
     """Book a QC inspection with the configured provider.
 
     Pre-condition: deal must be in ``PO_ISSUED`` state.
     Post: deal → ``SUPPLIER_DISPATCH_READY``, emits ``qc.booked``.
 
-    ``reinspection=True`` (QC_FAILED playbook): the deal already sits in
-    ``SUPPLIER_DISPATCH_READY`` after the rework — a fresh booking is made
+    The inspection day is the supplier's goods-ready date (``goods_ready_date``)
+    or an explicit ``inspection_date``, never earlier than the agency's lead
+    time (``shared.orchestration.qc_schedule``).
+
+    ``reinspection=True`` (QC_FAILED playbook, or a reschedule): the deal
+    already sits in ``SUPPLIER_DISPATCH_READY`` — a fresh booking is made
     without a deal transition.
     """
     await _assert_platform_running(f"QC booking for deal {req.deal_id}")
@@ -286,8 +365,16 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False) -> Third
                 if settings.qc_fallback_strategy == "cheapest"
                 else settings.default_qc_provider
             )
+    from shared.orchestration import qc_schedule
     now = datetime.now(timezone.utc)
     tpo_id = _new_tpo_id("QC")
+    requested = qc_schedule.to_date(req.inspection_date)
+    earliest = qc_schedule.earliest_inspection_date()
+    inspection = (qc_schedule.next_business_day(requested) if requested and requested >= earliest
+                  else qc_schedule.inspection_date_for(req.goods_ready_date))
+    hs_code = req.hs_code or getattr(deal, "hs_code", "")
+    supplier = _supplier_facts(deal)
+    connector = get_qc_connector(provider)
 
     # Create PENDING record first for crash-safety
     record = ThirdPartyOrderRecord(
@@ -296,7 +383,10 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False) -> Third
         order_type="QC",
         provider=provider,
         status="PENDING",
+        channel=connector.channel,
         pickup_ready_at=req.pickup_ready_at,
+        goods_ready_date=req.goods_ready_date,
+        inspection_date=inspection.isoformat(),
         idempotency_key=req.idempotency_key,
         created_at=now,
         updated_at=now,
@@ -304,14 +394,22 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False) -> Third
     await repo.save(record)
 
     # Call connector
-    connector = get_qc_connector(provider)
     try:
         result = await connector.book({
             "deal_id": req.deal_id,
-            "location": req.location or "",
+            "tpo_id": tpo_id,
+            "po_number": await _po_number(req.deal_id),
+            "location": req.location or supplier.get("address") or "",
             "pickup_ready_at": req.pickup_ready_at or "",
-            "hs_code": req.hs_code or getattr(deal, "hs_code", ""),
+            "goods_ready_date": req.goods_ready_date,
+            "inspection_date": inspection.isoformat(),
+            "ship_date": qc_schedule.ship_date_for(inspection).isoformat(),
+            "hs_code": hs_code,
+            "product_name": _product_name(hs_code),
             "quantity_mt": req.quantity_mt or 0.0,
+            "supplier": supplier,
+            "min_packed_pct": qc_schedule.min_packed_pct(),
+            "previous_order_number": previous.provider_order_number if previous else None,
             # Pre-shipment inspection AND supervision of the container
             # stuffing + sealing, so what was inspected is what ships.
             "services": _qc_services(),
@@ -321,10 +419,21 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False) -> Third
         await repo.save(failed)
         raise ConnectorCallError(f"QC booking failed for deal {req.deal_id}: {exc}") from exc
 
+    provider_status = result.get("provider_status") or "REQUESTED"
+    if connector.channel == "portal" and result.get("booking_request"):
+        result["booking_email_outcome"] = await _email_booking_desk(connector, tpo_id, req.deal_id, result["booking_request"])
     updated = record.model_copy(update={
         "status": "BOOKED",
         "ext_ref": result.get("ext_ref"),
+        "channel": result.get("channel") or connector.channel,
+        "provider_order_number": result.get("provider_order_number"),
+        "provider_status": provider_status,
+        "provider_status_code": result.get("provider_status_code"),
+        "provider_status_text": result.get("provider_status_text"),
+        "inspection_date": result.get("inspection_date") or inspection.isoformat(),
         "provider_payload": result,
+        "status_history": [{"at": datetime.now(timezone.utc).isoformat(), "status": provider_status, "source": "booking",
+                            "inspection_date": result.get("inspection_date") or inspection.isoformat()}],
         "updated_at": datetime.now(timezone.utc),
     })
     await repo.save(updated)
@@ -335,9 +444,14 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False) -> Third
         "tpo_id": tpo_id,
         "provider": provider,
         "ext_ref": result.get("ext_ref"),
-        "inspection_date": result.get("inspection_date"),
+        "provider_order_number": updated.provider_order_number,
+        "channel": updated.channel,
+        "inspection_date": updated.inspection_date,
+        "goods_ready_date": req.goods_ready_date,
+        "loading_supervision": "LOADING_SUPERVISION" in _qc_services(),
         "stub": result.get("stub", False),
         "reinspection": reinspection,
+        "rescheduled_from": previous.tpo_id if previous else None,
     })
 
     logger.info("ShieldLink: QC booked %s for deal %s (ref=%s)", tpo_id, req.deal_id, result.get("ext_ref"))
@@ -356,10 +470,12 @@ async def handle_qc_result(
     *,
     require_signature: bool = False,
 ) -> dict[str, str]:
-    """Process QC inspection result webhook.
+    """Process a QC provider webhook: a status update (CONFIRMED date,
+    INSPECTED …) and / or the result.
 
-    Verifies provider signature, updates TPO, transitions deal to
-    QC_PASSED or QC_FAILED, and emits the appropriate event.
+    Verifies the provider signature, then hands over to
+    ``qc.apply_update``: PASS → QC_PASSED, FAIL → QC_FAILED (once), report
+    files listed in ``documents`` are downloaded and kept.
     """
     repo = get_repository()
 
@@ -373,49 +489,16 @@ async def handle_qc_result(
     if not await signature_valid(connector, raw_headers, raw_body, require_signature=require_signature):
         raise WebhookVerifyError(f"QC webhook signature invalid for ext_ref={ext_ref}")
 
-    now = datetime.now(timezone.utc)
-    qc_result = payload.result  # "PASS" or "FAIL"
-
-    updated = tpo.model_copy(update={
-        "status": "COMPLETED" if qc_result == "PASS" else "FAILED",
-        "qc_result": qc_result,
-        "qc_report_url": payload.report_url,
-        "crf_hash": payload.crf_hash,
-        "qc_completed_at": now,
-        "updated_at": now,
-    })
-    await repo.save(updated)
-
-    if qc_result == "PASS":
-        try:
-            await _transition_deal(tpo.deal_id, "QC_PASSED", f"QC passed — ref {ext_ref}")
-        except Exception as exc:
-            logger.error("ShieldLink: QC_PASSED transition failed for deal %s: %s", tpo.deal_id, exc)
-        await _emit(EventTopic.QC_PASSED, tpo.deal_id, {
-            "tpo_id": tpo.tpo_id,
-            "ext_ref": ext_ref,
-            "crf_hash": payload.crf_hash,
-            "report_url": payload.report_url,
-            "container_numbers": payload.container_numbers,
-            "seal_numbers": payload.seal_numbers,
-            "loaded_quantity_mt": payload.loaded_quantity_mt,
-            "loaded_hs_code": payload.loaded_hs_code,
-            "goods_description": payload.goods_description,
-            "photos": payload.photos,
-        })
-    else:
-        try:
-            await _transition_deal(tpo.deal_id, "QC_FAILED", f"QC failed — ref {ext_ref}, notes: {payload.notes}")
-        except Exception as exc:
-            logger.error("ShieldLink: QC_FAILED transition failed for deal %s: %s", tpo.deal_id, exc)
-        await _emit(EventTopic.QC_FAILED, tpo.deal_id, {
-            "tpo_id": tpo.tpo_id,
-            "ext_ref": ext_ref,
-            "notes": payload.notes,
-        })
-
-    logger.info("ShieldLink: QC result %s processed for deal %s", qc_result, tpo.deal_id)
-    return {"status": "ok", "result": qc_result, "deal_id": tpo.deal_id}
+    from . import qc
+    if payload.result is None and payload.status is None:
+        raise InvalidDealState(tpo.deal_id, "webhook without result or status", "result or status")
+    return await qc.apply_update(
+        tpo, source="webhook", status=payload.status, result=payload.result,
+        provider_order_number=payload.provider_order_number, inspection_date=payload.inspection_date,
+        report_url=payload.report_url, crf_hash=payload.crf_hash, notes=payload.notes,
+        documents=[d.model_dump() for d in payload.documents], defects=payload.defects or None,
+        loading=qc.loading_from_payload(payload),
+    )
 
 
 # ---------------------------------------------------------------------------

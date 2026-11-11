@@ -46,6 +46,11 @@ os.environ["SUPPLIER_RETENTION_ENABLED"] = "false"
 # exercise the flow around them. tests/test_supplier_commitment.py turns them on.
 os.environ["SUPPLIER_CONFIRMATION_REQUIRED"] = "false"
 os.environ["PO_ACK_REQUIRED"] = "false"
+# Likewise the inspection waits for the supplier's goods-ready date
+# (shared/orchestration/qc_schedule.py); tests/test_qc_inspection.py turns it on.
+os.environ["QC_READINESS_DATE_REQUIRED"] = "false"
+# The QC provider sandbox is opt-in per test (tests/test_qc_inspection.py).
+os.environ.pop("QC_SANDBOX_PROVIDERS", None)
 
 # The pre-trade market check searches the web; the suite never goes online.
 # tests/test_trade_costs.py exercises it with a mocked search.

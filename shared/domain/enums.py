@@ -55,6 +55,15 @@ class DocumentType(str, Enum):
     CERTIFICATE_OF_ORIGIN = "CoO"
     SDF = "SDF"
     SHIPPING_BILL = "SHIPPING_BILL"
+    # Issued along the trade (shared/orchestration/documents.py):
+    SALES_CONTRACT = "SALES_CONTRACT"                  # PI accepted — full terms with the buyer
+    INSPECTION_ORDER = "INSPECTION_ORDER"              # QC booked — what the inspector checks, loading + sealing
+    SHIPPING_INSTRUCTIONS = "SHIPPING_INSTRUCTIONS"    # freight booked — shipper / consignee / B/L instructions
+    INSURANCE_DECLARATION = "INSURANCE_DECLARATION"    # freight booked, CIF / CIP — cover to declare to the insurer
+    ACCEPTANCE_CERTIFICATE = "ACCEPTANCE_CERTIFICATE"  # final tranche released — delivery accepted (or window lapsed)
+    REMITTANCE_ADVICE = "REMITTANCE_ADVICE"            # each completed supplier payout
+    SETTLEMENT_STATEMENT = "SETTLEMENT_STATEMENT"      # escrow settled — the buyer's statement of account
+    CREDIT_NOTE = "CREDIT_NOTE"                        # escrow refund to the buyer
 
 
 class ApprovalAction(str, Enum):

@@ -13,6 +13,8 @@ _ALL_VARS = [
     "AUTO_FLOW_ENABLED", "GMAIL_SENDER_ADDRESS", "GMAIL_APP_PASSWORD", "IMAP_USER",
     "IMAP_PASSWORD", "PORTLESS_EMAIL_DOMAIN", "GOOGLE_DRIVE_CLIENT_ID", "GOOGLE_DRIVE_CLIENT_SECRET",
     "GOOGLE_DRIVE_REFRESH_TOKEN", "SGS_API_KEY", "QIMA_API_KEY", "COGOPORT_API_KEY", "FREIGHTOS_API_KEY",
+    "QIMA_API_ACCESS_TOKEN", "QIMA_ACCOUNT", "QIMA_PASSWORD", "QIMA_PASSWORD_MD5", "SGS_BOOKING_EMAIL",
+    "BUREAU_VERITAS_BOOKING_EMAIL", "INTERTEK_API_KEY", "TUV_SUD_API_KEY", "QC_SANDBOX_PROVIDERS",
     "ICEGATE_API_KEY", "LLM_GATEWAY_URL", "LLM_GATEWAY_TOKEN", "LLM_GATEWAY_EMAIL",
     "LLM_GATEWAY_PASSWORD", "ENV_PROFILE", "READINESS_ENFORCE",
     "AUTH_GATEWAY_URL", "PORTLESS_ACCOUNT_ID", "LLM_GATEWAY_ACCOUNT_ID", "AUTH_TRUST_GATEWAY_HEADERS",
@@ -55,6 +57,10 @@ def _fill(monkeypatch):
     from services.dealmaker.config import settings as dm
     monkeypatch.setattr(dm, "portless_entity_iec", "AAAPL1234A")
     monkeypatch.setattr(dm, "portless_entity_gstin", "27AAAPL1234A1Z5")
+    for name, value in (("PORTLESS_ADDRESS", "1 Anna Salai, Chennai"), ("PORTLESS_IEC", "AAAPL1234A"),
+                        ("PORTLESS_GSTIN", "27AAAPL1234A1Z5"), ("PORTLESS_LUT_ARN", "AD270326000123X"),
+                        ("PORTLESS_AD_CODE", "6390005"), ("PORTLESS_CONTRACT_LAW", "Laws of India")):
+        monkeypatch.setenv(name, value)
 
 
 def test_dev_profile_reports_but_is_not_enforced(bare_env):
@@ -90,6 +96,15 @@ def test_fully_configured_dev_is_ready(bare_env):
     assert {c["id"]: c["status"] for c in report["checks"]}["email_domain"] == "ok"
 
 
+def test_missing_exporter_facts_fail_and_name_what_is_missing(bare_env):
+    _fill(bare_env)
+    bare_env.delenv("PORTLESS_LUT_ARN")
+    bare_env.delenv("PORTLESS_CONTRACT_LAW")
+    checks = {c["id"]: c for c in readiness.evaluate()["checks"]}
+    assert checks["documents_exporter"]["status"] == "fail" and "PORTLESS_LUT_ARN" in checks["documents_exporter"]["detail"]
+    assert checks["documents_contract_law"]["status"] == "warn"
+
+
 def test_money_ceiling_warns_when_raised(bare_env):
     _fill(bare_env)
     bare_env.setenv("AUTONOMY_MONEY_CEILING", "L3")
@@ -123,3 +138,30 @@ def test_compliance_switched_off_fails_in_production(bare_env):
     bare_env.setenv("COMPLIANCE_UNCHECKED_SCREENING", "allow")
     ids = {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}
     assert ids["compliance_trade"] == ids["compliance_loading"] == ids["compliance_unscreened"] == "fail"
+
+
+def test_qc_provider_counts_the_qima_api_and_the_portal_desks(bare_env):
+    def qc():
+        return {c["id"]: c for c in readiness.evaluate()["checks"]}["qc_provider"]
+
+    assert qc()["status"] == "warn"
+    bare_env.setenv("QIMA_API_ACCESS_TOKEN", "t")
+    bare_env.setenv("QIMA_ACCOUNT", "a")
+    assert qc()["status"] == "warn"  # no password yet
+    bare_env.setenv("QIMA_PASSWORD", "p")
+    assert qc()["status"] == "ok" and "QIMA API" in qc()["detail"]
+    for v in ("QIMA_API_ACCESS_TOKEN", "QIMA_ACCOUNT", "QIMA_PASSWORD"):
+        bare_env.delenv(v)
+    bare_env.setenv("SGS_BOOKING_EMAIL", "booking@sgs.invalid")
+    assert qc()["status"] == "ok" and "SGS booking desk" in qc()["detail"]
+
+
+def test_the_qc_sandbox_fails_in_production(bare_env):
+    def sandbox():
+        return {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}["qc_sandbox"]
+
+    assert sandbox() == "ok"
+    bare_env.setenv("QC_SANDBOX_PROVIDERS", "qima")
+    assert sandbox() == "warn"
+    bare_env.setenv("ENV_PROFILE", "production")
+    assert sandbox() == "fail"

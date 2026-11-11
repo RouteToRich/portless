@@ -24,7 +24,8 @@ the next pipeline step — instead of depending on a long-lived poller task
   PI_ACCEPTED         → open neutral escrow          → deal ESCROW_PENDING
                         + email funding instructions to the buyer
   ESCROW_FUNDED       → create ISSUE_PO HITL gate    (operator approves → PO)
-  PO_ISSUED           → book QC (buyer-opted agency) → SUPPLIER_DISPATCH_READY
+  PO_ISSUED           → (PO acknowledged + supplier's goods-ready date) → book QC
+                        (buyer-opted agency) for that date → SUPPLIER_DISPATCH_READY
                         + email the PO to the supplier
                         + RELEASE_ESCROW_TRANCHE gate (T1, PO_ISSUED trigger)
   QC_BOOKED           → email the inspection booking to the supplier
@@ -302,6 +303,43 @@ async def _best_effort(stage: str, deal_id: str | None, coro: Awaitable[Any]) ->
     except Exception as exc:  # noqa: BLE001
         logger.error("Continuation[%s]: secondary step failed for deal %s: %s", stage, deal_id, exc)
         return None
+
+
+async def _issue_document(deal_id: str, doc_type: str, suffix: str = "", **fields: Any) -> Any:
+    """Render one trade document for the deal (idempotent per deal x type x suffix).
+    A document missing a required fact is still rendered, marked DRAFT."""
+    from services.docugen.schemas import GenerateDocumentRequest  # type: ignore[import]
+    from services.docugen.service import generate_document  # type: ignore[import]
+    from shared.domain.enums import DocumentType
+    key = f"auto-doc-{deal_id}-{doc_type}" + (f"-{suffix}" if suffix else "")
+    doc = await generate_document(GenerateDocumentRequest(
+        deal_id=deal_id, doc_type=DocumentType(doc_type), idempotency_key=key, **fields))
+    logger.info("Continuation[DOCS]: %s %s for deal %s%s", doc_type, doc.doc_id, deal_id,
+                f" (DRAFT: {'; '.join(doc.draft_reasons)})" if doc.draft else "")
+    return doc
+
+
+async def _issue_freight_documents(deal_id: str) -> None:
+    """Freight booked: shipping instructions for the B/L, and the insurance
+    declaration when PortLess insures the cargo (CIF / CIP)."""
+    await _issue_document(deal_id, "SHIPPING_INSTRUCTIONS")
+    from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
+    pi = await _dm_repo().get_pi_by_deal(deal_id)
+    if (getattr(pi, "incoterm", "") or "").upper() in ("CIF", "CIP"):
+        await _issue_document(deal_id, "INSURANCE_DECLARATION")
+
+
+async def _supplier_port(deal_id: str) -> str:
+    """The export port nearest the supplier (cost sheet route), else Chennai."""
+    try:
+        from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+        session = await _neg_repo().get_session_by_deal(deal_id)
+        port = getattr(getattr(getattr(session, "cost_sheet", None), "supplier_route", None), "port", None)
+        if port:
+            return f"{port}, IN"
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Continuation: supplier port for %s unavailable: %s", deal_id, exc)
+    return "Chennai, IN"
 
 
 # Buyer CIF prices typically sit ~25% above the supplier's FOB ask; when the
@@ -1231,6 +1269,7 @@ async def on_pi_accepted(event: DomainEvent) -> None:
     deal = await _get_deal_in_status(deal_id, "PI_ACCEPTED", "PI_ACCEPTED→ESCROW")
     if deal is None:
         return
+    await _best_effort("PI_ACCEPTED→SALES_CONTRACT", deal_id, _issue_document(deal_id, "SALES_CONTRACT"))
 
     try:
         from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
@@ -1392,7 +1431,7 @@ async def on_escrow_funded(event: DomainEvent) -> None:
             callback_payload={
                 "deal_id": deal_id, "agreed_price": supplier_ask,
                 "quantity_mt": quantity_mt, "incoterm": "FOB",
-                "port_of_loading": "Chennai, IN",
+                "port_of_loading": await _supplier_port(deal_id),
                 "delivery_deadline": (date.today() + timedelta(days=21)).isoformat(),
                 "payment_terms": payment_terms_for(),
             },
@@ -1418,10 +1457,13 @@ async def book_qc_for_deal(deal_id: str, deal=None):
     _, quantity_mt = await _negotiation_numbers(deal_id, deal)
     from services.shield_link.schemas import QcBookingRequest  # type: ignore[import]
     from services.shield_link.service import book_qc  # type: ignore[import]
+    from shared.orchestration import supplier_commitment
+    commitment = await supplier_commitment.get(deal_id)
     tpo = await book_qc(QcBookingRequest(
         deal_id=deal_id,
         quantity_mt=quantity_mt,
         hs_code=getattr(deal, "hs_code", None),
+        goods_ready_date=commitment.qc_ready_date if commitment else None,
         idempotency_key=f"auto-qc-{deal_id}",
     ))
     logger.info("Continuation: QC booked %s (provider=%s) for deal %s", tpo.tpo_id, tpo.provider, deal_id)
@@ -1439,11 +1481,16 @@ async def on_po_issued(event: DomainEvent) -> None:
     deal = await _get_deal_in_status(deal_id, "PO_ISSUED", "PO_ISSUED→QC")
     if deal is None:
         return
-    from shared.orchestration import supplier_commitment
+    from shared.orchestration import qc_schedule, supplier_commitment
     if supplier_commitment.po_ack_required():
         _, quantity_mt = await _negotiation_numbers(deal_id, deal)
         await _best_effort("PO_ISSUED→AWAIT_ACK", deal_id, supplier_commitment.await_po_ack(deal_id, quantity_mt))
         logger.info("Continuation: deal %s — inspection is booked once the supplier acknowledges the PO", deal_id)
+    elif qc_schedule.readiness_required():
+        _, quantity_mt = await _negotiation_numbers(deal_id, deal)
+        await _best_effort("PO_ISSUED→AWAIT_READY_DATE", deal_id,
+                           supplier_commitment.request_qc_readiness(deal_id, quantity_mt))
+        logger.info("Continuation: deal %s — inspection is booked for the supplier's goods-ready date", deal_id)
     else:
         try:
             await book_qc_for_deal(deal_id, deal)
@@ -1475,12 +1522,13 @@ async def on_po_issued(event: DomainEvent) -> None:
 # ---------------------------------------------------------------------------
 
 async def on_qc_booked(event: DomainEvent) -> None:
-    """QC_BOOKED → email the inspection booking (agency, ref, date) to the supplier."""
+    """QC_BOOKED → the inspection order for the agency, and the booking e-mailed to the supplier."""
     if not _enabled():
         return
     deal_id = event.deal_id
     if not deal_id:
         return
+    await _best_effort("QC_BOOKED→INSPECTION_ORDER", deal_id, _issue_document(deal_id, "INSPECTION_ORDER"))
     try:
         from services.deals.service import get_deal  # type: ignore[import]
         deal = await get_deal(deal_id)
@@ -1706,6 +1754,7 @@ async def on_freight_booked(event: DomainEvent) -> None:
     if deal is None:
         return
     payload = event.payload or {}
+    await _best_effort("FREIGHT_BOOKED→SHIPPING_DOCS", deal_id, _issue_freight_documents(deal_id))
     try:
         doc_ids: list[str] = []
         try:
@@ -1913,6 +1962,9 @@ async def on_payout_completed(event: DomainEvent) -> None:
             from shared.orchestration import notifications
             await notifications.notify_payout_sent(await get_deal(deal_id), payload)
         await _best_effort("PAYOUT_COMPLETED→NOTIFY_SUPPLIER", deal_id, _notify_payout())
+        if payload.get("payout_id"):
+            await _best_effort("PAYOUT_COMPLETED→REMITTANCE_ADVICE", deal_id, _issue_document(
+                deal_id, "REMITTANCE_ADVICE", suffix=payload["payout_id"], payout_id=payload["payout_id"]))
     if payload.get("fully_paid") is False and deal_id:
         try:
             from services.deals.service import get_deal  # type: ignore[import]
@@ -1952,6 +2004,10 @@ async def on_escrow_tranche_released(event: DomainEvent) -> None:
         logger.error("Continuation[TRANCHE_RELEASED]: deal %s lookup failed: %s", deal_id, exc)
         return
     status = _status_of(deal)
+    if payload.get("trigger") == "ACCEPTED":
+        basis = "window_lapsed" if "lapsed" in str(payload.get("event") or "") else "buyer_accepted"
+        await _best_effort("TRANCHE_ACCEPTED→ACCEPTANCE_CERTIFICATE", deal_id,
+                           _issue_document(deal_id, "ACCEPTANCE_CERTIFICATE", acceptance_basis=basis))
 
     if payload.get("amount"):
         async def _notify_release() -> None:
@@ -2084,6 +2140,7 @@ async def on_escrow_settled(event: DomainEvent) -> None:
         return
     created = await _best_effort("ESCROW_SETTLED→BALANCE_GATE", deal_id,
                                  _supplier_payout_gate(deal, stage="ESCROW_SETTLED→BALANCE_GATE"))
+    await _best_effort("ESCROW_SETTLED→STATEMENT", deal_id, _issue_document(deal_id, "SETTLEMENT_STATEMENT"))
     from shared.orchestration import notifications
     await _best_effort(
         "ESCROW_SETTLED→NOTIFY", deal_id,

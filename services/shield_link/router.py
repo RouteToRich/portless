@@ -4,7 +4,13 @@ Routes:
   GET  /shield-link/qc/providers    Supported QC provider catalog (buyer-facing)
   POST /shield-link/qc/quote        Quote QC inspection cost for a provider
   POST /shield-link/qc              Book QC inspection (PO_ISSUED → SUPPLIER_DISPATCH_READY)
-  POST /shield-link/qc/webhook      QC provider result webhook
+  POST /shield-link/qc/webhook      QC provider status / result webhook
+  GET  /shield-link/deals/{id}/qc   Inspection status, date, result, reports, supplier readiness
+  POST /shield-link/deals/{id}/qc/poll       Poll the API provider (QIMA) now
+  POST /shield-link/deals/{id}/qc-readiness  Supplier's goods-ready date (staff) → books the inspection
+  POST /shield-link/qc/{ref}/status          Operator relay of a portal provider's status / result (staff)
+  POST /shield-link/qc/{tpo_id}/reschedule   Cancel + rebook on a new date (staff)
+  GET  /shield-link/qc/{tpo_id}/documents/{i} Kept inspection report
   POST /shield-link/freight         Book freight (QC_PASSED → IN_TRANSIT)
   POST /shield-link/freight/webhook Freight milestone webhook
   POST /shield-link/cha             Submit CHA customs filing
@@ -17,13 +23,20 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import Response
 
+from shared.auth.dependencies import AuthUser, require_portless
 from shared.webhooks import parse_webhook_body, signature_required
 
+from . import qc as qc_lifecycle
 from .schemas import (
     ChaFilingRequest,
     DealOrdersResponse,
+    DealQcResponse,
+    QcReadinessRequest,
+    QcRescheduleRequest,
+    QcStatusUpdateRequest,
     FreightBookingRequest,
     FreightMilestonePayload,
     FreightQuoteRequest,
@@ -124,9 +137,101 @@ async def api_qc_webhook(request: Request) -> dict[str, Any]:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))
     except TpoNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     except Exception as exc:
         logger.error("QC webhook processing error: %s", exc)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Webhook processing failed")
+
+
+# QC lifecycle — status, readiness, reports, reschedule
+# (aliases so tests and the route table can patch them on this module)
+get_deal_qc = qc_lifecycle.get_deal_qc
+poll_qc = qc_lifecycle.poll_qc
+record_qc_status = qc_lifecycle.record_qc_status
+get_qc_document = qc_lifecycle.get_qc_document
+reschedule_qc = qc_lifecycle.reschedule
+
+
+@router.get("/deals/{deal_id}/qc", response_model=DealQcResponse)
+async def api_deal_qc(deal_id: str) -> DealQcResponse:
+    """The deal's inspection: provider status, scheduled date, result, defects,
+    kept reports, the supplier's goods-ready date and the next step."""
+    return await get_deal_qc(deal_id)
+
+
+@router.post("/deals/{deal_id}/qc/poll")
+async def api_poll_qc(deal_id: str) -> dict[str, Any]:
+    """Ask the API provider (QIMA) for the order status now; a report found is applied."""
+    return await poll_qc(deal_id, force=True)
+
+
+@router.post("/qc/{ref}/status")
+async def api_record_qc_status(
+    ref: str, req: QcStatusUpdateRequest, user: AuthUser = Depends(require_portless),
+) -> dict[str, Any]:
+    """Relay what the provider's portal or e-mail says (SGS SMART, BV OneSource
+    Connect have no API): CONFIRMED date, INSPECTED, REPORT_ISSUED with PASS /
+    FAIL (moves the deal like the webhook), CANCELLED. ``ref`` = TPO id or the
+    booking reference."""
+    req = req.model_copy(update={"source": f"operator:{user.email or user.user_id}"})
+    try:
+        return await record_qc_status(ref, req)
+    except TpoNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
+@router.get("/qc/{tpo_id}/documents/{index}")
+async def api_qc_document(tpo_id: str, index: int) -> Response:
+    """A kept inspection report (PDF), streamed from Drive / disk."""
+    try:
+        data, mime, name = await get_qc_document(tpo_id, index)
+    except TpoNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return Response(data, media_type=mime, headers={"content-disposition": f'inline; filename="{name}"'})
+
+
+@router.post("/qc/{tpo_id}/reschedule", response_model=ThirdPartyOrderResponse, status_code=status.HTTP_201_CREATED)
+async def api_reschedule_qc(
+    tpo_id: str, req: QcRescheduleRequest, user: AuthUser = Depends(require_portless),
+) -> ThirdPartyOrderResponse:
+    """Move the inspection to a new date: cancelled at the provider (QIMA by
+    API), booked again. The deal stays at SUPPLIER_DISPATCH_READY."""
+    try:
+        return await reschedule_qc(tpo_id, req)
+    except TpoNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    except ConnectorCallError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+
+@router.post("/deals/{deal_id}/qc-readiness")
+async def api_qc_readiness(
+    deal_id: str, req: QcReadinessRequest, user: AuthUser = Depends(require_portless),
+) -> dict[str, Any]:
+    """The supplier's goods-ready date (heard by phone or corrected): recorded,
+    and the inspection is booked for it when the deal is at PO_ISSUED."""
+    from shared.orchestration import qc_schedule, supplier_commitment
+    ready = qc_schedule.to_date(req.ready_date)
+    if ready is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ready_date must be an ISO date (YYYY-MM-DD)")
+    try:
+        return await supplier_commitment.record_qc_readiness(
+            deal_id, ready, by=f"operator:{user.email or user.user_id}", produced_pct=req.produced_pct,
+            packed_pct=req.packed_pct, note=req.note,
+        )
+    except DealNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    except ConnectorCallError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

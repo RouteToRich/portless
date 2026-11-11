@@ -1,115 +1,44 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Shipper's Declaration Form {{ doc_id }}</title>
-<style>
-  body { font-family: Arial, sans-serif; font-size: 12px; color: #222; margin: 40px; }
-  h1 { font-size: 20px; margin: 0; }
-  h2 { font-size: 13px; color: #555; margin: 4px 0 0; }
-  .header { border-bottom: 2px solid #333; padding-bottom: 12px; margin-bottom: 20px; }
-  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 12px; }
-  .field { border: 1px solid #ccc; padding: 10px; border-radius: 4px; }
-  .field label { font-size: 10px; color: #888; display: block; margin-bottom: 4px; text-transform: uppercase; }
-  .declaration { background: #fff3e0; border-left: 4px solid #fb8c00; padding: 12px 16px; margin: 16px 0; font-size: 11px; }
-  .footer { margin-top: 30px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
-  .sig-box { border-top: 1px solid #333; padding-top: 8px; }
-</style>
-</head>
-<body>
-
-<div class="header">
-  <h1>SHIPPER'S DECLARATION FORM (SDF)</h1>
-  <h2>Reserve Bank of India — Foreign Exchange Management Act</h2>
-  <p style="margin:8px 0 0; color:#555;">No. {{ doc_id }} &nbsp;|&nbsp; Date: {{ sdf_date }}</p>
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Export Declaration (SDF){% endblock %}
+{% block kind_sub %}<div class="kind-sub">Declaration under the Foreign Exchange Management Act, 1999</div>{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block facts %}
+  {{ m.fact("Date", doc_date | date) }}
+  {{ m.fact("Exporter IEC", exporter.iec, mono=True) }}
+  {{ m.fact("AD bank code", exporter.ad_code, mono=True) }}
+  {{ m.fact("Commercial invoice", invoice_ref, mono=True) }}
+{% endblock %}
+{% block content %}
+<h2>Export particulars</h2>
+<div class="grid-2">
+  {{ m.exporter_card(exporter, "Exporter") }}
+  {{ m.party("Buyer", buyer.legal_name, [buyer.address, buyer.country]) }}
 </div>
+<table style="margin-top:12px">
+  <thead><tr><th>Description</th><th>HS code</th><th class="num">Quantity (MT)</th><th class="num">Invoice value ({{ currency }}, {{ incoterm }})</th><th class="num">FOB value ({{ currency }})</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>{{ product }}</strong></td>
+      <td class="mono">{{ hs_code }}</td>
+      <td class="num">{{ shipped_quantity_mt | qty }}</td>
+      <td class="num">{{ total_value | money }}</td>
+      <td class="num">{{ fob_value | money if fob_value else "—" }}</td>
+    </tr>
+  </tbody>
+</table>
+{% if fob_basis %}<p class="small muted" style="margin-top:6px">{{ fob_basis }}</p>{% endif %}
 
-<div class="row">
-  <div class="field">
-    <label>Exporter / AD Code</label>
-    <strong>{{ exporter_name }}</strong><br>
-    {{ exporter_address }}<br>
-    {% if exporter_iec %}IEC: {{ exporter_iec }}{% endif %}
-  </div>
-  <div class="field">
-    <label>Consignee</label>
-    <strong>{{ buyer_name }}</strong><br>
-    {{ buyer_address }}
-  </div>
+<h2>Declaration</h2>
+<ol class="clauses">
+  <li>I/We hereby declare that I/we am/are the <strong>seller</strong> of the goods in respect of which this declaration is made, and that the particulars given in the Shipping Bill are true.</li>
+  <li>The value as contracted with the buyer is the full export value of the goods: {{ total_value | money(currency) }} ({{ incoterm }}).</li>
+  <li>I/We undertake to realise and repatriate the full export value to India within the period prescribed by the Reserve Bank of India. Payment is held in a neutral escrow ({{ escrow_provider or "escrow" }}) and released in stages.</li>
+  <li>I/We undertake to submit the export documents to the Authorised Dealer bank (code {{ exporter.ad_code or "____" }}) within the prescribed period.</li>
+</ol>
+
+<div class="signs">
+  {{ m.exporter_sign(exporter) }}
+  <div></div>
 </div>
-
-<div class="row">
-  <div class="field">
-    <label>Port of Loading</label>
-    {{ port_of_loading }}
-  </div>
-  <div class="field">
-    <label>Port of Destination</label>
-    {{ port_of_destination }}
-  </div>
-</div>
-
-<div class="row">
-  <div class="field">
-    <label>HS Code</label>
-    {{ hs_code }}
-  </div>
-  <div class="field">
-    <label>Goods Description</label>
-    {{ description }}
-  </div>
-</div>
-
-<div class="row">
-  <div class="field">
-    <label>Quantity (MT)</label>
-    {{ "%.3f"|format(quantity_mt) }}
-  </div>
-  <div class="field">
-    <label>FOB Value ({{ currency }})</label>
-    {{ "%.2f"|format(fob_value) }}
-  </div>
-</div>
-
-<div class="row">
-  <div class="field">
-    <label>Payment Terms</label>
-    {{ payment_terms }}
-  </div>
-  <div class="field">
-    <label>Country of Destination</label>
-    {{ country_of_destination }}
-  </div>
-</div>
-
-{% if vessel_name or bill_of_lading_number %}
-<div class="row">
-  <div class="field">
-    <label>Vessel / Flight No.</label>
-    {{ vessel_name or "—" }}{% if voyage_number %} / {{ voyage_number }}{% endif %}
-  </div>
-  <div class="field">
-    <label>Bill of Lading No.</label>
-    {{ bill_of_lading_number or "—" }}
-  </div>
-</div>
-{% endif %}
-
-<div class="declaration">
-  <strong>Declaration:</strong> I/We hereby declare that the particulars given above are true
-  and correct and that the value stated is the full export value of the goods exported and
-  I/We undertake to realise the full export proceeds within the prescribed period as per the
-  provisions of the Foreign Exchange Management Act, 1999.
-</div>
-
-<div class="footer">
-  <div class="sig-box">
-    <p>Signature of Exporter<br><strong>{{ exporter_name }}</strong><br>Date: {{ sdf_date }}</p>
-  </div>
-  <div class="sig-box">
-    <p>Customs Certification<br>Date: ___________</p>
-  </div>
-</div>
-
-</body>
-</html>
+{% endblock %}

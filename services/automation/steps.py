@@ -215,7 +215,9 @@ def _options(suffix: str) -> dict[str, Any]:
         (r"with buyer \"C1\" and supplier offer \"OF1\"", lambda m: {"_after": ("board",)}),
         (r"with no buyer and no offer", lambda m: {}),
         (r"with an offer of ([\d.]+) sent to the buyer", lambda m: {"_after": ("offer", float(m.group(1)))}),
-        (r"with buyer price ([\d.]+)", lambda m: {"target_price": float(m.group(1))}),
+        # The PO margin guard measures against the PI's agreed price, so the
+        # buyer price must be the PI's (and the session's), not only the target.
+        (r"with buyer price ([\d.]+)", lambda m: {"buyer_price": float(m.group(1))}),
         (r"with an open \"([^\"]+)\" hold", lambda m: {"_after": ("hold", m.group(1))}),
         (r"with market \"([^\"]+)\"", lambda m: {"market": m.group(1)}),
         (r"with a fresh buyer screening of \"([^\"]+)\"", lambda m: {"_after": ("screening", m.group(1))}),
@@ -820,7 +822,7 @@ async def journal_balanced(ctx: Ctx) -> None:
     assert journal.get("balanced", True), f"journal not balanced: {journal.get('issues')}"
 
 
-from . import steps2, steps3, steps4, steps5  # noqa: E402,F401 — registers the remaining steps
+from . import steps2, steps3, steps4, steps5, steps6  # noqa: E402,F401 — registers the remaining steps
 
 
 def _assign_test_organisations() -> None:

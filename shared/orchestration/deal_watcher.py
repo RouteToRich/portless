@@ -17,8 +17,10 @@ happens. This sweep handles the opposite case — *nothing* happens:
   PO_ISSUED       the supplier never acknowledged the Purchase Order / QC was
                   never booked → supplier reminder every
                   ``DEAL_PO_ACK_REMINDER_AFTER_HOURS`` (max ``DEAL_REMINDER_MAX``)
-  SUPPLIER_DISPATCH_READY  the inspection never produced a result → supplier
-                  readiness reminder every ``DEAL_QC_READINESS_REMINDER_AFTER_HOURS``
+  SUPPLIER_DISPATCH_READY  API inspection provider (QIMA) polled every
+                  ``QC_POLL_MINUTES`` — a report found moves the deal; once the
+                  inspection date + ``QC_REPORT_GRACE_HOURS`` passes without one →
+                  supplier readiness reminder every ``DEAL_QC_READINESS_REMINDER_AFTER_HOURS``
                   (max ``DEAL_REMINDER_MAX``), then ``deal.exception``
   IN_TRANSIT      carrier-tracking poll every ``TRACKING_POLL_HOURS`` (the
                   ``apify_carrier_tracking`` actor; no-op while it is a stub)
@@ -196,6 +198,36 @@ async def _sweep_supplier_wait(
             counts["exceptions"] += 1
 
 
+async def _sweep_dispatch_ready(deal: Any, now: datetime, counts: dict[str, int]) -> None:
+    """Inspection booked: poll an API provider (QIMA) for the order status and
+    report (every ``QC_POLL_MINUTES``); remind the supplier only once the
+    inspection date plus ``QC_REPORT_GRACE_HOURS`` has passed without a result."""
+    from shared.orchestration import notifications, qc_schedule
+    order = None
+    try:
+        from services.shield_link import qc as shield_qc  # type: ignore[import]
+        from services.shield_link.repository import get_repository as sl_repo  # type: ignore[import]
+        polled = await shield_qc.poll_qc(deal.deal_id)
+        if any(o.get("result") in ("PASS", "FAIL") for o in polled.get("orders") or []):
+            counts["qc_results"] = counts.get("qc_results", 0) + 1
+            return
+        orders = [o for o in await sl_repo().list_by_deal(deal.deal_id)
+                  if o.order_type == "QC" and o.status not in ("CANCELLED", "FAILED")]
+        order = max(orders, key=lambda o: o.created_at) if orders else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("DealWatcher: QC poll for %s failed: %s", deal.deal_id, exc)
+    inspection = qc_schedule.to_date(order.inspection_date) if order is not None else None
+    if inspection is not None:
+        due = datetime(inspection.year, inspection.month, inspection.day, tzinfo=timezone.utc) + timedelta(
+            hours=24 + qc_schedule.report_grace_hours())
+        if now < due:
+            return
+    await _sweep_supplier_wait(
+        deal, "SUPPLIER_DISPATCH_READY", now, counts, every_var="DEAL_QC_READINESS_REMINDER_AFTER_HOURS",
+        every_default=72.0, kind="inspection_overdue", notify=notifications.notify_qc_readiness_reminder,
+    )
+
+
 async def _sweep_in_transit(deal: Any, now: datetime, counts: dict[str, int]) -> None:
     """Poll the carrier for the container; the generic stall SLA still applies."""
     every = _hours("TRACKING_POLL_HOURS", 12.0)
@@ -293,12 +325,7 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
                     every_default=48.0, kind="po_unacknowledged", notify=notifications.notify_po_reminder,
                 )
             elif status == "SUPPLIER_DISPATCH_READY":
-                from shared.orchestration import notifications
-                await _sweep_supplier_wait(
-                    deal, status, now, counts, every_var="DEAL_QC_READINESS_REMINDER_AFTER_HOURS",
-                    every_default=72.0, kind="inspection_overdue",
-                    notify=notifications.notify_qc_readiness_reminder,
-                )
+                await _sweep_dispatch_ready(deal, now, counts)
             elif status == "IN_TRANSIT":
                 await _sweep_in_transit(deal, now, counts)
             elif status == "CLEARED":

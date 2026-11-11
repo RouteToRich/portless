@@ -46,10 +46,29 @@ class ThirdPartyOrderRecord(BaseModel):
     last_milestone_source: str | None = None
     delivered_at: datetime | None = None
 
-    # QC result (populated by webhook)
+    # QC result (populated by webhook, provider poll or operator)
     qc_result: Literal["PASS", "FAIL", "PENDING"] | None = None
     qc_report_url: str | None = None
     qc_completed_at: datetime | None = None
+
+    # QC lifecycle at the provider (shared/connectors/qc_providers.py)
+    channel: str | None = None
+    """``api`` (QIMA) · ``portal`` (SGS SMART / BV OneSource Connect) · ``stub`` · ``sandbox``."""
+    provider_order_number: str | None = None
+    """The provider's own order number (QIMA ``Q26…-PP``, SGS / BV job number)."""
+    provider_status: str | None = None
+    """REQUESTED · CONFIRMED · INSPECTED · REPORT_ISSUED · CANCELLED."""
+    provider_status_code: str | None = None
+    provider_status_text: str | None = None
+    inspection_date: str | None = None
+    """Scheduled inspection day (ISO) — the supplier's ready date or later."""
+    goods_ready_date: str | None = None
+    """Day the supplier said the lot is produced and packed for inspection."""
+    qc_defects: dict[str, Any] = Field(default_factory=dict)
+    qc_documents: list[dict[str, Any]] = Field(default_factory=list)
+    """Reports kept by PortLess: name, file_type, storage_uri, sha256, size, mime, source."""
+    last_polled_at: datetime | None = None
+    status_history: list[dict[str, Any]] = Field(default_factory=list)
 
     # Audit
     created_at: datetime
@@ -74,6 +93,10 @@ class QcBookingRequest(BaseModel):
     """Supplier warehouse address or GPS coords."""
     hs_code: str | None = None
     quantity_mt: float | None = None
+    goods_ready_date: str | None = None
+    """ISO date the supplier said the goods are 100 % produced and packed."""
+    inspection_date: str | None = None
+    """ISO date to book; never earlier than the agency's lead time allows."""
     idempotency_key: str | None = None
 
 
@@ -113,6 +136,8 @@ class QcProviderInfo(BaseModel):
     evidence: dict[str, bool]
     available_in_india: bool
     indicative_fee_usd: float
+    channel: str = "api"
+    """How PortLess reaches it: ``api`` (status polled) or ``portal`` (booking desk; result by webhook / operator)."""
     notes: str = ""
 
 
@@ -173,23 +198,110 @@ class ChaFilingRequest(BaseModel):
     idempotency_key: str | None = None
 
 
-class QcWebhookPayload(BaseModel):
-    """Inbound webhook from QC provider with inspection result.
+QcProviderStatus = Literal["REQUESTED", "CONFIRMED", "INSPECTED", "REPORT_ISSUED", "CANCELLED"]
 
+
+class QcDocumentRef(BaseModel):
+    """A report file the provider published: fetched from ``url`` and kept by PortLess."""
+    name: str | None = None
+    type: str = "INSPECTION_REPORT"
+    url: str
+
+
+class QcWebhookPayload(BaseModel):
+    """Inbound webhook from a QC provider (or the portal relay) — a status
+    update and / or the inspection result.
+
+    ``result`` set → the report is out (PASS / FAIL moves the deal). Without a
+    result the call only records ``status`` (CONFIRMED date, INSPECTED …).
     When the inspector also supervised the container stuffing, the loading
     fields carry what went into the container and the seal applied."""
     ext_ref: str
-    result: Literal["PASS", "FAIL"]
+    result: Literal["PASS", "FAIL"] | None = None
+    status: QcProviderStatus | None = None
+    provider_order_number: str | None = None
+    inspection_date: str | None = None
     report_url: str | None = None
     crf_hash: str | None = None
     completed_at: str | None = None
     notes: str | None = None
+    documents: list[QcDocumentRef] = Field(default_factory=list)
+    defects: dict[str, Any] = Field(default_factory=dict)
     container_numbers: list[str] = Field(default_factory=list)
     seal_numbers: list[str] = Field(default_factory=list)
     loaded_quantity_mt: float | None = None
     loaded_hs_code: str | None = None
     goods_description: str | None = None
     photos: list[str] = Field(default_factory=list)
+
+
+class QcStatusUpdateRequest(BaseModel):
+    """Operator relay of what the provider's portal or e-mail says (SGS SMART,
+    BV OneSource Connect have no API) — same effect as the signed webhook."""
+    status: QcProviderStatus
+    result: Literal["PASS", "FAIL"] | None = None
+    provider_order_number: str | None = None
+    inspection_date: str | None = None
+    report_url: str | None = None
+    crf_hash: str | None = None
+    notes: str | None = None
+    documents: list[QcDocumentRef] = Field(default_factory=list)
+    defects: dict[str, Any] = Field(default_factory=dict)
+    container_numbers: list[str] = Field(default_factory=list)
+    seal_numbers: list[str] = Field(default_factory=list)
+    loaded_quantity_mt: float | None = None
+    loaded_hs_code: str | None = None
+    goods_description: str | None = None
+    photos: list[str] = Field(default_factory=list)
+    source: str = "operator"
+
+
+class QcReadinessRequest(BaseModel):
+    """The supplier's goods-ready date for the inspection (heard by phone, or
+    corrected by an operator). Books the inspection when the PO stage allows."""
+    ready_date: str
+    """ISO date the lot is 100 % produced and at least QC_MIN_PACKED_PCT % packed."""
+    produced_pct: float | None = Field(default=None, ge=0, le=100)
+    packed_pct: float | None = Field(default=None, ge=0, le=100)
+    note: str | None = None
+
+
+class QcRescheduleRequest(BaseModel):
+    """Move the inspection: the booking is cancelled at the provider and a new one made."""
+    inspection_date: str
+    reason: str = Field(min_length=3)
+
+
+class QcOrderView(BaseModel):
+    tpo_id: str
+    provider: str
+    channel: str | None = None
+    status: str
+    provider_status: str | None = None
+    provider_status_code: str | None = None
+    provider_status_text: str | None = None
+    provider_order_number: str | None = None
+    ext_ref: str | None = None
+    goods_ready_date: str | None = None
+    inspection_date: str | None = None
+    qc_result: str | None = None
+    qc_report_url: str | None = None
+    crf_hash: str | None = None
+    qc_defects: dict[str, Any] = Field(default_factory=dict)
+    documents: list[dict[str, Any]] = Field(default_factory=list)
+    last_polled_at: datetime | None = None
+    status_history: list[dict[str, Any]] = Field(default_factory=list)
+    booking_email: str | None = None
+    portal_url: str | None = None
+    created_at: datetime
+
+
+class DealQcResponse(BaseModel):
+    deal_id: str
+    orders: list[QcOrderView]
+    readiness: dict[str, Any] = Field(default_factory=dict)
+    """The supplier's goods-ready date and whether PortLess is waiting for it."""
+    next_step: str = ""
 
 
 class LoadingRecordRequest(BaseModel):
@@ -252,11 +364,19 @@ class ThirdPartyOrderResponse(BaseModel):
     last_milestone: str | None = None
     last_milestone_at: datetime | None = None
     delivered_at: datetime | None = None
+    channel: str | None = None
+    provider_status: str | None = None
+    provider_order_number: str | None = None
+    inspection_date: str | None = None
     created_at: datetime
 
     @classmethod
     def from_record(cls, r: ThirdPartyOrderRecord) -> "ThirdPartyOrderResponse":
         return cls(
+            channel=r.channel,
+            provider_status=r.provider_status,
+            provider_order_number=r.provider_order_number,
+            inspection_date=r.inspection_date,
             tpo_id=r.tpo_id,
             deal_id=r.deal_id,
             order_type=r.order_type,

@@ -1,0 +1,35 @@
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Remittance Advice{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block chip %}<div class="chip ok">Paid {{ paid_at | date }}</div>{% endblock %}
+{% block facts %}
+  {{ m.fact("Payment date", paid_at | date) }}
+  {{ m.fact("Amount", amount | money(currency)) }}
+  {{ m.fact("Payment reference", payment_ref, mono=True) }}
+  {{ m.fact("Purchase order", po_id, mono=True) }}
+{% endblock %}
+{% block content %}
+<h2>Payer and payee</h2>
+<div class="grid-2">
+  {{ m.exporter_card(exporter, "Payer") }}
+  {{ m.party("Payee — supplier", supplier.legal_name, [supplier.address], {"GSTIN": supplier.gstin}) }}
+</div>
+
+<h2>This payment</h2>
+<table>
+  <thead><tr><th>Purchase order</th><th>Description</th><th class="num">Order value</th><th class="num">This payment</th></tr></thead>
+  <tbody><tr>
+    <td class="mono">{{ po_id or "—" }}</td>
+    <td>{{ kind_label }} — {{ product }}, {{ quantity_mt | qty }} MT</td>
+    <td class="num">{{ po_value | money(currency) }}</td>
+    <td class="num"><strong>{{ amount | money(currency) }}</strong></td>
+  </tr></tbody>
+</table>
+<div class="totals">
+  <div class="row"><span>Paid to date (incl. this payment)</span><span>{{ paid_to_date | money(currency) }}</span></div>
+  {% if retained %}<div class="row"><span>Held until the buyer accepts the goods</span><span>{{ retained | money(currency) }}</span></div>{% endif %}
+  <div class="row grand"><span>Balance outstanding</span><span>{{ balance | money(currency) }}</span></div>
+</div>
+<p class="small muted" style="margin-top:10px">Paid by {{ provider or "bank transfer" }} to the account on file. Please quote <span class="mono">{{ po_id }}</span> on your GST tax invoice and reconcile against this advice.</p>
+{% endblock %}

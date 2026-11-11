@@ -171,9 +171,43 @@ def _tpl_po_issued(ctx: dict[str, Any]) -> tuple[str, str]:
         f"  Payment terms    : {po.payment_terms}\n"
         + (f"  Quality spec     : {po.quality_spec}\n" if getattr(po, 'quality_spec', None) else "")
         + (f"  Document         : {link}\n" if link else "")
-        + "\nPlease reply to acknowledge this Purchase Order and confirm your production schedule. "
-        "The independent pre-shipment inspection is booked as soon as we receive your "
-        "acknowledgement, and we will share the inspector's details with you."
+        + "\nPlease reply to:\n"
+        "  1. acknowledge this Purchase Order, and\n"
+        f"  2. tell us the date the goods will be 100% produced and at least {_packed_pct()}% packed "
+        "(for example \"ready for inspection on 15 December 2026\").\n\n"
+        "We book the independent pre-shipment inspection for that date — the agency needs "
+        f"{_lead_days()} working days' notice — and share the inspector's details with you. The "
+        "inspector also supervises the container stuffing and seals the container."
+        + _signature()
+    )
+    return subject, body
+
+
+def _packed_pct() -> int:
+    from shared.orchestration import qc_schedule
+    return qc_schedule.min_packed_pct()
+
+
+def _lead_days() -> int:
+    from shared.orchestration import qc_schedule
+    return qc_schedule.lead_business_days()
+
+
+def _tpl_qc_readiness_request(ctx: dict[str, Any]) -> tuple[str, str]:
+    subject = f"When will the goods be ready for inspection? — deal {ctx['deal_id']}"
+    body = (
+        f"{_dear(ctx.get('supplier_name'))},\n\n"
+        "Thank you for acknowledging the Purchase Order. To book the independent pre-shipment "
+        "inspection we need the date the goods will be ready:\n\n"
+        "  - 100% of the order quantity produced, and\n"
+        f"  - at least {ctx.get('packed_pct', 80)}% packed and labelled, with the rest available "
+        "for sampling.\n\n"
+        "Please reply with that date (for example \"ready for inspection on 15 December 2026\"). "
+        f"The inspection agency needs {ctx.get('lead_days', 2)} working days' notice, so the earliest "
+        f"possible inspection is {ctx.get('earliest', 'shortly after your reply')}. On the inspection day "
+        "please keep the Purchase Order, the packing list and the product specification ready, "
+        "give the inspector access to the whole lot, and plan the container stuffing right after "
+        "the inspection — the inspector supervises the loading and seals the container."
         + _signature()
     )
     return subject, body
@@ -225,11 +259,19 @@ def _tpl_qc_booked(ctx: dict[str, Any]) -> tuple[str, str]:
         f"A pre-shipment quality inspection has been booked for the goods under "
         f"Purchase Order {ctx.get('po_id', '')}.\n\n"
         f"  Inspection agency : {str(ctx.get('provider', '')).replace('_', ' ').upper()}\n"
-        f"  Booking reference : {ctx.get('ext_ref', '')}\n"
+        f"  Booking reference : {ctx.get('provider_order_number') or ctx.get('ext_ref', '')}\n"
         + (f"  Inspection date   : {ctx['inspection_date']}\n" if ctx.get("inspection_date") else "")
-        + "\nPlease have the full lot packed, labelled and accessible for sampling on the "
-        "inspection date, and keep the inspector's sampling plan unobstructed. Dispatch "
-        "proceeds only after a clean inspection report."
+        + "  Sampling          : ISO 2859-1, general inspection level II\n"
+        + "\nOn the inspection date please have:\n"
+        "  - 100% of the order quantity produced and at least "
+        f"{ctx.get('packed_pct', 80)}% packed and labelled, the rest available for sampling;\n"
+        "  - the Purchase Order, the packing list and the product specification at hand;\n"
+        "  - a person who can open cartons / bags and move goods for the inspector.\n"
+        + ("\nThe inspector also supervises the container stuffing and seals the container, so please "
+           "plan the loading right after the inspection.\n" if ctx.get("loading_supervision") else "")
+        + "\nIf the goods will not be ready on that date, tell us at once (at least one working day "
+        "before) so we can move the booking — a wasted visit may be charged. Dispatch proceeds only "
+        "after a clean inspection report."
         + _signature()
     )
     return subject, body
@@ -576,6 +618,7 @@ _TEMPLATES = {
     "deal_settled": _tpl_deal_settled,
     "escrow_opened": _tpl_escrow_opened,
     "po_issued": _tpl_po_issued,
+    "qc_readiness_request": _tpl_qc_readiness_request,
     "qc_booked": _tpl_qc_booked,
     "freight_booked": _tpl_freight_booked,
     "cargo_cleared": _tpl_cargo_cleared,
@@ -780,10 +823,15 @@ async def notify_qc_booked(deal: Any, payload: dict[str, Any], po_id: str | None
         {
             "provider": payload.get("provider"),
             "ext_ref": payload.get("ext_ref"),
+            "provider_order_number": payload.get("provider_order_number"),
             "inspection_date": payload.get("inspection_date"),
+            "loading_supervision": payload.get("loading_supervision"),
+            "packed_pct": _packed_pct(),
             "po_id": po_id or "",
             "supplier_name": _party_name(deal, "supplier"),
         },
+        # a rescheduled booking is a new notice with the new date
+        suffix=str(payload.get("tpo_id") or "") if payload.get("rescheduled_from") else "",
         deal=deal,
     )
 
@@ -1003,6 +1051,7 @@ NOTICE_LABELS: dict[str, tuple[str, str]] = {
     "supplier_order_request": ("Order request to supplier", "ESCROW_FUNDED"),
     "po_issued": ("Purchase Order issued", "PO_ISSUED"),
     "po_reminder": ("PO confirmation reminder", "PO_ISSUED"),
+    "qc_readiness_request": ("Goods-ready date requested", "PO_ISSUED"),
     "qc_booked": ("Inspection booked", "SUPPLIER_DISPATCH_READY"),
     "qc_readiness_reminder": ("Inspection readiness reminder", "SUPPLIER_DISPATCH_READY"),
     "qc_passed": ("Inspection passed", "QC_PASSED"),

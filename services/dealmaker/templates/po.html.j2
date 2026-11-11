@@ -1,119 +1,55 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Purchase Order {{ po_id }}</title>
-<style>
-  body { font-family: Arial, sans-serif; font-size: 12px; color: #222; margin: 40px; }
-  h1 { font-size: 22px; margin: 0; }
-  .header { display: flex; justify-content: space-between; border-bottom: 2px solid #333; padding-bottom: 12px; margin-bottom: 20px; }
-  .meta-block { margin-bottom: 16px; }
-  .meta-block div { margin-bottom: 4px; }
-  .meta-block strong { display: inline-block; width: 160px; }
-  .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
-  .party-box { border: 1px solid #ccc; padding: 12px; border-radius: 4px; }
-  .party-box h3 { margin: 0 0 8px 0; font-size: 13px; color: #555; text-transform: uppercase; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-  th { background: #333; color: #fff; padding: 8px; text-align: left; }
-  td { padding: 8px; border-bottom: 1px solid #ddd; }
-  .total-row td { font-weight: bold; background: #f5f5f5; }
-  .terms { background: #fafafa; border: 1px solid #e0e0e0; padding: 12px; border-radius: 4px; margin-bottom: 20px; }
-  .qc-box { background: #e8f5e9; border-left: 4px solid #43a047; padding: 10px 14px; margin-bottom: 20px; }
-  .footer { margin-top: 40px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
-  .sig-box { border-top: 1px solid #333; padding-top: 8px; }
-</style>
-</head>
-<body>
-
-<div class="header">
-  <div>
-    <h1>PURCHASE ORDER</h1>
-    <p style="margin:4px 0; color:#555;">No. {{ po_id }}</p>
-  </div>
-  <div style="text-align:right;">
-    <strong>{{ buyer_name }}</strong><br>
-    {{ buyer_address }}<br>
-    Deal Ref: {{ deal_id }}
-  </div>
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Purchase Order{% endblock %}
+{% block number %}{{ po_id }}{% endblock %}
+{% block chip %}<div class="chip">Escrow funded</div>{% endblock %}
+{% block facts %}
+  {{ m.fact("Order date", issued_at | date) }}
+  {{ m.fact("Ready for loading by", delivery_deadline | date) }}
+  {{ m.fact("Terms", incoterm ~ " " ~ (port_of_loading or "")) }}
+  {{ m.fact("Deal reference", deal_id, mono=True) }}
+{% endblock %}
+{% block content %}
+<h2>Parties</h2>
+<div class="grid-2">
+  {{ m.exporter_card(exporter, "Purchaser") }}
+  {{ m.party("Supplier / Manufacturer", supplier_name, [supplier_address], {"GSTIN": supplier_gstin, "IEC": supplier_iec}) }}
 </div>
 
-<div class="meta-block">
-  <div><strong>Issue Date:</strong> {{ issued_at }}</div>
-  <div><strong>Delivery Deadline:</strong> {{ delivery_deadline }}</div>
-  <div><strong>Deal Reference:</strong> {{ deal_id }}</div>
-  <div><strong>Incoterm:</strong> {{ incoterm }} — {{ port_of_loading }}</div>
-</div>
-
-<div class="parties">
-  <div class="party-box">
-    <h3>Purchaser</h3>
-    <strong>{{ buyer_name }}</strong><br>
-    {{ buyer_address }}
-  </div>
-  <div class="party-box">
-    <h3>Supplier</h3>
-    <strong>{{ supplier_name }}</strong><br>
-    {{ supplier_address }}<br>
-    {% if supplier_gstin %}GSTIN: {{ supplier_gstin }}<br>{% endif %}
-    {% if supplier_iec %}IEC: {{ supplier_iec }}<br>{% endif %}
-  </div>
-</div>
-
+<h2>Order</h2>
 <table>
-  <thead>
-    <tr>
-      <th>HS Code</th>
-      <th>Product Description</th>
-      <th>Quantity (MT)</th>
-      <th>Unit Price {{ incoterm }} ({{ currency }})</th>
-      <th>Total ({{ currency }})</th>
-    </tr>
-  </thead>
+  <thead><tr><th>#</th><th>Description</th><th>HS code</th><th class="num">Quantity (MT)</th><th class="num">Price ({{ currency }}/MT {{ incoterm }})</th><th class="num">Amount ({{ currency }})</th></tr></thead>
   <tbody>
     <tr>
-      <td>{{ hs_code }}</td>
-      <td>{{ product_description }}</td>
-      <td>{{ "%.3f"|format(quantity_mt) }}</td>
-      <td>{{ "%.4f"|format(agreed_price) }}</td>
-      <td>{{ "%.2f"|format(total_value) }}</td>
-    </tr>
-    <tr class="total-row">
-      <td colspan="4" style="text-align:right;">TOTAL {{ incoterm }} {{ port_of_loading }}</td>
-      <td>{{ currency }} {{ "%.2f"|format(total_value) }}</td>
+      <td>1</td>
+      <td><strong>{{ product_description }}</strong>{% if quality_spec %}<div class="small muted">{{ quality_spec }}</div>{% endif %}</td>
+      <td class="mono">{{ hs_code }}</td>
+      <td class="num">{{ quantity_mt | qty }}</td>
+      <td class="num">{{ agreed_price | money(None, 2) }}</td>
+      <td class="num">{{ total_value | money }}</td>
     </tr>
   </tbody>
 </table>
+{{ m.totals([("Quantity tolerance", "± 5% at the order price")], "Order value", total_value, currency) }}
 
-{% if quality_spec %}
-<div class="qc-box">
-  <strong>Quality &amp; Packing Specification:</strong><br>
-  {{ quality_spec }}
+<h2>Payment</h2>
+<p>{{ payment_terms }}</p>
+<p class="small muted">The buyer's money for this order is already held in a neutral escrow account. Your payments are released from it as each milestone below is evidenced; the last share follows the buyer's acceptance of the goods.</p>
+{{ m.timeline(tranches, total_value, currency) }}
+
+<h2>Conditions</h2>
+<ol class="clauses">
+  <li><strong>Acknowledgement.</strong> Please acknowledge this order in writing. The inspection is booked once it is acknowledged.</li>
+  <li><strong>Inspection and loading.</strong> An independent inspector checks quality, quantity and packing, supervises the stuffing and seals the container. The goods may not leave your premises before the inspection has passed.</li>
+  <li><strong>Packing and marks.</strong> Export-worthy new packing, marked as instructed by the purchaser. No supplier name, price or invoice is to be placed in or on the packages.</li>
+  <li><strong>Delivery.</strong> {{ incoterm }} {{ port_of_loading or "Indian seaport" }}, goods ready for loading by {{ delivery_deadline | date }}. Delay must be notified as soon as it is known.</li>
+  <li><strong>Documents from the supplier.</strong> GST tax invoice to the purchaser (export supply), quality certificate / certificate of analysis, and any phytosanitary or fumigation certificate the goods require.</li>
+  <li><strong>Confidentiality.</strong> The purchaser's customer and sale price are confidential. Direct contact with the purchaser's customer about this or future orders is not permitted.</li>
+  <li><strong>Rejection.</strong> Goods failing the inspection are rejected; the supplier replaces them or the order is cancelled and released funds are returned.</li>
+</ol>
+
+<div class="signs">
+  {{ m.exporter_sign(exporter, "For the Purchaser") }}
+  {{ m.sign("Accepted for the Supplier — " ~ supplier_name, "", "Name, title, date and company seal") }}
 </div>
-{% endif %}
-
-<div class="terms">
-  <strong>Payment Terms:</strong> {{ payment_terms }}<br>
-  <strong>Port of Loading:</strong> {{ port_of_loading }}<br>
-  <strong>Incoterm:</strong> {{ incoterm }}<br>
-  <strong>Delivery Deadline:</strong> {{ delivery_deadline }}<br>
-  <strong>Country of Origin:</strong> India
-</div>
-
-<p style="font-size:11px; color:#555;">
-  This Purchase Order is issued subject to the General Terms and Conditions of PortLess Trade Solutions
-  Pvt Ltd. The supplier must confirm acceptance within 48 hours of receipt. Failure to confirm
-  constitutes acceptance. All goods must be accompanied by the agreed inspection certificate
-  (SGS / Bureau Veritas CRF) prior to dispatch authorisation.
-</p>
-
-<div class="footer">
-  <div class="sig-box">
-    <p>Authorised Signatory — Purchaser<br><strong>{{ buyer_name }}</strong></p>
-  </div>
-  <div class="sig-box">
-    <p>Accepted by — Supplier<br><strong>{{ supplier_name }}</strong><br>Date: ___________</p>
-  </div>
-</div>
-
-</body>
-</html>
+{% endblock %}

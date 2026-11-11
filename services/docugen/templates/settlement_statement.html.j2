@@ -1,0 +1,37 @@
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Statement of Account{% endblock %}
+{% block kind_sub %}<div class="kind-sub">Escrow settlement — closing statement</div>{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block chip %}<div class="chip ok">Settled {{ settled_at | date }}</div>{% endblock %}
+{% block facts %}
+  {{ m.fact("Contract value", contract_value | money(currency)) }}
+  {{ m.fact("Paid into escrow", funded | money(currency)) }}
+  {{ m.fact("Escrow", escrow_provider ~ " · " ~ escrow_id) }}
+  {{ m.fact("Deal reference", deal_id, mono=True) }}
+{% endblock %}
+{% block content %}
+<h2>Account</h2>
+<div class="grid-2">
+  {{ m.exporter_card(exporter, "Seller") }}
+  {{ m.party("Buyer", buyer.legal_name, [buyer.address, buyer.country]) }}
+</div>
+
+<h2>Movements</h2>
+<table>
+  <thead><tr><th>Date</th><th>Description</th><th>Reference</th><th class="num">Paid in ({{ currency }})</th><th class="num">Released ({{ currency }})</th></tr></thead>
+  <tbody>
+  {% for row in movements %}
+    <tr><td class="nowrap">{{ row.date | date }}</td><td>{{ row.label }}</td><td class="mono">{{ row.ref or "—" }}</td>
+      <td class="num">{{ row.paid_in | money if row.paid_in else "" }}</td><td class="num">{{ row.released | money if row.released else "" }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<div class="totals">
+  <div class="row"><span>Total paid in</span><span>{{ funded | money(currency) }}</span></div>
+  <div class="row"><span>Released to the seller</span><span>{{ released | money(currency) }}</span></div>
+  {% if refunded %}<div class="row"><span>Refunded to the buyer</span><span>{{ refunded | money(currency) }}</span></div>{% endif %}
+  <div class="row grand"><span>Escrow balance</span><span>{{ balance | money(currency) }}</span></div>
+</div>
+<div class="notice accent">The trade of {{ shipped_quantity_mt | qty }} MT {{ product }} under PI <span class="mono">{{ pi_id }}</span> is complete: all escrow tranches have been released and the account is closed. Thank you for trading with {{ exporter.brand }}.</div>
+{% endblock %}

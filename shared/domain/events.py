@@ -31,6 +31,7 @@ class EventTopic(str, Enum):
     QC_BOOKED = "qc.booked"
     QC_PASSED = "qc.passed"
     QC_FAILED = "qc.failed"
+    QC_STATUS_UPDATED = "qc.status_updated"
     FREIGHT_BOOKED = "freight.booked"
     FREIGHT_MILESTONE = "freight.milestone"
     CUSTOMS_FILED = "customs.filed"

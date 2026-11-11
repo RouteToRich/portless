@@ -23,9 +23,16 @@ price and a delivery no manufacturer had confirmed. Now:
 4. **PO acknowledgement** — after the PO, the inspection is booked only once the
    supplier acknowledges it (e-mail reply, or an operator recording it), so an
    inspector is never sent to a factory that has not accepted the order.
+5. **Goods-ready date** — the inspection is booked for the day the supplier says
+   the lot is 100 % produced and packed (``shared/orchestration/qc_schedule.py``).
+   The date is read from the PO acknowledgement; without one the supplier is
+   asked (``qc_readiness_request``) and its next reply naming a date books the
+   inspection. ``POST /shield-link/deals/{id}/qc-readiness`` records a date an
+   operator heard by phone.
 
-Switches: ``SUPPLIER_CONFIRMATION_REQUIRED`` and ``PO_ACK_REQUIRED`` (default on;
-``tests/conftest.py`` pins both off for the older pipeline tests).
+Switches: ``SUPPLIER_CONFIRMATION_REQUIRED``, ``PO_ACK_REQUIRED`` and
+``QC_READINESS_DATE_REQUIRED`` (default on; ``tests/conftest.py`` pins them off
+for the older pipeline tests).
 Storage: Mongo ``supplier_commitments`` when ``MONGO_URI`` is set, else in memory.
 """
 from __future__ import annotations
@@ -96,6 +103,15 @@ class Commitment(BaseModel):
     """None | awaiting | acknowledged"""
     po_ack_at: datetime | None = None
     po_ack_by: str | None = None
+    qc_ready_status: str | None = None
+    """None | awaiting (asked for the goods-ready date) | received"""
+    qc_ready_date: str | None = None
+    """ISO date the supplier said the lot is produced and packed for inspection."""
+    qc_ready_by: str | None = None
+    qc_ready_at: datetime | None = None
+    qc_ready_asked_at: datetime | None = None
+    qc_ready_produced_pct: float | None = None
+    qc_ready_packed_pct: float | None = None
 
     @property
     def current(self) -> Attempt | None:
@@ -345,11 +361,21 @@ async def handle_supplier_reply(deal_id: str, deal_status: str, body: str, inbou
             await mark_and_advance(deal_id, "declined", note=body[:300])
             return "Supplier declined the order; the next supplier is asked."
         return None  # a new price or a question — a person reads it
-    if deal_status == "PO_ISSUED" and rec.po_ack == "awaiting":
+    if deal_status == "PO_ISSUED":
+        from shared.orchestration import qc_schedule
         text = _new_text(body)
-        if _PO_ACK.search(text) and not _DECLINE.search(text):
-            await acknowledge_po(deal_id, by=f"supplier e-mail {inbound_id}")
-            return "Supplier acknowledged the purchase order; inspection booked."
+        ready = qc_schedule.parse_ready_date(text)
+        if rec.po_ack == "awaiting":
+            if _PO_ACK.search(text) and not _DECLINE.search(text):
+                tpo = await acknowledge_po(deal_id, by=f"supplier e-mail {inbound_id}", ready_date=ready)
+                if tpo is not None:
+                    when = getattr(tpo, "inspection_date", None)
+                    return "Supplier acknowledged the purchase order; inspection booked" + (f" for {when}." if when else ".")
+                return "Supplier acknowledged the purchase order; asked for the date the goods are ready for inspection."
+            return None
+        if rec.qc_ready_status == "awaiting" and ready is not None and not _DECLINE.search(text):
+            result = await record_qc_readiness(deal_id, ready, by=f"supplier e-mail {inbound_id}")
+            return f"Supplier named {ready.isoformat()} as the goods-ready date; inspection booked for {result.get('inspection_date')}."
         return None
     return None
 
@@ -491,14 +517,93 @@ async def await_po_ack(deal_id: str, quantity_mt: float) -> None:
         await _save(rec)
 
 
-async def acknowledge_po(deal_id: str, *, by: str) -> Any:
-    """The supplier accepted the PO → book the inspection now."""
+async def acknowledge_po(deal_id: str, *, by: str, ready_date: Any = None) -> Any:
+    """The supplier accepted the PO → book the inspection for its goods-ready
+    date (asked for when the acknowledgement does not name one)."""
     rec = await get(deal_id)
     if rec is not None and rec.po_ack == "acknowledged":
         return None
     if rec is None:
         rec = Commitment(deal_id=deal_id, agreed_price=0.0, quantity_mt=0.0, status="confirmed")
     rec.po_ack, rec.po_ack_at, rec.po_ack_by = "acknowledged", _now(), by
+    if ready_date is not None:
+        _set_ready(rec, ready_date, by)
     await _save(rec)
+    return await book_qc_when_ready(deal_id)
+
+
+# ---------------------------------------------------------------------------
+# (c) Goods-ready date for the inspection
+# ---------------------------------------------------------------------------
+
+def _set_ready(rec: Commitment, ready_date: Any, by: str, produced_pct: float | None = None,
+               packed_pct: float | None = None) -> None:
+    from shared.orchestration import qc_schedule
+    d = qc_schedule.to_date(ready_date)
+    rec.qc_ready_date = d.isoformat() if d else None
+    rec.qc_ready_status = "received"
+    rec.qc_ready_by, rec.qc_ready_at = by, _now()
+    rec.qc_ready_produced_pct, rec.qc_ready_packed_pct = produced_pct, packed_pct
+
+
+async def request_qc_readiness(deal_id: str, quantity_mt: float = 0.0) -> bool:
+    """Ask the supplier when the lot will be ready for inspection (once)."""
+    rec = await get(deal_id) or Commitment(deal_id=deal_id, agreed_price=0.0, quantity_mt=quantity_mt, status="confirmed")
+    if rec.qc_ready_status in ("awaiting", "received"):
+        return False
+    rec.qc_ready_status, rec.qc_ready_asked_at = "awaiting", _now()
+    await _save(rec)
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        from shared.orchestration import notifications, qc_schedule
+        deal = await get_deal(deal_id)
+        await notifications.notify_party(deal_id, "supplier", "qc_readiness_request", {
+            "supplier_name": notifications._party_name(deal, "supplier"),
+            "lead_days": qc_schedule.lead_business_days(),
+            "packed_pct": qc_schedule.min_packed_pct(),
+            "earliest": qc_schedule.earliest_inspection_date().isoformat(),
+        }, deal=deal)
+    except Exception as exc:  # noqa: BLE001 — the watcher's PO reminder asks again
+        logger.error("SupplierCommitment: readiness request for %s not sent: %s", deal_id, exc)
+    return True
+
+
+async def book_qc_when_ready(deal_id: str) -> Any:
+    """Book the inspection now if the goods-ready date is known (or not
+    required); otherwise ask the supplier for it. Returns the QC order or None."""
+    from shared.orchestration import qc_schedule
+    rec = await get(deal_id)
+    if qc_schedule.readiness_required() and not (rec and rec.qc_ready_date):
+        await request_qc_readiness(deal_id, rec.quantity_mt if rec else 0.0)
+        logger.info("SupplierCommitment: deal %s — inspection waits for the supplier's goods-ready date", deal_id)
+        return None
     from shared.orchestration.continuations import book_qc_for_deal
     return await book_qc_for_deal(deal_id)
+
+
+async def record_qc_readiness(deal_id: str, ready_date: Any, *, by: str, produced_pct: float | None = None,
+                              packed_pct: float | None = None, note: str | None = None) -> dict[str, Any]:
+    """The supplier's goods-ready date: stored, and the inspection booked for it
+    while the deal is at PO_ISSUED (a date given before the PO acknowledgement
+    counts as the acknowledgement — a supplier naming a ready date has accepted
+    the order)."""
+    from services.deals.service import get_deal  # type: ignore[import]
+    from shared.orchestration import qc_schedule
+    try:
+        deal = await get_deal(deal_id)
+    except Exception as exc:
+        from services.shield_link.service import DealNotFoundError  # type: ignore[import]
+        raise DealNotFoundError(deal_id) from exc
+    rec = await get(deal_id) or Commitment(deal_id=deal_id, agreed_price=0.0, quantity_mt=0.0, status="confirmed")
+    _set_ready(rec, ready_date, by, produced_pct, packed_pct)
+    status = str(getattr(deal.status, "value", deal.status))
+    if status == "PO_ISSUED" and rec.po_ack != "acknowledged":
+        rec.po_ack, rec.po_ack_at, rec.po_ack_by = "acknowledged", _now(), f"{by} (goods-ready date given)"
+    await _save(rec)
+    out: dict[str, Any] = {"deal_id": deal_id, "ready_date": rec.qc_ready_date, "status": "recorded",
+                           "inspection_date": qc_schedule.inspection_date_for(rec.qc_ready_date).isoformat(), "note": note}
+    if status == "PO_ISSUED":
+        tpo = await book_qc_when_ready(deal_id)
+        if tpo is not None:
+            out.update(status="booked", tpo_id=tpo.tpo_id, provider=tpo.provider, inspection_date=tpo.inspection_date)
+    return out

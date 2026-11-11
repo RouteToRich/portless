@@ -1,0 +1,42 @@
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Insurance Declaration{% endblock %}
+{% block kind_sub %}<div class="kind-sub">Marine cargo — declaration for cover under {{ incoterm }}</div>{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block chip %}<div class="chip warn">For the insurer to certify</div>{% endblock %}
+{% block facts %}
+  {{ m.fact("Date", doc_date | date) }}
+  {{ m.fact("Sum insured", sum_insured | money(currency)) }}
+  {{ m.fact("Basis", "110% of the invoice value") }}
+  {{ m.fact("Open policy", policy_number, mono=True) }}
+{% endblock %}
+{% block content %}
+<div class="notice">The insurer issues the insurance certificate on this declaration; that certificate is the document the buyer receives.</div>
+
+<h2>Assured and beneficiary</h2>
+<div class="grid-2">
+  {{ m.exporter_card(exporter, "Assured") }}
+  {{ m.party("Claims payable to / in", buyer.legal_name, [buyer.country]) }}
+</div>
+
+<h2>Voyage and cargo</h2>
+<div class="grid-2">
+  {{ m.kv([("From", place_of_receipt or port_of_loading), ("Port of loading", port_of_loading), ("To", port_of_destination),
+           ("Vessel / voyage", (vessel ~ (" / " ~ voyage if voyage else "")) if vessel else "As booked"), ("Sailing on or about", etd | date)]) }}
+  {{ m.kv([("Goods", product ~ ", HS " ~ hs_code), ("Quantity", (shipped_quantity_mt | qty) ~ " MT"), ("Container(s)", containers | join(", ")),
+           ("Invoice", (invoice_ref or "—") ~ " — " ~ (total_value | money(currency)))]) }}
+</div>
+
+<h2>Cover</h2>
+<ul class="checks">
+  <li>Institute Cargo Clauses {{ cover_clauses }}, warehouse to warehouse</li>
+  <li>Institute War and Strikes Clauses (Cargo)</li>
+  <li>Sum insured {{ sum_insured | money(currency) }} — 110% of the {{ incoterm }} invoice value</li>
+  <li>Claims payable at destination in {{ currency }}</li>
+</ul>
+
+<div class="signs">
+  {{ m.exporter_sign(exporter, "For the Assured") }}
+  {{ m.sign("Insurer", "", "Certificate number and date") }}
+</div>
+{% endblock %}

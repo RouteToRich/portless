@@ -1,0 +1,52 @@
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Sales Contract{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block chip %}<div class="chip">PI {{ pi_id }} accepted {{ pi_accepted_at | date }}</div>{% endblock %}
+{% block facts %}
+  {{ m.fact("Contract date", doc_date | date) }}
+  {{ m.fact("Contract value", total_value | money(currency)) }}
+  {{ m.fact("Incoterms® 2020", incoterm ~ " " ~ (port_of_destination or "")) }}
+  {{ m.fact("Deal reference", deal_id, mono=True) }}
+{% endblock %}
+{% block content %}
+<h2>Parties</h2>
+<div class="grid-2">
+  {{ m.exporter_card(exporter, "Seller") }}
+  {{ m.party("Buyer", buyer.legal_name, [buyer.address, buyer.country, buyer.email], {"VAT / Tax ID": buyer.vat_number}) }}
+</div>
+
+<h2>Goods and price</h2>
+<table>
+  <thead><tr><th>Commodity</th><th>HS code</th><th class="num">Quantity (MT)</th><th class="num">Price ({{ currency }}/MT)</th><th class="num">Value ({{ currency }})</th></tr></thead>
+  <tbody><tr>
+    <td><strong>{{ product }}</strong><div class="small muted">{{ quality_spec }}</div></td>
+    <td class="mono">{{ hs_code }}</td>
+    <td class="num">{{ quantity_mt | qty }}</td>
+    <td class="num">{{ unit_price | money(None, 2) }}</td>
+    <td class="num">{{ total_value | money }}</td>
+  </tr></tbody>
+</table>
+{{ m.totals([("Quantity tolerance", "± " ~ tolerance_pct ~ "% at the contract price")], "Contract value", total_value, currency) }}
+
+<h2>Terms</h2>
+<ol class="clauses">
+  <li><strong>Quality.</strong> {{ quality_spec }}. Quality, quantity and packing are determined at loading by {{ qc_provider_name }}, chosen by the buyer; its certificate is final as to the condition of the goods at loading.</li>
+  <li><strong>Quantity.</strong> {{ quantity_mt | qty }} MT, ± {{ tolerance_pct }}% at the seller's option, invoiced at the contract price on the quantity loaded.</li>
+  <li><strong>Price and delivery.</strong> {{ unit_price | money(currency) }} per MT {{ incoterm }} {{ port_of_destination or "port of destination to be confirmed by the buyer" }} (Incoterms® 2020). Shipment from {{ port_of_loading or "an Indian seaport" }} within {{ shipment_days }} days of the escrow being funded. Partial shipment not allowed; transhipment allowed.</li>
+  <li><strong>Payment.</strong> 100% of the contract value into the neutral escrow account{% if escrow_provider %} ({{ escrow_provider }}){% endif %} within {{ funding_days }} days of this contract. Released to the seller in stages:
+    {{ m.timeline(tranches, total_value, currency) }}</li>
+  {% if incoterm in ("CIF", "CIP") %}<li><strong>Insurance.</strong> The seller insures the goods for 110% of the invoice value, Institute Cargo Clauses, from loading to the port of destination, and provides the insurance certificate.</li>{% endif %}
+  <li><strong>Documents.</strong> Commercial invoice, packing list, bill of lading, certificate of origin, inspection certificate{% if incoterm in ("CIF", "CIP") %}, insurance certificate{% endif %}{% if needs_phyto %}, phytosanitary certificate{% endif %}, sent electronically on shipment.</li>
+  <li><strong>Acceptance and claims.</strong> The buyer inspects the goods on delivery and confirms acceptance within {{ acceptance_hours // 24 }} days. A quality or quantity claim must be raised within that window, supported by an independent survey report; it suspends the final release until resolved. Without a claim within the window the goods are deemed accepted.</li>
+  <li><strong>Title and risk.</strong> Risk passes as provided by {{ incoterm }} (Incoterms® 2020). Title passes on the release of the final escrow tranche.</li>
+  <li><strong>Force majeure.</strong> Neither party is liable for delay or failure caused by events beyond its reasonable control, including government export restrictions, provided it notifies the other party promptly. If such an event lasts more than 30 days, either party may cancel and the undisbursed escrow balance is returned to the buyer.</li>
+  <li><strong>Compliance.</strong> Each party complies with applicable sanctions, export control and anti-bribery laws. The seller may suspend performance if the shipment would breach them.</li>
+  <li><strong>Law and disputes.</strong> {{ governing_law or "To be completed." }}</li>
+</ol>
+
+<div class="signs">
+  {{ m.exporter_sign(exporter, "For the Seller") }}
+  {{ m.sign("For the Buyer — " ~ (buyer.legal_name or ""), "", "Name, title, date and company seal") }}
+</div>
+{% endblock %}

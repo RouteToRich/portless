@@ -1,0 +1,35 @@
+{% extends "_base.html.j2" %}
+{% import "_macros.html.j2" as m %}
+{% block kind %}Credit Note{% endblock %}
+{% block number %}{{ doc_id }}{% endblock %}
+{% block chip %}<div class="chip">Refund from escrow</div>{% endblock %}
+{% block facts %}
+  {{ m.fact("Date", doc_date | date) }}
+  {{ m.fact("Against", (invoice_ref or pi_id), mono=True) }}
+  {{ m.fact("Credit amount", amount | money(currency)) }}
+  {{ m.fact("Deal reference", deal_id, mono=True) }}
+{% endblock %}
+{% block content %}
+<h2>Parties</h2>
+<div class="grid-2">
+  {{ m.exporter_card(exporter, "Issued by") }}
+  {{ m.party("Credited to", buyer.legal_name, [buyer.address, buyer.country], {"VAT / Tax ID": buyer.vat_number}) }}
+</div>
+
+<h2>Credit</h2>
+<table>
+  <thead><tr><th>Description</th><th>Original document</th><th class="num">Amount ({{ currency }})</th></tr></thead>
+  <tbody><tr>
+    <td><strong>Refund of escrowed funds</strong> — {{ product }}<div class="small muted">{{ reason }}</div></td>
+    <td class="mono">{{ invoice_ref or pi_id or "—" }}</td>
+    <td class="num">{{ amount | money }}</td>
+  </tr></tbody>
+</table>
+{{ m.totals([("Original contract value", contract_value | money(currency)), ("Released before the refund", released | money(currency))], "Total credited", amount, currency) }}
+<p class="small muted" style="margin-top:10px">Refunded by {{ escrow_provider or "the escrow provider" }} from escrow <span class="mono">{{ escrow_id }}</span> to the account the buyer paid from.</p>
+
+<div class="signs">
+  {{ m.exporter_sign(exporter) }}
+  <div></div>
+</div>
+{% endblock %}

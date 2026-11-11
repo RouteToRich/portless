@@ -27,7 +27,9 @@ _SERVICE_PREFIXES = ("TRADE", "DEALS", "SOURCING", "NEGOTIATION", "DEALMAKER", "
 _MUST_BE_BLANK = ("GMAIL_SENDER_ADDRESS", "GMAIL_APP_PASSWORD", "IMAP_USER", "IMAP_PASSWORD", "APIFY_TOKEN",
                   "GOOGLE_DRIVE_REFRESH_TOKEN", "HITL_TELEGRAM_BOT_TOKEN", "HITL_NOTIFY_WEBHOOK_URL",
                   "TAZAPAY_API_KEY", "ESCROW_COM_API_KEY", "STRIPE_SECRET_KEY", "PAYONEER_CLIENT_ID",
-                  "SGS_API_KEY", "QIMA_API_KEY", "COGOPORT_API_KEY", "FREIGHTOS_API_KEY", "ICEGATE_API_KEY")
+                  "SGS_API_KEY", "QIMA_API_KEY", "COGOPORT_API_KEY", "FREIGHTOS_API_KEY", "ICEGATE_API_KEY",
+                  "QIMA_API_ACCESS_TOKEN", "QIMA_ACCOUNT", "QIMA_PASSWORD", "QIMA_PASSWORD_MD5",
+                  "SGS_BOOKING_EMAIL", "BUREAU_VERITAS_BOOKING_EMAIL", "QC_SANDBOX_URL")
 
 WEBHOOK_SECRETS = {
     "TAZAPAY_WEBHOOK_SECRET": "qa-tazapay", "ESCROW_COM_WEBHOOK_SECRET": "qa-escrowcom",
@@ -81,6 +83,9 @@ def worker_env(use_mongo: bool = True, *, live_apify: bool = False, view: bool =
         "NEGOTIATION_MARKET_SEARCH_ENABLED": "false",
         "FOUR_EYES_THRESHOLD_USD": "",
         "PORTLESS_ENTITY_NAME": "PortLess QA Exports",
+        # QIMA / SGS / BV bookings go to the in-process provider sandbox
+        # (services/qc_sandbox): the documented request and response shapes, no network.
+        "QC_SANDBOX_PROVIDERS": "qima,sgs,bv",
     })
     if live_apify:
         env.update({"APIFY_TOKEN": real.get("APIFY_TOKEN", ""), "AUTOMATION_APIFY": "1",

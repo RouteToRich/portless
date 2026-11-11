@@ -2,7 +2,7 @@
 
 .PHONY: install dev up down gateway deals trade-min match-engine sourcing negotiator \
         dealmaker shield-link docugen escrow-guard hitl-approval exception-resolver \
-        email-gateway email-processor
+        email-gateway email-processor qc-sandbox
 
 install:
 	pip install -r requirements.txt
@@ -59,3 +59,7 @@ email-gateway:
 
 email-processor:
 	uvicorn services.email_processor.main:app --reload --port 8013
+
+# QIMA API contract + SGS / BV portal simulator (tests and demos only; QC_SANDBOX_URL=http://localhost:8014)
+qc-sandbox:
+	uvicorn services.qc_sandbox.main:app --reload --port 8014

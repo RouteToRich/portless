@@ -118,7 +118,7 @@ class GoogleDriveConnector:
     # -- Upload ---------------------------------------------------------------
 
     def upload_document(
-        self, deal_id: str, filename: str, content: str, mime_type: str = "text/html"
+        self, deal_id: str, filename: str, content: str | bytes, mime_type: str = "text/html"
     ) -> dict[str, str]:
         """Upload *content* as *filename* under ``<root>/<deal_id>/``.
 
@@ -132,7 +132,8 @@ class GoogleDriveConnector:
         service = self._get_service()
         folder_id = self._deal_folder(deal_id)
         media = MediaIoBaseUpload(
-            io.BytesIO(content.encode("utf-8")), mimetype=mime_type, resumable=False
+            io.BytesIO(content if isinstance(content, bytes) else content.encode("utf-8")),
+            mimetype=mime_type, resumable=False
         )
         safe_name = filename.replace("'", "\\'")
         query = f"name='{safe_name}' and '{folder_id}' in parents and trashed=false"
