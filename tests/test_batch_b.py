@@ -462,7 +462,7 @@ class TestMilestones:
             patch("services.shield_link.service._transition_deal", new=AsyncMock()),
             patch("services.shield_link.service._emit", new=AsyncMock()),
         ):
-            return await book_freight(FreightBookingRequest(deal_id=deal_id))
+            return await book_freight(FreightBookingRequest(deal_id=deal_id, provider="cogoport"))  # forwarder + tracking actor path
 
     @pytest.mark.asyncio
     async def test_delivered_records_and_clears_in_transit_deal(self):
@@ -851,3 +851,33 @@ class TestWatcherBatchB:
         assert counts["exceptions"] == 1
         assert published[0].deal_id == "DEAL-W4"
         dw.reset_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# RFQ shortlist: a Match Engine result keeps the address the scan found
+# ---------------------------------------------------------------------------
+
+async def test_rfq_shortlist_from_match_results_keeps_the_opportunitys_addresses(monkeypatch):
+    """A deal made from a scan has Match Engine results (no contact) and seller rows
+    (with e-mails); the RFQ must go to those e-mails, not to nobody."""
+    from services.deals.schemas import MatchResult
+    from shared.orchestration import continuations
+
+    seed = SimpleNamespace(top_sellers=[
+        {"supplier_id": "S1", "company_name": "Mill One", "source": "indiamart", "contact_id": "IM-1",
+         "fob_price_usd": 900.0, "email": "export@mill-one.invalid"},
+        {"supplier_id": "S2", "company_name": "Mill Two", "source": "apify_export_markets", "contact_id": None,
+         "fob_price_usd": 940.0, "email": "sales@mill-two.invalid"},
+    ])
+    monkeypatch.setattr("services.trade_min.service.get_match_seed", AsyncMock(return_value=seed))
+    results = [MatchResult(match_id=f"M-{sid}", supplier_id=sid, company_name=name, composite_score=score,
+                           gatekeeper_passed=True, arbitrage_score=60.0, proximity_score=60.0, reliability_score=0.0,
+                           decision="DISCARD", fob_price_usd=fob)
+               for sid, name, score, fob in (("S1", "Mill One", 64.6, 900.0), ("S2", "Mill Two", 64.2, 940.0))]
+    deal = SimpleNamespace(deal_id="D-RFQ", hs_code="10063020", market="AE", opportunity_id="OPP-1", match_results=results)
+
+    shortlist = await continuations._rfq_candidates(deal)
+
+    assert {c["supplier_id"]: c["email"] for c in shortlist} == {"S1": "export@mill-one.invalid", "S2": "sales@mill-two.invalid"}
+    assert next(c for c in shortlist if c["supplier_id"] == "S1")["contact_id"] == "IM-1"
+    assert next(c for c in shortlist if c["supplier_id"] == "S1")["source"] == "indiamart"

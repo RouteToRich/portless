@@ -523,19 +523,28 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
          "source": "other", "contact_id": None, "fob_price_usd": m.fob_price_usd}
         for m in results
     ]
-    if not out and getattr(deal, "opportunity_id", None):
+    if getattr(deal, "opportunity_id", None):
+        # The opportunity's seller rows carry the addresses the scan found; a
+        # Match Engine result names the supplier but not how to reach it.
         try:
             from services.trade_min.service import get_match_seed  # type: ignore[import]
             seed = await get_match_seed(deal.opportunity_id)
-            for s in (seed.top_sellers if seed else []):
-                out.append({
-                    "supplier_id": s.get("supplier_id"),
-                    "company_name": s.get("company_name", ""),
-                    "source": _rfq_source(s.get("source")),
-                    "contact_id": s.get("contact_id"),
-                    "fob_price_usd": s.get("fob_price_usd"),
-                    "email": s.get("email"),
-                })
+            sellers = [{
+                "supplier_id": s.get("supplier_id"),
+                "company_name": s.get("company_name", ""),
+                "source": _rfq_source(s.get("source")),
+                "contact_id": s.get("contact_id"),
+                "fob_price_usd": s.get("fob_price_usd"),
+                "email": s.get("email"),
+            } for s in (seed.top_sellers if seed else [])]
+            if out:
+                by_id = {s["supplier_id"]: s for s in sellers if s["supplier_id"]}
+                for c in out:
+                    s = by_id.get(c["supplier_id"])
+                    if s:
+                        c.update(email=s["email"], contact_id=s["contact_id"], source=s["source"])
+            else:
+                out = sellers
         except Exception as exc:  # noqa: BLE001
             logger.warning("Continuation[RFQ]: match seed lookup failed for %s: %s", deal.deal_id, exc)
     out = [c for c in out if c.get("supplier_id")]
@@ -1208,12 +1217,21 @@ async def issue_pi_for_deal(
         return None
     port = await _buyer_destination_port(deal_id)
     place = port or PORT_TO_BE_CONFIRMED
+    # The escrow the buyer chose (their e-mail / an operator), else the default —
+    # printed on the PI, and the provider the escrow opens with on acceptance.
+    escrow_provider = None
+    try:
+        from services.escrow_guard.service import resolve_provider  # type: ignore[import]
+        escrow_provider, _ = await resolve_provider(deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Continuation: escrow provider for the PI of %s not resolved: %s", deal_id, exc)
     return await issue_pi(IssuePiRequest(
         deal_id=deal_id,
         agreed_price=float(agreed_price),
         quantity_mt=float(quantity_mt),
         port_of_destination=f"{place}, {market}" if market else place,
         payment_terms=payment_terms_for(),
+        escrow_provider=escrow_provider,
         idempotency_key=f"auto-pi-{deal_id}",
     ))
 
@@ -1308,6 +1326,10 @@ async def on_pi_accepted(event: DomainEvent) -> None:
         return
 
     from shared.orchestration import notifications
+    await _best_effort(
+        "PI_ACCEPTED→ORDER_CONFIRMED", deal_id,
+        notifications.notify_order_confirmed(deal, pi, escrow),
+    )
     await _best_effort(
         "ESCROW_PENDING→NOTIFY_BUYER", deal_id,
         notifications.notify_escrow_opened(deal, escrow, getattr(pi, "pi_id", None)),
@@ -1457,8 +1479,19 @@ async def book_qc_for_deal(deal_id: str, deal=None):
     _, quantity_mt = await _negotiation_numbers(deal_id, deal)
     from services.shield_link.schemas import QcBookingRequest  # type: ignore[import]
     from services.shield_link.service import book_qc  # type: ignore[import]
-    from shared.orchestration import supplier_commitment
+    from shared.orchestration import inspection_plan, supplier_commitment
     commitment = await supplier_commitment.get(deal_id)
+    ready = commitment.qc_ready_date if commitment else None
+    plan = await inspection_plan.plan_for(deal_id)
+    if "DUPRO" in plan:
+        if inspection_plan.dupro_date(ready) is not None:
+            await _best_effort("PO_ACK→DUPRO", deal_id, book_qc(QcBookingRequest(
+                deal_id=deal_id, quantity_mt=quantity_mt, hs_code=getattr(deal, "hs_code", None),
+                goods_ready_date=ready, inspection_type="DUPRO", idempotency_key=f"auto-qc-dupro-{deal_id}",
+            )))
+        else:
+            logger.info("Continuation: deal %s — production ends too soon for a DUPRO (ready %s); PSI only",
+                        deal_id, ready)
     tpo = await book_qc(QcBookingRequest(
         deal_id=deal_id,
         quantity_mt=quantity_mt,
@@ -1672,7 +1705,9 @@ async def _qc_tranche_and_freight(deal, payload: dict[str, Any], loading=None) -
             deal_id, "BOOK_FREIGHT",
             summary=f"QC passed — book freight for deal {deal_id}{seal_text}",
             financial_impact_usd=None,
-            callback_payload={"deal_id": deal_id, "provider": "cogoport", "incoterm": "FOB",
+            callback_payload={"deal_id": deal_id, "incoterm": "FOB",
+                              "origin_port": await _supplier_port(deal_id),
+                              "idempotency_key": f"auto-freight-{deal_id}",
                               **({"destination_port": destination_port} if destination_port else {}),
                               **({"container_numbers": loading.container_numbers,
                                   "seal_numbers": loading.seal_numbers} if loading else {})},
@@ -1765,6 +1800,12 @@ async def on_freight_booked(event: DomainEvent) -> None:
             logger.warning("Continuation[CUSTOMS]: document listing failed for %s: %s", deal_id, exc)
         if not doc_ids:
             doc_ids = await _generate_documents(deal_id)
+        if not await _peo_cleared(deal_id, deal):
+            logger.info("Continuation: deal %s — customs filing waits for the pre-customs inspection (PEO)", deal_id)
+            from shared.orchestration import notifications
+            await _best_effort("FREIGHT_BOOKED→NOTIFY_BUYER", deal_id,
+                               notifications.notify_freight_booked(deal, payload))
+            return
         await _create_gate(
             deal_id, "FILE_CUSTOMS",
             summary=(
@@ -1792,6 +1833,101 @@ async def on_freight_booked(event: DomainEvent) -> None:
                        notifications.notify_freight_booked(deal, payload))
 
 
+async def _peo_cleared(deal_id: str, deal) -> bool:
+    """True when no PEO is planned or it passed; books the PEO when it is planned and missing."""
+    from shared.orchestration import inspection_plan
+    if "PEO" not in await inspection_plan.plan_for(deal_id):
+        return True
+    from services.shield_link.repository import get_repository as _sl_repo  # type: ignore[import]
+    peo = [o for o in await _sl_repo().list_by_deal(deal_id)
+           if o.order_type == "QC" and getattr(o, "inspection_type", "PSI") == "PEO" and o.status != "CANCELLED"]
+    if any(o.qc_result == "PASS" for o in peo):
+        return True
+    if not [o for o in peo if o.status != "FAILED"]:
+        from services.shield_link.schemas import QcBookingRequest  # type: ignore[import]
+        from services.shield_link.service import book_qc  # type: ignore[import]
+        _, quantity_mt = await _negotiation_numbers(deal_id, deal)
+        await _best_effort("FREIGHT_BOOKED→PEO", deal_id, book_qc(QcBookingRequest(
+            deal_id=deal_id, quantity_mt=quantity_mt, hs_code=getattr(deal, "hs_code", None),
+            inspection_type="PEO", idempotency_key=f"auto-qc-peo-{deal_id}",
+        )))
+    return False
+
+
+async def _customs_gate(deal, *, reason: str) -> None:
+    """The FILE_CUSTOMS gate with the rendered document pack (idempotent per deal)."""
+    deal_id = deal.deal_id
+    doc_ids: list[str] = []
+    try:
+        from services.docugen.service import list_deal_documents  # type: ignore[import]
+        docs = await list_deal_documents(deal_id)
+        doc_ids = [d.doc_id for d in docs.documents if d.status == "RENDERED"]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Continuation[CUSTOMS]: document listing failed for %s: %s", deal_id, exc)
+    await _create_gate(
+        deal_id, "FILE_CUSTOMS",
+        summary=f"{reason} — file Shipping Bill with CHA for deal {deal_id} ({len(doc_ids)} document(s))",
+        financial_impact_usd=None,
+        callback_payload={"deal_id": deal_id, "provider": "icegate", "documents": doc_ids,
+                          "rodtep_declaration": True, "idempotency_key": f"auto-cha-{deal_id}"},
+        idempotency_key=f"auto-customs-gate-{deal_id}",
+        deal=deal,
+    )
+
+
+async def on_qc_phase_result(event: DomainEvent) -> None:
+    """A DUPRO / PEO result. DUPRO PASS → progress notice to the buyer; DUPRO FAIL →
+    rework notice to the supplier + exception (the PSI is still to come); PEO PASS →
+    the customs filing gate; PEO FAIL → customs held + exception."""
+    if not _enabled():
+        return
+    deal_id = event.deal_id
+    payload = event.payload or {}
+    phase, result = payload.get("inspection_type"), payload.get("result")
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        deal = await get_deal(deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Continuation[QC_PHASE]: deal %s unavailable: %s", deal_id, exc)
+        return
+    from shared.orchestration import notifications, qc_status
+    await _best_effort("QC_PHASE→STATUS", deal_id, qc_status.sync(deal_id))
+    await _best_effort("QC_PHASE→NOTIFY", deal_id, notifications.notify_inspection_phase(deal, payload))
+    if result == "PASS" and phase == "PEO":
+        status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+        if status == "IN_TRANSIT":
+            try:
+                await _customs_gate(deal, reason=f"Pre-customs inspection passed ({payload.get('provider')} "
+                                                 f"{payload.get('provider_order_number') or payload.get('ext_ref')})")
+            except Exception as exc:
+                await _emit_exception(deal_id, "PEO_PASSED→FILE_CUSTOMS_GATE", exc)
+        return
+    if result == "FAIL":
+        await _publish_exception(
+            deal_id, f"{phase}_FAILED",
+            (f"{phase} inspection failed: {payload.get('notes') or 'see the report'} — "
+             + ("the supplier must rework before the pre-shipment inspection" if phase == "DUPRO"
+                else "customs filing is held until the goods pass a re-inspection")),
+            {"category": "UNKNOWN", "inspection_type": phase, "tpo_id": payload.get("tpo_id"),
+             "ext_ref": payload.get("ext_ref"),
+             "action_required": "supplier_rework_before_psi" if phase == "DUPRO" else "reinspect_before_customs"},
+        )
+
+
+async def on_transport_document_issued(event: DomainEvent) -> None:
+    """B/L issued by the carrier → the buyer is told (number, vessel, containers)."""
+    if not _enabled():
+        return
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        deal = await get_deal(event.deal_id)
+    except Exception:  # noqa: BLE001
+        return
+    from shared.orchestration import notifications
+    await _best_effort("BL_ISSUED→NOTIFY_BUYER", event.deal_id,
+                       notifications.notify_bill_of_lading(deal, event.payload or {}))
+
+
 # ---------------------------------------------------------------------------
 # CUSTOMS_CLEARED → tranche T3 + buyer notice + payout gate
 # ---------------------------------------------------------------------------
@@ -1810,7 +1946,9 @@ async def on_customs_cleared(event: DomainEvent) -> None:
         try:
             from services.shield_link.service import list_deal_orders  # type: ignore[import]
             orders = await list_deal_orders(deal_id)
-            return [o.ext_ref for o in orders.orders if o.order_type.upper() == "CHA" and o.ext_ref]
+            return ([o.ext_ref for o in orders.orders if o.order_type.upper() == "CHA" and o.ext_ref]
+                    + [f"B/L {o.transport_document_reference}" for o in orders.orders
+                       if o.order_type.upper() == "FREIGHT" and o.ebl_status == "ISSUED" and o.transport_document_reference])
         except Exception:  # noqa: BLE001
             return []
 
@@ -2268,6 +2406,8 @@ def register_continuations(bus) -> None:
     bus.subscribe(EventTopic.QC_PASSED, on_qc_passed)
     bus.subscribe(EventTopic.QC_FAILED, on_qc_failed)
     bus.subscribe(EventTopic.FREIGHT_BOOKED, on_freight_booked)
+    bus.subscribe(EventTopic.QC_PHASE_RESULT, on_qc_phase_result)
+    bus.subscribe(EventTopic.TRANSPORT_DOCUMENT_ISSUED, on_transport_document_issued)
     bus.subscribe(EventTopic.CUSTOMS_CLEARED, on_customs_cleared)
     bus.subscribe(EventTopic.FREIGHT_MILESTONE, on_freight_milestone)
     bus.subscribe(EventTopic.LOADING_RECORDED, on_loading_recorded)

@@ -89,6 +89,7 @@ class TestQcProviderHttp:
     @pytest.fixture
     def connector(self, monkeypatch):
         monkeypatch.setenv("INTERTEK_API_KEY", "K")
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         return qc.IntertekConnector()
 
     @pytest.mark.parametrize(("operation", "arg"), [("quote", {"quantity_mt": 20}), ("book", {}), ("status", "R")])

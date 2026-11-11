@@ -81,7 +81,8 @@ class Outcome(BaseModel):
     response: str | None = None
     # what happened
     proposed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    decision: Literal["pending", "approved", "rejected"] = "pending"
+    decision: Literal["pending", "approved", "rejected", "superseded"] = "pending"
+    """superseded: another pair of the deal was confirmed first — not an operator decision on this one."""
     decided_at: datetime | None = None
     result: Literal["open", "signed", "failed", "not_pursued"] = "open"
     result_status: str | None = None
@@ -190,7 +191,7 @@ async def mark_decision(deal_id: str, candidate_id: str, offer_id: str, decision
         for o in await all_outcomes(kind="match", deal_id=deal_id):
             if o.candidate_id == candidate_id and o.offer_id == offer_id and o.decision == "pending":
                 upd: dict[str, Any] = {"decision": decision, "decided_at": now}
-                if decision == "rejected":
+                if decision in ("rejected", "superseded"):
                     upd.update({"result": "not_pursued", "resolved_at": now})
                 await _save(o.model_copy(update=upd))
                 return

@@ -26,7 +26,9 @@ _SERVICE_PREFIXES = ("TRADE", "DEALS", "SOURCING", "NEGOTIATION", "DEALMAKER", "
                      "HITL_APPROVAL", "EXCEPTION_RESOLVER", "EMAIL_PROCESSOR", "LLM", "CACHE", "AUTH")
 _MUST_BE_BLANK = ("GMAIL_SENDER_ADDRESS", "GMAIL_APP_PASSWORD", "IMAP_USER", "IMAP_PASSWORD", "APIFY_TOKEN",
                   "GOOGLE_DRIVE_REFRESH_TOKEN", "HITL_TELEGRAM_BOT_TOKEN", "HITL_NOTIFY_WEBHOOK_URL",
-                  "TAZAPAY_API_KEY", "ESCROW_COM_API_KEY", "STRIPE_SECRET_KEY", "PAYONEER_CLIENT_ID",
+                  "TAZAPAY_API_KEY", "TAZAPAY_API_SECRET", "ESCROW_COM_API_KEY", "ESCROW_COM_EMAIL",
+                  "ESCROW_SANDBOX_URL", "STRIPE_SECRET_KEY", "PAYONEER_CLIENT_ID",
+                  "MAERSK_CONSUMER_KEY", "MAERSK_CLIENT_SECRET", "CARRIER_SANDBOX_URL",
                   "SGS_API_KEY", "QIMA_API_KEY", "COGOPORT_API_KEY", "FREIGHTOS_API_KEY", "ICEGATE_API_KEY",
                   "QIMA_API_ACCESS_TOKEN", "QIMA_ACCOUNT", "QIMA_PASSWORD", "QIMA_PASSWORD_MD5",
                   "SGS_BOOKING_EMAIL", "BUREAU_VERITAS_BOOKING_EMAIL", "QC_SANDBOX_URL")
@@ -37,7 +39,7 @@ WEBHOOK_SECRETS = {
     "SGS_WEBHOOK_SECRET": "qa-sgs", "QIMA_WEBHOOK_SECRET": "qa-qima", "BUREAU_VERITAS_WEBHOOK_SECRET": "qa-bv",
     "INTERTEK_WEBHOOK_SECRET": "qa-intertek", "TUV_SUD_WEBHOOK_SECRET": "qa-tuv",
     "COGOPORT_WEBHOOK_SECRET": "qa-cogoport", "FREIGHTOS_WEBHOOK_SECRET": "qa-freightos",
-    "MAILGUN_SIGNING_KEY": "qa-mailgun",
+    "MAILGUN_SIGNING_KEY": "qa-mailgun", "MAERSK_WEBHOOK_SECRET": "qa-maersk",
 }
 
 
@@ -83,9 +85,25 @@ def worker_env(use_mongo: bool = True, *, live_apify: bool = False, view: bool =
         "NEGOTIATION_MARKET_SEARCH_ENABLED": "false",
         "FOUR_EYES_THRESHOLD_USD": "",
         "PORTLESS_ENTITY_NAME": "PortLess QA Exports",
-        # QIMA / SGS / BV bookings go to the in-process provider sandbox
-        # (services/qc_sandbox): the documented request and response shapes, no network.
+        # QC, freight, customs, escrow and payouts answer from stubs — the same
+        # code as the live workflow, switched by INTEGRATION_MODE
+        # (shared/integration_mode.py). QIMA / SGS / BV go further, to the
+        # in-process provider simulator (services/qc_sandbox): the documented
+        # request and response shapes, no network.
+        "INTEGRATION_MODE": "sandbox",
         "QC_SANDBOX_PROVIDERS": "qima,sgs,bv",
+        # Tazapay / Escrow.com go to the escrow provider simulator
+        # (services/escrow_sandbox): the documented requests and responses, the
+        # buyer paying and the provider paying out played by the simulator.
+        "ESCROW_SANDBOX_PROVIDERS": "tazapay,escrow_com",
+        # Every Tazapay stage release uploads a signed proof-sheet link; the
+        # simulator records the URL and never fetches it.
+        "PORTLESS_PUBLIC_BASE_URL": "https://portless-qa.invalid",
+        "ESCROW_PROOF_LINK_SECRET": "qa-proof-link",
+        # Maersk booking / Track & Trace / eBL / VGM go to the carrier simulator.
+        "CARRIER_SANDBOX_PROVIDERS": "maersk",
+        "FREIGHT_PROVIDER": "maersk",
+        "MAERSK_CARRIER_SERVICE_CODE": "QA1",
     })
     if live_apify:
         env.update({"APIFY_TOKEN": real.get("APIFY_TOKEN", ""), "AUTOMATION_APIFY": "1",
@@ -132,6 +150,8 @@ def assert_isolated() -> None:
     problems += [f"{key} is set" for key in _MUST_BE_BLANK if os.environ.get(key) and key not in allowed]
     if os.environ.get("AUTOMATION_WORKER") != "1":
         problems.append("not started as an automation worker")
+    if os.environ.get("INTEGRATION_MODE", "live").strip().lower() != "sandbox":
+        problems.append("INTEGRATION_MODE is not sandbox — QC / freight / escrow would call the real providers")
     if problems:
         raise SystemExit("Automation refused: " + "; ".join(problems))
 

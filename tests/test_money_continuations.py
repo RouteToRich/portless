@@ -441,12 +441,14 @@ class TestRfqByEmail:
                            SupplierRef(supplier_id="SUP-2", source="other", email="x@other.in")],
             ))
         received = AsyncMock(return_value=SimpleNamespace(quote_id="Q-1", supplier_id="SUP-1", re_scored_decision=None))
-        with patch("services.sourcing.service.receive_quote", new=received):
+        deal = SimpleNamespace(match_results=[SimpleNamespace(supplier_id="SUP-1", company_name="Kerala Spices Pvt Ltd")])
+        with patch("services.sourcing.service.receive_quote", new=received),                 patch("services.deals.service.get_deal", new=AsyncMock(return_value=deal)):
             await receive_quote_by_email(res.rfq_id, "Ravi <ravi@kerala.in>".split("<")[1].rstrip(">"), 3150.0,
                                          body_text="Our GSTIN is 32AAAAA0000A1Z5, IEC: AAAPL1234A")
         req = received.await_args.args[0]
         assert req.supplier_id == "SUP-1" and req.rfq_id == res.rfq_id and req.deal_id == "DEAL-1"
         assert req.unit_price_usd == 3150.0 and req.gstin == "32AAAAA0000A1Z5" and req.iec_number == "AAAPL1234A"
+        assert req.company_name == "Kerala Spices Pvt Ltd"  # the match board never shows a nameless offer
 
         from services.email_processor.mapper import map_email, rfq_id_from_subject
         assert rfq_id_from_subject(f"Re: Request for quotation [RFQ:{res.rfq_id}]") == res.rfq_id

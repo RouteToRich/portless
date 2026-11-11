@@ -81,6 +81,8 @@ class PiRecord(BaseModel):
     # Buyer selections captured on the PI (target — see workflow_dealmaker.md §3.1)
     qc_provider: str | None = None
     escrow_provider: str | None = None
+    packing_spec: str | None = None
+    """The buyer's packing requirements as printed on the PI (shared/orchestration/packing.py)."""
 
     # Derived / rendered
     storage_uri: str | None = None
@@ -202,6 +204,8 @@ class PoRecord(BaseModel):
     supplier_gstin: str | None
     supplier_iec: str | None
     quality_spec: str | None
+    packing_spec: str | None = None
+    """The buyer's packing the supplier must use (and the inspector checks)."""
 
     # Margin gate result (recorded for audit)
     net_margin_pct: float | None = None

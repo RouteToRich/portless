@@ -279,6 +279,9 @@ def _freight_split(f: dict, total_value: float) -> tuple[float | None, float | N
     sheet = getattr(f["session"], "cost_sheet", None)
     if sheet is None:
         return None, None, None, ""
+    if isinstance(sheet, dict):  # the negotiation session stores it as a plain dict
+        from shared.orchestration.trade_costs import CostSheet
+        sheet = CostSheet.model_validate(sheet)
     qty = f["shipped_quantity_mt"]
     freight = sum(line.usd_per_mt for line in sheet.lines if line.key == "ocean_freight") * qty
     insurance = (sum(line.pct_of_price for line in sheet.lines if line.key == "marine_insurance") / 100.0 * total_value

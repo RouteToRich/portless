@@ -174,6 +174,8 @@ def build(
     supplier_price_basis: str = "FOB",
     escrow_fee_pct: float | None = None,
     usd_inr_rate: float | None = None,
+    packing: Any = None,
+    packing_in_supplier_price: bool = False,
 ) -> CostSheet:
     """The deal's cost sheet from what is known now (quotes where they exist)."""
     from shared.orchestration import landed_cost
@@ -210,6 +212,29 @@ def build(
         paid_by="PortLess" if ex_works else "supplier (inside FOB)", source="setting",
         note=f"{containers} container(s)",
     ))
+
+    # 1b. The buyer's packing. Standard export packing is inside the supplier's
+    # FOB price; special packing (jute, retail packs, marking, pallets,
+    # fumigation …) is PortLess's estimated cost until the supplier confirms
+    # its price includes it (shared/orchestration/packing.py).
+    from shared.orchestration import packing as packing_mod
+    spec = packing_mod.as_spec(packing)
+    if spec is None:
+        lines.append(CostLine(key="packing", label="Export packing", paid_by="supplier (inside FOB)",
+                              source="estimate", note="buyer's packing requirements not known yet"))
+        warnings.append("buyer's packing requirements not known: special packing would cost extra")
+    elif not packing_mod.special(spec):
+        lines.append(CostLine(key="packing", label="Export packing (supplier's standard)", paid_by="supplier (inside FOB)",
+                              source="setting", note=packing_mod.describe(spec)))
+    else:
+        extra, parts = packing_mod.surcharge(spec, qty)
+        if packing_in_supplier_price:
+            lines.append(CostLine(key="packing", label="Buyer's special packing", paid_by="supplier (confirmed in its price)",
+                                  source="quote", note=packing_mod.describe(spec)))
+        else:
+            lines.append(CostLine(key="packing", label="Buyer's special packing (over standard)", usd_per_mt=extra,
+                                  source="estimate", note="; ".join([packing_mod.describe(spec), *parts])
+                                  + " — until the supplier confirms its price includes it"))
 
     # 2. Export clearance (PortLess is the exporter of record).
     cha = _f("TRADE_COST_CHA_USD_PER_SHIPMENT", 150.0) / qty

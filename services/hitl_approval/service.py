@@ -478,6 +478,36 @@ async def resolve_approval(
 # Internal auto-resolve (called by timeout watcher)
 # ---------------------------------------------------------------------------
 
+async def withdraw_pending(deal_id: str, actions: set[str] | frozenset[str], reason: str) -> list[str]:
+    """Close a deal's PENDING gates of these actions because a decision made
+    them moot (e.g. the match was confirmed: the other proposed pairs are no
+    longer open questions). Recorded as REJECTED by ``system:superseded`` —
+    no callback runs and no deal exception is raised. Returns their ids."""
+    repo = get_repository()
+    now = datetime.now(timezone.utc)
+    closed: list[str] = []
+    for response in await list_approvals(status="PENDING", deal_id=deal_id):
+        if response.action not in actions:
+            continue
+        record = await repo.get(response.approval_id)
+        if record is None or record.status != "PENDING":
+            continue
+        updated = record.model_copy(update={
+            "status": "REJECTED", "decision": "REJECT", "resolved_by": "system:superseded",
+            "resolved_at": now, "resolution_note": reason, "updated_at": now,
+        })
+        await repo.save(updated)
+        await notify("approval_resolved", ApprovalResponse.from_record(updated).model_dump(mode="json"))
+        await _emit(EventTopic.APPROVAL_RESOLVED, deal_id, {
+            "approval_id": record.approval_id, "action": record.action, "decision": "REJECT",
+            "resolved_by": "system:superseded", "reason": reason,
+        })
+        closed.append(record.approval_id)
+    if closed:
+        logger.info("HitlApproval: %d gate(s) of deal %s withdrawn — %s", len(closed), deal_id, reason)
+    return closed
+
+
 async def _auto_resolve(record: ApprovalRecord, decision: str, reason: str) -> None:
     """Auto-resolve a PENDING approval (timeout or system trigger)."""
     repo = get_repository()

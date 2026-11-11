@@ -191,6 +191,23 @@ async def test_fob_value_takes_freight_and_insurance_off_the_cif_invoice(deal, t
     assert "23,438.25" in html
 
 
+async def test_fob_split_reads_the_cost_sheet_as_the_session_stores_it(deal, tmp_path, monkeypatch):
+    """The negotiation session keeps ``cost_sheet`` as a plain dict (Mongo); SDF and the
+    shipping bill must read it like the model, not fail with 'dict' has no 'lines'."""
+    session = SimpleNamespace(quantity_mt=20.0, qc_provider="sgs", cost_sheet={"quantity_mt": 20.0, "lines": [
+        {"key": "ocean_freight", "label": "Ocean freight", "usd_per_mt": 60.0},
+        {"key": "marine_insurance", "label": "Marine insurance", "pct_of_price": 0.5}]})
+
+    class NegRepo:
+        async def get_session_by_deal(self, _deal_id):
+            return session
+    monkeypatch.setattr("agents.negotiation_agent.repository.get_repository", lambda: NegRepo())
+    await _full_trade(deal)
+    record = await _gen(DocumentType.SDF)
+    assert record.status == "RENDERED"
+    assert "23,438.25" in _html(tmp_path, record)
+
+
 async def test_sales_contract_is_for_the_contract_quantity(deal, tmp_path, monkeypatch):
     monkeypatch.setenv("PORTLESS_CONTRACT_LAW", "Laws of India; arbitration in Chennai.")
     await _full_trade(deal)

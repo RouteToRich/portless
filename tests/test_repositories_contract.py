@@ -345,6 +345,18 @@ class TestDeals:
     async def test_mark_status_on_missing_deal(self, repo):
         assert await repo.mark_status("x", make(StatusHistoryEntry, status=DealStatus.PAID, transitioned_at=NOW)) is False
 
+    async def test_set_fields_touches_only_those_fields(self, repo):
+        from shared.domain.enums import QcStatus
+        await repo.save(self._deal(status=DealStatus.SUPPLIER_DISPATCH_READY))
+        # a concurrent transition lands first; set_fields must not undo it
+        await repo.mark_status("D1", make(StatusHistoryEntry, status=DealStatus.QC_FAILED, transitioned_at=NOW))
+        assert await repo.set_fields("D1", {"qc_status": QcStatus.FAILED, "qc_status_detail": "QIMA FAIL",
+                                            "qc_status_at": NOW}) is True
+        deal = await repo.get("D1")
+        assert deal.status == DealStatus.QC_FAILED and deal.qc_status == QcStatus.FAILED
+        assert deal.qc_status_detail == "QIMA FAIL" and deal.status_history[-1].status == DealStatus.QC_FAILED
+        assert await repo.set_fields("missing", {"qc_status": None}) is False
+
     async def test_malformed_mongo_deal_is_skipped(self, db):
         await db["d"].insert_one({"deal_id": "broken", "created_at": "x"})
         assert await deals.MongoDealRepository(db["d"]).list_active() == []

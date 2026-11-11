@@ -9,6 +9,11 @@ Routes:
   GET  /escrow-guard/deals/{deal_id}/summary Full escrow summary for a deal
   POST /escrow-guard/webhooks/escrow-funded  Provider confirms funds received
   POST /escrow-guard/webhooks/payout        Provider confirms payout status
+  POST /escrow-guard/webhooks/tazapay       Tazapay event (signed) → the escrow is re-read
+  POST /escrow-guard/webhooks/escrow-com    Escrow.com event (?token=) → the transaction is re-read
+  POST /escrow-guard/escrows/{id}/poll      Read the escrow on its provider now
+  POST /escrow-guard/escrows/{id}/tranches/{tid}/provider-confirmed   Staff relay of a provider payout
+  GET  /escrow-guard/proof/{id}/{tid}       Signed proof sheet for the provider (exp + sig)
   GET  /escrow-guard/health
 """
 from __future__ import annotations
@@ -16,8 +21,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
 
+from shared.auth.dependencies import AuthUser, require_portless
 from shared.webhooks import parse_webhook_body, signature_required
 
 from .schemas import (
@@ -32,6 +39,7 @@ from .schemas import (
     PayoutRequest,
     PayoutResponse,
     PayoutWebhookPayload,
+    ProviderReleaseConfirmation,
     RefundRequest,
     ReleaseTrancheRequest,
 )
@@ -44,6 +52,7 @@ from .service import (
     WebhookVerifyError,
     accept_escrow,
     clear_dispute,
+    confirm_release_by_staff,
     create_escrow,
     create_hold,
     dispute_escrow,
@@ -54,9 +63,11 @@ from .service import (
     get_payout,
     handle_escrow_funded_webhook,
     handle_payout_webhook,
+    handle_provider_webhook,
     list_deal_ledgers,
     list_escrow_providers,
     open_inspection_window,
+    poll_provider,
     refund,
     release_tranche,
     request_buyer_acceptance,
@@ -383,6 +394,83 @@ async def api_payout_webhook(request: Request) -> dict[str, Any]:
     except Exception as exc:
         logger.error("Payout webhook error: %s", exc)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Webhook processing failed")
+
+
+async def _provider_webhook(provider: str, request: Request) -> dict[str, Any]:
+    raw_body = await request.body()
+    headers = dict(request.headers)
+    token = request.query_params.get("token")
+    if token:
+        headers["x-portless-webhook-token"] = token
+    try:
+        return await handle_provider_webhook(provider, headers, raw_body,
+                                             require_signature=signature_required(request))
+    except WebhookVerifyError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+    except HoldNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ConnectorCallError as exc:  # provider read failed — let the provider retry
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+
+@router.post("/webhooks/tazapay")
+async def api_tazapay_webhook(request: Request) -> dict[str, Any]:
+    """Tazapay event (``signature`` header, HMAC-SHA256 base64 over event id +
+    body + created_at). The escrow is fetched from Tazapay before anything changes."""
+    return await _provider_webhook("tazapay", request)
+
+
+@router.post("/webhooks/escrow-com")
+async def api_escrow_com_webhook(request: Request) -> dict[str, Any]:
+    """Escrow.com event. Register ``…/webhooks/escrow-com?token=<ESCROW_COM_WEBHOOK_SECRET>``
+    with Escrow.com (it does not sign); the transaction is always fetched first."""
+    return await _provider_webhook("escrow_com", request)
+
+
+# ---------------------------------------------------------------------------
+# Provider reads + proof sheet
+# ---------------------------------------------------------------------------
+
+@router.post("/escrows/{escrow_id}/poll", response_model=EscrowResponse)
+async def api_poll_provider(escrow_id: str) -> EscrowResponse:
+    """Read the escrow on Tazapay / Escrow.com now (the watcher does it every ``ESCROW_POLL_MINUTES``)."""
+    try:
+        return EscrowResponse.from_record(await poll_provider(escrow_id, source="poll"))
+    except HoldNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ConnectorCallError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+
+@router.post("/escrows/{escrow_id}/tranches/{tranche_id}/provider-confirmed", response_model=EscrowResponse)
+async def api_provider_confirmed(
+    escrow_id: str, tranche_id: str, req: ProviderReleaseConfirmation,
+    user: AuthUser = Depends(require_portless),
+) -> EscrowResponse:
+    """Staff record a payout seen on the provider's dashboard (provider reference
+    + reason, audited on the escrow). Only for a stage already SUBMITTED."""
+    try:
+        return await confirm_release_by_staff(
+            escrow_id, tranche_id, provider_ref=req.provider_ref, reason=req.reason,
+            confirmed_by=user.email or user.user_id,
+        )
+    except HoldNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+
+
+@router.get("/proof/{escrow_id}/{tranche_id}", response_class=HTMLResponse)
+async def api_proof_sheet(escrow_id: str, tranche_id: str, exp: str | None = None,
+                          sig: str | None = None) -> HTMLResponse:
+    """The tranche's proof sheet for the escrow provider — only with a valid, unexpired signature."""
+    from shared.orchestration import escrow_proof
+    if not escrow_proof.verify(escrow_id, tranche_id, exp, sig):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="invalid or expired proof link")
+    page = await escrow_proof.render(escrow_id, tranche_id)
+    if page is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="no such escrow stage")
+    return HTMLResponse(page)
 
 
 # ---------------------------------------------------------------------------

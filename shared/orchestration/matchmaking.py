@@ -566,6 +566,27 @@ async def propose_match(deal: Any, pair: PairScore) -> str | None:
     return gid
 
 
+_PROPOSAL_ACTIONS = frozenset({"CONFIRM_MATCH", "SEND_INDICATIVE_OFFER"})
+
+
+async def _withdraw_other_proposals(deal_id: str, candidate_id: str, supplier_id: str) -> None:
+    """The match is decided: every other pair still proposed for this deal (and
+    any indicative offer not yet sent) is closed, not left for an operator to
+    approve into a deal that has moved on. Never fails the confirmation."""
+    try:
+        from services.hitl_approval.service import list_approvals, withdraw_pending  # type: ignore[import]
+        from shared.orchestration import outcomes
+        others = [g for g in await list_approvals(status="PENDING", deal_id=deal_id) if g.action in _PROPOSAL_ACTIONS]
+        await withdraw_pending(deal_id, _PROPOSAL_ACTIONS,
+                               f"match confirmed: {candidate_id} × {supplier_id}")
+        for gate in others:
+            p = gate.callback_payload or {}
+            if gate.action == "CONFIRM_MATCH" and p.get("candidate_id") and p.get("offer_id"):
+                await outcomes.mark_decision(deal_id, p["candidate_id"], p["offer_id"], "superseded")
+    except Exception as exc:  # noqa: BLE001 — the match itself is confirmed
+        logger.warning("Matchmaking: could not withdraw the other proposals of deal %s: %s", deal_id, exc)
+
+
 async def confirm_match(deal_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """CONFIRM_MATCH APPROVE callback: the pair becomes the deal and the
     negotiation opens (MATCHING → NEGOTIATING)."""
@@ -622,6 +643,7 @@ async def confirm_match(deal_id: str, payload: dict[str, Any]) -> dict[str, Any]
         target_status=DealStatus.NEGOTIATING,
         reason=f"Match confirmed: {cand.legal_name} × {offer.company_name or offer.supplier_id}",
     ))
+    await _withdraw_other_proposals(deal_id, cid, offer.supplier_id)
     logger.info("Matchmaking: deal %s matched %s × %s → NEGOTIATING", deal_id, cid, offer.supplier_id)
     return {"matched": True, "candidate_id": cid, "supplier_id": offer.supplier_id}
 

@@ -726,10 +726,11 @@ async def orchestrator_node(state: NegotiationGraphState) -> NegotiationGraphSta
 # ---------------------------------------------------------------------------
 
 def _qc_provider_options_summary() -> str:
-    """Buyer-facing one-liner per supported QC inspector, for the email draft."""
-    from shared.connectors.qc_providers import QC_PROVIDER_CATALOG
+    """Buyer-facing one-liner per QC inspector PortLess books today
+    (``QC_PROVIDERS_ENABLED``, default QIMA only), for the email draft."""
+    from shared.connectors.qc_providers import enabled_qc_catalog
     parts = []
-    for meta in QC_PROVIDER_CATALOG.values():
+    for meta in enabled_qc_catalog().values():
         media = "photo + live-video" if meta["evidence"].get("video") else "photo"
         parts.append(f"{meta['display_name']} ({meta['acceptance']}; {media}-documented reports)")
     return " | ".join(parts)
@@ -740,6 +741,23 @@ def _qc_provider_display(provider: str | None) -> str:
     if provider and provider in QC_PROVIDER_CATALOG:
         return QC_PROVIDER_CATALOG[provider]["display_name"]
     return "NOT_YET_SELECTED"
+
+
+def _inspection_options() -> str:
+    from shared.orchestration import inspection_plan
+    return inspection_plan.summary(list(inspection_plan.ORDER))
+
+
+def _escrow_options() -> str:
+    from shared.connectors.escrow import options_summary
+    return options_summary()
+
+
+def _escrow_display(provider: str | None) -> str:
+    from shared.connectors.escrow import default_provider, display_name
+    if provider:
+        return display_name(provider)
+    return f"NOT_YET_SELECTED (default {display_name(default_provider())})"
 
 
 async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphState:
@@ -847,6 +865,9 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
         "knowledge_context": await _knowledge_context(session, "buyer"),
         "qc_provider_options": _qc_provider_options_summary(),
         "buyer_selected_qc_provider": _qc_provider_display(session.qc_provider),
+        "escrow_provider_options": _escrow_options(),
+        "inspection_phase_options": _inspection_options(),
+        "buyer_selected_escrow_provider": _escrow_display(getattr(session, "escrow_provider", None)),
         "pending_agreement_info": state.get("pending_agreement_info") or [],
     }
 
@@ -965,6 +986,11 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
     brief = await briefing.supplier_brief(session, supplier_history, inbound_from_supplier)
     # A supplier that answered our RFQ e-mail is not a cold contact.
     is_first_contact = brief["stage"] == briefing.COLD
+    # Our prices go to the supplier in its country's currency (shared/currency.py);
+    # its own quotation is mirrored in the currency it wrote it in.
+    from shared import currency as _currency
+    write_currency = _currency.party_currency(brief.get("country") or "IN")
+    quoted_in = _currency.quoted_currency(inbound_from_supplier) or _currency.quoted_currency(supplier_history)
     band = supplier_band(
         supplier_quote=supplier_own,
         ceiling=implied_max,
@@ -989,6 +1015,8 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
         "price_basis": trade_costs.supplier_price_basis(session.cost_sheet),
         "supplier_price_basis": session.supplier_price_basis,
         "market_facts": _market_facts(state, "supplier"),
+        "write_currency": write_currency,
+        "supplier_quoted_in": quoted_in,
         "current_ask_usd": round(ask, 4),
         "current_ask_inr": ask_inr,
         "implied_max_supplier_price_usd": round(implied_max, 4),
@@ -1017,9 +1045,10 @@ async def supplier_agent_node(state: NegotiationGraphState) -> NegotiationGraphS
                 f"{_dear(brief.get('company_name'))}\n\n"
                 + ("Thank you for your quotation. " if inbound_from_supplier else
                    (f"{company_profile.one_line()}\n\n" if is_first_contact else ""))
-                + f"For {product_phrase(session.product_code)} we can place the order at INR "
-                f"{band.recommended * usd_inr_rate:,.0f} per MT FOB (USD {band.recommended:,.2f}). "
-                "This is based on FOB delivery at your port of loading: PortLess pays the ocean freight, insurance, "
+                + f"For {product_phrase(session.product_code)} we can place the order at "
+                + (f"INR {band.recommended * usd_inr_rate:,.0f} per MT FOB (USD {band.recommended:,.2f}). "
+                   if write_currency == "INR" else f"USD {band.recommended:,.2f} per MT FOB. ")
+                + "This is based on FOB delivery at your port of loading: PortLess pays the ocean freight, insurance, "
                 "export documents and inspection. We issue the purchase order only after the overseas buyer has paid "
                 "into a neutral escrow account, and you are paid from those funds in stages, starting with a "
                 "production advance.\n\n"

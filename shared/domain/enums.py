@@ -28,6 +28,60 @@ class DealStatus(str, Enum):
     REFUNDED = "REFUNDED"
 
 
+class QcStatus(str, Enum):
+    """Where a deal's pre-shipment inspection stands — kept on the deal
+    (``DealRecord.qc_status``) by ``shared/orchestration/qc_status.py`` from the
+    deal status, the supplier's PO acknowledgement / goods-ready date and the
+    QC order at the provider."""
+
+    AWAITING_PO_ACK = "AWAITING_PO_ACK"            # PO sent, supplier has not acknowledged it
+    AWAITING_READY_DATE = "AWAITING_READY_DATE"    # acknowledged; asked when the goods are ready
+    NOT_BOOKED = "NOT_BOOKED"                      # ready to book, no booking yet
+    BOOKING_FAILED = "BOOKING_FAILED"              # the provider refused / the request never reached it
+    REQUESTED = "REQUESTED"                        # booked, provider has not confirmed yet
+    SCHEDULED = "SCHEDULED"                        # provider confirmed the date / inspector
+    INSPECTED = "INSPECTED"                        # inspection done, report not out yet
+    OVERDUE = "OVERDUE"                            # inspection day + grace passed without a report
+    RESULT_PENDING = "RESULT_PENDING"              # report leaves the decision to us — a person decides
+    REINSPECTION = "REINSPECTION"                  # re-inspection booked after a failure
+    PASSED = "PASSED"                              # report PASS
+    FAILED = "FAILED"                              # report FAIL (deal QC_FAILED → DISPUTE)
+
+
+class EscrowStatus(str, Enum):
+    """Where the buyer's money stands at the deal's escrow provider — kept on the
+    deal (``DealRecord.escrow_status``) by ``shared/orchestration/escrow_status.py``."""
+
+    OPEN_FAILED = "OPEN_FAILED"                    # the provider refused to open the escrow
+    AWAITING_FUNDING = "AWAITING_FUNDING"          # opened; the buyer has not paid
+    PARTIALLY_FUNDED = "PARTIALLY_FUNDED"          # the provider holds less than the PI
+    FUNDED = "FUNDED"                              # fully funded, nothing paid out yet
+    WITH_PROVIDER = "WITH_PROVIDER"                # a stage's proof is with the provider, payout pending
+    RELEASING = "RELEASING"                        # some stages paid out, more to come
+    ACCEPTANCE_WINDOW = "ACCEPTANCE_WINDOW"        # goods delivered; the buyer's acceptance window is open
+    DISPUTED = "DISPUTED"                          # the buyer disputed / rejected a stage
+    SETTLED = "SETTLED"                            # every stage paid out
+    REFUNDED = "REFUNDED"                          # the undisbursed money went back to the buyer
+
+
+class FreightStatus(str, Enum):
+    """Where the deal's shipment stands with the carrier — kept on the deal
+    (``DealRecord.freight_status``) by ``shared/orchestration/freight_status.py``."""
+
+    NOT_BOOKED = "NOT_BOOKED"                  # QC passed, no booking yet (gate pending)
+    BOOKING_FAILED = "BOOKING_FAILED"          # the carrier refused the request / it never reached it
+    BOOKING_REQUESTED = "BOOKING_REQUESTED"    # sent; the carrier has not confirmed
+    BOOKING_REJECTED = "BOOKING_REJECTED"      # the carrier rejected / cancelled it
+    BOOKING_CONFIRMED = "BOOKING_CONFIRMED"    # space and containers confirmed
+    DOCS_PENDING = "DOCS_PENDING"              # VGM or the B/L draft waits for PortLess
+    BL_ISSUED = "BL_ISSUED"                    # bill of lading issued
+    LOADED = "LOADED"                          # container gated in / loaded on board
+    DEPARTED = "DEPARTED"                      # vessel sailed
+    ARRIVED = "ARRIVED"                        # vessel at the port of discharge
+    DISCHARGED = "DISCHARGED"                  # container off the vessel
+    DELIVERED = "DELIVERED"                    # container out to the buyer
+
+
 class PartyRole(str, Enum):
     BUYER = "buyer"
     SUPPLIER = "supplier"
@@ -101,6 +155,13 @@ class ApprovalAction(str, Enum):
     """Inbound email mapped to a negotiation but no price could be extracted
     (or it arrived after the agreement) — operator reads it and acts via the
     manual inbound endpoint. Informational; the callback is a no-op."""
+    SUBMIT_VGM = "SUBMIT_VGM"
+    """The verified gross mass of each container (inspector's loaded quantity +
+    the container's tare) is ready → submit it to the carrier (a SOLAS
+    declaration PortLess signs as shipper)."""
+    APPROVE_TRANSPORT_DOCUMENT = "APPROVE_TRANSPORT_DOCUMENT"
+    """The carrier's draft bill of lading is ready → the shipper approves it, and
+    the carrier issues it."""
     CONFIRM_COUNTERPARTY_RISK = "CONFIRM_COUNTERPARTY_RISK"
     """Sanctions / registry screening of the buyer (Apify counterparty-check
     actor) returned ``review`` before the Proforma Invoice goes out → an

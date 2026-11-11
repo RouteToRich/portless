@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -47,7 +48,7 @@ from services.escrow_guard.schemas import (
     ReleaseTrancheRequest,
     TrancheSpec,
 )
-from shared.connectors.escrow import EscrowComConnector, TazapayEscrowConnector
+from shared.connectors.escrow import EscrowComConnector, TazapayEscrowConnector, tazapay_signature
 from shared.connectors.payments import ConnectorError, PayoneerConnector, StripeTreasuryConnector
 from shared.domain.events import EventTopic
 
@@ -359,16 +360,17 @@ class TestHttpErrors:
 
 class TestWebhookSignatures:
     def _sign(self, secret: str, body: bytes) -> str:
-        return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        from shared.connectors.escrow import tazapay_signature
+        return tazapay_signature(secret, body)
 
     def test_escrow_funded_signature_enforced(self, api, world, monkeypatch):
         monkeypatch.setenv("TAZAPAY_WEBHOOK_SECRET", "s3cret")
         escrow = api.post("/escrow-guard/escrows", json={"deal_id": "D1", "provider": "tazapay", "amount": 100}).json()
         body = json.dumps({"ext_ref": escrow["ext_ref"], "status": "FUNDED", "amount": 100}).encode()
-        forged = api.post("/escrow-guard/webhooks/escrow-funded", content=body, headers={"x-tazapay-signature": "0" * 64})
+        forged = api.post("/escrow-guard/webhooks/escrow-funded", content=body, headers={"signature": "0" * 44})
         assert forged.status_code == 401 and world.status == "ESCROW_PENDING"
         real = api.post("/escrow-guard/webhooks/escrow-funded", content=body,
-                        headers={"x-tazapay-signature": self._sign("s3cret", body)})
+                        headers={"signature": self._sign("s3cret", body)})
         assert real.status_code == 200 and world.status == "ESCROW_FUNDED"
 
     def test_tampered_body_is_refused(self, api, world, monkeypatch):
@@ -377,7 +379,7 @@ class TestWebhookSignatures:
         signed = json.dumps({"ext_ref": escrow["ext_ref"], "status": "FUNDED", "amount": 1}).encode()
         sent = json.dumps({"ext_ref": escrow["ext_ref"], "status": "FUNDED", "amount": 100}).encode()
         response = api.post("/escrow-guard/webhooks/escrow-funded", content=sent,
-                            headers={"x-tazapay-signature": self._sign("s3cret", signed)})
+                            headers={"signature": self._sign("s3cret", signed)})
         assert response.status_code == 401
 
     def test_non_ascii_signature_is_refused_not_a_crash(self, api, world, monkeypatch):
@@ -385,7 +387,7 @@ class TestWebhookSignatures:
         escrow = api.post("/escrow-guard/escrows", json={"deal_id": "D1", "provider": "tazapay", "amount": 100}).json()
         body = json.dumps({"ext_ref": escrow["ext_ref"], "status": "FUNDED", "amount": 100}).encode()
         response = api.post("/escrow-guard/webhooks/escrow-funded", content=body,
-                            headers={"x-tazapay-signature": "é".encode("latin-1")})
+                            headers={"signature": "é".encode("latin-1")})
         assert response.status_code == 401
 
     async def test_payout_signature_enforced(self, api, world, monkeypatch):
@@ -426,6 +428,7 @@ class TestStripe:
     @pytest.fixture
     def live(self, monkeypatch):
         monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test")
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         return StripeTreasuryConnector()
 
     async def test_stub_mode(self):
@@ -488,6 +491,7 @@ class TestPayoneer:
     @pytest.fixture
     def live(self, monkeypatch):
         monkeypatch.setenv("PAYONEER_CLIENT_ID", "cid")
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         monkeypatch.setenv("PAYONEER_CLIENT_SECRET", "sec")
         monkeypatch.setenv("PAYONEER_BASE_URL", "https://payoneer.test")
         return PayoneerConnector()
@@ -548,16 +552,24 @@ class TestPayoneer:
 
 
 ESCROW_CONNECTORS = [
-    pytest.param(TazapayEscrowConnector, {"TAZAPAY_API_KEY": "k", "TAZAPAY_API_SECRET": "s"}, "x-tazapay-signature",
-                 "TAZAPAY_WEBHOOK_SECRET", id="tazapay"),
-    pytest.param(EscrowComConnector, {"ESCROW_COM_API_KEY": "k", "ESCROW_COM_EMAIL": "e@x"}, "x-escrow-signature",
-                 "ESCROW_COM_WEBHOOK_SECRET", id="escrow_com"),
+    pytest.param(TazapayEscrowConnector, {"TAZAPAY_API_KEY": "k", "TAZAPAY_API_SECRET": "s"}, id="tazapay"),
+    pytest.param(EscrowComConnector, {"ESCROW_COM_API_KEY": "k", "ESCROW_COM_EMAIL": "e@x"}, id="escrow_com"),
 ]
+
+_BUYER = {"name": "Gulf Foods LLC", "email": "buyer@gulf.example", "country": "ae"}
+_TRANCHES = [{"tranche_id": "T1", "trigger": "PO_ISSUED", "amount": 30.0},
+             {"tranche_id": "T4", "trigger": "ACCEPTED", "amount": 70.0}]
+
+
+def _live(monkeypatch, env):
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("INTEGRATION_MODE", "live")
 
 
 class TestEscrowConnectors:
-    @pytest.mark.parametrize(("cls", "_env", "_h", "_s"), ESCROW_CONNECTORS)
-    async def test_stub_mode(self, cls, _env, _h, _s):
+    @pytest.mark.parametrize(("cls", "_env"), ESCROW_CONNECTORS)
+    async def test_stub_mode(self, cls, _env):
         conn = cls()
         booked = await conn.book({"amount": 10, "currency": "USD"})
         assert booked["stub"] is True and booked["amount"] == 10 and booked["checkout_url"].endswith(booked["ext_ref"])
@@ -565,65 +577,218 @@ class TestEscrowConnectors:
         assert released["stub"] is True and released["tranche_id"] == "T1" and released["amount"] == 3
         assert (await conn.refund({"ext_ref": "r", "amount": 3}))["stub"] is True
         assert (await conn.status("r"))["stub"] is True
+        assert (await conn.cancel("r"))["stub"] is True
         assert await conn.list_payment_methods()
         assert "fee_pct" in await conn.quote({})
+        assert conn.interpret_status({"stub": True}, [])["funded"] is False
 
-    @pytest.mark.parametrize(("cls", "env", "_h", "_s"), ESCROW_CONNECTORS)
+    @pytest.mark.parametrize(("cls", "env"), ESCROW_CONNECTORS)
     @pytest.mark.parametrize(("call", "arg"), [
-        ("book", {"amount": 10}), ("release", {"ext_ref": "r", "amount": 3}),
+        ("book", {"amount": 10, "buyer": _BUYER}),
+        ("release", {"ext_ref": "r", "amount": 3, "tranche_id": "T1", "trigger": "PO_ISSUED", "item_id": "9",
+                     "proof_refs": ["PO-1"], "documents": [{"url": "https://p/1", "name": "proof"}]}),
         ("refund", {"ext_ref": "r", "amount": 3}), ("status", "r"),
     ])
     @pytest.mark.parametrize("code", [400, 500])
-    async def test_provider_error_raises(self, monkeypatch, mock_http, cls, env, _h, _s, call, arg, code):
-        for key, value in env.items():
-            monkeypatch.setenv(key, value)
+    async def test_provider_error_raises(self, monkeypatch, mock_http, cls, env, call, arg, code):
+        _live(monkeypatch, env)
         mock_http(_json_response({}, code))
         with pytest.raises(ConnectorError, match=str(code)):
             await getattr(cls(), call)(arg)
 
-    @pytest.mark.parametrize(("cls", "env", "_h", "_s"), ESCROW_CONNECTORS)
-    @pytest.mark.parametrize(("call", "arg"), [("release", {"ext_ref": "r", "amount": 3}), ("refund", {"ext_ref": "r", "amount": 3}), ("status", "r")])
-    async def test_success_returns_provider_body(self, monkeypatch, mock_http, cls, env, _h, _s, call, arg):
-        for key, value in env.items():
-            monkeypatch.setenv(key, value)
-        mock_http(_json_response({"ok": 1}))
-        assert await getattr(cls(), call)(arg) == {"ok": 1}
+    # -- Tazapay v3 ----------------------------------------------------------
 
-    @pytest.mark.parametrize(("cls", "_e", "header", "secret"), ESCROW_CONNECTORS)
-    async def test_webhook(self, monkeypatch, cls, _e, header, secret):
-        assert await cls().webhook_verify({}, b"b") is True
-        monkeypatch.setenv(secret, "s")
-        conn = cls()
+    async def test_tazapay_create_escrow_contract(self, monkeypatch, mock_http):
+        _live(monkeypatch, {"TAZAPAY_API_KEY": "k", "TAZAPAY_API_SECRET": "s"})
+        monkeypatch.setenv("TAZAPAY_WEBHOOK_URL", "https://api.portless.io/escrow-guard/webhooks/tazapay")
+        seen = mock_http(_json_response({"status": "success", "message": "", "data": {
+            "id": "esc_abc", "url": "https://checkout.tazapay.com/transaction/x", "status": "active",
+            "payment_status": "unpaid", "invoice_currency": "USD"}}))
+        booked = await TazapayEscrowConnector().book({"amount": 1234.5, "currency": "usd", "reference": "ESC-1",
+                                                      "deal_id": "D1", "escrow_id": "ESC-1", "description": "Rice",
+                                                      "buyer": _BUYER, "tranches": _TRANCHES})
+        assert booked == {"ext_ref": "esc_abc", "provider": "tazapay", "status": "active", "payment_status": "unpaid",
+                          "amount": 1234.5, "currency": "USD", "checkout_url": "https://checkout.tazapay.com/transaction/x"}
+        req = seen[0]
+        assert str(req.url) == "https://service.tazapay.com/v3/escrow" and req.method == "POST"
+        assert req.headers["authorization"] == "Basic " + base64.b64encode(b"k:s").decode()
+        sent = json.loads(req.content)
+        assert sent["amount"] == 123450 and sent["invoice_currency"] == "USD"  # minor units
+        assert sent["customer_details"] == {"name": "Gulf Foods LLC", "email": "buyer@gulf.example", "country": "AE"}
+        assert sent["reference_id"] == "ESC-1" and sent["transaction_description"] == "Rice"
+        assert sent["webhook_url"].endswith("/webhooks/tazapay")
+        assert json.loads(sent["metadata"]["tranches"])[0]["tranche_id"] == "T1"
+
+    @pytest.mark.parametrize(("env", "base"), [
+        ({"TAZAPAY_ENV": "sandbox"}, "https://service-sandbox.tazapay.com"),
+        ({"TAZAPAY_BASE_URL": "https://api.tazapay.com/v3"}, "https://api.tazapay.com"),
+    ])
+    async def test_tazapay_base_url(self, monkeypatch, mock_http, env, base):
+        _live(monkeypatch, {"TAZAPAY_API_KEY": "k", "TAZAPAY_API_SECRET": "s", **env})
+        seen = mock_http(_json_response({"data": {"id": "esc_1"}}))
+        await TazapayEscrowConnector().status("esc_1")
+        assert str(seen[0].url) == f"{base}/v3/escrow/esc_1"
+
+    async def test_tazapay_release_uploads_each_document_and_waits(self, monkeypatch, mock_http):
+        _live(monkeypatch, {"TAZAPAY_API_KEY": "k", "TAZAPAY_API_SECRET": "s"})
+        seen = mock_http(_json_response({"status": "success", "data": {"id": "doc_1", "object": "document"}}))
+        out = await TazapayEscrowConnector().release({
+            "ext_ref": "esc_1", "amount": 400.0, "tranche_id": "T2", "trigger": "QC_PASSED",
+            "documents": [{"url": "https://api.portless.io/escrow-guard/proof/ESC/T2?exp=1&sig=a", "name": "T2 proof sheet"},
+                          {"url": "https://qima.example/report.pdf", "name": "report.pdf"}],
+        })
+        assert out["status"] == "SUBMITTED" and out["documents"] == ["doc_1", "doc_1"]
+        assert [str(r.url) for r in seen] == ["https://service.tazapay.com/v3/document"] * 2
+        first = json.loads(seen[0].content)
+        assert first["reference"] == "esc_1" and first["type"] == "inspection_report"
+        assert json.loads(first["metadata"])["tranche_id"] == "T2"
+
+    async def test_tazapay_release_needs_a_document(self, monkeypatch, mock_http):
+        _live(monkeypatch, {"TAZAPAY_API_KEY": "k", "TAZAPAY_API_SECRET": "s"})
+        mock_http(_json_response({}))
+        with pytest.raises(ConnectorError, match="no release document"):
+            await TazapayEscrowConnector().release({"ext_ref": "esc_1", "tranche_id": "T1"})
+
+    async def test_tazapay_refund_and_expire(self, monkeypatch, mock_http):
+        _live(monkeypatch, {"TAZAPAY_API_KEY": "k", "TAZAPAY_API_SECRET": "s"})
+        seen = mock_http(_json_response({"status": "success", "data": {"id": "rfd_1", "status": "processing"}}))
+        out = await TazapayEscrowConnector().refund({"ext_ref": "esc_1", "amount": 12.34, "currency": "USD", "reason": "qc"})
+        assert out["status"] == "REFUNDED" and out["refund_id"] == "rfd_1"
+        assert str(seen[0].url).endswith("/v3/refund")
+        assert json.loads(seen[0].content) == {"payin": "esc_1", "reason": "qc", "amount": 1234, "currency": "usd"}
+        await TazapayEscrowConnector().cancel("esc_1")
+        assert str(seen[1].url).endswith("/v3/escrow/esc_1/expire") and seen[1].method == "POST"
+
+    def test_tazapay_reads_payment_and_verified_documents(self):
+        tranches = [SimpleNamespace(tranche_id="T1"), SimpleNamespace(tranche_id="T2")]
+        view = TazapayEscrowConnector().interpret_status({
+            "status": "active", "payment_status": "paid", "amount_paid": 1000000,
+            "transaction_documents": [
+                {"id": "doc_1", "status": "verified", "metadata": json.dumps({"tranche_id": "T1"})},
+                {"id": "doc_2", "status": "submitted", "metadata": {"tranche_id": "T2"}},
+                {"id": "doc_3", "status": "failed", "metadata": {"tranche_id": "T2"}},
+            ]}, tranches)
+        assert view["funded"] and view["funded_amount"] == 10000.0
+        assert view["released"] == ["T1"] and view["rejected"] == ["T2"]
+        partial = TazapayEscrowConnector().interpret_status({"payment_status": "partially_paid", "amount_paid": 500}, tranches)
+        assert partial["funded"] and partial["funded_amount"] == 5.0
+        expired = TazapayEscrowConnector().interpret_status({"status": "expired", "payment_status": "unpaid"}, tranches)
+        assert expired["cancelled"] and not expired["funded"]
+        event = {"type": "escrow.verification.succeeded", "data": {"metadata": {"tranche_id": "T2"}}}
+        assert TazapayEscrowConnector().interpret_status({"payment_status": "paid"}, tranches, event)["released"] == ["T2"]
+
+    def test_tazapay_webhook_signature_matches_the_documented_example(self, monkeypatch):
+        """developer.tazapay.com/api-reference/appendix/webhook-authentication.md, verbatim."""
+        body = (b'{"type":"payout.created","id":"evt_cv82n92p51c5jo1f5vfg","object":"event","created_at":"2025-03-11T12:25:08.284979602Z",'
+                b'"data":{"created_at":"2025-03-11T12:25:05.960717Z","beneficiary_details":{"address":{"line1":"test","line2":"test",'
+                b'"postal_code":"10038","city":"test","state":"test","country":""},"destination_details":{"bank":{"bank_codes":'
+                b'{"aba_code":"test","swift_code":"test"},"account_number":"test","bank_name":"test","country":"US","currency":"USD"},'
+                b'"type":"bank"},"phone":{"calling_code":"1","number":"12312312312"},"name":"test","email":"test@examplee.com",'
+                b'"type":"individual","tax_id":"test"},"payout_fx_transaction":{"initial":{"currency":"USD","amount":100},"final":'
+                b'{"currency":"USD","amount":100},"id":"fx_cv82n89445nl3tkns2ug","object":"fx_transaction","exchange_rate":1},'
+                b'"type":"local","status":"processing","purpose":"PYR001","id":"pot_cv82n88epb2o04b90t9g","holding_currency":"USD",'
+                b'"currency":"USD","beneficiary":"bnf_crv7poph1l071n2fkcmg","object":"payout","balance_transaction":'
+                b'"btr_cv82n8gepb2o04b90tdg","amount":100}}')
+        assert tazapay_signature("YKzhhJM4gd8s5MS1LVvWbqSyJqLPvr7j", body) == "T2tZvRcMuZWVyDZrorBlPd7u8XKBx8RTWUSGuTakZqQ="
+
+    async def test_tazapay_webhook_verify(self, monkeypatch):
+        assert await TazapayEscrowConnector().webhook_verify({}, b"{}") is True  # no secret configured
+        monkeypatch.setenv("TAZAPAY_WEBHOOK_SECRET", "s")
+        conn = TazapayEscrowConnector()
+        body = b'{"id":"evt_1","created_at":"2026-01-01T00:00:00Z","type":"checkout.paid","data":{}}'
+        good = tazapay_signature("s", body)
+        assert await conn.webhook_verify({"signature": good}, body) is True
+        assert await conn.webhook_verify({"webhook-signature": good}, body) is True
+        assert await conn.webhook_verify({"signature": good}, body.replace(b"evt_1", b"evt_2")) is False
+        assert await conn.webhook_verify({}, body) is False
+
+    # -- Escrow.com 2017-09-01 ----------------------------------------------
+
+    async def test_escrow_com_milestone_transaction_contract(self, monkeypatch, mock_http):
+        _live(monkeypatch, {"ESCROW_COM_API_KEY": "k", "ESCROW_COM_EMAIL": "ops@portless.io"})
+        seen = mock_http(_json_response({
+            "id": 3001, "is_cancelled": False,
+            "parties": [{"role": "buyer", "customer": "buyer@gulf.example", "next_step": "https://www.escrow.com/t/3001"},
+                        {"role": "seller", "customer": "ops@portless.io"}],
+            "items": [{"id": 30011, "reference": "T1"}, {"id": 30012, "reference": "T4"}],
+        }))
+        booked = await EscrowComConnector().book({"amount": 100.0, "currency": "USD", "reference": "ESC-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                                                  "description": "Rice", "buyer": _BUYER, "tranches": _TRANCHES,
+                                                  "acceptance_window_days": 3})
+        assert booked["ext_ref"] == "3001" and booked["tranche_items"] == {"T1": "30011", "T4": "30012"}
+        assert booked["checkout_url"] == "https://www.escrow.com/t/3001"
+        req = seen[0]
+        assert str(req.url) == "https://api.escrow.com/2017-09-01/transaction"
+        assert req.headers["authorization"] == "Basic " + base64.b64encode(b"ops@portless.io:k").decode()
+        sent = json.loads(req.content)
+        assert sent["parties"] == [{"role": "buyer", "customer": "buyer@gulf.example"}, {"role": "seller", "customer": "me"}]
+        assert sent["currency"] == "usd" and len(sent["reference"]) <= 24
+        t1, t4 = sent["items"]
+        assert t1["type"] == t4["type"] == "milestone" and t1["reference"] == "T1"
+        assert t1["inspection_period"] == 86400 and t4["inspection_period"] == 3 * 86400
+        assert t1["schedule"][0]["payer_customer"] == "buyer@gulf.example" and t1["schedule"][0]["beneficiary_customer"] == "me"
+        assert t1["schedule"][0]["amount"] == 30.0 and t1["schedule"][0]["due_date"]
+
+    async def test_escrow_com_needs_the_buyer_email(self, monkeypatch, mock_http):
+        _live(monkeypatch, {"ESCROW_COM_API_KEY": "k", "ESCROW_COM_EMAIL": "e@x"})
+        mock_http(_json_response({}))
+        with pytest.raises(ConnectorError, match="buyer's e-mail"):
+            await EscrowComConnector().book({"amount": 10, "buyer": {"name": "x"}})
+
+    async def test_escrow_com_release_ships_the_milestone(self, monkeypatch, mock_http):
+        _live(monkeypatch, {"ESCROW_COM_API_KEY": "k", "ESCROW_COM_EMAIL": "e@x", "ESCROW_COM_ENV": "sandbox"})
+        seen = mock_http(_json_response({"id": 1}))
+        out = await EscrowComConnector().release({"ext_ref": "3001", "item_id": "30011", "tranche_id": "T1",
+                                                  "proof_refs": ["PO-9"], "documents": [{"url": "https://p/1"}]})
+        assert out["status"] == "SUBMITTED" and out["item_id"] == "30011"
+        req = seen[0]
+        assert req.method == "PATCH" and str(req.url) == "https://api.escrow-sandbox.com/2017-09-01/transaction/3001/item/30011"
+        sent = json.loads(req.content)
+        assert sent["action"] == "ship" and "PO-9" in sent["shipping_information"]["tracking_information"]["tracking_id"]
+
+    async def test_escrow_com_release_needs_the_item(self, monkeypatch, mock_http):
+        _live(monkeypatch, {"ESCROW_COM_API_KEY": "k", "ESCROW_COM_EMAIL": "e@x"})
+        mock_http(_json_response({}))
+        with pytest.raises(ConnectorError, match="no milestone item id"):
+            await EscrowComConnector().release({"ext_ref": "3001", "tranche_id": "T1"})
+
+    async def test_escrow_com_refund_cancels(self, monkeypatch, mock_http):
+        _live(monkeypatch, {"ESCROW_COM_API_KEY": "k", "ESCROW_COM_EMAIL": "e@x"})
+        seen = mock_http(_json_response({"id": 3001, "is_cancelled": True}))
+        out = await EscrowComConnector().refund({"ext_ref": "3001", "reason": "qc failed"})
+        assert out["status"] == "REFUNDED"
+        assert json.loads(seen[0].content) == {"action": "cancel", "cancel_information": {"cancellation_reason": "qc failed"}}
+
+    def test_escrow_com_reads_secured_and_accepted(self):
+        tranches = [SimpleNamespace(tranche_id="T1", provider_item_id="11"),
+                    SimpleNamespace(tranche_id="T2", provider_item_id="12")]
+        sched = lambda amount, secured, paid=False: [{"amount": amount, "status": {"secured": secured, "disbursed_to_beneficiary": paid}}]  # noqa: E731
+        view = EscrowComConnector().interpret_status({"is_cancelled": False, "items": [
+            {"id": 11, "type": "milestone", "status": {"accepted": True}, "schedule": sched(30, True, True)},
+            {"id": 12, "type": "milestone", "status": {"rejected": True}, "schedule": sched(70, True)},
+        ]}, tranches)
+        assert view["funded"] and view["funded_amount"] == 100.0 and view["provider_status"] == "funded"
+        assert view["released"] == ["T1"] and view["rejected"] == ["T2"]
+        unpaid = EscrowComConnector().interpret_status({"items": [
+            {"id": 11, "type": "milestone", "status": {}, "schedule": sched(30, False)}]}, tranches)
+        assert not unpaid["funded"] and unpaid["provider_status"] == "awaiting_payment"
+        assert EscrowComConnector().interpret_status({"is_cancelled": True, "items": []}, tranches)["cancelled"]
+
+    async def test_escrow_com_webhook_token(self, monkeypatch):
+        assert await EscrowComConnector().webhook_verify({}, b"b") is True
+        monkeypatch.setenv("ESCROW_COM_WEBHOOK_SECRET", "s")
+        conn = EscrowComConnector()
+        assert await conn.webhook_verify({"x-portless-webhook-token": "s"}, b"b") is True
+        assert await conn.webhook_verify({"x-portless-webhook-token": "guess"}, b"b") is False
         good = hmac.new(b"s", b"b", hashlib.sha256).hexdigest()
-        assert await conn.webhook_verify({header: good}, b"b") is True
-        assert await conn.webhook_verify({header: good}, b"c") is False
+        assert await conn.webhook_verify({"x-escrow-signature": good}, b"b") is True
         assert await conn.webhook_verify({}, b"b") is False
 
-    async def test_tazapay_book_uses_basic_auth(self, monkeypatch, mock_http):
-        monkeypatch.setenv("TAZAPAY_API_KEY", "k")
-        monkeypatch.setenv("TAZAPAY_API_SECRET", "s")
-        seen = mock_http(_json_response({"escrow_id": "tz-1", "checkout_url": "https://c"}))
-        booked = await TazapayEscrowConnector().book({"amount": 10, "reference": "D1", "description": "d"})
-        assert booked["ext_ref"] == "tz-1" and booked["status"] == "AWAITING_FUNDING"
-        assert seen[0].headers["authorization"].startswith("Basic ")
-        assert json.loads(seen[0].content) == {"amount": 10, "currency": "USD", "reference": "D1", "transaction_description": "d"}
-
-    async def test_tazapay_prefers_id_field(self, monkeypatch, mock_http):
-        monkeypatch.setenv("TAZAPAY_API_KEY", "k")
-        mock_http(_json_response({"id": "a", "escrow_id": "b"}))
-        assert (await TazapayEscrowConnector().book({"amount": 1}))["ext_ref"] == "a"
-
-    @pytest.mark.parametrize(("status_body", "expected"), [
-        ({"in_dispute": True}, "in_dispute"), ({"in_dispute": False}, "awaiting_payment"), ({}, "awaiting_payment"),
-    ])
-    async def test_escrow_com_book(self, monkeypatch, mock_http, status_body, expected):
-        monkeypatch.setenv("ESCROW_COM_API_KEY", "k")
-        monkeypatch.setenv("ESCROW_COM_EMAIL", "e@x")
-        seen = mock_http(_json_response({"id": 42, "status": status_body, "landing_page": "https://l"}))
-        booked = await EscrowComConnector().book({"amount": 10, "currency": "USD", "reference": "D1"})
-        assert booked["ext_ref"] == "42" and booked["status"] == expected and booked["checkout_url"] == "https://l"
-        sent = json.loads(seen[0].content)
-        assert sent["currency"] == "usd" and sent["items"][0]["schedule"][0]["amount"] == 10
+    def test_event_references(self):
+        assert TazapayEscrowConnector.event_reference({"data": {"id": "esc_9"}}) == "esc_9"
+        assert TazapayEscrowConnector.event_reference({"data": {"id": "doc_1", "reference": "esc_9"}}) == "esc_9"
+        assert EscrowComConnector.event_reference({"event": "accept", "transaction_id": 3001}) == "3001"
+        assert EscrowComConnector.event_reference({"transaction": {"id": 7}}) == "7"
 
 
 # ---------------------------------------------------------------------------

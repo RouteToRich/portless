@@ -55,7 +55,9 @@ SANDBOX_COMPANY_ID = "7C1E2D3F4A5B4C6D8E9F0A1B2C3D4E5F"
 REFERER = "https://preprodmy.qima.com/"
 
 STATUS_TEXT = {"20": "WAITING_FOR_VALIDATION", "30": "VALIDATED", "60": "COMPLETED", "90": "CANCELLED"}
-SERVICE_TYPES = {"1": "PSI", "2": "DUPRO", "3": "IPC", "4": "CLC"}
+SERVICE_TYPES = {"1": "PSI", "2": "DUPRO", "3": "IPC", "4": "CLC", "5": "PEO"}
+# 1-4 are QIMA's documented booking ids; "5" = PEO is the simulator's stand-in
+# (QIMA lists "peo" only as a search alias — the real id is per account).
 _ALIAS_TO_TYPE = {"psi": "1", "dupro": "2", "ipc": "3", "clc": "4"}
 _DEFAULT_SEARCH = "psi,ipc,dupro,clc,pm,peo,sr,fpsi,sc"
 

@@ -46,7 +46,12 @@ from typing import Any
 from uuid import uuid4
 
 from shared.bus import get_publisher
-from shared.connectors.escrow import EscrowComConnector, TazapayEscrowConnector
+from shared.connectors.escrow import (
+    EscrowComConnector,
+    TazapayEscrowConnector,
+    buyer_accepts_at_provider,
+    display_name,
+)
 from shared.connectors.payments import ConnectorError, PayoneerConnector, StripeTreasuryConnector
 from shared.domain.enums import DealStatus
 from shared.domain.events import DomainEvent, EventTopic
@@ -198,6 +203,16 @@ async def _emit(topic: EventTopic, deal_id: str, payload: dict) -> None:
         await get_publisher().publish(DomainEvent(topic=topic, deal_id=deal_id, payload=payload))
     except Exception as exc:
         logger.warning("EscrowGuard: emit %s failed: %s", topic, exc)
+    await _sync_status(deal_id)
+
+
+async def _sync_status(deal_id: str | None) -> None:
+    """Keep the deal's escrow status line (provider + stage) in step. Never raises."""
+    try:
+        from shared.orchestration import escrow_status
+        await escrow_status.sync(deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("EscrowGuard: escrow status sync failed for %s: %s", deal_id, exc)
 
 
 async def _assert_platform_running(what: str) -> None:
@@ -338,13 +353,29 @@ async def handle_escrow_funded_webhook(
     if hold.status in ("FUNDED", "RELEASED", "REFUNDED"):
         return {"status": "ok", "escrow_id": hold.escrow_id, "deal_id": hold.deal_id}
 
+    return await _apply_funding(
+        hold,
+        funded_amount=_normalize_funded_amount(hold.provider, payload.amount),
+        event_id=payload.event_id,
+        ext_ref=payload.ext_ref,
+        payer_name=payload.payer_name,
+        payer_country=payload.payer_country,
+        event_payload=payload.model_dump(),
+    )
+
+
+async def _apply_funding(
+    hold: EscrowHoldRecord, *, funded_amount: float | None, event_id: str | None, ext_ref: str | None,
+    payer_name: str | None = None, payer_country: str | None = None, event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Book what the provider holds: FUNDED (deal → ESCROW_FUNDED), or a shortfall."""
+    repo = get_repository()
     now = datetime.now(timezone.utc)
-    funded_amount = _normalize_funded_amount(hold.provider, payload.amount)
-    events = list(hold.processed_events) + ([payload.event_id] if payload.event_id else [])
+    events = list(hold.processed_events) + ([event_id] if event_id else [])
     base_update: dict[str, Any] = {
         "updated_at": now,
         "processed_events": events,
-        "provider_payload": {**hold.provider_payload, "funded_event": payload.model_dump()},
+        "provider_payload": {**hold.provider_payload, "funded_event": event_payload or {}},
     }
 
     # Funding shortfall: the provider holds less than the Proforma Invoice total.
@@ -398,7 +429,7 @@ async def handle_escrow_funded_webhook(
     await repo.save_hold(updated)
 
     try:
-        await _transition_deal(hold.deal_id, "ESCROW_FUNDED", f"Escrow funded — ref {payload.ext_ref}")
+        await _transition_deal(hold.deal_id, "ESCROW_FUNDED", f"Escrow funded — ref {ext_ref}")
     except Exception as exc:
         logger.error("EscrowGuard: ESCROW_FUNDED transition failed for deal %s: %s", hold.deal_id, exc)
 
@@ -421,12 +452,13 @@ async def handle_escrow_funded_webhook(
 
     await _emit(EventTopic.ESCROW_FUNDED, hold.deal_id, {
         "escrow_id": hold.escrow_id,
-        "ext_ref": payload.ext_ref,
+        "ext_ref": ext_ref,
         "amount": hold.amount,
         "funded_amount": funded_amount,
         "currency": hold.currency,
-        "payer_name": payload.payer_name,
-        "payer_country": payload.payer_country,
+        "payer_name": payer_name,
+        "payer_country": payer_country,
+        "provider": hold.provider,
     })
 
     logger.info("EscrowGuard: hold %s funded for deal %s", hold.escrow_id, hold.deal_id)
@@ -622,7 +654,7 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
         amount=req.amount,
         currency=req.currency.upper(),
         status="REQUESTED",
-        description=req.description or f"Payout for deal {req.deal_id}",
+        description=req.description or await _payout_note(req),
         idempotency_key=req.idempotency_key,
         kind=req.kind,
         total_owed=req.total_owed,
@@ -804,6 +836,56 @@ def _build_tranches(amount: float, schedule: list[TrancheInput] | None) -> list[
     ]
 
 
+async def resolve_provider(deal_id: str, requested: str | None = None) -> tuple[str, str]:
+    """The escrow provider for a deal and where the choice came from.
+
+    Order: the request → the PI the buyer accepted (``escrow_provider``) → the
+    deal (the latest choice: the buyer's e-mail or an operator) → the
+    negotiation session → ``ESCROW_DEFAULT_PROVIDER``.
+    A provider that is not enabled (``ESCROW_PROVIDERS_ENABLED``) is skipped."""
+    from shared.connectors.escrow import default_provider, enabled_providers, resolve_escrow_provider
+
+    enabled = enabled_providers()
+    candidates: list[tuple[str | None, str]] = [(requested, "request")]
+    try:
+        from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
+        pi = await _dm_repo().get_pi_by_deal(deal_id)
+        candidates.append((getattr(pi, "escrow_provider", None) if pi else None, "pi"))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        deal = await _fetch_deal(deal_id)
+        candidates.append((getattr(deal, "escrow_provider", None),
+                           getattr(deal, "escrow_provider_source", None) or "operator"))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+        session = await _neg_repo().get_session_by_deal(deal_id)
+        candidates.append((getattr(session, "escrow_provider", None) if session else None, "buyer"))
+    except Exception:  # noqa: BLE001
+        pass
+    for name, source in candidates:
+        key = resolve_escrow_provider(name)
+        if key and key in enabled:
+            return key, source
+    return default_provider(), "default"
+
+
+def _buyer_details(deal: Any) -> dict[str, Any]:
+    """Name / e-mail / country of the deal's buyer, for the provider's customer record."""
+    buyer = next((p for p in getattr(deal, "parties", None) or []
+                  if str(getattr(getattr(p, "role", ""), "value", getattr(p, "role", ""))).upper() == "BUYER"), None)
+    if buyer is None:
+        return {}
+    return {
+        "name": getattr(buyer, "legal_name", None) or getattr(buyer, "name", None),
+        "email": getattr(buyer, "email", None),
+        "country": getattr(buyer, "country", None),
+        "address": getattr(buyer, "address", None),
+    }
+
+
 async def create_escrow(req: CreateEscrowRequest) -> EscrowResponse:
     """Open a neutral, staged-release escrow with the buyer's chosen provider.
 
@@ -828,6 +910,7 @@ async def create_escrow(req: CreateEscrowRequest) -> EscrowResponse:
     if deal_status not in ("PI_ACCEPTED", "ESCROW_PENDING"):
         raise InvalidDealState(req.deal_id, deal_status, "PI_ACCEPTED")
 
+    provider, chosen_by = await resolve_provider(req.deal_id, req.provider)
     now = datetime.now(timezone.utc)
     escrow_id = _new_escrow_id()
     tranches = _build_tranches(req.amount, req.tranche_schedule)
@@ -836,7 +919,7 @@ async def create_escrow(req: CreateEscrowRequest) -> EscrowResponse:
     record = EscrowHoldRecord(
         escrow_id=escrow_id,
         deal_id=req.deal_id,
-        provider=req.provider,
+        provider=provider,
         amount=req.amount,
         currency=req.currency.upper(),
         status="PENDING",
@@ -844,52 +927,70 @@ async def create_escrow(req: CreateEscrowRequest) -> EscrowResponse:
         payment_method=req.payment_method,
         qc_provider=req.qc_provider,
         tranches=tranches,
-        fee_pct=await _provider_fee_pct(req.provider),
+        fee_pct=await _provider_fee_pct(provider),
+        provider_payload={"chosen_by": chosen_by},
         created_at=now,
         updated_at=now,
     )
     await repo.save_hold(record)
 
-    connector = _payment_connector(req.provider)
+    connector = _payment_connector(provider)
+    window_days = max(1, -(-int(settings.inspection_window_hours) // 24))
+    from shared.orchestration import trade_brief
+    escrow_note = trade_brief.note(await trade_brief.brief(req.deal_id), "escrow")
     try:
         result = await connector.book({
             "amount": req.amount,
             "currency": req.currency.upper(),
-            "reference": req.deal_id,
-            "description": f"PortLess escrow for deal {req.deal_id}",
+            "reference": escrow_id,
+            "deal_id": req.deal_id,
+            "escrow_id": escrow_id,
+            "description": escrow_note,
+            "note": escrow_note,
+            "buyer": _buyer_details(deal),
+            "tranches": [{"tranche_id": t.tranche_id, "trigger": t.trigger, "amount": t.amount} for t in tranches],
+            "acceptance_window_days": window_days,
         })
     except ConnectorError as exc:
         failed = record.model_copy(update={"status": "FAILED", "updated_at": datetime.now(timezone.utc)})
         await repo.save_hold(failed)
+        await _sync_status(req.deal_id)
         raise ConnectorCallError(f"Escrow open failed for deal {req.deal_id}: {exc}") from exc
 
+    items = result.get("tranche_items") or {}
     updated = record.model_copy(update={
         "ext_ref": result.get("ext_ref"),
         "checkout_url": result.get("checkout_url"),
-        "provider_payload": result,
+        "tranches": [t.model_copy(update={"provider_item_id": items.get(t.tranche_id)}) for t in tranches],
+        "provider_status": result.get("payment_status") or result.get("status"),
+        "provider_payload": {**result, "chosen_by": chosen_by},
         "updated_at": datetime.now(timezone.utc),
     })
     await repo.save_hold(updated)
 
     if deal_status == "PI_ACCEPTED":
         try:
-            await _transition_deal(req.deal_id, "ESCROW_PENDING", f"Escrow opened with {req.provider}")
+            await _transition_deal(req.deal_id, "ESCROW_PENDING", f"Escrow opened with {provider}")
         except Exception as exc:
             logger.error("EscrowGuard: ESCROW_PENDING transition failed for deal %s: %s", req.deal_id, exc)
+    await _sync_status(req.deal_id)
 
     logger.info(
-        "EscrowGuard: escrow %s opened for deal %s via %s (ext_ref=%s)",
-        escrow_id, req.deal_id, req.provider, updated.ext_ref,
+        "EscrowGuard: escrow %s opened for deal %s via %s (%s's choice, ext_ref=%s)",
+        escrow_id, req.deal_id, provider, chosen_by, updated.ext_ref,
     )
     return EscrowResponse.from_record(updated)
 
 
 async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowResponse:
-    """Release one tranche to PortLess after its independent proof is authenticated.
+    """Hand one tranche's proof to the escrow provider, which pays it out.
 
     Pre-condition: escrow ``FUNDED``. Idempotent per tranche. The caller attaches
-    the authenticated proof refs (CRF hash, shipping-bill no., BL) — the release
-    is authorized by that proof, not by PortLess's word (target spec §5.4).
+    the authenticated proof refs (CRF hash, shipping-bill no., BL). With a
+    neutral provider the money does not move on PortLess's word: the tranche
+    becomes ``SUBMITTED`` and counts as released only when the provider pays it
+    out — Tazapay after verifying the documents, Escrow.com after the buyer
+    accepts the milestone (``confirm_tranche_release``).
     """
     await _assert_platform_running(f"Tranche release from escrow {escrow_id}")
     repo = get_repository()
@@ -905,7 +1006,7 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
     if idx is None:
         raise HoldNotFoundError(f"{escrow_id}:tranche:{req.tranche_id}")
     tranche = hold.tranches[idx]
-    if tranche.status == "RELEASED":  # idempotent
+    if tranche.status in ("RELEASED", "SUBMITTED"):  # idempotent
         return EscrowResponse.from_record(hold)
     await _refuse_if_compliance_blocked(hold.deal_id)
 
@@ -935,8 +1036,10 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
 
     amount = tranche.amount if tranche.amount is not None else round(hold.amount * tranche.pct, 2)
 
-    # Reconciliation guard: never release more than the held principal.
-    if round(hold.released_total + amount + hold.refunded_total, 2) > hold.amount + _FUNDING_TOLERANCE:
+    # Reconciliation guard: never release more than the held principal
+    # (money already with the provider for payout counts as gone).
+    submitted = sum((t.amount or 0.0) for t in hold.tranches if t.status == "SUBMITTED")
+    if round(hold.released_total + submitted + amount + hold.refunded_total, 2) > hold.amount + _FUNDING_TOLERANCE:
         raise InvalidDealState(
             hold.deal_id,
             f"release would over-disburse (released {hold.released_total} + {amount} + refunded {hold.refunded_total})",
@@ -948,22 +1051,111 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
         result = await connector.release({  # type: ignore[union-attr]
             "ext_ref": hold.ext_ref,
             "amount": amount,
+            "currency": hold.currency,
             "tranche_id": tranche.tranche_id,
+            "trigger": tranche.trigger,
+            "item_id": tranche.provider_item_id,
             "proof_refs": req.proof_refs,
-            "note": f"Release {tranche.tranche_id} ({tranche.trigger}) for deal {hold.deal_id}",
+            "documents": release_documents(hold, tranche, req.proof_refs),
+            "note": await _release_note(hold, tranche),
         })
     except ConnectorError as exc:
         raise ConnectorCallError(
             f"Tranche release failed for {escrow_id}/{req.tranche_id}: {exc}"
         ) from exc
 
+    if str(result.get("status", "")).upper() == "SUBMITTED":
+        updated = await _mark_submitted(hold, [tranche.tranche_id], result, req.proof_refs)
+        return EscrowResponse.from_record(updated)
+    updated = await _apply_tranche_release(
+        hold, tranche.tranche_id, ext_ref=result.get("ext_ref") or result.get("tranche_id"),
+        proof_refs=req.proof_refs, source="provider",
+    )
+    return EscrowResponse.from_record(updated)
+
+
+async def _release_note(hold: EscrowHoldRecord, tranche: TrancheSpec) -> str:
+    from shared.orchestration import trade_brief
+    return trade_brief.note(await trade_brief.brief(hold.deal_id), "escrow",
+                            extra=f"release {tranche.tranche_id} ({tranche.trigger}, {int(round(tranche.pct * 100))}%)")
+
+
+async def _payout_note(req: PayoutRequest) -> str:
+    from shared.orchestration import trade_brief
+    kind = "balance" if req.kind == "supplier_balance" else "payment"
+    return trade_brief.note(await trade_brief.brief(req.deal_id), "payout", extra=f"supplier {kind} from escrow")[:500]
+
+
+def release_documents(hold: EscrowHoldRecord, tranche: TrancheSpec, proof_refs: list[str]) -> list[dict[str, Any]]:
+    """The documents a provider gets for a tranche: a link to PortLess's signed
+    proof sheet (every proof ref + document hash, readable without a sign-in for
+    ``ESCROW_PROOF_LINK_DAYS``) plus any proof that is itself a URL (QC report,
+    tracking page). Without ``PORTLESS_PUBLIC_BASE_URL`` only the URL proofs go."""
+    from shared.orchestration import escrow_proof
+    docs: list[dict[str, Any]] = []
+    link = escrow_proof.signed_url(hold.escrow_id, tranche.tranche_id)
+    if link:
+        docs.append({"url": link, "name": f"{tranche.tranche_id} proof sheet"})
+    for ref in proof_refs or []:
+        if isinstance(ref, str) and ref.startswith(("https://", "http://")):
+            docs.append({"url": ref, "name": ref.rsplit("/", 1)[-1][:80] or "proof"})
+    return docs
+
+
+async def _mark_submitted(hold: EscrowHoldRecord, tranche_ids: list[str], result: dict[str, Any],
+                          proof_refs: list[str] | None = None) -> EscrowHoldRecord:
+    """The provider has the proof; the money is still in the escrow."""
+    repo = get_repository()
+    now = datetime.now(timezone.utc)
+    new_tranches = []
+    for t in hold.tranches:
+        if t.tranche_id in tranche_ids and t.status == "PENDING":
+            t = t.model_copy(update={
+                "status": "SUBMITTED",
+                "submitted_at": now,
+                "proof_refs": proof_refs or t.proof_refs,
+                "provider_documents": [d for d in result.get("documents") or [] if d],
+                "provider_item_id": result.get("item_id") or t.provider_item_id,
+            })
+        new_tranches.append(t)
+    updated = hold.model_copy(update={"tranches": new_tranches, "updated_at": now})
+    await repo.save_hold(updated)
+    for tid in tranche_ids:
+        t = next(x for x in new_tranches if x.tranche_id == tid)
+        await _emit(EventTopic.ESCROW_TRANCHE_SUBMITTED, hold.deal_id, {
+            "escrow_id": hold.escrow_id, "tranche_id": tid, "trigger": t.trigger, "amount": t.amount,
+            "provider": hold.provider, "currency": hold.currency, "proof_refs": t.proof_refs,
+            "provider_documents": t.provider_documents,
+        })
+    logger.info("EscrowGuard: %s submitted to %s for escrow %s (deal %s) — waiting for its payout",
+                ", ".join(tranche_ids), hold.provider, hold.escrow_id, hold.deal_id)
+    # The provider may already have paid it out (sandbox auto-confirm, an
+    # instant verification): read it once now; the watcher keeps reading.
+    try:
+        return await poll_provider(hold.escrow_id, source="poll")
+    except Exception as exc:  # noqa: BLE001
+        logger.info("EscrowGuard: provider read after submit failed for %s: %s", hold.escrow_id, exc)
+        return updated
+
+
+async def _apply_tranche_release(
+    hold: EscrowHoldRecord, tranche_id: str, *, ext_ref: str | None, proof_refs: list[str] | None,
+    source: str,
+) -> EscrowHoldRecord:
+    """Book one proof-gated tranche as paid out of the escrow (ledger, window, event, settlement)."""
+    repo = get_repository()
+    escrow_id = hold.escrow_id
+    idx = next(i for i, t in enumerate(hold.tranches) if t.tranche_id == tranche_id)
+    tranche = hold.tranches[idx]
+    amount = tranche.amount if tranche.amount is not None else round(hold.amount * tranche.pct, 2)
     now = datetime.now(timezone.utc)
     new_tranches = list(hold.tranches)
     new_tranches[idx] = tranche.model_copy(update={
         "status": "RELEASED",
-        "proof_refs": req.proof_refs or tranche.proof_refs,
-        "ext_ref": result.get("ext_ref") or result.get("tranche_id"),
+        "proof_refs": proof_refs or tranche.proof_refs,
+        "ext_ref": ext_ref or tranche.ext_ref,
         "released_at": now,
+        "release_source": source,
     })
     released_total = round(sum(t.amount or 0.0 for t in new_tranches if t.status == "RELEASED"), 2)
     all_released = all(t.status == "RELEASED" for t in new_tranches)
@@ -975,10 +1167,11 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
     # open_inspection_window opens it on the DELIVERED milestone).
     inspection_deadline = hold.inspection_deadline
     remaining_pending = [t for t in new_tranches if t.status == "PENDING"]
+    proof_tranches_open = any(t.status != "RELEASED" and t.trigger != "ACCEPTED" for t in new_tranches)
     window_opened = False
     trigger_met = _window_trigger() == "proof" or hold.delivery_confirmed_at is not None
     if (remaining_pending and all(t.trigger == "ACCEPTED" for t in remaining_pending)
-            and inspection_deadline is None and trigger_met):
+            and not proof_tranches_open and inspection_deadline is None and trigger_met):
         inspection_deadline = now + timedelta(hours=settings.inspection_window_hours)
         window_opened = True
 
@@ -1009,15 +1202,17 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
         "inspection_window_opened": window_opened,
         "inspection_deadline": inspection_deadline.isoformat() if inspection_deadline else None,
         "provider": hold.provider,
-        "proof_refs": req.proof_refs,
+        "proof_refs": proof_refs or tranche.proof_refs,
         "currency": hold.currency,
+        "release_source": source,
     })
     logger.info(
-        "EscrowGuard: released tranche %s (%.2f %s) for deal %s (escrow=%s, total=%.2f)",
-        tranche.tranche_id, amount, hold.currency, hold.deal_id, escrow_id, released_total,
+        "EscrowGuard: released tranche %s (%.2f %s) for deal %s (escrow=%s, total=%.2f, by %s)",
+        tranche.tranche_id, amount, hold.currency, hold.deal_id, escrow_id, released_total, source,
     )
-    updated = await _settle_if_complete(updated, now)
-    return EscrowResponse.from_record(updated)
+    if window_opened and buyer_accepts_at_provider(hold.provider):
+        updated = await _submit_final_to_provider(updated, "inspection window opened")
+    return await _settle_if_complete(updated, now)
 
 
 def _undisbursed_or_refuse(hold: EscrowHoldRecord) -> float:
@@ -1089,6 +1284,7 @@ async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
         result = await connector.refund({  # type: ignore[union-attr]
             "ext_ref": hold.ext_ref,
             "amount": undisbursed,
+            "currency": hold.currency,
             "reason": req.reason,
         })
     except ConnectorError as exc:
@@ -1185,7 +1381,7 @@ async def open_inspection_window(
     if not pending_final:
         return EscrowResponse.from_record(hold)  # nothing left to accept
 
-    earlier_pending = [t.tranche_id for t in hold.tranches if t.trigger != "ACCEPTED" and t.status == "PENDING"]
+    earlier_pending = [t.tranche_id for t in hold.tranches if t.trigger != "ACCEPTED" and t.status != "RELEASED"]
     if earlier_pending:
         updated = hold.model_copy(update={
             "delivery_confirmed_at": hold.delivery_confirmed_at or now, "updated_at": now,
@@ -1217,6 +1413,8 @@ async def open_inspection_window(
     })
     logger.info("EscrowGuard: inspection window opened for %s (deal %s, %s) until %s",
                 escrow_id, hold.deal_id, trigger, deadline.isoformat())
+    if buyer_accepts_at_provider(hold.provider):
+        updated = await _submit_final_to_provider(updated, reason)
     return EscrowResponse.from_record(updated)
 
 
@@ -1243,9 +1441,11 @@ async def clear_dispute(escrow_id: str, *, reason: str = "resolved") -> EscrowRe
 # ---------------------------------------------------------------------------
 
 async def _release_final_tranches(hold: EscrowHoldRecord, note: str) -> tuple[list[TrancheSpec], float, bool]:
-    """Release every PENDING ``ACCEPTED``-trigger tranche. Returns
-    (new_tranches, released_total, all_released). Raises ConnectorCallError on
-    provider failure."""
+    """Ask the provider to pay out every PENDING ``ACCEPTED``-trigger tranche.
+    Returns (new_tranches, released_total, all_released). A provider that pays
+    out only after its own check answers SUBMITTED — those tranches are left
+    ``SUBMITTED`` and confirmed later (``confirm_tranche_release``). Raises
+    ConnectorCallError on provider failure."""
     connector = _payment_connector(hold.provider)
     now = datetime.now(timezone.utc)
     new_tranches = list(hold.tranches)
@@ -1256,21 +1456,110 @@ async def _release_final_tranches(hold: EscrowHoldRecord, note: str) -> tuple[li
                 result = await connector.release({  # type: ignore[union-attr]
                     "ext_ref": hold.ext_ref,
                     "amount": amount,
+                    "currency": hold.currency,
                     "tranche_id": t.tranche_id,
+                    "trigger": t.trigger,
+                    "item_id": t.provider_item_id,
+                    "proof_refs": t.proof_refs,
+                    "documents": release_documents(hold, t, t.proof_refs),
                     "note": note,
                 })
             except ConnectorError as exc:
                 raise ConnectorCallError(
                     f"Final release failed for {hold.escrow_id}/{t.tranche_id}: {exc}"
                 ) from exc
+            if str(result.get("status", "")).upper() == "SUBMITTED":
+                new_tranches[i] = t.model_copy(update={
+                    "status": "SUBMITTED", "submitted_at": now,
+                    "provider_documents": [d for d in result.get("documents") or [] if d],
+                })
+                continue
             new_tranches[i] = t.model_copy(update={
                 "status": "RELEASED",
                 "ext_ref": result.get("ext_ref") or result.get("tranche_id"),
                 "released_at": now,
+                "release_source": "provider",
             })
     released_total = round(sum((t.amount or 0.0) for t in new_tranches if t.status == "RELEASED"), 2)
     all_released = all(t.status == "RELEASED" for t in new_tranches)
     return new_tranches, released_total, all_released
+
+
+async def _submit_final_to_provider(hold: EscrowHoldRecord, reason: str) -> EscrowHoldRecord:
+    """Escrow.com: deliver the final milestone as soon as the acceptance window
+    opens, so the buyer accepts (or its inspection period lapses) on Escrow.com
+    itself. Never raises; a failure is retried by acceptance / the window watcher."""
+    if not any(t.trigger == "ACCEPTED" and t.status == "PENDING" for t in hold.tranches):
+        return hold
+    try:
+        new_tranches, released_total, _ = await _release_final_tranches(
+            hold, f"Goods delivered — buyer to accept on {hold.provider} ({reason})")
+    except ConnectorCallError as exc:
+        logger.warning("EscrowGuard: final milestone not delivered to %s for %s: %s", hold.provider, hold.escrow_id, exc)
+        return hold
+    if released_total > hold.released_total + _FUNDING_TOLERANCE:
+        # The provider paid at once — book it through the normal acceptance path.
+        return await _apply_final_release(hold, [t.tranche_id for t in hold.tranches if t.trigger == "ACCEPTED"
+                                                 and t.status == "PENDING"], event="provider_accepted",
+                                          source="provider", accepted_by=None)
+    submitted = [t.tranche_id for t in new_tranches if t.status == "SUBMITTED"
+                 and next(o for o in hold.tranches if o.tranche_id == t.tranche_id).status == "PENDING"]
+    if not submitted:
+        return hold
+    updated = hold.model_copy(update={"tranches": new_tranches, "updated_at": datetime.now(timezone.utc)})
+    await get_repository().save_hold(updated)
+    for tid in submitted:
+        t = next(x for x in new_tranches if x.tranche_id == tid)
+        await _emit(EventTopic.ESCROW_TRANCHE_SUBMITTED, hold.deal_id, {
+            "escrow_id": hold.escrow_id, "tranche_id": tid, "trigger": t.trigger, "amount": t.amount,
+            "provider": hold.provider, "currency": hold.currency, "reason": reason,
+        })
+    return updated
+
+
+async def _apply_final_release(
+    hold: EscrowHoldRecord, tranche_ids: list[str], *, event: str, source: str,
+    accepted_by: str | None = None, now: datetime | None = None,
+) -> EscrowHoldRecord:
+    """Book the final ``ACCEPTED``-trigger tranche(s) as paid out of the escrow."""
+    now = now or datetime.now(timezone.utc)
+    new_tranches = [
+        t.model_copy(update={"status": "RELEASED", "released_at": now, "release_source": source})
+        if t.tranche_id in tranche_ids and t.status != "RELEASED" else t
+        for t in hold.tranches
+    ]
+    released_total = round(sum((t.amount or 0.0) for t in new_tranches if t.status == "RELEASED"), 2)
+    all_released = all(t.status == "RELEASED" for t in new_tranches)
+    final_amount = round(released_total - hold.released_total, 2)
+    updated = hold.model_copy(update={
+        "tranches": new_tranches,
+        "released_total": released_total,
+        "fees_total": round(hold.fees_total + _fee_on(hold, final_amount), 2),
+        "status": "RELEASED" if all_released else hold.status,
+        "released_at": now if all_released else hold.released_at,
+        "buyer_accepted_at": hold.buyer_accepted_at or now,
+        "updated_at": now,
+    })
+    await get_repository().save_hold(updated)
+    payload = {
+        "escrow_id": hold.escrow_id,
+        "tranche_id": "FINAL",
+        "trigger": "ACCEPTED",
+        "event": event,
+        "amount": final_amount,
+        "released_total": released_total,
+        "fees_total": updated.fees_total,
+        "all_released": all_released,
+        "provider": hold.provider,
+        "currency": hold.currency,
+        "release_source": source,
+    }
+    if event == "buyer_accepted" or accepted_by is not None:
+        payload["accepted_by"] = accepted_by
+    await _emit(EventTopic.ESCROW_TRANCHE_RELEASED, hold.deal_id, payload)
+    logger.info("EscrowGuard: final tranche of escrow %s (deal %s) paid out (%s); released_total=%.2f",
+                hold.escrow_id, hold.deal_id, event, released_total)
+    return await _settle_if_complete(updated, now)
 
 
 async def accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowResponse:
@@ -1278,7 +1567,9 @@ async def accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowRespo
 
     This is the authority for the last slice — PortLess cannot release it via
     ``release_tranche``. Escrow must be FUNDED and not under dispute. Idempotent
-    once accepted.
+    once accepted. With Tazapay the acceptance goes to Tazapay as the delivery
+    document; with Escrow.com the buyer accepts on Escrow.com itself (a partner
+    cannot accept for the buyer), so this only records what the buyer told us.
     """
     await _assert_platform_running(f"Acceptance release from escrow {escrow_id}")
     repo = get_repository()
@@ -1296,37 +1587,33 @@ async def accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowRespo
     await _refuse_if_compliance_blocked(hold.deal_id)
 
     now = datetime.now(timezone.utc)
+    if not pending_final and any(t.trigger == "ACCEPTED" and t.status == "SUBMITTED" for t in hold.tranches):
+        # Already with the provider (Escrow.com milestone delivered): record it, read the provider.
+        noted = hold.model_copy(update={"buyer_accepted_at": now, "updated_at": now})
+        await repo.save_hold(noted)
+        return EscrowResponse.from_record(await poll_provider(escrow_id, source="poll"))
+
     new_tranches, released_total, all_released = await _release_final_tranches(
         hold, f"Buyer acceptance ({req.accepted_by or 'buyer'}) for deal {hold.deal_id}"
     )
     final_amount = round(released_total - hold.released_total, 2)
-    updated = hold.model_copy(update={
-        "tranches": new_tranches,
-        "released_total": released_total,
-        "fees_total": round(hold.fees_total + _fee_on(hold, final_amount), 2),
-        "status": "RELEASED" if all_released else hold.status,
-        "released_at": now if all_released else hold.released_at,
-        "buyer_accepted_at": now,
-        "updated_at": now,
-    })
-    await repo.save_hold(updated)
+    if final_amount <= _FUNDING_TOLERANCE and any(t.status == "SUBMITTED" for t in new_tranches):
+        submitted = hold.model_copy(update={"tranches": new_tranches, "buyer_accepted_at": now, "updated_at": now})
+        await repo.save_hold(submitted)
+        for t in new_tranches:
+            if t.trigger == "ACCEPTED" and t.status == "SUBMITTED":
+                await _emit(EventTopic.ESCROW_TRANCHE_SUBMITTED, hold.deal_id, {
+                    "escrow_id": escrow_id, "tranche_id": t.tranche_id, "trigger": t.trigger, "amount": t.amount,
+                    "provider": hold.provider, "currency": hold.currency, "accepted_by": req.accepted_by,
+                })
+        return EscrowResponse.from_record(await poll_provider(escrow_id, source="poll"))
 
-    await _emit(EventTopic.ESCROW_TRANCHE_RELEASED, hold.deal_id, {
-        "escrow_id": escrow_id,
-        "tranche_id": "FINAL",
-        "trigger": "ACCEPTED",
-        "event": "buyer_accepted",
-        "amount": final_amount,
-        "released_total": released_total,
-        "fees_total": updated.fees_total,
-        "all_released": all_released,
-        "accepted_by": req.accepted_by,
-        "provider": hold.provider,
-        "currency": hold.currency,
-    })
+    updated = await _apply_final_release(
+        hold, [t.tranche_id for t in pending_final], event="buyer_accepted", source="provider",
+        accepted_by=req.accepted_by, now=now,
+    )
     logger.info("EscrowGuard: buyer accepted escrow %s (deal %s); released_total=%.2f",
-                escrow_id, hold.deal_id, released_total)
-    updated = await _settle_if_complete(updated, now)
+                escrow_id, hold.deal_id, updated.released_total)
     return EscrowResponse.from_record(updated)
 
 
@@ -1436,31 +1723,20 @@ async def check_inspection_windows(now: datetime | None = None) -> int:
             logger.warning("EscrowGuard: window auto-release failed for %s: %s", hold.escrow_id, exc)
             continue
         final_amount = round(released_total - hold.released_total, 2)
-        updated = hold.model_copy(update={
-            "tranches": new_tranches,
-            "released_total": released_total,
-            "fees_total": round(hold.fees_total + _fee_on(hold, final_amount), 2),
-            "status": "RELEASED" if all_released else hold.status,
-            "released_at": now if all_released else hold.released_at,
-            "buyer_accepted_at": now,
-            "updated_at": now,
-        })
-        await repo.save_hold(updated)
-        await _emit(EventTopic.ESCROW_TRANCHE_RELEASED, hold.deal_id, {
-            "escrow_id": hold.escrow_id,
-            "tranche_id": "FINAL",
-            "trigger": "ACCEPTED",
-            "event": "auto_release_window_lapsed",
-            "amount": final_amount,
-            "released_total": released_total,
-            "fees_total": updated.fees_total,
-            "all_released": all_released,
-            "provider": hold.provider,
-            "currency": hold.currency,
-        })
+        if final_amount <= _FUNDING_TOLERANCE and any(t.status == "SUBMITTED" for t in new_tranches):
+            # The provider pays out after its own check — record and wait for it.
+            await repo.save_hold(hold.model_copy(update={"tranches": new_tranches, "updated_at": now}))
+            await _emit(EventTopic.ESCROW_TRANCHE_SUBMITTED, hold.deal_id, {
+                "escrow_id": hold.escrow_id, "tranche_id": "FINAL", "trigger": "ACCEPTED",
+                "event": "window_lapsed", "provider": hold.provider, "currency": hold.currency,
+            })
+            continue
+        await _apply_final_release(
+            hold, [t.tranche_id for t in hold.tranches if t.trigger == "ACCEPTED" and t.status == "PENDING"],
+            event="auto_release_window_lapsed", source="provider", now=now,
+        )
         logger.info("EscrowGuard: auto-released final tranche for %s (deal %s) — window lapsed",
                     hold.escrow_id, hold.deal_id)
-        await _settle_if_complete(updated, now)
         released += 1
     return released
 
@@ -1477,6 +1753,7 @@ async def run_inspection_watcher() -> None:
         try:
             await asyncio.sleep(interval)
             await check_inspection_windows()
+            await poll_open_escrows()
             await check_reconciliation()
         except asyncio.CancelledError:
             logger.info("EscrowGuard: escrow watcher stopped")
@@ -1760,19 +2037,235 @@ async def check_reconciliation() -> int:
     return flagged
 
 
-async def list_escrow_providers() -> list[dict[str, Any]]:
-    """Supported neutral-escrow providers + the pay-in methods each offers.
+# ---------------------------------------------------------------------------
+# Reading the provider — funding and payouts are the provider's word
+# ---------------------------------------------------------------------------
 
-    Powers the buyer's choice on the PI (DealMaker §3.1). ``default`` marks the
-    configured fallback (``escrow_default_provider``).
-    """
+NEUTRAL_PROVIDERS = ("tazapay", "escrow_com")
+
+
+async def poll_provider(escrow_id: str, *, event: dict[str, Any] | None = None,
+                        source: str = "poll") -> EscrowHoldRecord:
+    """Read the escrow on the provider and apply what changed: the buyer's
+    payment (FUNDED / shortfall), tranches the provider paid out, a milestone
+    the buyer rejected (dispute), an escrow closed before anyone paid.
+
+    Used by both provider webhooks (the payload is never trusted on its own —
+    the escrow is fetched), by the escrow watcher and right after a submit."""
+    repo = get_repository()
+    hold = await repo.get_hold(escrow_id)
+    if hold is None:
+        raise HoldNotFoundError(escrow_id)
+    if hold.provider not in NEUTRAL_PROVIDERS or not hold.ext_ref:
+        return hold
+    connector = _payment_connector(hold.provider)
+    try:
+        body = await connector.status(hold.ext_ref)  # type: ignore[union-attr]
+    except ConnectorError as exc:
+        raise ConnectorCallError(f"Escrow status read failed for {escrow_id}: {exc}") from exc
+    view = connector.interpret_status(body, hold.tranches, event)  # type: ignore[union-attr]
+    now = datetime.now(timezone.utc)
+    hold = hold.model_copy(update={
+        "provider_status": view.get("provider_status") or hold.provider_status,
+        "provider_checked_at": now,
+    })
+    await repo.save_hold(hold)
+
+    # 1. The buyer's payment.
+    if view.get("funded") and hold.status in ("PENDING", "PARTIALLY_FUNDED"):
+        amount = view.get("funded_amount")
+        amount = hold.amount if amount is None else float(amount)
+        changed = hold.status == "PENDING" or hold.funded_amount is None or abs(amount - hold.funded_amount) > _FUNDING_TOLERANCE
+        if changed:
+            payer = _payer_from_provider(hold, await _deal_or_none(hold.deal_id))
+            await _apply_funding(
+                hold, funded_amount=amount, event_id=f"{hold.provider}:funded:{amount:.2f}", ext_ref=hold.ext_ref,
+                payer_name=payer.get("payer_name"), payer_country=payer.get("payer_country"),
+                event_payload={"source": source, "provider": hold.provider, "amount": amount,
+                               "provider_status": view.get("provider_status"), **payer},
+            )
+            hold = await repo.get_hold(escrow_id) or hold
+
+    # 2. Tranches the provider paid out.
+    for tid in view.get("released") or []:
+        current = next((t for t in hold.tranches if t.tranche_id == tid), None)
+        if current is None or current.status == "RELEASED":
+            continue
+        hold = await confirm_tranche_release(escrow_id, tid, source=source)
+
+    # 3. The buyer rejected a milestone on the provider → dispute.
+    rejected = [tid for tid in view.get("rejected") or []
+                if any(t.tranche_id == tid and t.status != "RELEASED" for t in hold.tranches)]
+    if rejected and not hold.disputed and hold.status in ("FUNDED", "RELEASED"):
+        await dispute_escrow(escrow_id, DisputeEscrowRequest(
+            reason=f"{display_name(hold.provider)} reports the buyer rejected {', '.join(rejected)}",
+            raised_by=f"{hold.provider}:{source}",
+        ))
+        hold = await repo.get_hold(escrow_id) or hold
+
+    # 4. Closed before anyone paid.
+    if view.get("cancelled") and hold.status == "PENDING":
+        hold = hold.model_copy(update={"status": "FAILED", "updated_at": now})
+        await repo.save_hold(hold)
+        await _emit(EventTopic.DEAL_EXCEPTION, hold.deal_id, {
+            "source": "escrow_guard", "escrow_id": escrow_id, "category": "PAYMENT_FAILED",
+            "reason": "escrow_closed_unfunded", "provider": hold.provider,
+            "action_required": "reopen_escrow_or_cancel_deal",
+        })
+    else:
+        await _sync_status(hold.deal_id)
+    return hold
+
+
+async def _deal_or_none(deal_id: str) -> Any:
+    try:
+        return await _fetch_deal(deal_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _payer_from_provider(hold: EscrowHoldRecord, deal: Any) -> dict[str, Any]:
+    """Who paid, as far as the provider tells us. Escrow.com takes the money only
+    from the transaction's buyer account (identity-checked by Escrow.com), so the
+    buyer party is the payer; Tazapay's escrow does not report the paying
+    account, so the payer stays unknown and the compliance check asks a person."""
+    if hold.provider == "escrow_com" and deal is not None:
+        buyer = _buyer_details(deal)
+        if buyer.get("name"):
+            return {"payer_name": buyer["name"], "payer_country": buyer.get("country"),
+                    "payer_source": "escrow_com_buyer_account"}
+    return {}
+
+
+async def confirm_tranche_release(escrow_id: str, tranche_id: str, *, source: str,
+                                  provider_ref: str | None = None) -> EscrowHoldRecord:
+    """The provider paid this tranche out of the escrow — book it. Idempotent."""
+    repo = get_repository()
+    hold = await repo.get_hold(escrow_id)
+    if hold is None:
+        raise HoldNotFoundError(escrow_id)
+    tranche = next((t for t in hold.tranches if t.tranche_id == tranche_id), None)
+    if tranche is None:
+        raise HoldNotFoundError(f"{escrow_id}:tranche:{tranche_id}")
+    if tranche.status == "RELEASED":
+        return hold
+    if tranche.trigger == "ACCEPTED":
+        return await _apply_final_release(
+            hold, [tranche_id],
+            event="buyer_accepted_at_provider" if buyer_accepts_at_provider(hold.provider) else "provider_released",
+            source=source,
+        )
+    return await _apply_tranche_release(hold, tranche_id, ext_ref=provider_ref, proof_refs=None, source=source)
+
+
+async def confirm_release_by_staff(escrow_id: str, tranche_id: str, *, provider_ref: str, reason: str,
+                                   confirmed_by: str | None) -> EscrowResponse:
+    """A person saw the payout on the provider's dashboard and records it.
+
+    Only a tranche whose proof already went to the provider (SUBMITTED) can be
+    confirmed this way — this relays the provider's payout, it never replaces it."""
+    repo = get_repository()
+    hold = await repo.get_hold(escrow_id)
+    if hold is None:
+        raise HoldNotFoundError(escrow_id)
+    tranche = next((t for t in hold.tranches if t.tranche_id == tranche_id), None)
+    if tranche is None:
+        raise HoldNotFoundError(f"{escrow_id}:tranche:{tranche_id}")
+    if tranche.status == "RELEASED":
+        return EscrowResponse.from_record(hold)
+    if tranche.status != "SUBMITTED":
+        raise InvalidDealState(hold.deal_id, f"tranche {tranche_id} is {tranche.status}",
+                               "SUBMITTED to the provider first")
+    noted = hold.model_copy(update={"provider_payload": {
+        **hold.provider_payload,
+        "staff_confirmations": [*(hold.provider_payload.get("staff_confirmations") or []), {
+            "tranche_id": tranche_id, "provider_ref": provider_ref, "reason": reason,
+            "confirmed_by": confirmed_by, "at": datetime.now(timezone.utc).isoformat(),
+        }],
+    }})
+    await repo.save_hold(noted)
+    updated = await confirm_tranche_release(escrow_id, tranche_id, source="staff", provider_ref=provider_ref)
+    return EscrowResponse.from_record(updated)
+
+
+async def handle_provider_webhook(provider: str, headers: dict[str, str], raw_body: bytes, *,
+                                  require_signature: bool = False) -> dict[str, Any]:
+    """Tazapay / Escrow.com webhook: verify, find the escrow, then read the
+    escrow on the provider (``poll_provider``) — the payload alone moves nothing."""
+    import json as _json
+    if provider not in NEUTRAL_PROVIDERS:
+        raise HoldNotFoundError(provider)
+    connector = _payment_connector(provider)
+    if not await signature_valid(connector, headers, raw_body, require_signature=require_signature):
+        raise WebhookVerifyError(f"{provider} webhook signature invalid")
+    try:
+        body = _json.loads(raw_body or b"{}")
+    except ValueError as exc:
+        raise WebhookVerifyError(f"{provider} webhook body is not JSON") from exc
+    ref = connector.event_reference(body)  # type: ignore[union-attr]
+    hold = await get_repository().get_hold_by_ext_ref(str(ref)) if ref else None
+    if hold is None:
+        raise HoldNotFoundError(str(ref or "?"))
+    event_id = str(body.get("id") or "") if provider == "tazapay" else ""
+    if event_id and event_id in hold.processed_events:
+        return {"status": "ok", "escrow_id": hold.escrow_id, "deal_id": hold.deal_id, "replayed": True}
+    updated = await poll_provider(hold.escrow_id, event=body, source="webhook")
+    if event_id:
+        latest = await get_repository().get_hold(hold.escrow_id) or updated
+        await get_repository().save_hold(latest.model_copy(update={
+            "processed_events": [*latest.processed_events, event_id]}))
+    return {"status": "ok", "escrow_id": hold.escrow_id, "deal_id": hold.deal_id,
+            "escrow_status": updated.status,
+            "tranches": {t.tranche_id: t.status for t in updated.tranches}}
+
+
+async def poll_open_escrows(now: datetime | None = None) -> int:
+    """Watcher sweep: read every neutral escrow that waits on its provider
+    (unpaid, part-paid, or a tranche SUBMITTED) at most every ``ESCROW_POLL_MINUTES``."""
+    now = now or datetime.now(timezone.utc)
+    every = timedelta(minutes=max(1, int(os.getenv("ESCROW_POLL_MINUTES", "30") or 30)))
+    read = 0
+    for hold in await get_repository().list_holds():
+        if hold.provider not in NEUTRAL_PROVIDERS or not hold.ext_ref:
+            continue
+        waiting = hold.status in ("PENDING", "PARTIALLY_FUNDED") or any(t.status == "SUBMITTED" for t in hold.tranches)
+        if not waiting:
+            continue
+        last = hold.provider_checked_at
+        if last is not None:
+            last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
+            if now - last < every:
+                continue
+        try:
+            await poll_provider(hold.escrow_id, source="poll")
+            read += 1
+        except Exception as exc:  # noqa: BLE001 — one provider outage never stops the sweep
+            logger.warning("EscrowGuard: provider read failed for %s: %s", hold.escrow_id, exc)
+    return read
+
+
+async def list_escrow_providers() -> list[dict[str, Any]]:
+    """The neutral-escrow providers a buyer can choose, what each does, and the
+    configured default (``ESCROW_DEFAULT_PROVIDER``). Disabled ones are listed
+    with ``enabled: false``."""
+    from shared.connectors.escrow import ESCROW_PROVIDER_CATALOG, default_provider, enabled_providers
+    from shared.integration_mode import configured
+
+    enabled = enabled_providers()
+    creds = {"tazapay": ("TAZAPAY_API_KEY", "TAZAPAY_API_SECRET"), "escrow_com": ("ESCROW_COM_API_KEY", "ESCROW_COM_EMAIL")}
     out: list[dict[str, Any]] = []
-    for name in ("tazapay", "escrow_com"):
+    for name, meta in ESCROW_PROVIDER_CATALOG.items():
         conn = _payment_connector(name)
-        methods = await conn.list_payment_methods()  # type: ignore[union-attr]
         out.append({
             "provider": name,
-            "payment_methods": methods,
-            "default": name == settings.escrow_default_provider,
+            "display_name": meta["display_name"],
+            "payment_methods": await conn.list_payment_methods(),  # type: ignore[union-attr]
+            "release_authority": meta["release_authority"],
+            "buyer_pays_by": meta["buyer_pays_by"],
+            "buyer_accepts_at_provider": meta["buyer_accepts_at_provider"],
+            "fee_pct": await _provider_fee_pct(name),
+            "enabled": name in enabled,
+            "configured": configured(*creds[name]),
+            "default": name == default_provider(),
         })
     return out

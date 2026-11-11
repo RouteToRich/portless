@@ -63,11 +63,21 @@ _QUERY_TOKEN_PATH_SUFFIXES = ("/hitl-approval/stream",)
 _PROVIDER_WEBHOOK_PATH_SUFFIXES = (
     "/escrow-guard/webhooks/escrow-funded",
     "/escrow-guard/webhooks/payout",
+    "/escrow-guard/webhooks/tazapay",
+    "/escrow-guard/webhooks/escrow-com",
     "/shield-link/qc/webhook",
     "/shield-link/freight/webhook",
+    "/shield-link/carrier/maersk/webhook",
     "/email-processor/inbound/sendgrid",
     "/email-processor/inbound/mailgun",
 )
+
+
+# Signed read-only links for an outside party with no PortLess sign-in: the
+# escrow provider downloads a tranche's proof sheet. The route itself refuses
+# any call whose ``exp`` / ``sig`` query parameters do not verify
+# (shared/orchestration/escrow_proof.py), signed in or not.
+_SIGNED_LINK_PATH_MARKERS = ("/escrow-guard/proof/",)
 
 
 def _is_public(path: str) -> bool:
@@ -83,6 +93,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # CORS preflight carries no auth header.
         if request.method == "OPTIONS" or _is_public(request.url.path):
+            return await call_next(request)
+        if request.method == "GET" and any(m in request.url.path for m in _SIGNED_LINK_PATH_MARKERS):
             return await call_next(request)
 
         allow_query = any(request.url.path.endswith(s) for s in _QUERY_TOKEN_PATH_SUFFIXES)

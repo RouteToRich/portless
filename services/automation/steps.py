@@ -334,8 +334,10 @@ async def connector_fails(ctx: Ctx, name: str, error: str) -> None:
         from services.docugen import service as docugen
         ctx.patch(docugen, "load_stored_document", AsyncMock(side_effect=google_drive.GoogleDriveError(error)))
         return
-    targets = {"tazapay": (escrow_connectors, "TazapayEscrowConnector"), "payoneer": (payments, "PayoneerConnector"),
-               "cogoport": (shields, "CogoportConnector"), "sgs": (qc_providers, "SgsConnector")}
+    targets = {"tazapay": (escrow_connectors, "TazapayEscrowConnector"),
+               "escrow_com": (escrow_connectors, "EscrowComConnector"), "payoneer": (payments, "PayoneerConnector"),
+               "cogoport": (shields, "CogoportConnector"), "sgs": (qc_providers, "SgsConnector"),
+               "qima": (qc_providers, "QimaConnector")}
     if name not in targets:
         raise NotAutomated(f"Connector failure not automated: {name}")
     module, cls_name = targets[name]
@@ -458,6 +460,9 @@ def _signed(provider: str, raw: bytes, kind: str, age_seconds: int = 0) -> dict[
         key = b"wrong" if kind == "wrong" else b"qa-stripe"
         digest = hmac.new(key, f"{stamp}.".encode() + raw, hashlib.sha256).hexdigest()
         return {"stripe-signature": f"t={stamp},v1={digest}"}
+    if provider == "tazapay":  # Tazapay's own scheme: base64 HMAC over event id + body + created_at
+        from shared.connectors.escrow import tazapay_signature
+        return {"signature": tazapay_signature("wrong" if kind == "wrong" else "qa-tazapay", raw)}
     if provider not in _SIGNATURES:
         raise NotAutomated(f"Signature for provider not automated: {provider}")
     header, secret = _SIGNATURES[provider]

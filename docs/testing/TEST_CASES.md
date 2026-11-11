@@ -904,7 +904,7 @@ Feature: Duplicate events, replay and the automation switch
   @TC-EVT-006 @P1 @exception
   Scenario: A failing handler becomes a deal exception
     Given a deal "D" at status "PO_ISSUED" from fixture "FX-STD"
-    And the connector "sgs" fails with "HTTP 500"
+    And the connector "qima" fails with "HTTP 500"
     When the event "po.issued" for the deal is published
     Then an exception is recorded with "source_event" equal to "PO_ISSUED→QC_BOOKED"
 ```
@@ -2750,7 +2750,7 @@ Feature: Inspection booking, result and supervised loading
     Then the response status is 200
     When I call "POST /shield-link/qc/quote" with body:
       """
-      {"provider":"sgs","quantity_mt":20,"hs_code":"10063020"}
+      {"provider":"qima","quantity_mt":20,"hs_code":"10063020"}
       """
     Then the response status is 200
 
@@ -2763,22 +2763,22 @@ Feature: Inspection booking, result and supervised loading
     Then the response status is 422
 
   @TC-QC-003 @P0 @positive
-  Scenario Outline: Book with each provider
+  Scenario Outline: Only QIMA is booked
     Given a deal "D" at status "PO_ISSUED" from fixture "FX-STD"
     When I call "POST /shield-link/qc" with body:
       """
       {"deal_id":"{D}","provider":"<provider>","idempotency_key":"qc-{D}"}
       """
-    Then the response status is 201
-    And deal "D" has status "SUPPLIER_DISPATCH_READY"
+    Then the response status is <code>
+    And deal "D" has status "<status>"
 
     Examples:
-      | provider |
-      | sgs      |
-      | qima     |
-      | bv       |
-      | intertek |
-      | tuv_sud  |
+      | provider | code | status                  |
+      | qima     | 201  | SUPPLIER_DISPATCH_READY |
+      | sgs      | 422  | PO_ISSUED               |
+      | bv       | 422  | PO_ISSUED               |
+      | intertek | 422  | PO_ISSUED               |
+      | tuv_sud  | 422  | PO_ISSUED               |
 
   @TC-QC-004 @P1 @positive
   Scenario: The buyer-opted provider is used by default
@@ -2794,7 +2794,7 @@ Feature: Inspection booking, result and supervised loading
     Given a deal "D" at status "<status>" from fixture "FX-STD"
     When I call "POST /shield-link/qc" with body:
       """
-      {"deal_id":"{D}","provider":"sgs"}
+      {"deal_id":"{D}","provider":"qima"}
       """
     Then the response status is 422
 
@@ -2817,15 +2817,15 @@ Feature: Inspection booking, result and supervised loading
       | body                                  | code |
       | {}                                    | 422  |
       | {"deal_id":"{D}","provider":"nope"}   | 422  |
-      | {"deal_id":"NOPE","provider":"sgs"}   | 404  |
+      | {"deal_id":"NOPE","provider":"qima"}  | 404  |
 
   @TC-QC-007 @P1 @exception @needs:fake-connector
   Scenario: A provider failure on booking answers 502
     Given a deal "D" at status "PO_ISSUED" from fixture "FX-STD"
-    And the connector "sgs" fails with "HTTP 500"
+    And the connector "qima" fails with "HTTP 500"
     When I call "POST /shield-link/qc" with body:
       """
-      {"deal_id":"{D}","provider":"sgs"}
+      {"deal_id":"{D}","provider":"qima"}
       """
     Then the response status is 502
     And a "FAILED" order exists for the deal
@@ -2976,7 +2976,7 @@ Feature: Inspection booking, result and supervised loading
 
 #### Inspection providers: QIMA by API, SGS and BV by portal
 
-QIMA publishes a REST API (developers.qima.com): the booking goes to `POST /v1.0/inspection`, the status and the report are polled, and the report PDF is downloaded. SGS SMART and BV OneSource Connect are portals with no public API: the booking request goes to the provider's booking desk, and the confirmation and report come back on the signed QC webhook or from staff. The automation worker runs these providers on the in-process sandbox (`services/qc_sandbox`, `QC_SANDBOX_PROVIDERS`). The sandbox uses QIMA's documented requests and responses, and PortLess's own webhook contract for the portals. `{READY_DATE}` is a working day 8 to 10 days out, set by the Given step.
+Only QIMA is booked today (`QC_PROVIDERS_ENABLED`, default `qima`); the SGS and BV scenarios enable their provider first, to keep the dormant connectors covered. QIMA publishes a REST API (developers.qima.com): the booking goes to `POST /v1.0/inspection`, the status and the report are polled, and the report PDF is downloaded. SGS SMART and BV OneSource Connect are portals with no public API: the booking request goes to the provider's booking desk, and the confirmation and report come back on the signed QC webhook or from staff. The automation worker runs these providers on the in-process sandbox (`services/qc_sandbox`, `QC_SANDBOX_PROVIDERS`). The sandbox uses QIMA's documented requests and responses, and PortLess's own webhook contract for the portals. `{READY_DATE}` is a working day 8 to 10 days out, set by the Given step.
 
 ```gherkin
 @phase:qc @api @flow
@@ -3034,7 +3034,8 @@ Feature: Inspection providers, the goods-ready date and the inspection status
 
   @TC-QC-028 @P0 @positive @sandbox
   Scenario Outline: A portal provider confirms and reports by signed webhook
-    Given a deal "D" whose "<provider>" inspection is booked
+    Given the QC provider "<provider>" is enabled
+    And a deal "D" whose "<provider>" inspection is booked
     When the "<provider>" desk confirms the booking by webhook
     Then the response status is 200
     And the QC order has provider status "CONFIRMED"
@@ -3049,14 +3050,16 @@ Feature: Inspection providers, the goods-ready date and the inspection status
 
   @TC-QC-029 @P1 @negative @sandbox
   Scenario: A portal webhook with a wrong signature is refused
-    Given a deal "D" whose "sgs" inspection is booked
+    Given the QC provider "sgs" is enabled
+    And a deal "D" whose "sgs" inspection is booked
     When the "sgs" desk confirms the booking by webhook with a wrong signature
     Then the response status is 401
     And the QC order has provider status "REQUESTED"
 
   @TC-QC-030 @P1 @positive
   Scenario: Staff relay the result read on the provider's portal
-    Given a deal "D" whose "bv" inspection is booked
+    Given the QC provider "bv" is enabled
+    And a deal "D" whose "bv" inspection is booked
     When I call "POST /shield-link/qc/{QC}/status" with body:
       """
       {"status":"REPORT_ISSUED","result":"FAIL","notes":"broken grains above the limit"}
@@ -3066,7 +3069,8 @@ Feature: Inspection providers, the goods-ready date and the inspection status
 
   @TC-QC-031 @P1 @negative
   Scenario Outline: Status relay validation
-    Given a deal "D" whose "bv" inspection is booked
+    Given the QC provider "bv" is enabled
+    And a deal "D" whose "bv" inspection is booked
     When I call "POST /shield-link/qc/<ref>/status" with body:
       """
       <body>
@@ -3154,6 +3158,16 @@ Feature: Inspection providers, the goods-ready date and the inspection status
     And the response field "orders.0.provider_status" is "REQUESTED"
     And the response field "orders.0.channel" is "sandbox"
 
+  @TC-QC-039 @P0 @positive
+  Scenario: A buyer who chose SGS is inspected by QIMA
+    Given a deal "D" at status "PO_ISSUED" from fixture "FX-STD" whose buyer opted for "sgs"
+    When I call "POST /shield-link/qc" with body:
+      """
+      {"deal_id":"{D}"}
+      """
+    Then the response status is 201
+    And the response field "provider" is "qima"
+
   @TC-QC-038 @P2 @positive @sandbox
   Scenario: The kept report is served as a PDF
     Given a deal "D" whose "qima" inspection is booked
@@ -3162,6 +3176,66 @@ Feature: Inspection providers, the goods-ready date and the inspection status
     And I call "GET /shield-link/qc/{QC}/documents/0"
     Then the response status is 200
     And the response is a PDF
+```
+
+#### The buyer's packing requirements
+
+The buyer states its packing before the agreement (`NEGOTIATION_PACKING_REQUIRED`, off in the catalogue run like the other supplier steps). The supplier's order request, the PO and the PI state it, the inspector checks it, and special packing is priced on the cost sheet (`shared/orchestration/packing.py`).
+
+```gherkin
+@phase:qc @api @flow
+Feature: Packing asked, passed on, inspected and priced
+
+  Background:
+    Given I am "staff"
+
+  @TC-PCK-001 @P1 @positive
+  Scenario: Staff record the buyer's packing heard by phone
+    Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
+    When I call "PUT /deals/{D}/packing" with body:
+      """
+      {"text":"50 kg jute bags with our marking printed on each bag, palletised"}
+      """
+    Then the response status is 200
+    And the response field "special" is "true"
+    And the response field "packing.material" is "jute"
+    When I call "GET /deals/{D}/packing"
+    Then the response field "packing.unit_weight_kg" is "50"
+
+  @TC-PCK-002 @P1 @positive
+  Scenario: Standard packing adds no cost
+    Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
+    When I call "PUT /deals/{D}/packing" with body:
+      """
+      {"text":"Your standard export packing is fine"}
+      """
+    Then the response status is 200
+    And the response field "special" is "false"
+    And the response field "surcharge_usd_per_mt" is "0"
+
+  @TC-PCK-003 @P0 @positive
+  Scenario: The PO and the inspection booking carry the buyer's packing
+    Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
+    And the buyer's packing is "25 kg PP woven bags with inner liner"
+    When "staff" approves the pending "ISSUE_PO" gate
+    Then deal "D" has status "SUPPLIER_DISPATCH_READY"
+    And an e-mail containing "checked by the inspector" is composed for the "supplier"
+    And an e-mail containing "The inspector checks the buyer's packing" is composed for the "supplier"
+
+  @TC-PCK-004 @P2 @negative
+  Scenario Outline: Packing validation
+    Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
+    When I call "PUT /deals/<deal>/packing" with body:
+      """
+      <body>
+      """
+    Then the response status is <code>
+
+    Examples:
+      | deal | body                          | code |
+      | {D}  | {}                            | 422  |
+      | {D}  | {"unit_weight_kg":0}          | 422  |
+      | NOPE | {"text":"25 kg bags"}         | 404  |
 ```
 
 ### Phase 8: Documents
@@ -5506,6 +5580,73 @@ Feature: Whole deals from matching to cash
 
   Background:
     Given the browser is signed in as "staff"
+
+  # Played by the LLM journey UC-15 (services/automation/journeys_full.py): no
+  # browser, nothing written into a record by hand, every provider on its
+  # simulator (QIMA, Tazapay, Maersk), the real LLM drafting PortLess's e-mails
+  # and playing the buyer and the supplier. Only the Indian registries
+  # (GSTN / DGFT / MCA / Udyam) answer "active" — they have no sandbox.
+  @TC-E2E-000 @P0 @positive @flow @journey:UC-15
+  Scenario: The whole positive flow, opportunity to cash, touching every service
+    Given a trade-min opportunity for HS "10063020" to "AE" with buyers "B1", "B2" and suppliers "S1" at 900 and "S2" at 940
+    When a deal is created from the opportunity
+    Then deal "D" has status "MATCHING" with 2 buyer candidates and Match Engine scores
+    And no buyer party is set while the outreach funnel is open
+    And each buyer gets an introduction e-mail with its own "[BUY:" token
+    And each supplier gets the RFQ by e-mail with an "[RFQ:" token
+    When "B1" replies that it is interested at a target of 1250 per MT CIF Jebel Ali
+    Then "B1" becomes the buyer party at its own address
+    When "S1" replies to the RFQ with 900 per MT FOB Chennai and its GSTIN and IEC
+    Then the quote is verified and the supplier offer reaches the deal
+    And the match board proposes "B1" × "S1" in a "CONFIRM_MATCH" gate
+    When the operator approves the match
+    Then deal "D" has status "NEGOTIATING" with "S1" as the supplier party
+    And every other proposed pair of the deal is closed as superseded
+    When the LLM negotiation runs: the buyer counters 1200 naming Jebel Ali, a DUPRO, a PSI, a PEO and Tazapay; the supplier offers 910; the buyer counters 1225
+    And the operator approves every drafted e-mail and the agreement
+    Then the deal's inspection plan is "DUPRO, PSI, PEO" and its escrow provider is "tazapay"
+    When the trade compliance review is approved
+    Then the supplier is asked to confirm the order at its own price, in INR with the USD price beside it
+    And the request asks for the full address of its facility, which the scan never had
+    When the supplier confirms by e-mail giving "Factory address: Plot 14, SIPCOT Industrial Estate, Thanjavur, Tamil Nadu 613005" and the operator approves
+    Then the supplier party's address is that facility address
+    Then deal "D" has status "PI_SENT" and the PI carries the agreed price and port "Jebel Ali, AE"
+    When the buyer accepts the PI by e-mail and the operator approves
+    Then deal "D" has status "ESCROW_PENDING" with a Tazapay escrow at the PI value
+    And both parties get the order-confirmed e-mail, neither naming the other
+    When the buyer pays on the Tazapay simulator
+    Then PortLess reads the payment, deal "D" has status "ESCROW_FUNDED" and an "ISSUE_PO" gate waits
+    When the PO gate is approved and the supplier acknowledges the PO naming its goods-ready date
+    Then a DUPRO and a PSI are booked on the QIMA simulator for that date
+    And tranche "T1" is submitted to Tazapay and booked "RELEASED" once Tazapay pays it out
+    When QIMA reports the DUPRO passed
+    Then deal "D" still has status "SUPPLIER_DISPATCH_READY"
+    When QIMA reports the PSI passed
+    Then deal "D" has status "QC_PASSED" and QC status "PASSED"
+    When the inspector records container "MSKU1111111" sealed after supervised loading
+    Then "RELEASE_ESCROW_TRANCHE" and "BOOK_FREIGHT" gates wait and tranche "T2" is paid out on approval
+    When the freight gate is approved
+    Then the booking is on the Maersk simulator and deal "D" has status "IN_TRANSIT"
+    When Maersk confirms the booking
+    Then "SUBMIT_VGM" and "APPROVE_TRANSPORT_DOCUMENT" gates wait
+    When both are approved and Maersk issues the bill of lading
+    Then the VGM is "SUBMITTED" and the eBL is "ISSUED"
+    When QIMA reports the PEO passed and the customs gate is approved
+    Then a customs (CHA) order is filed
+    When Maersk reports the vessel departed and arrived
+    Then deal "D" has status "CLEARED", tranche "T3" is paid out and the supplier is paid up to the retention
+    When Maersk reports the container delivered
+    Then the buyer's acceptance window opens
+    When the buyer writes that it accepts the goods and the operator approves
+    Then tranche "T4" is paid out, the escrow settles and the supplier balance is paid
+    And deal "D" has status "PAID" with the ledger reconciled and the supplier paid exactly the PO value
+    And the double-entry journal balances
+    And the sales contract, inspection order, CI, PL, CoO, SDF, shipping bill, shipping instructions, insurance declaration, acceptance certificate, remittance advice and settlement statement were issued
+    And the Deal Board shows QC "PASSED" and freight "DELIVERED"
+    And the timeline and the evidence pack with its content hash are complete
+    And no e-mail to one party names the other, and none went to a real mailbox
+    And every price PortLess wrote to the Indian supplier is in INR, and its USD quotation is never restated in INR
+    And no gate is left pending and no exception is open
 
   @TC-E2E-001 @P0 @positive
   Scenario: Healthy margin deal, buyer accepts

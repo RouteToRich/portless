@@ -22,13 +22,14 @@ needs (sent to ``<PREFIX>_BOOKING_EMAIL`` by Shield-Link, or entered on the
 portal by an operator); the confirmation and the report arrive on the signed QC
 webhook or from an operator (``POST /shield-link/qc/{ref}/status``).
 
-Graceful degradation: QIMA without credentials (``QIMA_API_ACCESS_TOKEN`` +
-``QIMA_ACCOUNT`` + ``QIMA_PASSWORD``) and the generic adapters without
-``<PREFIX>_API_KEY`` return a stub dict — never raise in a stub.
-
-Sandbox: ``QC_SANDBOX_PROVIDERS=qima,sgs,bv`` (or ``all``) points those
-connectors at ``services.qc_sandbox`` — in process through ASGI, or at
-``QC_SANDBOX_URL``. Tests and automation only; readiness fails in production.
+Live vs sandbox (``shared/integration_mode.py``): with ``INTEGRATION_MODE=live``
+(the default) every provider is really called with the configured credentials —
+a missing key or a ``.env`` placeholder is refused by the provider and surfaces
+as ``ConnectorError``; a portal provider without a real booking-desk address
+refuses to book. Only ``INTEGRATION_MODE=sandbox`` (automation, pytest) answers
+with stubs, and there ``QC_SANDBOX_PROVIDERS=qima,sgs,bv`` (or ``all``) sends
+those providers to the simulator ``services.qc_sandbox`` instead — in process
+through ASGI, or at ``QC_SANDBOX_URL``. Readiness fails in production in sandbox.
 """
 from __future__ import annotations
 
@@ -43,6 +44,8 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+
+from shared.integration_mode import sandbox as stub_mode
 
 from .base import Connector
 
@@ -69,6 +72,7 @@ class ConnectorError(Exception):
 
 SANDBOX_PROVIDERS = ("qima", "sgs", "bv")
 _SANDBOX_HOST = "http://qc-sandbox.local"
+_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 
 
 def sandbox_providers() -> set[str]:
@@ -79,7 +83,8 @@ def sandbox_providers() -> set[str]:
 
 
 def in_sandbox(provider: str) -> bool:
-    return provider in sandbox_providers()
+    """The provider runs on the simulator — only ever in INTEGRATION_MODE=sandbox."""
+    return stub_mode() and provider in sandbox_providers()
 
 
 def _sandbox_client(timeout: float = _TIMEOUT) -> httpx.AsyncClient:
@@ -133,12 +138,19 @@ class QcProviderConnector(Connector):
 
     # ── capability ────────────────────────────────────────────────────────
     def is_configured(self) -> bool:
-        return bool(self._api_key)
+        """A real credential is set (not empty, not a ``.env`` placeholder)."""
+        from shared.integration_mode import is_placeholder
+        return bool(self._api_key) and not is_placeholder(self._api_key)
+
+    @property
+    def stubbed(self) -> bool:
+        """Answers come from a stub: INTEGRATION_MODE=sandbox without the simulator."""
+        return stub_mode()
 
     @property
     def pollable(self) -> bool:
-        """True when ``status`` asks the provider (not just echoes a stub)."""
-        return self.channel == "api" and self.is_configured()
+        """True when ``status`` asks the provider (or its simulator), not a stub."""
+        return self.channel == "api" and not self.stubbed
 
     def _stub_ref(self) -> str:
         return f"{self.ref_prefix}-STUB-{uuid4().hex[:10].upper()}"
@@ -160,13 +172,13 @@ class QcProviderConnector(Connector):
             "currency": "USD",
             "evidence": {"photos": self.provides_photos, "video": self.provides_video},
             "price_source": source,
-            "stub": True,
+            "stub": stub_mode(),
         }
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
         """Fetch inspection availability/price for a given date and location."""
-        if not self._api_key:
-            logger.warning("%s: %s_API_KEY not set — returning stub quote", type(self).__name__, self.env_prefix)
+        if self.stubbed:
+            logger.warning("%s: INTEGRATION_MODE=sandbox — returning stub quote", type(self).__name__)
             return self._estimate(request)
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(f"{self._base_url}/quotes", json=request,
@@ -177,9 +189,9 @@ class QcProviderConnector(Connector):
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         """Book an inspection appointment and return the booking reference."""
-        if not self._api_key:
+        if self.stubbed:
             ref = self._stub_ref()
-            logger.warning("%s: %s_API_KEY not set — returning stub booking %s", type(self).__name__, self.env_prefix, ref)
+            logger.warning("%s: INTEGRATION_MODE=sandbox — returning stub booking %s", type(self).__name__, ref)
             return {
                 "ext_ref": ref,
                 "status": "BOOKED",
@@ -203,7 +215,7 @@ class QcProviderConnector(Connector):
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
         """Poll the status of an existing inspection booking."""
-        if not self._api_key:
+        if self.stubbed:
             return {"ext_ref": ext_ref, "status": "BOOKED", "provider": self.name, "stub": True}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.get(f"{self._base_url}/bookings/{ext_ref}",
@@ -369,7 +381,10 @@ class QimaConnector(QcProviderConnector):
         self._password_md5 = os.getenv("QIMA_PASSWORD_MD5", "").lower() or (
             hashlib.md5(password.encode("utf-8")).hexdigest() if password else "")  # noqa: S324 — QIMA's documented hash
         self._referer = os.getenv("QIMA_REFERER", "https://preprodmy.qima.com/")
-        if self._sandbox and not (self._access_token and self._account and self._password_md5):
+        from shared.integration_mode import is_placeholder
+        real = all(v and not is_placeholder(v) for v in (self._access_token, self._account,
+                                                          os.getenv("QIMA_PASSWORD", "") or self._password_md5))
+        if self._sandbox and not real:
             from services.qc_sandbox import qima as sandbox
             self._access_token = sandbox.SANDBOX_ACCESS_TOKEN
             self._account = sandbox.SANDBOX_ACCOUNT
@@ -377,7 +392,12 @@ class QimaConnector(QcProviderConnector):
             self._referer = sandbox.REFERER
 
     def is_configured(self) -> bool:
-        return self._sandbox or bool(self._access_token and self._account and self._password_md5)
+        from shared.integration_mode import is_placeholder
+        return self._sandbox or all(v and not is_placeholder(v) for v in (self._access_token, self._account, self._password_md5))
+
+    @property
+    def stubbed(self) -> bool:
+        return stub_mode() and not self._sandbox
 
     # ── HTTP plumbing ─────────────────────────────────────────────────────
     def _client(self) -> httpx.AsyncClient:
@@ -435,6 +455,22 @@ class QimaConnector(QcProviderConnector):
         return resp.json().get("content")
 
     # ── booking ───────────────────────────────────────────────────────────
+    def service_type(self, inspection_type: str) -> str:
+        """QIMA ``serviceType`` for a phase: PSI ``QIMA_SERVICE_TYPE`` (1), DUPRO
+        ``QIMA_SERVICE_TYPE_DUPRO`` (2) — both in QIMA's documented list; PEO has no
+        documented booking id, so ``QIMA_SERVICE_TYPE_PEO`` must hold the id QIMA
+        gives the account (the simulator uses 5)."""
+        phase = (inspection_type or "PSI").upper()
+        if phase == "DUPRO":
+            return os.getenv("QIMA_SERVICE_TYPE_DUPRO", "") or "2"
+        if phase == "PEO":
+            value = os.getenv("QIMA_SERVICE_TYPE_PEO", "") or ("5" if self._sandbox else "")
+            if not value:
+                raise ConnectorError("QIMA has no documented service type for a pre-customs clearance inspection (PEO) "
+                                     "— set QIMA_SERVICE_TYPE_PEO to the id QIMA gives your account")
+            return value
+        return os.getenv("QIMA_SERVICE_TYPE", "") or "1"
+
     def build_inspection_order(self, request: dict[str, Any], user_id: str) -> dict[str, Any]:
         """PortLess booking request → QIMA ``InspectionOrder`` (the documented
         ``POST /v1.0/inspection`` body)."""
@@ -452,11 +488,17 @@ class QimaConnector(QcProviderConnector):
         po = request.get("po_number") or request.get("deal_id")
         inspection_date = request.get("inspection_date") or (date.today() + timedelta(days=self.stub_lead_days)).isoformat()
         services = request.get("services") or []
+        from shared.orchestration import packing as packing_mod
+        spec = packing_mod.as_spec(request.get("packing"))
+        checks = packing_mod.qc_checklist(spec)
+        outer = "; ".join(filter(None, ["palletised" if spec and spec.palletised else "",
+                                        "fumigated" if spec and spec.fumigation else "",
+                                        "container lined" if spec and spec.container_lining else ""])) or None
         return {
             "userId": user_id,
             "serviceDate": _qima_date(inspection_date),
             "shipDate": _qima_date(request.get("ship_date") or inspection_date),
-            "serviceType": os.getenv("QIMA_SERVICE_TYPE", "1"),
+            "serviceType": self.service_type(request.get("inspection_type") or "PSI"),
             "bookingType": "General",
             "previousOrderNumber": request.get("previous_order_number"),
             "referenceNumber": po,
@@ -479,8 +521,12 @@ class QimaConnector(QcProviderConnector):
                 "prodReference": request.get("hs_code"),
                 "poNumber": po,
                 "prodQuantity": int(round(quantity)),
-                "expectedFinishedPct": 100,
-                "expectedPackedPct": int(request.get("min_packed_pct") or 80),
+                "expectedFinishedPct": int(request.get("expected_finished_pct") or 100),
+                "expectedPackedPct": (0 if (request.get("inspection_type") or "PSI") == "DUPRO"
+                                      else int(request.get("min_packed_pct") or 80)),
+                "unitPacking": packing_mod.describe(spec) or None,
+                "outerPacking": outer,
+                "sampleReferenceClientComments": " | ".join(filter(None, [*checks, request.get("note")])) or None,
                 "customField1": f"Quantity {quantity:g} MT (metric tonnes)",
                 "refs": [{"poNumber": po, "skuCode": request.get("hs_code") or "", "qty": int(round(quantity))}],
                 "checkList": {
@@ -492,7 +538,10 @@ class QimaConnector(QcProviderConnector):
             }],
             "customField1": request.get("deal_id"),
             "customField2": request.get("tpo_id"),
-            "customField3": "LOADING_SUPERVISION requested" if "LOADING_SUPERVISION" in services else "",
+            "customField3": " · ".join(filter(None, [
+                request.get("inspection_type") or "PSI",
+                "LOADING_SUPERVISION requested" if "LOADING_SUPERVISION" in services else "",
+            ])),
             "performInQimaone": None,
             "allowChangeInspectionDate": os.getenv("QIMA_ALLOW_DATE_CHANGE", "true").lower() in ("1", "true", "yes"),
         }
@@ -503,8 +552,7 @@ class QimaConnector(QcProviderConnector):
         return self._estimate(request, source="catalogue_estimate")
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
-        if not self.is_configured():
-            logger.warning("QimaConnector: QIMA_API_ACCESS_TOKEN / QIMA_ACCOUNT / QIMA_PASSWORD not set — stub booking")
+        if self.stubbed:
             return await super().book(request)
         async with self._client() as client:
             session = await self._session(client)
@@ -556,7 +604,7 @@ class QimaConnector(QcProviderConnector):
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
         """Order status + (once issued) the report result and defect counts."""
-        if not self.is_configured():
+        if self.stubbed:
             return await super().status(ext_ref)
         detail = await self._order_detail(ext_ref)
         out = self._normalise_order(detail)
@@ -581,7 +629,7 @@ class QimaConnector(QcProviderConnector):
         return out
 
     async def documents(self, ext_ref: str, product_ids: list[str] | None = None) -> list[dict[str, Any]]:
-        if not self.is_configured():
+        if self.stubbed:
             return []
         ids = list(product_ids or [])
         if not ids:
@@ -606,7 +654,7 @@ class QimaConnector(QcProviderConnector):
         return resp.content, mime
 
     async def cancel(self, ext_ref: str, reason: str) -> dict[str, Any]:
-        if not self.is_configured():
+        if self.stubbed:
             return {"ext_ref": ext_ref, "cancelled": True, "stub": True}
         resp = await self._call("DELETE", f"/user/{{userId}}/inspection/{ext_ref}", params={"reason": reason or "request by client"})
         return {"ext_ref": ext_ref, "cancelled": bool(self._content(resp, "cancel")), "channel": "api"}
@@ -629,7 +677,12 @@ class PortalQcConnector(QcProviderConnector):
         self._booking_email = os.getenv(f"{self.env_prefix}_BOOKING_EMAIL", "").strip()
 
     def is_configured(self) -> bool:
-        return True  # the portal channel always works; the booking e-mail is optional
+        """A real booking-desk address is set."""
+        return bool(_EMAIL.fullmatch(self._booking_email or ""))
+
+    @property
+    def stubbed(self) -> bool:
+        return stub_mode() and not self._sandbox
 
     @property
     def booking_email(self) -> str:
@@ -641,6 +694,7 @@ class PortalQcConnector(QcProviderConnector):
 
     def booking_request(self, request: dict[str, Any], ref: str) -> dict[str, Any]:
         """What the provider's booking form asks for — sent to the booking desk."""
+        from shared.orchestration import packing as packing_mod
         supplier = request.get("supplier") or {}
         aql = request.get("aql") or {}
         services = request.get("services") or ["PRE_SHIPMENT_INSPECTION"]
@@ -649,6 +703,8 @@ class PortalQcConnector(QcProviderConnector):
             "deal_id": request.get("deal_id"),
             "po_number": request.get("po_number"),
             "services": services,
+            "inspection_type": request.get("inspection_type") or "PSI",
+            "notes": request.get("note"),
             "inspection_date": request.get("inspection_date"),
             "goods_ready_date": request.get("goods_ready_date"),
             "ship_date": request.get("ship_date"),
@@ -661,7 +717,11 @@ class PortalQcConnector(QcProviderConnector):
             "sampling": {"standard": "ISO 2859-1", "level": aql.get("sample_level") or "II",
                          "aql_critical": aql.get("critical") or "0", "aql_major": aql.get("major") or "2.5",
                          "aql_minor": aql.get("minor") or "4.0"},
-            "readiness": {"produced_pct": 100, "packed_pct_min": int(request.get("min_packed_pct") or 80)},
+            "readiness": {"produced_pct": int(request.get("expected_finished_pct") or 100),
+                          "packed_pct_min": (0 if (request.get("inspection_type") or "PSI") == "DUPRO"
+                                             else int(request.get("min_packed_pct") or 80))},
+            "packing": {"required": packing_mod.describe(request.get("packing")) or "supplier's standard export packing",
+                        "checks": packing_mod.qc_checklist(request.get("packing"))},
             "report_to": request.get("report_to"),
         }
 
@@ -671,6 +731,16 @@ class PortalQcConnector(QcProviderConnector):
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         ref = f"{self.ref_prefix}-REQ-{uuid4().hex[:10].upper()}"
         booking = self.booking_request(request, ref)
+        if self.stubbed:
+            logger.warning("%s: INTEGRATION_MODE=sandbox — stub portal booking %s", type(self).__name__, ref)
+            return {"ext_ref": ref, "status": "BOOKED", "provider_status": REQUESTED, "channel": "stub",
+                    "portal": self.portal_name, "booking_request": booking, "provider": self.name,
+                    "provider_display_name": self.display_name, "inspection_date": request.get("inspection_date"),
+                    "evidence": {"photos": self.provides_photos, "video": self.provides_video}, "stub": True}
+        if not self._sandbox and not self.is_configured():
+            raise ConnectorError(
+                f"{self.display_name}: {self.env_prefix}_BOOKING_EMAIL is not a real address — set the "
+                f"{self.portal_name} booking-desk e-mail (the booking request is sent there)")
         if self._sandbox:
             async with _sandbox_client() as client:
                 resp = await client.post(f"/_sandbox/{self.name}/bookings", json=booking)
@@ -882,15 +952,42 @@ def detect_qc_provider_mention(text: str | None) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
+def enabled_qc_providers() -> list[str]:
+    """Providers PortLess books today, in catalogue order. ``QC_PROVIDERS_ENABLED``
+    (comma list or ``all``; default ``qima`` — the only one with a live API
+    integration). The other connectors stay in the code, dormant."""
+    raw = os.getenv("QC_PROVIDERS_ENABLED", "qima").strip().lower()
+    if raw in ("all", "*"):
+        return list(QC_PROVIDER_CATALOG)
+    wanted = {resolve_qc_provider(p) or p.strip() for p in raw.split(",") if p.strip()}
+    return [k for k in QC_PROVIDER_CATALOG if k in wanted] or ["qima"]
+
+
+def qc_provider_enabled(provider: str | None) -> bool:
+    return bool(provider) and provider in enabled_qc_providers()
+
+
+def enabled_qc_catalog() -> dict[str, dict[str, Any]]:
+    return {k: QC_PROVIDER_CATALOG[k] for k in enabled_qc_providers()}
+
+
+def bookable_qc_provider(name: str | None) -> str:
+    """The provider to actually book for a (buyer's) choice: the choice when it
+    is enabled, else the cheapest enabled provider."""
+    key = resolve_qc_provider(name)
+    return key if qc_provider_enabled(key) else cheapest_qc_provider()
+
+
 def cheapest_qc_provider(candidates: list[str] | None = None) -> str:
-    """Registry key of the cheapest provider by indicative fee.
+    """Registry key of the cheapest enabled provider by indicative fee.
 
     ``candidates`` restricts the choice to the buyer's named acceptable
-    agencies (resolved keys); unknown names are ignored. With no (valid)
-    candidates the whole catalog competes — used when the buyer left the
-    choice open ("book whichever is cheaper").
+    agencies (resolved keys); unknown or disabled names are ignored. With no
+    (valid) candidates every enabled provider competes — used when the buyer
+    left the choice open ("book whichever is cheaper").
     """
-    keys = [k for k in (candidates or []) if k in QC_PROVIDER_CATALOG] or list(QC_PROVIDER_CATALOG)
+    enabled = enabled_qc_providers()
+    keys = [k for k in (candidates or []) if k in enabled] or enabled
     return min(keys, key=lambda k: QC_PROVIDER_CATALOG[k]["indicative_fee_usd"])
 
 

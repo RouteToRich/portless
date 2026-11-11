@@ -69,6 +69,27 @@ class ThirdPartyOrderRecord(BaseModel):
     """Reports kept by PortLess: name, file_type, storage_uri, sha256, size, mime, source."""
     last_polled_at: datetime | None = None
     status_history: list[dict[str, Any]] = Field(default_factory=list)
+    inspection_type: str = "PSI"
+    """QC phase: ``DUPRO`` (during production), ``PSI`` (pre-shipment — the release
+    check that moves the deal), ``PEO`` (pre-customs clearance, before the export filing)."""
+
+    # -- carrier booking lifecycle (FREIGHT orders with a carrier API: Maersk) --
+    carrier: str | None = None
+    booking_status: str | None = None
+    """Carrier's own status: RECEIVED / PENDING_UPDATE / CONFIRMED / REJECTED / CANCELLED / COMPLETED."""
+    transport_document_reference: str | None = None
+    ebl_status: str | None = None
+    """DRAFT / APPROVED / ISSUED / SURRENDERED / VOIDED."""
+    ebl_issued_at: datetime | None = None
+    vgm_status: str | None = None
+    """None → not due yet; ``GATED`` (waiting for an operator) / ``SUBMITTED`` / ``FAILED``."""
+    vgm_submitted_at: datetime | None = None
+    containers: list[dict[str, Any]] = Field(default_factory=list)
+    """[{equipment_reference, iso_code, tare_kg, seal, last_event, last_event_at, location}]"""
+    tracking_events: list[dict[str, Any]] = Field(default_factory=list)
+    """Normalised carrier events, oldest first (``shared.connectors.maersk.normalize_events``)."""
+    note: str | None = None
+    """The trade brief sent with the order (``shared.orchestration.trade_brief``)."""
 
     # Audit
     created_at: datetime
@@ -97,6 +118,8 @@ class QcBookingRequest(BaseModel):
     """ISO date the supplier said the goods are 100 % produced and packed."""
     inspection_date: str | None = None
     """ISO date to book; never earlier than the agency's lead time allows."""
+    inspection_type: str = "PSI"
+    """``DUPRO`` / ``PSI`` / ``PEO`` — only a PSI moves the deal (QC_PASSED / QC_FAILED)."""
     idempotency_key: str | None = None
 
 
@@ -148,13 +171,16 @@ class QcProvidersResponse(BaseModel):
 
 class FreightBookingRequest(BaseModel):
     deal_id: str
-    provider: str = "cogoport"
+    provider: str | None = None
+    """``maersk`` (carrier API) / ``cogoport`` / ``freightos``; None → ``FREIGHT_PROVIDER`` (default maersk)."""
     incoterm: str = "FOB"
     origin_port: str | None = None
     destination_port: str | None = None
     container_type: str = "40HC"
     quantity_mt: float | None = None
     hs_code: str | None = None
+    container_numbers: list[str] = Field(default_factory=list)
+    seal_numbers: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
 
 
@@ -298,6 +324,10 @@ class QcOrderView(BaseModel):
 
 class DealQcResponse(BaseModel):
     deal_id: str
+    qc_status: str | None = None
+    """shared.domain.enums.QcStatus — where the inspection stands."""
+    qc_status_label: str | None = None
+    qc_status_detail: str | None = None
     orders: list[QcOrderView]
     readiness: dict[str, Any] = Field(default_factory=dict)
     """The supplier's goods-ready date and whether PortLess is waiting for it."""
@@ -368,11 +398,29 @@ class ThirdPartyOrderResponse(BaseModel):
     provider_status: str | None = None
     provider_order_number: str | None = None
     inspection_date: str | None = None
+    inspection_type: str | None = None
+    carrier: str | None = None
+    booking_status: str | None = None
+    transport_document_reference: str | None = None
+    ebl_status: str | None = None
+    vgm_status: str | None = None
+    vessel: str | None = None
+    voyage: str | None = None
+    etd: str | None = None
     created_at: datetime
 
     @classmethod
     def from_record(cls, r: ThirdPartyOrderRecord) -> "ThirdPartyOrderResponse":
         return cls(
+            inspection_type=r.inspection_type if r.order_type == "QC" else None,
+            carrier=r.carrier,
+            booking_status=r.booking_status,
+            transport_document_reference=r.transport_document_reference,
+            ebl_status=r.ebl_status,
+            vgm_status=r.vgm_status,
+            vessel=r.vessel,
+            voyage=r.voyage,
+            etd=r.etd,
             channel=r.channel,
             provider_status=r.provider_status,
             provider_order_number=r.provider_order_number,

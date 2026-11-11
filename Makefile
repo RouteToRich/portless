@@ -2,7 +2,7 @@
 
 .PHONY: install dev up down gateway deals trade-min match-engine sourcing negotiator \
         dealmaker shield-link docugen escrow-guard hitl-approval exception-resolver \
-        email-gateway email-processor qc-sandbox
+        email-gateway email-processor qc-sandbox escrow-sandbox carrier-sandbox
 
 install:
 	pip install -r requirements.txt
@@ -63,3 +63,11 @@ email-processor:
 # QIMA API contract + SGS / BV portal simulator (tests and demos only; QC_SANDBOX_URL=http://localhost:8014)
 qc-sandbox:
 	uvicorn services.qc_sandbox.main:app --reload --port 8014
+
+# Tazapay API v3 + Escrow.com API simulator (tests and demos only; ESCROW_SANDBOX_URL=http://localhost:8015)
+escrow-sandbox:
+	uvicorn services.escrow_sandbox.main:app --reload --port 8015
+
+# Maersk Ocean Booking / Track & Trace / eBL / VGM simulator (tests and demos only; CARRIER_SANDBOX_URL=http://localhost:8016)
+carrier-sandbox:
+	uvicorn services.carrier_sandbox.main:app --reload --port 8016

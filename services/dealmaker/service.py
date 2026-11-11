@@ -76,7 +76,7 @@ def _render_pi(*, pi_id: str, deal_id: str, deal: Any, buyer_name: str, buyer_ad
                product_description: str, quantity_mt: float, agreed_price: float, currency: str,
                total_value: float, incoterm: str, port_of_destination: str, payment_terms: str,
                validity_days: int, issued_at: datetime, expires_at: datetime,
-               qc_provider: str | None, escrow_provider: str | None) -> str:
+               qc_provider: str | None, escrow_provider: str | None, packing: str = "") -> str:
     from shared.documents.facts import party
     buyer = party(deal, "buyer")
     return render_document(_jinja_env, "pi.html.j2", {
@@ -87,8 +87,20 @@ def _render_pi(*, pi_id: str, deal_id: str, deal: Any, buyer_name: str, buyer_ad
         "port_of_destination": port_of_destination, "port_of_loading": getattr(deal, "port_of_loading", "") or "",
         "payment_terms": payment_terms, "validity_days": validity_days, "issued_at": issued_at,
         "expires_at": expires_at, "qc_provider": qc_provider, "escrow_provider": escrow_provider,
-        "tolerance_pct": _QTY_TOLERANCE_PCT,
+        "tolerance_pct": _QTY_TOLERANCE_PCT, "packing": packing,
     }, exporter_fields=_PI_EXPORTER_FIELDS, required={"buyer address": buyer_address})
+
+
+async def _packing_of(deal_id: str) -> str:
+    """The buyer's packing requirements agreed in the negotiation, as one line."""
+    try:
+        from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+        from shared.orchestration import packing
+        session = await _neg_repo().get_session_by_deal(deal_id)
+        return packing.describe(getattr(session, "packing", None)) if session else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("DealMaker: packing for %s unavailable: %s", deal_id, exc)
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +377,7 @@ async def issue_pi(req: IssuePiRequest) -> PiResponse:
     expires_at = now + timedelta(days=req.validity_days)
 
     # ── Render template ───────────────────────────────────────────────────
+    packing_spec = await _packing_of(req.deal_id)
     html = _render_pi(
         pi_id=pi_id, deal_id=req.deal_id, deal=deal, buyer_name=buyer_name, buyer_address=buyer_address,
         buyer_vat_number=buyer_vat_number, product_description=product_description,
@@ -372,6 +385,7 @@ async def issue_pi(req: IssuePiRequest) -> PiResponse:
         total_value=total_value, incoterm=req.incoterm, port_of_destination=req.port_of_destination,
         payment_terms=req.payment_terms, validity_days=req.validity_days, issued_at=now,
         expires_at=expires_at, qc_provider=req.qc_provider, escrow_provider=req.escrow_provider,
+        packing=packing_spec,
     )
 
     content_hash = _sha256(html)
@@ -395,6 +409,7 @@ async def issue_pi(req: IssuePiRequest) -> PiResponse:
         buyer_vat_number=buyer_vat_number,
         qc_provider=req.qc_provider,
         escrow_provider=req.escrow_provider,
+        packing_spec=packing_spec or None,
         storage_uri=storage_uri,
         content_hash=content_hash,
         issued_at=now,
@@ -495,6 +510,7 @@ async def extend_pi(pi_id: str, req: ExtendPiRequest, by: str) -> PiResponse:
         total_value=pi.total_value, incoterm=pi.incoterm, port_of_destination=pi.port_of_destination,
         payment_terms=pi.payment_terms, validity_days=req.validity_days, issued_at=pi.issued_at,
         expires_at=expires_at, qc_provider=pi.qc_provider, escrow_provider=pi.escrow_provider,
+        packing=pi.packing_spec or "",
     )
     storage_uri = await _write_document(pi.deal_id, f"{pi.pi_id}.html", html)
     updated = pi.model_copy(update={
@@ -620,6 +636,7 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
     )
 
     # ── Render template ───────────────────────────────────────────────────
+    packing_spec = await _packing_of(req.deal_id)
     html = render_document(_jinja_env, "po.html.j2", {
         "po_id": po_id, "deal_id": req.deal_id, "buyer_name": buyer_name,
         "supplier_name": supplier_name, "supplier_address": supplier_address,
@@ -628,7 +645,7 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
         "quantity_mt": req.quantity_mt, "agreed_price": req.agreed_price, "currency": req.currency,
         "total_value": total_value, "incoterm": req.incoterm, "port_of_loading": req.port_of_loading,
         "payment_terms": req.payment_terms, "delivery_deadline": req.delivery_deadline,
-        "quality_spec": req.quality_spec or "", "issued_at": now,
+        "quality_spec": req.quality_spec or "", "packing": packing_spec, "issued_at": now,
     }, exporter_fields=_PO_EXPORTER_FIELDS, required={"supplier address": supplier_address})
 
     content_hash = _sha256(html)
@@ -652,6 +669,7 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
         supplier_gstin=supplier_gstin,
         supplier_iec=supplier_iec,
         quality_spec=req.quality_spec,
+        packing_spec=packing_spec or None,
         net_margin_pct=net_margin_pct,
         margin_floor_pct=floor,
         storage_uri=storage_uri,

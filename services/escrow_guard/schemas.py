@@ -26,7 +26,10 @@ from pydantic import BaseModel, Field
 
 EscrowProviderName = Literal["tazapay", "escrow_com"]
 TrancheTrigger = Literal["PO_ISSUED", "QC_PASSED", "CLEARED", "ACCEPTED"]
-TrancheStatus = Literal["PENDING", "RELEASED"]
+TrancheStatus = Literal["PENDING", "SUBMITTED", "RELEASED"]
+"""``SUBMITTED`` — PortLess sent the tranche's proof to the escrow provider; the
+money is still in the escrow until the provider pays it out (Tazapay verifies
+the documents / the buyer accepts the Escrow.com milestone)."""
 PayoutKind = Literal["supplier_payout", "supplier_balance"]
 """``supplier_payout`` — the main disbursement at CLEARED (capped by the funds
 released from escrow so far); ``supplier_balance`` — the remainder once the
@@ -44,6 +47,14 @@ class TrancheSpec(BaseModel):
     proof_refs: list[str] = Field(default_factory=list)
     ext_ref: str | None = None
     released_at: datetime | None = None
+    submitted_at: datetime | None = None
+    """When the proof went to the provider (status SUBMITTED)."""
+    provider_item_id: str | None = None
+    """The provider's own id for this stage (Escrow.com milestone item id)."""
+    provider_documents: list[str] = Field(default_factory=list)
+    """Document ids the provider returned for the submitted proof (Tazapay ``doc_…``)."""
+    release_source: str | None = None
+    """What confirmed the payout: ``provider`` (immediate), ``webhook``, ``poll`` or ``staff``."""
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +100,10 @@ class EscrowHoldRecord(BaseModel):
     """Estimated provider fees on the amounts released so far."""
     processed_events: list[str] = Field(default_factory=list)
     """Provider webhook event ids already applied (replay protection)."""
+    provider_status: str | None = None
+    """The provider's own status word at the last read (``unpaid`` / ``paid`` / ``funded`` …)."""
+    provider_checked_at: datetime | None = None
+    """Last time the provider was read (webhook re-fetch or watcher poll)."""
 
     # -- final-tranche release authority (buyer acceptance / inspection window) --
     inspection_deadline: datetime | None = None
@@ -168,7 +183,9 @@ class TrancheInput(BaseModel):
 class CreateEscrowRequest(BaseModel):
     """Open a neutral, staged-release escrow with the buyer's chosen provider."""
     deal_id: str
-    provider: EscrowProviderName = "tazapay"
+    provider: EscrowProviderName | None = None
+    """The buyer's choice. None → the PI's ``escrow_provider``, then the
+    negotiation, then the deal, then ``ESCROW_DEFAULT_PROVIDER``."""
     amount: float
     currency: str = "USD"
     payment_method: str | None = None
@@ -190,6 +207,14 @@ class ReleaseTrancheRequest(BaseModel):
     approval_id: str | None = None
     """Over HTTP: the APPROVED gate this release carries out (a retry after its callback failed)."""
     idempotency_key: str | None = None
+
+
+class ProviderReleaseConfirmation(BaseModel):
+    """Staff relay of a payout the provider made (seen on its dashboard / statement)."""
+    provider_ref: str = Field(min_length=3)
+    """The provider's own reference for the payout / verification."""
+    reason: str = Field(min_length=5)
+    confirmed_by: str | None = None
 
 
 class AcceptEscrowRequest(BaseModel):
@@ -277,9 +302,15 @@ class EscrowResponse(BaseModel):
     buyer_accepted_at: datetime | None = None
     disputed: bool = False
     disputed_at: datetime | None = None
+    provider_display: str | None = None
+    provider_status: str | None = None
+    provider_checked_at: datetime | None = None
+    submitted_total: float = 0.0
+    """Proof sent to the provider, payout not confirmed yet."""
 
     @classmethod
     def from_record(cls, r: EscrowHoldRecord) -> "EscrowResponse":
+        from shared.connectors.escrow import display_name
         return cls(
             escrow_id=r.escrow_id,
             deal_id=r.deal_id,
@@ -308,6 +339,10 @@ class EscrowResponse(BaseModel):
             buyer_accepted_at=r.buyer_accepted_at,
             disputed=r.disputed,
             disputed_at=r.disputed_at,
+            provider_display=display_name(r.provider),
+            provider_status=r.provider_status,
+            provider_checked_at=r.provider_checked_at,
+            submitted_total=round(sum((t.amount or 0.0) for t in r.tranches if t.status == "SUBMITTED"), 2),
         )
 
 

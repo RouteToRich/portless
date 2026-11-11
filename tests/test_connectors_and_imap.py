@@ -78,12 +78,14 @@ class TestFreightConnectors:
     @pytest.mark.parametrize("operation", ["quote", "book", "status"])
     async def test_live_call_is_authenticated(self, cls, prefix, header, auth, operation, http, monkeypatch):
         monkeypatch.setenv(f"{prefix}_API_KEY", "K")
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         result = await getattr(cls(), operation)("R1" if operation == "status" else {"a": 1})
         assert result == {"ok": True} and http.requests[0].headers["authorization"] == auth
 
     @pytest.mark.parametrize("operation", ["quote", "book", "status"])
     async def test_provider_error_raises(self, cls, prefix, header, auth, operation, http, monkeypatch):
         monkeypatch.setenv(f"{prefix}_API_KEY", "K")
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         http.status = 503
         with pytest.raises(shields.ConnectorError, match="503"):
             await getattr(cls(), operation)("R1" if operation == "status" else {})
@@ -116,12 +118,14 @@ class TestIcegate:
     @pytest.mark.parametrize("operation", ["book", "status"])
     async def test_live(self, operation, http, monkeypatch):
         monkeypatch.setenv("ICEGATE_API_KEY", "K")
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         assert await getattr(shields.IcegateConnector(), operation)("S" if operation == "status" else {}) == {"ok": True}
         assert http.requests[0].headers["x-api-key"] == "K"
 
     @pytest.mark.parametrize("operation", ["book", "status"])
     async def test_live_failure(self, operation, http, monkeypatch):
         monkeypatch.setenv("ICEGATE_API_KEY", "K")
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         http.status = 500
         with pytest.raises(shields.ConnectorError):
             await getattr(shields.IcegateConnector(), operation)("S" if operation == "status" else {})

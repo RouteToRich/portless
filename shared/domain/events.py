@@ -41,6 +41,17 @@ class EventTopic(str, Enum):
     ESCROW_TRANCHE_RELEASED = "escrow.tranche_released"
     """One staged tranche left the neutral escrow for PortLess (proof-gated
     release, buyer acceptance, or inspection-window lapse)."""
+    ESCROW_TRANCHE_SUBMITTED = "escrow.tranche_submitted"
+    """A tranche's proof went to the escrow provider; the money stays in the
+    escrow until the provider pays it out (Tazapay verification / the buyer
+    accepting the Escrow.com milestone)."""
+    QC_PHASE_RESULT = "qc.phase_result"
+    """A DUPRO (during production) or PEO (pre-customs) inspection reported
+    PASS / FAIL — the deal does not move; the PSI remains the release check."""
+    FREIGHT_BOOKING_UPDATED = "freight.booking_updated"
+    """The carrier's booking changed (confirmed / rejected, containers, vessel)."""
+    TRANSPORT_DOCUMENT_ISSUED = "freight.transport_document_issued"
+    """The carrier issued the bill of lading (number = proof for the export tranche)."""
     ESCROW_SETTLED = "escrow.settled"
     """Every tranche of the escrow is released — the money side of the trade
     is closed (PortLess margin realised, supplier balance payable)."""

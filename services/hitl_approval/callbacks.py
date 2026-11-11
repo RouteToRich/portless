@@ -40,6 +40,18 @@ async def _cb_book_freight(deal_id: str, payload: dict[str, Any]) -> dict | None
     return {"tpo_id": result.tpo_id, "status": result.status}
 
 
+async def _cb_submit_vgm(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Continue: send the verified gross mass to the carrier (SOLAS declaration)."""
+    from services.shield_link.freight import submit_vgm  # type: ignore[import]
+    return await submit_vgm(payload["tpo_id"], payload.get("containers") or [])
+
+
+async def _cb_approve_transport_document(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Continue: approve the carrier's draft bill of lading so it is issued."""
+    from services.shield_link.freight import approve_transport_document  # type: ignore[import]
+    return await approve_transport_document(payload["tpo_id"])
+
+
 async def _cb_issue_po(deal_id: str, payload: dict[str, Any]) -> dict | None:
     """Continue: issue Purchase Order after HITL approval."""
     from services.dealmaker.service import issue_po  # type: ignore[import]
@@ -388,6 +400,8 @@ async def _rcb_log_only(deal_id: str, payload: dict[str, Any]) -> dict | None:
 
 _CALLBACK_MAP = {
     "BOOK_FREIGHT": _cb_book_freight,
+    "SUBMIT_VGM": _cb_submit_vgm,
+    "APPROVE_TRANSPORT_DOCUMENT": _cb_approve_transport_document,
     "ISSUE_PO": _cb_issue_po,
     "RELEASE_SUPPLIER_PAYOUT": _cb_release_supplier_payout,
     "FILE_CUSTOMS": _cb_file_customs,

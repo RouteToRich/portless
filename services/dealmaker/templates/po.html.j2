@@ -22,7 +22,7 @@
   <tbody>
     <tr>
       <td>1</td>
-      <td><strong>{{ product_description }}</strong>{% if quality_spec %}<div class="small muted">{{ quality_spec }}</div>{% endif %}</td>
+      <td><strong>{{ product_description }}</strong>{% if quality_spec %}<div class="small muted">{{ quality_spec }}</div>{% endif %}{% if packing %}<div class="small"><strong>Packing:</strong> {{ packing }}</div>{% endif %}</td>
       <td class="mono">{{ hs_code }}</td>
       <td class="num">{{ quantity_mt | qty }}</td>
       <td class="num">{{ agreed_price | money(None, 2) }}</td>

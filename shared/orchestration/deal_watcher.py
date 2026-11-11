@@ -202,8 +202,9 @@ async def _sweep_dispatch_ready(deal: Any, now: datetime, counts: dict[str, int]
     """Inspection booked: poll an API provider (QIMA) for the order status and
     report (every ``QC_POLL_MINUTES``); remind the supplier only once the
     inspection date plus ``QC_REPORT_GRACE_HOURS`` has passed without a result."""
-    from shared.orchestration import notifications, qc_schedule
+    from shared.orchestration import notifications, qc_schedule, qc_status
     order = None
+    await qc_status.sync(deal.deal_id)  # time-based: OVERDUE once the report is late
     try:
         from services.shield_link import qc as shield_qc  # type: ignore[import]
         from services.shield_link.repository import get_repository as sl_repo  # type: ignore[import]
@@ -229,7 +230,12 @@ async def _sweep_dispatch_ready(deal: Any, now: datetime, counts: dict[str, int]
 
 
 async def _sweep_in_transit(deal: Any, now: datetime, counts: dict[str, int]) -> None:
-    """Poll the carrier for the container; the generic stall SLA still applies."""
+    """Poll the carrier for the container; the generic stall SLA still applies.
+    A carrier booking (Maersk) is read through its own API every
+    ``FREIGHT_POLL_MINUTES``; a forwarder booking uses the tracking actor."""
+    if await _carrier_sync(deal, counts):
+        await _sweep_generic(deal, "IN_TRANSIT", now, counts)
+        return
     every = _hours("TRACKING_POLL_HOURS", 12.0)
     last = _last_tracking_poll.get(deal.deal_id)
     if last is None or now - last >= timedelta(hours=every):
@@ -245,9 +251,26 @@ async def _sweep_in_transit(deal: Any, now: datetime, counts: dict[str, int]) ->
     await _sweep_generic(deal, "IN_TRANSIT", now, counts)
 
 
+async def _carrier_sync(deal: Any, counts: dict[str, int]) -> bool:
+    """True when the deal has a carrier booking (read here when due)."""
+    try:
+        from services.shield_link import freight  # type: ignore[import]
+        result = await freight.sync_deal(deal.deal_id, force=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("DealWatcher: carrier read failed for %s: %s", deal.deal_id, exc)
+        return False
+    if result.get("status") == "no_booking":
+        return False
+    if result.get("milestone"):
+        counts["tracking_updates"] = counts.get("tracking_updates", 0) + 1
+    return True
+
+
 async def _sweep_cleared(deal: Any, now: datetime, counts: dict[str, int]) -> None:
     """Delivery never confirmed: open the acceptance window after the fallback
-    period so the final tranche and the supplier's balance are not stuck."""
+    period so the final tranche and the supplier's balance are not stuck.
+    A carrier booking keeps being read until the container is delivered."""
+    await _carrier_sync(deal, counts)
     try:
         from services.escrow_guard.repository import get_repository as _eg_repo  # type: ignore[import]
         hold = await _eg_repo().get_hold_by_deal(deal.deal_id)

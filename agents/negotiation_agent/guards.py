@@ -124,14 +124,22 @@ def is_price_plausible(
 
 def missing_agreement_info(session: NegotiationSession) -> list[str]:
     """Human-readable list of required items not yet received. Empty = complete."""
+    from shared.connectors.qc_providers import QC_PROVIDER_CATALOG, enabled_qc_providers
+    from shared.orchestration import packing
     missing: list[str] = []
-    if not session.qc_provider:
+    enabled = enabled_qc_providers()
+    if not session.qc_provider and len(enabled) > 1:  # one provider → nothing to choose
         missing.append(
-            "buyer's choice of QC inspection agency "
-            "(SGS / QIMA / Bureau Veritas / Intertek / TÜV SÜD)"
+            "buyer's choice of QC inspection agency ("
+            + " / ".join(QC_PROVIDER_CATALOG[k]["display_name"] for k in enabled) + ")"
         )
     if not session.quantity_mt:
         missing.append("confirmed order quantity (MT)")
+    if packing.required() and not getattr(session, "packing", None):
+        missing.append(
+            "buyer's packing requirements (bag type and net weight, liner, marking / private label, pallets, "
+            "fumigation) — or confirmation that the supplier's standard export packing is acceptable"
+        )
     return missing
 
 

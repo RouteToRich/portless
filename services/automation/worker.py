@@ -127,12 +127,20 @@ async def _run(args: argparse.Namespace, guard: NetworkGuard) -> int:
             # pytest suite it runs without those two steps. The LLM journeys run
             # the real flow with both on.
             commitment_env = {k: os.environ.get(k) for k in ("SUPPLIER_CONFIRMATION_REQUIRED", "PO_ACK_REQUIRED",
-                                                             "QC_READINESS_DATE_REQUIRED")}
+                                                             "QC_READINESS_DATE_REQUIRED", "NEGOTIATION_PACKING_REQUIRED",
+                                                             "QC_FACILITY_ADDRESS_REQUIRED")}
             if cases:
                 os.environ["SUPPLIER_CONFIRMATION_REQUIRED"] = "false"
                 os.environ["PO_ACK_REQUIRED"] = "false"
                 os.environ["QC_READINESS_DATE_REQUIRED"] = "false"
+                os.environ["QC_FACILITY_ADDRESS_REQUIRED"] = "false"
+                os.environ["NEGOTIATION_PACKING_REQUIRED"] = "false"
+            linked: list[tuple[Any, str]] = []  # (case, journey id): a Gherkin case played by an LLM journey
             for case in cases:
+                journey_id = next((tag.split(":", 1)[1] for tag in case.tags if tag.startswith("@journey:")), None)
+                if journey_id:
+                    linked.append((case, journey_id))
+                    continue
                 if case.layer == "ui":
                     for i, row in enumerate(case.iterations()):
                         await sink.result({"tc_id": case.tc_id, "iteration": i, "row": row, "status": "needs_browser",
@@ -149,11 +157,25 @@ async def _run(args: argparse.Namespace, guard: NetworkGuard) -> int:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+            wanted = ",".join(filter(None, [args.only, *(jid for _, jid in linked)])) if args.only else args.only
             if args.scope in ("all", "journeys"):
                 from services.automation import journeys
                 state["all_llm"] = True
-                await journeys.run_all(sink, mail, guard, background, only=args.only)
+                await journeys.run_all(sink, mail, guard, background, only=wanted)
                 state["all_llm"] = False
+            elif linked:
+                from services.automation import journeys
+                state["all_llm"] = True
+                await journeys.run_all(sink, mail, guard, background, only=",".join(jid for _, jid in linked))
+                state["all_llm"] = False
+            for case, journey_id in linked:
+                played = next((r for r in reversed(sink.results) if r["tc_id"] == journey_id), None)
+                result = dict(played) if played else {
+                    "status": "not_automated", "error": f"Played by journey {journey_id}, which did not run.",
+                    "steps": [], "emails": [], "duration_ms": 0}
+                result.update(tc_id=case.tc_id, iteration=0, row={}, phase=case.phase, layer=case.layer, journey=journey_id)
+                await sink.result(result)
+                print(f"{case.tc_id}[0] {result['status']} (journey {journey_id}): {(result.get('error') or '')[:300]}", flush=True)
 
     counts: dict[str, int] = {}
     for r in sink.results:

@@ -168,6 +168,33 @@ def parties(uid: str, market: str = MARKET) -> tuple[Any, Any, dict[str, str]]:
     return buyer, supplier, who
 
 
+async def _on_provider_simulator(hold: Any, who: dict[str, Any], market: str, funded: float | None) -> Any:
+    """With ``ESCROW_SANDBOX_PROVIDERS`` the seeded escrow also exists on the provider
+    simulator (opened through the real connector request, paid by the simulated
+    buyer), so a later release / poll talks to a provider that knows it."""
+    from shared.connectors.escrow import in_simulator
+
+    if not in_simulator(hold.provider) or hold.status in ("REFUNDED", "FAILED"):
+        return hold
+    from services.escrow_guard.service import _payment_connector
+    from services.escrow_sandbox.main import buyer_pays
+
+    booked = await _payment_connector(hold.provider).book({
+        "amount": hold.amount, "currency": hold.currency, "reference": hold.escrow_id, "deal_id": hold.deal_id,
+        "escrow_id": hold.escrow_id, "description": f"PortLess escrow for deal {hold.deal_id}",
+        "buyer": {"name": who["buyer_company"], "email": who["buyer_mail"], "country": market},
+        "tranches": [{"tranche_id": t.tranche_id, "trigger": t.trigger, "amount": t.amount} for t in hold.tranches],
+    })
+    items = booked.get("tranche_items") or {}
+    if funded is not None:
+        await buyer_pays(hold.provider, booked["ext_ref"], None if funded >= hold.amount - 0.01 else funded)
+    return hold.model_copy(update={
+        "ext_ref": booked["ext_ref"], "checkout_url": booked.get("checkout_url"),
+        "tranches": [t.model_copy(update={"provider_item_id": items.get(t.tranche_id)}) for t in hold.tranches],
+        "provider_payload": {**hold.provider_payload, "chosen_by": "seed"},
+    })
+
+
 async def seed_deal(status: str, fixture: str = "FX-STD", *, released: list[str] | None = None, org_id: str = "qa-org-a",
                     market: str = MARKET, provider: str = "tazapay", funded: float | None = None, loading: bool | None = None,
                     window_open: bool = False, po: bool = True, target_price: float | None | str = "fixture",
@@ -273,6 +300,7 @@ async def seed_deal(status: str, fixture: str = "FX-STD", *, released: list[str]
             delivery_confirmed_at=now if window_open else None,
             settled_at=now if settled else None,
         )
+        hold = await _on_provider_simulator(hold, who, market, got)
         await eg_repo().save_hold(hold)
         ids["ESC"], ids["ESC_REF"] = hold.escrow_id, hold.ext_ref
     if level >= rank("PO_ISSUED") and po:

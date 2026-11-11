@@ -1,6 +1,8 @@
 """HTTP routes for the Deals service (LLD 4.2)."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -233,13 +235,72 @@ async def update_party(
     """
     await _org_deal(deal_id, user)
     try:
-        return await service.update_party(
-            deal_id, role, payload.model_dump(exclude_none=True), source="operator"
-        )
+        updates = payload.model_dump(exclude_none=True)
+        deal = await service.update_party(deal_id, role, updates, source="operator")
+        if role.lower() == "supplier" and updates.get("address"):
+            # An inspection waiting for the facility address is booked now.
+            from shared.orchestration import supplier_commitment
+            try:
+                if await supplier_commitment.address_known(deal_id) is not None:
+                    deal = await service.get_deal(deal_id)
+            except Exception as exc:  # noqa: BLE001 — the address is saved either way
+                logging.getLogger(__name__).warning("Deal %s: QC booking after the address update failed: %s", deal_id, exc)
+        return deal
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except DealNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+class InspectionPlanChoice(BaseModel):
+    types: list[str]
+    """Any of DUPRO / PSI / PEO (PSI is always included)."""
+    reason: str = ""
+
+
+@router.put("/{deal_id}/inspection-plan", response_model=DealRecord)
+async def set_inspection_plan(
+    deal_id: str, body: InspectionPlanChoice, user: AuthUser = Depends(require_portless),
+) -> DealRecord:
+    """Staff record the buyer's inspection requirement (DUPRO / PSI / PEO)."""
+    from shared.orchestration import inspection_plan, qc_status
+    try:
+        await service.get_deal(deal_id)
+    except DealNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    unknown = [t for t in body.types if str(t).upper() not in inspection_plan.ORDER]
+    if unknown:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"unknown inspection type(s): {unknown}")
+    await inspection_plan.set_plan(deal_id, body.types, "operator")
+    await qc_status.sync(deal_id)
+    logging.getLogger(__name__).info("Deals: inspection plan of %s set by %s (%s)", deal_id,
+                                     user.email or user.user_id, body.reason[:200])
+    return await service.get_deal(deal_id)
+
+
+class EscrowProviderChoice(BaseModel):
+    provider: str
+    """``tazapay`` or ``escrow_com`` (``Escrow.com`` / ``Tazapay`` accepted)."""
+    reason: str = ""
+
+
+@router.put("/{deal_id}/escrow-provider", response_model=DealRecord)
+async def set_escrow_provider(
+    deal_id: str, body: EscrowProviderChoice, user: AuthUser = Depends(require_portless),
+) -> DealRecord:
+    """Staff record the buyer's escrow provider (said by phone / in a meeting).
+    Refused once the escrow is open, or for a provider that is not enabled."""
+    from shared.orchestration import escrow_status
+    try:
+        await service.get_deal(deal_id)
+    except DealNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if not await escrow_status.set_choice(deal_id, body.provider, "operator"):
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            detail="Provider unknown / not enabled, or the escrow is already open")
+    logging.getLogger(__name__).info("Deals: escrow provider of %s set to %s by %s (%s)", deal_id, body.provider,
+                                     user.email or user.user_id, body.reason[:200])
+    return await service.get_deal(deal_id)
 
 
 @router.post("/{deal_id}/enrich", response_model=EnrichmentResult)
@@ -488,6 +549,67 @@ async def supplier_commitment_po_ack(
     from shared.orchestration import supplier_commitment
     tpo = await supplier_commitment.acknowledge_po(deal_id, by=f"{user.email or user.user_id}: {body.reason}")
     return {"deal_id": deal_id, "status": "acknowledged", "qc_order": getattr(tpo, "tpo_id", None)}
+
+
+# ---------------------------------------------------------------------------
+# Buyer's packing requirements (shared/orchestration/packing.py)
+# ---------------------------------------------------------------------------
+
+class PackingUpdate(BaseModel):
+    """The buyer's packing — structured fields, or its own words in ``text``."""
+    text: str | None = None
+    standard_ok: bool | None = None
+    material: str | None = None
+    unit_weight_kg: float | None = Field(default=None, gt=0, le=2000)
+    inner_liner: bool | None = None
+    marking: str | None = None
+    private_label: bool | None = None
+    palletised: bool | None = None
+    fumigation: bool | None = None
+    container_lining: bool | None = None
+    notes: str | None = None
+
+
+@router.get("/{deal_id}/packing")
+async def get_packing(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """What the buyer asked for, what it adds to the cost, and what the inspector checks."""
+    await _org_deal(deal_id, user)
+    from agents.negotiation_agent.repository import get_repository as neg_repo  # type: ignore[import]
+    from shared.orchestration import packing
+    session = await neg_repo().get_session_by_deal(deal_id)
+    spec = getattr(session, "packing", None) if session else None
+    extra, parts = packing.surcharge(spec, getattr(session, "quantity_mt", None) or 20.0)
+    return {"deal_id": deal_id, "packing": spec, "description": packing.describe(spec) or None,
+            "special": packing.special(spec), "surcharge_usd_per_mt": extra, "surcharge_parts": parts,
+            "in_supplier_price": bool(getattr(session, "packing_in_supplier_price", False)),
+            "qc_checks": packing.qc_checklist(spec)}
+
+
+@router.put("/{deal_id}/packing")
+async def set_packing(deal_id: str, body: PackingUpdate, user: AuthUser = Depends(require_portless)) -> dict:
+    """Record the buyer's packing heard by phone, or correct it. The cost sheet
+    is repriced; the order request, PO, PI and inspection carry it from here."""
+    await _org_deal(deal_id, user)
+    from agents.negotiation_agent.repository import get_repository as neg_repo  # type: ignore[import]
+    from agents.negotiation_agent.service import refresh_cost_sheet  # type: ignore[import]
+    from shared.orchestration import packing
+    session = await neg_repo().get_session_by_deal(deal_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="the deal has no negotiation yet")
+    fields = body.model_dump(exclude_none=True, exclude={"text"})
+    spec = packing.parse_packing(body.text) if body.text else None
+    if body.text and spec is None:
+        spec = packing.PackingSpec(notes=body.text[:300], raw=body.text)
+    if fields:
+        spec = packing.PackingSpec(**{**(spec.model_dump() if spec else {}), **fields})
+    if spec is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="give the packing as text or fields")
+    spec.source = f"operator:{user.email or user.user_id}"
+    session.packing = packing.merge(session.packing, spec).model_dump(mode="json") if not fields else spec.model_dump(mode="json")
+    session.packing_in_supplier_price = False  # a changed packing must be confirmed by the supplier again
+    session = await refresh_cost_sheet(session)
+    await neg_repo().save_session(session)
+    return await get_packing(deal_id, user)
 
 
 # ---------------------------------------------------------------------------

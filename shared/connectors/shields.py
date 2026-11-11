@@ -5,10 +5,11 @@ QC provider set (SGS, QIMA, Bureau Veritas, Intertek, TÜV SÜD) is a distinct,
 buyer-selectable ecosystem, separated from transportation management. The key
 QC symbols are re-exported here for backward compatibility.
 
-Each connector checks for its API key at call-time:
-  • Key present  → attempts real HTTP call; any error becomes a ConnectorError.
-  • Key absent   → returns a realistic stub dict so the deal flow can proceed
-                   in dev / CI without live credentials.
+``INTEGRATION_MODE`` (``shared/integration_mode.py``) decides, not the key:
+  • live (default) → always a real HTTP call with the configured credentials;
+    a missing key or a ``your_..._here`` placeholder is refused by the provider
+    and surfaces as ``ConnectorError`` — never a made-up success.
+  • sandbox        → a realistic stub (automation runs and pytest only).
 
 All connectors share the uniform ``quote / book / status / webhook_verify``
 interface defined in ``shared.connectors.base``.
@@ -24,6 +25,8 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+
+from shared.integration_mode import sandbox as stub_mode
 
 from .base import Connector
 from .qc_providers import (  # noqa: F401 — re-exported for backward compat
@@ -58,8 +61,8 @@ class CogoportConnector(Connector):
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
         """Fetch FCL/LCL spot rates for origin→destination with HS code."""
-        if not self._api_key:
-            logger.warning("CogoportConnector: COGOPORT_API_KEY not set — returning stub rates")
+        if stub_mode():
+            logger.warning("CogoportConnector: INTEGRATION_MODE=sandbox — returning stub rates")
             return {
                 "provider": "cogoport",
                 "origin": request.get("origin_port", "Chennai, IN"),
@@ -82,9 +85,9 @@ class CogoportConnector(Connector):
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         """Confirm container booking and return booking reference + BL draft date."""
-        if not self._api_key:
+        if stub_mode():
             ref = self._stub_ref()
-            logger.warning("CogoportConnector: COGOPORT_API_KEY not set — returning stub booking %s", ref)
+            logger.warning("CogoportConnector: INTEGRATION_MODE=sandbox — returning stub booking %s", ref)
             return {
                 "ext_ref": ref,
                 "status": "CONFIRMED",
@@ -107,7 +110,7 @@ class CogoportConnector(Connector):
             return resp.json()
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
-        if not self._api_key:
+        if stub_mode():
             return {"ext_ref": ext_ref, "status": "IN_TRANSIT", "stub": True}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.get(
@@ -147,8 +150,8 @@ class FreightosConnector(Connector):
         return f"FTO-STUB-{uuid4().hex[:10].upper()}"
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
-        if not self._api_key:
-            logger.warning("FreightosConnector: FREIGHTOS_API_KEY not set — returning stub rates")
+        if stub_mode():
+            logger.warning("FreightosConnector: INTEGRATION_MODE=sandbox — returning stub rates")
             return {
                 "provider": "freightos",
                 "origin": request.get("origin_port", "Chennai, IN"),
@@ -168,9 +171,9 @@ class FreightosConnector(Connector):
             return resp.json()
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
-        if not self._api_key:
+        if stub_mode():
             ref = self._stub_ref()
-            logger.warning("FreightosConnector: FREIGHTOS_API_KEY not set — returning stub booking %s", ref)
+            logger.warning("FreightosConnector: INTEGRATION_MODE=sandbox — returning stub booking %s", ref)
             return {
                 "ext_ref": ref,
                 "status": "CONFIRMED",
@@ -191,7 +194,7 @@ class FreightosConnector(Connector):
             return resp.json()
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
-        if not self._api_key:
+        if stub_mode():
             return {"ext_ref": ext_ref, "status": "IN_TRANSIT", "stub": True}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.get(
@@ -232,11 +235,11 @@ class IcegateConnector(Connector):
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         """Submit a Shipping Bill to ICEGATE. Returns SB number and LEO."""
-        if not self._api_key:
+        if stub_mode():
             sb_num = f"SB{uuid4().hex[:8].upper()}"
             leo = f"LEO-{uuid4().hex[:8].upper()}"
             logger.warning(
-                "IcegateConnector: ICEGATE_API_KEY not set — returning stub SB %s / LEO %s",
+                "IcegateConnector: INTEGRATION_MODE=sandbox — returning stub SB %s / LEO %s",
                 sb_num, leo,
             )
             return {
@@ -256,7 +259,7 @@ class IcegateConnector(Connector):
             return resp.json()
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
-        if not self._api_key:
+        if stub_mode():
             return {"shipping_bill_number": ext_ref, "status": "FILED", "stub": True}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.get(
@@ -281,7 +284,11 @@ _FREIGHT_CONNECTORS: dict[str, type] = {
 }
 
 
-def get_freight_connector(provider: str) -> CogoportConnector | FreightosConnector:
-    """Return an instantiated freight connector. Defaults to Cogoport."""
+def get_freight_connector(provider: str):
+    """Return an instantiated freight connector (``maersk`` = carrier booking,
+    ``cogoport`` / ``freightos`` = forwarders). Defaults to Cogoport."""
+    if provider.lower() == "maersk":
+        from .maersk import MaerskConnector
+        return MaerskConnector()
     cls = _FREIGHT_CONNECTORS.get(provider.lower(), CogoportConnector)
     return cls()

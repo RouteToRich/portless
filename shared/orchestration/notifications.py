@@ -137,20 +137,159 @@ def _tpl_escrow_opened(ctx: dict[str, Any]) -> tuple[str, str]:
         f"    • {int(round((t.pct or 0) * 100))}% {_release_when(t.trigger)}\n"
         for t in (getattr(esc, "tranches", None) or [])
     )
+    from shared.connectors.escrow import ESCROW_PROVIDER_CATALOG, display_name
+
+    provider = display_name(esc.provider)
+    meta = ESCROW_PROVIDER_CATALOG.get(str(esc.provider), {})
+    if esc.checkout_url:
+        pay_line = f"  Payment link     : {esc.checkout_url}\n"
+    elif esc.provider == "escrow_com":
+        pay_line = "  How to pay       : Escrow.com has e-mailed you an invitation to this transaction — fund it from there\n"
+    else:
+        pay_line = ""
+    if meta.get("buyer_accepts_at_provider"):
+        authority = (f"{provider} pays each stage out only after you accept it on {provider} — or when that "
+                     f"stage's inspection period ends without an objection from you.")
+    elif meta:
+        authority = (f"{provider} pays each stage out only after it has checked our documents for that stage "
+                     f"(purchase order, inspection report, bill of lading); the last stage waits for your "
+                     f"acceptance of the goods.")
+    else:
+        authority = "The provider releases each stage only on the schedule above."
     body = (
         f"{_dear(ctx.get('buyer_name'))},\n\n"
         f"Thank you for accepting Proforma Invoice {ctx.get('pi_id', '')}. A neutral escrow "
-        f"has been opened with {str(esc.provider).replace('_', '.').title()} for this order.\n\n"
-        f"  Escrow reference : {esc.escrow_id}\n"
+        f"has been opened with {provider} for this order.\n\n"
+        f"  Escrow provider  : {provider}\n"
+        f"  Escrow reference : {esc.escrow_id}"
+        + (f" ({provider} ref {esc.ext_ref})" if getattr(esc, "ext_ref", None) else "") + "\n"
         f"  Amount to fund   : {_fmt_money(esc.amount, esc.currency)}\n"
-        + (f"  Payment link     : {esc.checkout_url}\n" if esc.checkout_url else "")
+        + pay_line
+        + (f"  Pay by           : {meta['buyer_pays_by']}\n" if meta.get("buyer_pays_by") else "")
         + ("\n  Staged release schedule:\n" + tranches if tranches else "")
-        + "\nFunds are held by the escrow provider — never by us — and are released only "
-        "on the schedule above: the production advance when the purchase order is placed, "
-        "the rest against the independent QC report, the shipping documents and delivery. "
+        + f"\nFunds are held by {provider} — never by us. {authority} "
         "Production starts as soon as the escrow is funded."
         + _signature()
     )
+    return subject, body
+
+
+
+def _plan_lines(types: list[str] | None, agency: str | None) -> str:
+    from shared.orchestration import inspection_plan
+    who = f" by {agency}" if agency else ""
+    return "".join(f"    • {inspection_plan.label(t)}{who} — {inspection_plan.META[t]['when']}\n"
+                   for t in inspection_plan.normalise(types))
+
+
+def _tpl_order_confirmed_buyer(ctx: dict[str, Any]) -> tuple[str, str]:
+    """One e-mail with everything the buyer needs for the order (never the supplier)."""
+    from shared.connectors.escrow import ESCROW_PROVIDER_CATALOG, display_name
+    pi, esc = ctx["pi"], ctx.get("escrow")
+    provider = display_name(getattr(esc, "provider", None) or getattr(pi, "escrow_provider", None) or "")
+    meta = ESCROW_PROVIDER_CATALOG.get(str(getattr(esc, "provider", "") or ""), {})
+    stages = "".join(f"    • {int(round((t.pct or 0) * 100))}% {_release_when(t.trigger)}\n"
+                     for t in (getattr(esc, "tranches", None) or []))
+    subject = f"Order confirmed — {ctx.get('product') or 'your order'} · PI {pi.pi_id} · deal {ctx['deal_id']}"
+    body = (
+        f"{_dear(pi.buyer_name)},\n\n"
+        "Thank you — your order is confirmed. Here is everything in one place.\n\n"
+        "ORDER\n"
+        f"  Proforma Invoice : {pi.pi_id}\n"
+        f"  Product          : {ctx.get('product') or ''} (HS {ctx.get('hs_code', '')})\n"
+        f"  Quantity         : {_qty(pi.quantity_mt)} MT\n"
+        f"  Price            : {_fmt_money(pi.agreed_price, pi.currency)} / MT {pi.incoterm} — total {_fmt_money(pi.total_value, pi.currency)}\n"
+        f"  Destination port : {pi.port_of_destination}\n"
+        + (f"  Packing          : {ctx['packing']}\n" if ctx.get("packing") else "")
+        + "\nPAYMENT — NEUTRAL ESCROW\n"
+        f"  Escrow provider  : {provider or 'to be confirmed'}\n"
+        + (f"  Escrow reference : {esc.escrow_id}\n" if esc else "")
+        + (f"  Payment link     : {esc.checkout_url}\n" if esc and getattr(esc, "checkout_url", None) else "")
+        + (f"  Pay by           : {meta['buyer_pays_by']}\n" if meta.get("buyer_pays_by") else "")
+        + (f"  Released in stages:\n{stages}" if stages else "")
+        + (f"  Who releases     : {meta['release_authority']}\n" if meta.get("release_authority") else "")
+        + "\nINDEPENDENT INSPECTION\n"
+        + _plan_lines(ctx.get("inspection_types"), ctx.get("agency"))
+        + "  Every report is shared with you before the next payment stage.\n"
+        "\nSHIPPING\n"
+        f"  Carrier          : {ctx.get('carrier') or 'Maersk'} — booked by PortLess once the goods pass inspection\n"
+        f"  Route            : {ctx.get('port_of_loading') or 'Indian port of loading'} → {pi.port_of_destination}\n"
+        "  Tracking         : container and vessel milestones are sent to you as they happen\n"
+        "\nDOCUMENTS YOU WILL RECEIVE\n"
+        "  Sales contract, commercial invoice, packing list, certificate of origin, inspection report(s), bill of lading"
+        + (", marine insurance declaration" if str(pi.incoterm).upper() in ("CIF", "CIP") else "") + ".\n"
+        "\nNEXT STEP\n"
+        "  Fund the escrow using the details above. Production starts as soon as the funds are confirmed.\n"
+        "  Reply to this e-mail for anything about the order — it reaches the trade desk handling it."
+        + _signature()
+    )
+    return subject, body
+
+
+def _tpl_order_confirmed_supplier(ctx: dict[str, Any]) -> tuple[str, str]:
+    """One e-mail with everything the supplier needs (never the buyer or the sale price)."""
+    subject = f"Order confirmed — {ctx.get('product') or 'order'} · {_qty(ctx.get('quantity_mt'))} MT · deal {ctx['deal_id']}"
+    price = ctx.get("supplier_price")
+    body = (
+        f"{_dear(ctx.get('supplier_name'))},\n\n"
+        "Thank you for confirming. The order is now confirmed on our side too — here is the full plan.\n\n"
+        "ORDER\n"
+        f"  Product          : {ctx.get('product') or ''} (HS {ctx.get('hs_code', '')})\n"
+        f"  Quantity         : {_qty(ctx.get('quantity_mt'))} MT\n"
+        + (f"  Price            : {_price(ctx, price)} / MT FOB {ctx.get('port_of_loading') or ''}\n" if price else "")
+        + (f"  Packing          : {ctx['packing']}\n" if ctx.get("packing") else "")
+        + "  Purchase order   : issued as soon as the buyer's payment is secured in escrow (within days)\n"
+        "\nINSPECTION AT YOUR FACILITY\n"
+        + _plan_lines(ctx.get("inspection_types"), ctx.get("agency"))
+        + "  Please tell us your goods-ready date when you acknowledge the PO; the inspector also supervises\n"
+        "  the container stuffing and fixes the seal.\n"
+        "\nSHIPPING\n"
+        f"  PortLess books the container with {ctx.get('carrier') or 'Maersk'}; the empty container is released to you\n"
+        "  for stuffing under the inspector's supervision. You deliver FOB at the port of loading.\n"
+        "\nPAYMENT TO YOU\n"
+        "  Paid from the escrow in stages as the trade advances — production advance after the PO, then\n"
+        "  after the inspection passes and the shipment clears; the last share once the buyer accepts the goods.\n"
+        "\nDOCUMENTS WE NEED FROM YOU\n"
+        "  Tax invoice (GST), packing list, mill / test certificate if any, and the goods-ready date.\n"
+        "\nReply to this e-mail for anything about the order — it reaches the trade desk handling it."
+        + _signature()
+    )
+    return subject, body
+
+
+def _tpl_inspection_phase(ctx: dict[str, Any]) -> tuple[str, str]:
+    from shared.orchestration import inspection_plan
+    phase, result = ctx.get("inspection_type") or "", ctx.get("result") or ""
+    label = inspection_plan.label(phase)
+    ref = ctx.get("provider_order_number") or ctx.get("ext_ref") or ""
+    subject = f"{label}: {'passed' if result == 'PASS' else 'needs attention'} — deal {ctx['deal_id']}"
+    if ctx.get("party") == "supplier" and result == "FAIL":
+        body = (f"{_dear(ctx.get('name'))},\n\n"
+                f"The {label} ({str(ctx.get('provider') or '').upper()} {ref}) found issues: "
+                f"{ctx.get('notes') or 'see the inspection report'}.\n\n"
+                "Please correct them during production and reply with what was done and the expected "
+                "goods-ready date; the pre-shipment inspection will check the full lot." + _signature())
+    else:
+        body = (f"{_dear(ctx.get('name'))},\n\n"
+                f"The {label} ({str(ctx.get('provider') or '').upper()} {ref}) "
+                + ("passed. " if result == "PASS" else f"reported issues: {ctx.get('notes') or 'see the report'}. ")
+                + ("The order stays on track; the next step follows as planned." if result == "PASS"
+                   else "We are handling it with the supplier and will keep you informed.")
+                + _signature())
+    return subject, body
+
+
+def _tpl_bill_of_lading(ctx: dict[str, Any]) -> tuple[str, str]:
+    subject = f"Bill of lading {ctx.get('bl_number')} issued — deal {ctx['deal_id']}"
+    boxes = ", ".join(ctx.get("containers") or []) or "—"
+    body = (f"{_dear(ctx.get('buyer_name'))},\n\n"
+            "The carrier has issued the bill of lading for your order.\n\n"
+            f"  Bill of lading   : {ctx.get('bl_number')}\n"
+            f"  Vessel / voyage  : {ctx.get('vessel') or '—'} {ctx.get('voyage') or ''}\n"
+            f"  Container(s)     : {boxes}\n"
+            + (f"  Seal(s)          : {', '.join(ctx.get('seal_numbers') or [])}\n" if ctx.get("seal_numbers") else "")
+            + "\nYou can follow the container on the carrier's tracking with the B/L number; we send you every "
+            "milestone too." + _signature())
     return subject, body
 
 
@@ -164,18 +303,21 @@ def _tpl_po_issued(ctx: dict[str, Any]) -> tuple[str, str]:
         f"  Purchase Order   : {po.po_id}\n"
         f"  Product (HS)     : {ctx.get('hs_code', '')}\n"
         f"  Quantity         : {_qty(po.quantity_mt)} MT\n"
-        f"  Unit price       : {_fmt_money(po.agreed_price, po.currency)} / MT ({po.incoterm})\n"
-        f"  Total value      : {_fmt_money(po.total_value, po.currency)}\n"
+        f"  Unit price       : {_po_money(ctx, po.agreed_price, po.currency)} / MT ({po.incoterm})\n"
+        f"  Total value      : {_po_money(ctx, po.total_value, po.currency)}\n"
         f"  Port of loading  : {po.port_of_loading}\n"
         f"  Delivery by      : {po.delivery_deadline}\n"
         f"  Payment terms    : {po.payment_terms}\n"
         + (f"  Quality spec     : {po.quality_spec}\n" if getattr(po, 'quality_spec', None) else "")
+        + (f"  Packing          : {po.packing_spec} (checked by the inspector)\n" if getattr(po, 'packing_spec', None) else "")
         + (f"  Document         : {link}\n" if link else "")
-        + "\nPlease reply to:\n"
-        "  1. acknowledge this Purchase Order, and\n"
+        + "\n" + _rate_line(ctx)
+        + "Please reply to:\n"
+        "  1. acknowledge this Purchase Order,\n"
         f"  2. tell us the date the goods will be 100% produced and at least {_packed_pct()}% packed "
-        "(for example \"ready for inspection on 15 December 2026\").\n\n"
-        "We book the independent pre-shipment inspection for that date — the agency needs "
+        "(for example \"ready for inspection on 15 December 2026\")"
+        + (f", and\n  3. send us {_ADDRESS_ASK}.\n\n" if ctx.get("address_needed") else ".\n\n")
+        + "We book the independent pre-shipment inspection for that date — the agency needs "
         f"{_lead_days()} working days' notice — and share the inspector's details with you. The "
         "inspector also supervises the container stuffing and seals the container."
         + _signature()
@@ -213,13 +355,28 @@ def _tpl_qc_readiness_request(ctx: dict[str, Any]) -> tuple[str, str]:
     return subject, body
 
 
+def _tpl_facility_address_request(ctx: dict[str, Any]) -> tuple[str, str]:
+    subject = f"Address of your facility for the inspection — deal {ctx['deal_id']}"
+    known = ctx.get("known")
+    body = (
+        f"{_dear(ctx.get('supplier_name'))},\n\n"
+        "To book the independent inspection we need the address the inspector will come to: the full address "
+        "of the facility where the goods are produced, packed and loaded — street, town and PIN code.\n\n"
+        + (f"We currently have only \"{known}\", which is not enough for the inspection agency.\n\n" if known else "")
+        + "Please reply with the address (for example \"Factory address: Plot 14, SIPCOT Industrial Estate, "
+        "Thanjavur, Tamil Nadu 613005\"). The inspection is booked as soon as we have it."
+        + _signature()
+    )
+    return subject, body
+
+
 def _tpl_supplier_order_request(ctx: dict[str, Any]) -> tuple[str, str]:
     """Firm order request before the buyer gets a Proforma Invoice — the supplier
     commits first (shared/orchestration/supplier_commitment.py)."""
     from shared.product_label import product_phrase
     product = product_phrase(ctx.get("hs_code", "") or "")
     qty = _qty(ctx.get("quantity_mt"))
-    price = _fmt_money(ctx.get("price"))
+    price = _price(ctx, ctx.get("price"))
     hours = ctx.get("hours") or 24
     window = f"{hours:g} hours" if float(hours) != 24 else "24 hours"
     subject = f"Order confirmation requested — {qty} MT {product} at {price}/MT FOB (deal {ctx['deal_id']})"
@@ -240,9 +397,18 @@ def _tpl_supplier_order_request(ctx: dict[str, Any]) -> tuple[str, str]:
         "  Payment          : Purchase Order issued only after the buyer has paid into a neutral escrow\n"
         "                     account; production advance at the Purchase Order, balance from escrow as\n"
         "                     the shipment clears and is accepted\n"
-        "  Inspection       : Independent pre-shipment inspection at your facility before dispatch\n\n"
-        "To confirm, simply reply \"We confirm the order\" and, if you have not already done so, let us know "
-        "your port of loading and your lead time from Purchase Order to goods at port. As soon as we receive "
+        "  Inspection       : Independent pre-shipment inspection at your facility before dispatch\n"
+        + (f"  Packing          : {ctx['packing']}\n" if ctx.get("packing") else "")
+        + "\n"
+        + ("The buyer requires the packing above and the inspector will check it. Your price must include this "
+           "packing; if it costs extra, tell us the amount per MT in your reply instead of confirming.\n\n"
+           if ctx.get("packing_special") else
+           "Packing is your standard export packing, which the buyer has accepted.\n\n" if ctx.get("packing") else "")
+        + _rate_line(ctx)
+        + "To confirm, simply reply \"We confirm the order\" and, if you have not already done so, let us know "
+        "your port of loading, your lead time from Purchase Order to goods at port"
+        + (f" and {_ADDRESS_ASK}" if ctx.get("address_needed") else "")
+        + ". As soon as we receive "
         "your confirmation we will finalise the contract with the buyer, and the Purchase Order follows once "
         "the buyer's payment is in escrow.\n\n"
         f"To hold this order for you, we kindly ask for your confirmation within {window}. If you are unable "
@@ -267,6 +433,8 @@ def _tpl_qc_booked(ctx: dict[str, Any]) -> tuple[str, str]:
         f"{ctx.get('packed_pct', 80)}% packed and labelled, the rest available for sampling;\n"
         "  - the Purchase Order, the packing list and the product specification at hand;\n"
         "  - a person who can open cartons / bags and move goods for the inspector.\n"
+        + (f"\nThe inspector checks the buyer's packing: {ctx['packing']} — weight per unit, marking and "
+           "condition, with photos.\n" if ctx.get("packing") else "")
         + ("\nThe inspector also supervises the container stuffing and seals the container, so please "
            "plan the loading right after the inspection.\n" if ctx.get("loading_supervision") else "")
         + "\nIf the goods will not be ready on that date, tell us at once (at least one working day "
@@ -617,8 +785,13 @@ _TEMPLATES = {
     "inspection_window_open": _tpl_inspection_window_open,
     "deal_settled": _tpl_deal_settled,
     "escrow_opened": _tpl_escrow_opened,
+    "order_confirmed_buyer": _tpl_order_confirmed_buyer,
+    "order_confirmed_supplier": _tpl_order_confirmed_supplier,
+    "inspection_phase": _tpl_inspection_phase,
+    "bill_of_lading": _tpl_bill_of_lading,
     "po_issued": _tpl_po_issued,
     "qc_readiness_request": _tpl_qc_readiness_request,
+    "facility_address_request": _tpl_facility_address_request,
     "qc_booked": _tpl_qc_booked,
     "freight_booked": _tpl_freight_booked,
     "cargo_cleared": _tpl_cargo_cleared,
@@ -669,6 +842,50 @@ async def _record_skipped(
         ))
     except Exception as exc:  # noqa: BLE001
         logger.warning("Notifications: could not record skipped %s for deal %s: %s", kind, deal_id, exc)
+
+
+async def _local_terms(ctx: dict[str, Any], deal_id: str, party: str, deal: Any | None) -> None:
+    """What every template may use about this party: the currency its prices are
+    put in (its country's, next to the USD contract figure — shared/currency.py)
+    and, for the supplier, whether its facility address is still missing.
+    Separate keys: ``currency`` in a context is the currency of an amount."""
+    from shared import currency
+    try:
+        if deal is None:
+            from services.deals.service import get_deal  # type: ignore[import]
+            deal = await get_deal(deal_id)
+        p = next((x for x in getattr(deal, "parties", None) or []
+                  if str(getattr(x.role, "value", x.role)).lower() == party), None)
+    except Exception:  # noqa: BLE001
+        p = None
+    country = getattr(p, "country", None) or ("IN" if party == "supplier" else None)
+    code = currency.party_currency(country)
+    ctx.setdefault("party_currency", code)
+    if "fx_rate" not in ctx:
+        ctx["fx_rate"] = await currency.usd_rate(code) if code != "USD" else None
+    if party == "supplier" and "address_needed" not in ctx:
+        from shared.orchestration import supplier_address
+        ctx["address_needed"] = not supplier_address.is_complete(getattr(p, "address", None), country)
+
+
+def _price(ctx: dict[str, Any], usd: Any) -> str:
+    """A USD price as this party reads it: ``INR 87,360 (USD 910.00)`` or ``USD 910.00``."""
+    from shared import currency
+    return currency.money(usd, ctx.get("party_currency") or "USD", ctx.get("fx_rate"))
+
+
+def _rate_line(ctx: dict[str, Any]) -> str:
+    from shared import currency
+    note = currency.rate_note(ctx.get("party_currency") or "USD", ctx.get("fx_rate"))
+    return f"{note}\n\n" if note else ""
+
+
+def _po_money(ctx: dict[str, Any], value: Any, code: str | None) -> str:
+    return _price(ctx, value) if (code or "USD") == "USD" else _fmt_money(value, code)
+
+
+_ADDRESS_ASK = ("the full address of the facility where the goods are produced and will be inspected "
+                "(street, town and PIN code) — the inspector is booked for that address")
 
 
 async def notify_party(
@@ -729,6 +946,7 @@ async def notify_party(
             return email_id  # already drafted/sent — idempotent (a SKIPPED one is retried)
 
         ctx = {"deal_id": deal_id, **context}
+        await _local_terms(ctx, deal_id, party, deal)
         subject, body = _TEMPLATES[kind](ctx)
         now = datetime.now(timezone.utc)
         record = EmailHistoryRecord(
@@ -810,6 +1028,55 @@ async def notify_escrow_opened(deal: Any, escrow: Any, pi_id: str | None = None)
     )
 
 
+async def notify_order_confirmed(deal: Any, pi: Any, escrow: Any) -> list[str | None]:
+    """The consolidated order summary — one e-mail to the buyer, one to the supplier,
+    each with only its own side of the trade."""
+    from shared.orchestration import inspection_plan, packing, supplier_commitment, trade_brief
+    b = await trade_brief.brief(deal.deal_id)
+    plan = await inspection_plan.plan_for(deal.deal_id)
+    agency = None
+    try:
+        from services.shield_link.service import _buyer_opted_qc_provider, _buyer_packing  # type: ignore[import]
+        agency = await _buyer_opted_qc_provider(deal.deal_id)
+        packed = packing.describe(await _buyer_packing(deal.deal_id))
+    except Exception:  # noqa: BLE001
+        packed = ""
+    from shared.connectors.qc_providers import QC_PROVIDER_CATALOG
+    agency_name = QC_PROVIDER_CATALOG.get(agency or "", {}).get("display_name") if agency else None
+    common = {"product": b.get("product"), "hs_code": getattr(deal, "hs_code", ""), "inspection_types": plan,
+              "agency": agency_name, "carrier": "Maersk", "packing": packed}
+    commitment = await supplier_commitment.get(deal.deal_id)
+    supplier_price = getattr(commitment, "confirmed_price", None) if commitment else None
+    from shared.orchestration.continuations import _supplier_port
+    port = await _supplier_port(deal.deal_id)
+    buyer = await notify_party(deal.deal_id, "buyer", "order_confirmed_buyer",
+                               {**common, "pi": pi, "escrow": escrow, "port_of_loading": port}, deal=deal)
+    supplier = await notify_party(deal.deal_id, "supplier", "order_confirmed_supplier",
+                                  {**common, "quantity_mt": getattr(pi, "quantity_mt", None),
+                                   "supplier_price": supplier_price, "port_of_loading": port,
+                                   "supplier_name": _party_name(deal, "supplier")}, deal=deal)
+    return [buyer, supplier]
+
+
+async def notify_inspection_phase(deal: Any, payload: dict[str, Any]) -> list[str | None]:
+    """DUPRO / PEO result: the supplier hears a DUPRO failure (rework); the buyer hears every result."""
+    sent = []
+    suffix = f"{payload.get('inspection_type')}-{payload.get('tpo_id')}"
+    if payload.get("result") == "FAIL" and payload.get("inspection_type") == "DUPRO":
+        sent.append(await notify_party(deal.deal_id, "supplier", "inspection_phase",
+                                       {**payload, "party": "supplier", "name": _party_name(deal, "supplier")},
+                                       suffix=suffix + "-s", deal=deal))
+    sent.append(await notify_party(deal.deal_id, "buyer", "inspection_phase",
+                                   {**payload, "party": "buyer", "name": _party_name(deal, "buyer")},
+                                   suffix=suffix + "-b", deal=deal))
+    return sent
+
+
+async def notify_bill_of_lading(deal: Any, payload: dict[str, Any]) -> str | None:
+    return await notify_party(deal.deal_id, "buyer", "bill_of_lading",
+                              {**payload, "buyer_name": _party_name(deal, "buyer")}, deal=deal)
+
+
 async def notify_po_issued(deal: Any, po: Any) -> str | None:
     return await notify_party(
         deal.deal_id, "supplier", "po_issued",
@@ -818,6 +1085,12 @@ async def notify_po_issued(deal: Any, po: Any) -> str | None:
 
 
 async def notify_qc_booked(deal: Any, payload: dict[str, Any], po_id: str | None) -> str | None:
+    from shared.orchestration import packing
+    try:
+        from services.shield_link.service import _buyer_packing  # type: ignore[import]
+        buyer_packing = packing.describe(await _buyer_packing(deal.deal_id))
+    except Exception:  # noqa: BLE001
+        buyer_packing = ""
     return await notify_party(
         deal.deal_id, "supplier", "qc_booked",
         {
@@ -827,6 +1100,7 @@ async def notify_qc_booked(deal: Any, payload: dict[str, Any], po_id: str | None
             "inspection_date": payload.get("inspection_date"),
             "loading_supervision": payload.get("loading_supervision"),
             "packed_pct": _packed_pct(),
+            "packing": buyer_packing,
             "po_id": po_id or "",
             "supplier_name": _party_name(deal, "supplier"),
         },
@@ -1045,6 +1319,10 @@ NOTICE_LABELS: dict[str, tuple[str, str]] = {
     "pi_issued": ("Proforma Invoice issued", "PI_SENT"),
     "pi_reminder": ("PI reminder", "PI_SENT"),
     "escrow_opened": ("Escrow funding instructions", "ESCROW_PENDING"),
+    "order_confirmed_buyer": ("Order confirmed — full summary", "PI_ACCEPTED"),
+    "order_confirmed_supplier": ("Order confirmed — full plan", "PI_ACCEPTED"),
+    "inspection_phase": ("Inspection phase result", "—"),
+    "bill_of_lading": ("Bill of lading issued", "IN_TRANSIT"),
     "escrow_reminder": ("Escrow funding reminder", "ESCROW_PENDING"),
     "funding_shortfall": ("Escrow partially funded", "ESCROW_PENDING"),
     "escrow_funded": ("Payment received in escrow", "ESCROW_FUNDED"),
@@ -1052,6 +1330,7 @@ NOTICE_LABELS: dict[str, tuple[str, str]] = {
     "po_issued": ("Purchase Order issued", "PO_ISSUED"),
     "po_reminder": ("PO confirmation reminder", "PO_ISSUED"),
     "qc_readiness_request": ("Goods-ready date requested", "PO_ISSUED"),
+    "facility_address_request": ("Facility address requested", "PO_ISSUED"),
     "qc_booked": ("Inspection booked", "SUPPLIER_DISPATCH_READY"),
     "qc_readiness_reminder": ("Inspection readiness reminder", "SUPPLIER_DISPATCH_READY"),
     "qc_passed": ("Inspection passed", "QC_PASSED"),

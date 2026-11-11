@@ -26,8 +26,16 @@ class ShieldLinkSettings(BaseSettings):
     shield_link_tpo_collection: str = "third_party_orders"
 
     # ── Default providers ─────────────────────────────────────────────────
-    default_qc_provider: str = "sgs"
-    default_freight_provider: str = "cogoport"
+    default_qc_provider: str = "qima"
+    default_freight_provider: str = Field(
+        default="maersk", validation_alias=AliasChoices("FREIGHT_PROVIDER", "SHIELD_LINK_DEFAULT_FREIGHT_PROVIDER"),
+    )
+    """Who books the shipment: ``maersk`` (carrier API — booking, tracking, VGM,
+    eBL) or a forwarder (``cogoport`` / ``freightos``)."""
+    freight_quote_provider: str = Field(
+        default="cogoport", validation_alias=AliasChoices("FREIGHT_QUOTE_PROVIDER", "SHIELD_LINK_FREIGHT_QUOTE_PROVIDER"),
+    )
+    """Who quotes the lane for pricing (Maersk rates come from the contract)."""
 
     qc_fallback_strategy: str = Field(
         default="cheapest", validation_alias="SHIELD_LINK_QC_FALLBACK_STRATEGY"

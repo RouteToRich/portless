@@ -63,6 +63,16 @@ async def deal_with_booking(ctx: Ctx, name: str, provider: str) -> None:
     _ready_date(ctx, 10)  # a later date for a reschedule
 
 
+@step(r'the QC provider "([^"]+)" is enabled')
+async def provider_enabled(ctx: Ctx, provider: str) -> None:
+    """Only QIMA is booked by default (QC_PROVIDERS_ENABLED); a scenario that
+    exercises a dormant provider enables it for itself."""
+    import os
+    current = os.environ.get("QC_PROVIDERS_ENABLED", "qima")
+    if provider not in current.split(","):
+        ctx.set_env("QC_PROVIDERS_ENABLED", f"{current},{provider}")
+
+
 @step(r"the supplier must acknowledge the PO and give a goods-ready date")
 async def readiness_required(ctx: Ctx) -> None:
     ctx.set_env("PO_ACK_REQUIRED", "true")
@@ -238,3 +248,16 @@ async def deal_out_of_reinspections(ctx: Ctx, alias: str) -> None:
             provider="sgs", status="FAILED", ext_ref=f"QC-{ctx.ids['uid']}-F{n + 1}", qc_result="FAIL",
             provider_status="REPORT_ISSUED", created_at=earlier + timedelta(days=n), updated_at=earlier + timedelta(days=n),
         ))
+
+
+@step(r'the buyer\'s packing is "([^"]+)"')
+async def buyer_packing(ctx: Ctx, text: str) -> None:
+    """The buyer stated its packing during the negotiation (fixture fact)."""
+    from agents.negotiation_agent.repository import get_repository as neg_repo
+    from shared.orchestration import packing
+    repo = neg_repo()
+    session = await repo.get_session_by_deal(ctx.ids["D"])
+    assert session is not None, "the fixture has no negotiation session"
+    spec = packing.parse_packing(text)
+    assert spec is not None, f"not a packing statement: {text}"
+    await repo.save_session(session.model_copy(update={"packing": spec.model_dump(mode="json")}))

@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from shared.domain.enums import AutonomyLevel, DealStatus
+from shared.domain.enums import AutonomyLevel, DealStatus, EscrowStatus, FreightStatus, QcStatus
 from shared.domain.models import Party
 
 
@@ -225,6 +225,36 @@ class DealRecord(BaseModel):
 
     # ── Parties ───────────────────────────────────────────────────────────
     parties: list[Party] = Field(default_factory=list)
+
+    # ── Inspection (shared/orchestration/qc_status.py keeps these current) ─
+    qc_status: QcStatus | None = None
+    """Where the pre-shipment inspection stands (None before the PO)."""
+    qc_status_detail: str | None = None
+    """One line for the operator: provider, date, order number, reason."""
+    qc_status_at: datetime | None = None
+
+    # ── Escrow (shared/orchestration/escrow_status.py keeps these current) ─
+    escrow_provider: str | None = None
+    """``tazapay`` | ``escrow_com`` — the buyer's / operator's choice before the
+    escrow opens, the provider actually holding the money after."""
+    escrow_provider_source: str | None = None
+    """Who chose it: ``buyer`` (their e-mail) / ``operator`` / ``pi`` / ``default``."""
+    escrow_status: EscrowStatus | None = None
+    """Where the buyer's money stands at the provider (None before the escrow opens)."""
+    escrow_status_detail: str | None = None
+    escrow_status_at: datetime | None = None
+
+    # ── Inspection plan (shared/orchestration/inspection_plan.py) ──────────
+    inspection_types: list[str] = Field(default_factory=list)
+    """QC phases the buyer asked for: DUPRO / PSI / PEO (PSI always included). Empty → default."""
+    inspection_types_source: str | None = None
+    inspections: list[dict[str, Any]] = Field(default_factory=list)
+    """One line per phase: {type, label, status, provider, inspection_date, result, order_number}."""
+
+    # ── Freight (shared/orchestration/freight_status.py keeps these current) ─
+    freight_status: FreightStatus | None = None
+    freight_status_detail: str | None = None
+    freight_status_at: datetime | None = None
 
     # ── Audit ─────────────────────────────────────────────────────────────
     status_history: list[StatusHistoryEntry] = Field(default_factory=list)

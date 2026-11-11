@@ -6,6 +6,8 @@ Code: `shared/connectors/qc_providers.py` (providers), `services/shield_link/` (
 
 ## 1. Which provider has an API (checked 2026-11)
 
+**Only QIMA is booked today** (`QC_PROVIDERS_ENABLED=qima`, the default). Buyers are offered QIMA only, a buyer who names another inspector is booked with QIMA, and an explicit request for another provider answers 422. The SGS and BV portal channel below is built and tested but dormant; add a provider to `QC_PROVIDERS_ENABLED` to switch it on.
+
 | Provider | Product | Public API | How PortLess connects |
 |---|---|---|---|
 | **QIMA** | QIMA Public API, [developers.qima.com](https://developers.qima.com) | **Yes.** Token auth, booking, order search and detail, cancel, report search, PDF info, file download. No webhook. | `api` channel. PortLess books by API, polls the status, and downloads the report. |
@@ -48,6 +50,8 @@ The same inspector supervises the **container stuffing and seals the container**
 | Report (QIMA usually the same or next day) | PASS → `QC_PASSED` (export documents, T2 tranche gate, freight gate once the loading record matches). FAIL → `QC_FAILED` → `DISPUTE` → re-inspection playbook. PENDING → an operator decides. | PortLess |
 | No report by inspection day + 1 day + `QC_REPORT_GRACE_HOURS` (48) | The supplier gets reminders, then `deal.exception`. | Deal watcher |
 
+**Packing.** The buyer's packing (bag type and weight, liner, marking or private label, pallets, fumigation) is asked before the agreement and sent with the booking: QIMA gets it in `unitPacking`, `outerPacking` and `sampleReferenceClientComments` (the checks: weight per unit, marking against the artwork, liner, pallets, fumigation certificate), and the SGS / BV booking request has a `packing` section. See `shared/orchestration/packing.py`.
+
 What the supplier must have ready on the day (sent in the booking notice): the full quantity produced, at least 80 % packed and labelled, the rest open for sampling, the PO, packing list and product specification at hand, and someone to open bags or cartons and move goods.
 
 ## 3. Status in PortLess
@@ -66,6 +70,26 @@ A result is applied **once**. A repeated poll or a replayed webhook is ignored. 
 
 `GET /shield-link/deals/{id}/qc` returns the order, provider status and order number, the inspection date, the supplier's ready date, the result, defects, the kept reports, the history and the next step.
 
+### The deal's QC status
+
+On top of the order's provider status, each deal carries one **QC status** (`DealRecord.qc_status`, `shared/orchestration/qc_status.py`), which the Deal Board's QC column shows:
+
+| QC status | Meaning |
+|---|---|
+| `AWAITING_PO_ACK` | The PO was sent and the supplier has not acknowledged it |
+| `AWAITING_READY_DATE` | The supplier acknowledged and was asked when the goods are ready |
+| `NOT_BOOKED` | Nothing holds the booking back, but no inspection is booked |
+| `BOOKING_FAILED` | The provider refused the booking, or the request never reached it |
+| `REQUESTED` | Booked; the provider has not confirmed yet |
+| `SCHEDULED` | The provider confirmed the date and inspector |
+| `INSPECTED` | The inspection happened; the report is not out yet |
+| `OVERDUE` | Inspection day + 1 day + `QC_REPORT_GRACE_HOURS` passed without a report |
+| `RESULT_PENDING` | The report leaves the decision to the client, so a person decides |
+| `REINSPECTION` | A re-inspection is booked after a failed one |
+| `PASSED` / `FAILED` | Report PASS / FAIL (FAIL moves the deal QC_FAILED → DISPUTE) |
+
+It is derived only from the deal status, the supplier's PO acknowledgement and goods-ready date, and the QC orders, and is rewritten on every change to any of them.
+
 ## 4. Documents
 
 - **QIMA:** every final report PDF (`PROD_FINAL_REPORT`) is downloaded by API when the result arrives.
@@ -73,7 +97,18 @@ A result is applied **once**. A repeated poll or a replayed webhook is ignored. 
 - Stored like the other trade documents: Google Drive `<GOOGLE_DRIVE_ROOT_FOLDER>/<deal_id>/QC-<tpo>-<name>.pdf`, with local disk (`SHIELD_LINK_STORAGE_DIR`) as the logged fallback. Each record has its SHA-256, size and source.
 - Served at `GET /shield-link/qc/{tpo_id}/documents/{index}`. The PortLess Inspection Order (DocuGen) is still issued at `qc.booked`.
 
-## 5. Testing without a provider account: the sandbox
+## 5. Live and automation: one implementation
+
+The real workflow and the automated one run the same code. Only `INTEGRATION_MODE` (`shared/integration_mode.py`) differs, and it covers QC, freight and customs, and escrow and payouts alike:
+
+| `INTEGRATION_MODE` | Who sets it | What the connectors do |
+|---|---|---|
+| `live` (default, in `.env`) | Every deployment and the dev server | Always call the real provider with the configured keys. A missing key or a `your_..._here` placeholder is sent as-is; the provider refuses it and the step fails visibly (502 / `deal.exception`), never a made-up success. A portal provider without a real booking-desk address refuses to book, and a booking e-mail that was not delivered fails the booking. |
+| `sandbox` | Only the automation worker and view server (`worker_env`; `assert_isolated` refuses anything else) and pytest | Stub answers. QIMA / SGS / BV in `QC_SANDBOX_PROVIDERS` go to the simulator below. |
+
+`.env` and `.env.example` hold a placeholder for every QC, freight and escrow key. Replacing a placeholder with the real key is all it takes to switch that provider on. Readiness counts a placeholder as not configured, and its `integration_mode` check fails in production in sandbox.
+
+### The simulator (automation and tests only)
 
 `services/qc_sandbox` simulates both channels:
 
@@ -83,14 +118,34 @@ A result is applied **once**. A repeated poll or a replayed webhook is ignored. 
 
 | How | Setting |
 |---|---|
-| In process (tests, automation) | `QC_SANDBOX_PROVIDERS=qima,sgs,bv` (or `all`). Connectors reach the sandbox through ASGI, with no network. |
-| Standalone | `make qc-sandbox` (port 8014) + `QC_SANDBOX_URL=http://localhost:8014`. A `callback_url` on confirm or report delivers the webhook to a running PortLess. |
+| In process (tests, automation) | `INTEGRATION_MODE=sandbox` + `QC_SANDBOX_PROVIDERS=qima,sgs,bv` (or `all`). Connectors reach the sandbox through ASGI, with no network. |
+| Standalone | `make qc-sandbox` (port 8014) + `INTEGRATION_MODE=sandbox` + `QC_SANDBOX_URL=http://localhost:8014`. A `callback_url` on confirm or report delivers the webhook to a running PortLess. |
 
-The automation worker always runs with the sandbox. Readiness check `qc_sandbox` **fails in production** while it is set; it is never a silent fallback.
+`QC_SANDBOX_PROVIDERS` is ignored in live mode, so the simulator is never a silent fallback.
 
 ## 6. Go-live checklist
 
 1. QIMA: get the `Ai-Api-Access-Token`, a client account and the production host. Set `QIMA_*`, and read the product ids for your HS codes from `GET /parameter/v2/product-tree`. Confirm the AQL value format your account expects (the guide's own example uses `"0"`, `"1"`, `"3"`).
 2. SGS / BV: get the booking desk addresses and set `SGS_BOOKING_EMAIL` / `BUREAU_VERITAS_BOOKING_EMAIL`. Agree with each desk to send reports to the PortLess mailbox. Set `SGS_WEBHOOK_SECRET` / `BUREAU_VERITAS_WEBHOOK_SECRET` if a relay posts the webhook.
-3. Leave `QC_SANDBOX_PROVIDERS` unset. Readiness `qc_provider` is `ok` once one of the above is configured.
+3. Replace the `your_..._here` placeholders in `.env` with the real values and keep `INTEGRATION_MODE=live`. Readiness `qc_provider` is `ok` once one of the above is configured. Freight (`COGOPORT_*`, `FREIGHTOS_*`, `ICEGATE_API_KEY`) and escrow (`TAZAPAY_*`, `ESCROW_COM_*`, `STRIPE_*`, `PAYONEER_*`) work the same way.
 4. Open: a separate QIMA container-loading (CLC) order is not booked yet. The loading supervision is requested in `customField3`; the seal record comes from the inspector's report through `POST /shield-link/deals/{id}/loading`.
+
+## Inspection phases — DUPRO / PSI / PEO (`shared/orchestration/inspection_plan.py`)
+
+The buyer chooses which inspections the order gets: named in a reply ("we also
+need a DUPRO", "add a pre-customs clearance inspection" — negation-aware), or set
+by staff (`PUT /deals/{id}/inspection-plan` `{types, reason}`, Deal page >
+Logistics > Inspection plan). Default `QC_DEFAULT_INSPECTION_TYPES=PSI`; the PSI
+is always part of the plan.
+
+| Phase | When | QIMA `serviceType` | Effect |
+|---|---|---|---|
+| DUPRO — During Production | `QC_DUPRO_DAYS_BEFORE_READY` (10) days before the goods-ready date, at `QC_DUPRO_PRODUCTION_PCT` (30 %) produced; skipped when production ends too soon | `QIMA_SERVICE_TYPE_DUPRO` (2, documented) | booked with the PSI; FAIL → rework notice to the supplier + exception; the deal does not move |
+| PSI — Pre-Shipment | goods-ready date, 100 % produced, ≥ 80 % packed, supervised loading + sealing | `QIMA_SERVICE_TYPE` (1) | the release check: PASS → QC_PASSED, FAIL → QC_FAILED |
+| PEO — Pre-Customs Clearance | after the freight booking, before the export filing | `QIMA_SERVICE_TYPE_PEO` — **no documented id; ask QIMA** (the simulator uses 5) | the FILE_CUSTOMS gate waits for its PASS; FAIL → customs held + exception |
+
+DUPRO / PEO results emit `qc.phase_result` (never QC_PASSED / QC_FAILED). The
+deal's `inspections` field lists every phase with its status for the console;
+`qc_status` keeps following the PSI. Every booking carries the trade brief
+(deal, PO, product, quantity, phase) in QIMA's client comments / the portal
+request's `notes`.

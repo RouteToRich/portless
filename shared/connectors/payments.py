@@ -1,9 +1,10 @@
 """Payment / escrow connectors (Stripe Treasury, Payoneer).
 
-Each connector checks for its API key at call-time:
-  • Key present  → attempts real HTTP call; errors become ConnectorError.
-  • Key absent   → returns a realistic stub so the deal pipeline can proceed
-                   in dev / CI without live credentials.
+``INTEGRATION_MODE`` (``shared/integration_mode.py``) decides, not the key:
+  • live (default) → always a real HTTP call with the configured credentials;
+    a missing key or a ``your_..._here`` placeholder is refused by the provider
+    and surfaces as ``ConnectorError`` — never a made-up success.
+  • sandbox        → a realistic stub (automation runs and pytest only).
 """
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+
+from shared.integration_mode import sandbox as stub_mode
 
 from .base import Connector
 
@@ -35,7 +38,7 @@ class StripeTreasuryConnector(Connector):
     """Stripe Treasury / Payment Intents connector for buyer escrow holds.
 
     Uses Stripe's standard REST API (v1).  Requires STRIPE_SECRET_KEY.
-    Without credentials returns stub responses so deal flow can advance.
+    Stub responses only with INTEGRATION_MODE=sandbox.
     """
 
     name = "stripe_treasury"
@@ -58,10 +61,10 @@ class StripeTreasuryConnector(Connector):
         ``request`` must contain: ``amount`` (in smallest currency unit),
         ``currency`` (ISO 3-letter), ``metadata.deal_id``.
         """
-        if not self._api_key:
+        if stub_mode():
             ref = self._stub_ref()
             logger.warning(
-                "StripeTreasuryConnector: STRIPE_SECRET_KEY not set — returning stub PI %s", ref
+                "StripeTreasuryConnector: INTEGRATION_MODE=sandbox — returning stub PI %s", ref
             )
             return {
                 "ext_ref": ref,
@@ -103,7 +106,7 @@ class StripeTreasuryConnector(Connector):
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
         """Retrieve a PaymentIntent's current status."""
-        if not self._api_key:
+        if stub_mode():
             return {
                 "ext_ref": ext_ref,
                 "status": "requires_capture",
@@ -156,7 +159,7 @@ class StripeTreasuryConnector(Connector):
 
     async def capture(self, ext_ref: str) -> dict[str, Any]:
         """Capture a previously authorised PaymentIntent (escrow release)."""
-        if not self._api_key:
+        if stub_mode():
             return {"ext_ref": ext_ref, "status": "succeeded", "stub": True}
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(
@@ -213,7 +216,7 @@ class PayoneerConnector(Connector):
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
         """Estimate FX conversion and fee for a USD → INR payout."""
-        if not self._client_id:
+        if stub_mode():
             return {
                 "provider": "payoneer",
                 "from_currency": "USD",
@@ -239,10 +242,10 @@ class PayoneerConnector(Connector):
         ``request`` must contain: ``payee_id``, ``amount`` (USD),
         ``currency``, ``description``, ``idempotency_key``.
         """
-        if not self._client_id:
+        if stub_mode():
             ref = self._stub_ref()
             logger.warning(
-                "PayoneerConnector: PAYONEER_CLIENT_ID not set — returning stub payout %s", ref
+                "PayoneerConnector: INTEGRATION_MODE=sandbox — returning stub payout %s", ref
             )
             return {
                 "ext_ref": ref,
@@ -282,7 +285,7 @@ class PayoneerConnector(Connector):
             }
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
-        if not self._client_id:
+        if stub_mode():
             return {"ext_ref": ext_ref, "status": "COMPLETED", "stub": True}
         token = await self._get_token()
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:

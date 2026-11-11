@@ -96,7 +96,20 @@ async def approve(deal_id: str, action: str, by: str = "qa-operator") -> list:
         await resolve_approval(gate.approval_id, ResolveApprovalRequest(decision="APPROVE", resolved_by=by))
         done.append(gate)
         await settle()
+        if action in ("RELEASE_ESCROW_TRANCHE", "CONFIRM_BUYER_ACCEPTANCE"):
+            await read_escrow_provider(deal_id)
     return done
+
+
+async def read_escrow_provider(deal_id: str) -> None:
+    """A provider escrow (Tazapay / Escrow.com) only takes the proof on a
+    release; the payout is booked when PortLess reads the provider, which the
+    escrow watcher does in production (the watcher is off in automation)."""
+    hold = await eg_repo().get_hold_by_deal(deal_id)
+    from shared.connectors.escrow import in_simulator
+    if hold is not None and in_simulator(hold.provider):
+        await eg.poll_provider(hold.escrow_id, source="poll")
+        await settle()
 
 
 async def seed(name: str, buyer_price: float, supplier_price: float, qty: float = 20.0,
@@ -180,6 +193,16 @@ async def to_funded(s: str, deal_id: str, payer: str | None = None) -> None:
 
 async def fund(deal_id: str, amount: float, payer: str, country: str, event_id: str) -> dict:
     hold = await eg_repo().get_hold_by_deal(deal_id)
+    from shared.connectors.escrow import in_simulator
+    if in_simulator(hold.provider):
+        # The buyer pays on the provider (simulator); PortLess learns it by reading
+        # the provider, exactly as from a real Tazapay / Escrow.com webhook.
+        from services.escrow_sandbox.main import buyer_pays
+        await buyer_pays(hold.provider, hold.ext_ref, None if amount >= hold.amount - 0.01 else amount)
+        updated = await eg.poll_provider(hold.escrow_id, source="webhook")
+        await settle()
+        return {"status": "ok" if updated.status == "FUNDED" else updated.status.lower(),
+                "escrow_id": hold.escrow_id, "deal_id": deal_id}
     wire = amount * 100 if hold.provider == "stripe" else amount
     res = await eg.handle_escrow_funded_webhook(EscrowFundedWebhookPayload(
         ext_ref=hold.ext_ref, status="FUNDED", amount=wire, currency=hold.currency, event_id=event_id,
@@ -261,11 +284,17 @@ async def to_in_transit(s: str, deal_id: str) -> None:
     await qc_result(deal_id, "PASS")
     check(s, "deal reaches QC_PASSED", await status(deal_id) == "QC_PASSED", await status(deal_id))
     docs = await dg_repo().list_by_deal(deal_id)
-    check(s, "5 export documents rendered", len(docs) == 5, str(sorted(str(getattr(d.doc_type, 'value', d.doc_type)) for d in docs)))
+    kinds = {str(getattr(d.doc_type, "value", d.doc_type)) for d in docs if d.status == "RENDERED"}
+    expected = {"SALES_CONTRACT", "INSPECTION_ORDER", "CI", "PL", "CoO", "SDF", "SHIPPING_BILL"}
+    check(s, "sales contract, inspection order and the 5 export documents rendered", expected <= kinds,
+          f"missing {sorted(expected - kinds)}; have {sorted(kinds)}")
     say(f"   gates: {[g.action for g in await pending(deal_id)]}")
     await approve(deal_id, "RELEASE_ESCROW_TRANCHE")
     await approve(deal_id, "BOOK_FREIGHT")
     check(s, "deal reaches IN_TRANSIT", await status(deal_id) == "IN_TRANSIT", await status(deal_id))
+    # A Maersk booking (the default carrier) asks for the VGM and the draft B/L once confirmed.
+    await approve(deal_id, "SUBMIT_VGM")
+    await approve(deal_id, "APPROVE_TRANSPORT_DOCUMENT")
     await approve(deal_id, "FILE_CUSTOMS")
     orders = await sl_repo().list_by_deal(deal_id)
     check(s, "customs (CHA) order filed", any(o.order_type.upper() == "CHA" for o in orders),
@@ -329,14 +358,21 @@ async def persona_reply(role: str, company: str, thread: str, instruction: str) 
         "signed with a first name. Do not write a subject line. Do not use markdown. Follow the "
         "instruction exactly; state prices as, for example, USD 1,180 per MT."
     )
-    user = f"The e-mail you received:\n---\n{thread[-1800:]}\n---\n\nYour instruction: {instruction}"
     for attempt in range(4):
+        # A long template (the Proforma Invoice) has come back blank from the gateway:
+        # retries show less of it and allow more tokens.
+        shown = thread[-1800:] if attempt == 0 else thread[:700]
+        user = f"The e-mail you received:\n---\n{shown}\n---\n\nYour instruction: {instruction}"
         try:
             response = await LLMClient().chat(
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                caller="qa_counterparty", temperature=0.4, max_tokens=1500,
+                caller="qa_counterparty", temperature=0.4 + 0.1 * attempt, max_tokens=1500 if attempt == 0 else 3000,
             )
             text = (response.content or "").strip()
+            if len(re.findall(r"[A-Za-z]{2,}", text)) < 4:  # "-P", a bare name: not an e-mail
+                say(f"   (LLM reply too short to be an e-mail: {text[:40]!r}, attempt {attempt + 1})")
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
             missing = [p for p in _scripted_prices(instruction) if p not in text.replace(",", "")]
             if text and not missing:
                 LLM_REPLIES["ok"] += 1
@@ -350,8 +386,9 @@ async def persona_reply(role: str, company: str, thread: str, instruction: str) 
         await asyncio.sleep(3 * (attempt + 1))
     LLM_REPLIES["failed"] += 1
     raise CounterpartyUnavailable(
-        f"LLM gateway unavailable: the simulated {role} at {company} could not write a reply after 4 attempts "
-        f"(instruction: {instruction[:120]}). The journey stopped here; rerun when the gateway is healthy."
+        f"No usable LLM reply: the simulated {role} at {company} did not write the scripted reply after 4 attempts "
+        "(gateway errors, blank or too-short replies, or a missing scripted price — see the attempt lines) "
+        f"(instruction: {instruction[:120]}). The journey stopped here."
     )
 
 
@@ -443,9 +480,14 @@ async def reply(deal_id: str, who, party: str, instruction: str, from_address: s
 
 def leak_free(text: str, who, party: str) -> list[str]:
     ask = who.get("supplier_ask", 1000.0)
-    other = ([who["supplier_company"], who["supplier_mail"], f"{ask:,.0f}", f"{ask:.0f}"] if party == "buyer"
-             else [who["buyer_company"], who["buyer_mail"]])
-    return [w for w in other if w.lower() in text.lower()]
+    names = [who["supplier_company"], who["supplier_mail"]] if party == "buyer" else [who["buyer_company"], who["buyer_mail"]]
+    found = [w for w in names if w.lower() in text.lower()]
+    if party == "buyer":
+        # The supplier's price as a whole amount: "900" or "900.00", never the tail of "4,900.00".
+        for amount in dict.fromkeys((f"{ask:,.0f}", f"{ask:.0f}")):
+            if re.search(rf"(?<![\d,.]){re.escape(amount)}(?![\d,]|\.\d*[1-9])", text):
+                found.append(amount)
+    return found
 
 
 async def assert_outbound_clean(s: str, who):
@@ -494,7 +536,7 @@ async def uc_whole_deal():
             agreed_gate = True
             break
     if not agreed_gate:
-        await reply(deal_id, who, "buyer", "Our destination port is Jebel Ali, UAE. Say clearly: we accept your offer and your terms and wish to proceed. Say that you choose SGS as the inspection agency. Do NOT write any price or number in your reply, and repeat the sentence about the destination port word for word.")
+        await reply(deal_id, who, "buyer", "Our destination port is Jebel Ali, UAE. Say clearly: we accept your offer and your terms and wish to proceed. Say that the goods must be packed in 25 kg PP woven bags with our company name printed on each bag. Do NOT write any price in your reply, and repeat the sentences about the destination port and the packing word for word.")
         await send_pending_drafts(deal_id, who)
     session = await session_of(who)
     say(f"   negotiation: status={session.status} round={session.round_no} bid={session.current_bid} ask={session.current_ask} agreed={session.agreed_price}")
@@ -518,6 +560,13 @@ async def uc_whole_deal():
           and await status(deal_id) == "NEGOTIATION_AGREED", f"{await status(deal_id)}; {commitment.status if commitment else None}")
     if request_mail:
         note(f"\n**PortLess → {request_mail['to']}** (template)\n\n> {request_mail['subject']}\n\n{request_mail['body']}\n")
+    agreed_session = await session_of(who)
+    check(s, "the buyer's packing was read from its own e-mail",
+          bool(agreed_session.packing) and agreed_session.packing.get("unit_weight_kg") == 25,
+          str(agreed_session.packing))
+    check(s, "the supplier's order request states the buyer's packing and asks for a price including it",
+          bool(request_mail) and "25 kg" in request_mail["body"] and "Your price must include this packing" in request_mail["body"],
+          (request_mail or {}).get("body", "")[:300])
     if commitment is None or commitment.current is None:
         return
     asked = commitment.current.price_usd_per_mt
@@ -557,8 +606,12 @@ async def uc_whole_deal():
     stated = final.supplier_last_quote or final.supplier_quote_price
     check(s, "the PO price is one the supplier itself stated", bool(po_gate) and abs(po_gate[0].callback_payload["agreed_price"] - stated) < 0.01,
           f"PO {po_gate[0].callback_payload['agreed_price'] if po_gate else None}, supplier stated {stated}, our last counter {final.current_ask}")
-    check(s, "funding by the buyer shows no payer warning", bool(po_gate) and not [f for f in po_gate[0].risk_flags if "payer_" in f],
-          str(po_gate[0].risk_flags if po_gate else "no gate"))
+    # Tazapay does not report the paying account, so a person confirms the payer
+    # (payer_unknown); Escrow.com takes money only from the buyer's account.
+    payer_flags = [f for f in (po_gate[0].risk_flags if po_gate else []) if "payer_" in f]
+    allowed = {"compliance:payer_unknown"} if hold.provider == "tazapay" else set()
+    check(s, "funding by the buyer raises no payer mismatch", bool(po_gate) and set(payer_flags) <= allowed,
+          f"{hold.provider}: {payer_flags if po_gate else 'no gate'}")
 
     ready_on = datetime.now(timezone.utc).date() + timedelta(days=12)
     ready_text = f"{ready_on.day} {ready_on:%B %Y}"
@@ -587,6 +640,8 @@ async def uc_whole_deal():
     check(s, "supplier is not fully paid before the buyer accepts", await status(deal_id) == "CLEARED", await status(deal_id))
     await base.milestone(deal_id, "DELIVERED")
     await slow_settle()
+    await approve(deal_id, "SUBMIT_VGM", by="operator@qa.invalid")
+    await approve(deal_id, "APPROVE_TRANSPORT_DOCUMENT", by="operator@qa.invalid")
     await reply(deal_id, who, "buyer", "Say the cargo arrived in good condition and state plainly: we accept the goods.")
     check(s, "acceptance of the goods needs confirmation", bool(await pending(deal_id, "CONFIRM_BUYER_ACCEPTANCE")),
           str([g.action for g in await pending(deal_id)]))
@@ -1012,12 +1067,12 @@ async def uc_supplier_silent():
 
 def _trust_webhooks() -> None:
     """The journeys hand provider results straight to the services; signatures have their own cases."""
-    from shared.connectors import escrow, payments, qc_providers, shields
+    from shared.connectors import escrow, maersk, payments, qc_providers, shields
 
     async def verified(*_args: Any, **_kwargs: Any) -> bool:
         return True
 
-    for module in (escrow, payments, qc_providers, shields):
+    for module in (escrow, maersk, payments, qc_providers, shields):
         for name in dir(module):
             cls = getattr(module, name)
             if isinstance(cls, type) and "webhook_verify" in vars(cls):
@@ -1057,3 +1112,7 @@ async def run_all(sink: Any, mail: list[dict[str, Any]], guard: Any, background:
             "transcript": "\n".join(TRANSCRIPT)[:60000],
             "duration_ms": int((asyncio.get_running_loop().time() - began) * 1000),
         })
+
+
+# Registered last: it builds on the helpers above.
+from .journeys_full import uc_full_flow  # noqa: E402,F401

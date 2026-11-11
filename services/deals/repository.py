@@ -56,6 +56,10 @@ class DealRepository(Protocol):
         deal_id: str,
         entry: StatusHistoryEntry,
     ) -> bool: ...
+    async def set_fields(self, deal_id: str, fields: dict) -> bool:
+        """Set a few fields without touching the rest of the document — an
+        atomic ``$set``, so it never overwrites a concurrent status change."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +114,13 @@ class InMemoryFallbackRepository:
                 "status_history": deal.status_history + [entry],
             }
         )
+        return True
+
+    async def set_fields(self, deal_id: str, fields: dict) -> bool:
+        deal = self._store.get(deal_id)
+        if deal is None:
+            return False
+        self._store[deal_id] = deal.model_copy(update=fields)
         return True
 
 
@@ -187,6 +198,13 @@ class MongoDealRepository:
                 },
             },
         )
+        return res.matched_count > 0
+
+    async def set_fields(self, deal_id: str, fields: dict) -> bool:
+        from pydantic import TypeAdapter
+        doc = {k: TypeAdapter(type(v)).dump_python(v, mode="json") if v is not None else None
+               for k, v in fields.items()}
+        res = await self._col.update_one({"deal_id": deal_id}, {"$set": doc})
         return res.matched_count > 0
 
 

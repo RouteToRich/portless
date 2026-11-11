@@ -537,6 +537,11 @@ async def update_status(deal_id: str, payload: UpdateStatusRequest) -> DealRecor
     if deal is None:
         raise DealNotFoundError(deal_id)
 
+    # Keep the inspection status line in step with the deal (PO → QC → after).
+    from shared.orchestration import qc_status
+    if await qc_status.sync(deal_id) != deal.qc_status:
+        deal = await repo.get(deal_id) or deal
+
     event_topic = _STATUS_TO_EVENT.get(payload.target_status)
     if event_topic:
         await _emit_event(
@@ -699,6 +704,11 @@ async def _supplier_contact(deal: DealRecord, supplier_id: str) -> dict[str, Any
                     info.setdefault("iec", getattr(c, "iec", None))
                     info.setdefault("country", getattr(c, "country", None))
                     info.setdefault("source", getattr(c, "source", None))
+                    # A scan knows the supplier's town, not its street: still the
+                    # place the inspection is booked at until the supplier corrects it.
+                    place = ", ".join(filter(None, (getattr(c, "location_city", None), getattr(c, "location_state", None))))
+                    if place:
+                        info.setdefault("address", place)
                     break
         except Exception as exc:  # noqa: BLE001
             logger.debug("Deal %s: opportunity lookup for supplier %s failed: %s", deal.deal_id, supplier_id, exc)

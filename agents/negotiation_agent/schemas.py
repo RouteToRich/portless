@@ -189,6 +189,16 @@ class NegotiationSession(BaseModel):
     qc_provider: str | None = None
     """Buyer-opted QC provider key; None until the buyer opts (default
     provider's cost is priced in meanwhile)."""
+    escrow_provider: str | None = None
+    """Buyer-chosen escrow provider (``tazapay`` / ``escrow_com``); None until the
+    buyer names one — the PI then states ``ESCROW_DEFAULT_PROVIDER``."""
+    packing: dict[str, Any] | None = None
+    """The buyer's packing requirements (shared/orchestration/packing.py
+    PackingSpec) — asked before the agreement, passed to the supplier (order
+    request, PO), the PI and the inspector, and priced on the cost sheet."""
+    packing_in_supplier_price: bool = False
+    """The supplier confirmed its price includes the buyer's packing (its order
+    confirmation) — the packing line then leaves PortLess's costs."""
     quantity_mt: float | None = None
     logistics_cost_usd: float | None = None
     """Per-unit ocean-freight cost included in the margin math (quoted via

@@ -117,19 +117,30 @@ def _buyer_facts(req: Any) -> dict[str, Any]:
     return {k: v for k, v in facts.items() if v not in (None, "", [])}
 
 
-def buyer_missing(facts: dict[str, Any], *, qc_selected: bool, quantity_known: bool) -> list[str]:
+PACKING_QUESTION = ("packing: bag type and net weight, inner liner, marking or private label, pallets, fumigation — "
+                    "or that our standard export packing suits them")
+
+
+def buyer_missing(facts: dict[str, Any], *, qc_selected: bool, quantity_known: bool,
+                  packing_known: bool = True) -> list[str]:
     """Facts still needed before a proforma invoice can be issued, by priority."""
+    from shared.connectors.qc_providers import QC_PROVIDER_CATALOG, enabled_qc_providers
+    from shared.orchestration import packing
     out: list[str] = []
     if not facts.get("destination_port"):
         out.append("destination port (our price is CIF to that port)")
     if not (facts.get("quantity_mt") or quantity_known):
         out.append("quantity in MT for the first shipment")
     if not facts.get("grade"):
-        out.append("grade / specification and packaging")
+        out.append("grade / specification")
+    if packing.required() and not (packing_known or facts.get("packing") or facts.get("packaging")):
+        out.append(PACKING_QUESTION)
     if not facts.get("delivery_window"):
         out.append("when the goods must arrive")
-    if not qc_selected:
-        out.append("which inspection agency they trust (SGS, QIMA, Bureau Veritas, Intertek or TÜV SÜD)")
+    enabled = enabled_qc_providers()
+    if not qc_selected and len(enabled) > 1:  # one provider → nothing to choose
+        names = [QC_PROVIDER_CATALOG[k]["display_name"] for k in enabled]
+        out.append(f"which inspection agency they trust ({', '.join(names[:-1])} or {names[-1]})")
     if not facts.get("certifications_required"):
         out.append("documents and certificates required at destination")
     return out[:_MAX_MISSING]
@@ -141,6 +152,10 @@ async def buyer_brief(session: Any, history: str = "", inbound: str = "") -> dic
     cand = _selected_candidate(deal, getattr(session, "buyer_email", None)) if deal else None
     req = getattr(cand, "requirement", None) if cand else None
     facts = _buyer_facts(req)
+    from shared.orchestration import packing as _packing
+    agreed_packing = _packing.describe(getattr(session, "packing", None))
+    if agreed_packing:
+        facts["packing"] = agreed_packing
 
     earlier: list[str] = []
     if cand is not None and getattr(cand, "contacted_at", None):
@@ -172,6 +187,7 @@ async def buyer_brief(session: Any, history: str = "", inbound: str = "") -> dic
             facts,
             qc_selected=bool(getattr(session, "qc_provider", None)),
             quantity_known=bool(getattr(session, "quantity_mt", None)),
+            packing_known=bool(getattr(session, "packing", None)),
         ),
     }
 
@@ -199,10 +215,13 @@ def _supplier_facts(offer: Any) -> dict[str, Any]:
     return {k: v for k, v in facts.items() if v not in (None, "", [])}
 
 
-def supplier_missing(facts: dict[str, Any], *, verified: bool) -> list[str]:
+def supplier_missing(facts: dict[str, Any], *, verified: bool, address_known: bool = True) -> list[str]:
     out: list[str] = []
     if not verified:
         out.append("GSTIN and IEC (we verify every supplier before a purchase order)")
+    if not address_known:
+        out.append("full address of the facility where the goods are produced and will be inspected "
+                   "(street, town, PIN code)")
     if not facts.get("grade"):
         out.append("grade / specification and packaging")
     if not facts.get("lead_time_days"):
@@ -236,12 +255,17 @@ async def supplier_brief(session: Any, history: str = "", inbound: str = "") -> 
         or (party is not None and getattr(party, "gstin", None) and getattr(party, "iec", None))
     )
     company = (getattr(party, "legal_name", None) or getattr(offer, "company_name", None) or "").strip()
+    from shared.orchestration import supplier_address
+    address = getattr(party, "address", None)
+    country = getattr(party, "country", None) or "IN"
     return {
         "stage": _stage(history, inbound, offer is not None),
         "company_name": company or None,
+        "country": country,
         "what_they_told_us": facts,
         "our_earlier_messages": earlier,
-        "missing_information": supplier_missing(facts, verified=verified),
+        "missing_information": supplier_missing(facts, verified=verified,
+                                                address_known=supplier_address.is_complete(address, country)),
     }
 
 

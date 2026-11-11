@@ -22,7 +22,7 @@
   <tbody>
     <tr>
       <td>1</td>
-      <td><strong>{{ product_description }}</strong><div class="small muted">Origin: India · Quality as agreed, verified by independent inspection before shipment</div></td>
+      <td><strong>{{ product_description }}</strong><div class="small muted">Origin: India · Quality as agreed, verified by independent inspection before shipment</div>{% if packing %}<div class="small"><strong>Packing:</strong> {{ packing }}</div>{% endif %}</td>
       <td class="mono">{{ hs_code }}</td>
       <td class="num">{{ quantity_mt | qty }}</td>
       <td class="num">{{ agreed_price | money(None, 2) }}</td>

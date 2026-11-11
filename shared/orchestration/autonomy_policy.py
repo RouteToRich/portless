@@ -180,6 +180,17 @@ ACTION_CLASSES: tuple[ActionClass, ...] = (
         default="L0", follows_deal_profile=True, default_on_timeout="APPROVE",
     ),
     ActionClass(
+        "SUBMIT_VGM", "VGM Submission",
+        "Send each container's verified gross mass (inspector's loaded cargo + container tare) "
+        "to the carrier — a SOLAS declaration PortLess signs as shipper.",
+        default="L0",
+    ),
+    ActionClass(
+        "APPROVE_TRANSPORT_DOCUMENT", "Bill of Lading Approval",
+        "Approve the carrier's draft bill of lading (shipper, consignee, cargo, seals) so it is issued.",
+        default="L0",
+    ),
+    ActionClass(
         "FILE_CUSTOMS", "Customs Filing",
         "File the Shipping Bill with the CHA / ICEGATE once freight is booked.",
         default="L0", follows_deal_profile=True, default_on_timeout="APPROVE",

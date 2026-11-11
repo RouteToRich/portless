@@ -112,6 +112,9 @@ class Commitment(BaseModel):
     qc_ready_asked_at: datetime | None = None
     qc_ready_produced_pct: float | None = None
     qc_ready_packed_pct: float | None = None
+    facility_address_status: str | None = None
+    """None | awaiting (the inspection waits for the facility address) | received"""
+    facility_address_asked_at: datetime | None = None
 
     @property
     def current(self) -> Attempt | None:
@@ -152,6 +155,14 @@ async def get(deal_id: str) -> Commitment | None:
 
 
 async def _save(c: Commitment) -> None:
+    """Store the commitment, then recompute the deal's QC status line (the PO
+    acknowledgement and the goods-ready date are two of its sources)."""
+    await _store(c)
+    from shared.orchestration import qc_status
+    await qc_status.sync(c.deal_id)
+
+
+async def _store(c: Commitment) -> None:
     col = _mongo()
     if col is not None:
         try:
@@ -265,15 +276,18 @@ async def ready_for_pi(deal_id: str, *, agreed_price: float, quantity_mt: float 
 
 async def _request(rec: Commitment, deal: Any, *, supplier_id: str, company: str, email: str | None,
                    price: float, introduced: bool) -> None:
-    from shared.orchestration import notifications
+    from shared.orchestration import notifications, packing
     rec.status = "requested"
     rec.attempts.append(Attempt(supplier_id=supplier_id, company_name=company, email=email,
                                 price_usd_per_mt=price, requested_at=_now()))
     await _save(rec)
+    session = await _session(deal.deal_id)
+    buyer_packing = getattr(session, "packing", None) if session is not None else None
     await notifications.notify_party(
         deal.deal_id, "supplier", "supplier_order_request",
         {"supplier_name": company, "price": price, "quantity_mt": rec.quantity_mt,
-         "hs_code": getattr(deal, "hs_code", ""), "hours": confirm_hours(), "introduced": introduced},
+         "hs_code": getattr(deal, "hs_code", ""), "hours": confirm_hours(), "introduced": introduced,
+         "packing": packing.describe(buyer_packing), "packing_special": packing.special(buyer_packing)},
         suffix=f"{supplier_id}-{len(rec.attempts)}", deal=deal,
     )
     logger.info("SupplierCommitment: firm order request to %s (%s) at %.2f for deal %s",
@@ -371,13 +385,27 @@ async def handle_supplier_reply(deal_id: str, deal_status: str, body: str, inbou
                 if tpo is not None:
                     when = getattr(tpo, "inspection_date", None)
                     return "Supplier acknowledged the purchase order; inspection booked" + (f" for {when}." if when else ".")
+                after = await get(deal_id)
+                if after is not None and after.facility_address_status == "awaiting":
+                    return "Supplier acknowledged the purchase order; asked for the address of its facility for the inspection."
                 return "Supplier acknowledged the purchase order; asked for the date the goods are ready for inspection."
             return None
         if rec.qc_ready_status == "awaiting" and ready is not None and not _DECLINE.search(text):
             result = await record_qc_readiness(deal_id, ready, by=f"supplier e-mail {inbound_id}")
-            return f"Supplier named {ready.isoformat()} as the goods-ready date; inspection booked for {result.get('inspection_date')}."
+            if result.get("status") == "booked":
+                return f"Supplier named {ready.isoformat()} as the goods-ready date; inspection booked for {result.get('inspection_date')}."
+            return f"Supplier named {ready.isoformat()} as the goods-ready date; the inspection waits for its facility address."
+        if rec.facility_address_status == "awaiting" and (await _address_now_known(deal_id)):
+            tpo = await address_known(deal_id)
+            if tpo is not None:
+                return f"Supplier gave its facility address; inspection booked for {getattr(tpo, 'inspection_date', None)}."
         return None
     return None
+
+
+async def _address_now_known(deal_id: str) -> bool:
+    from shared.orchestration import supplier_address
+    return (await supplier_address.current(deal_id))[1]
 
 
 async def _gate_confirmation(rec: Commitment, inbound_id: str, body: str) -> None:
@@ -413,7 +441,12 @@ async def record_confirmed(deal_id: str, *, supplier_id: str, price: float) -> A
     session = await _session(deal_id)
     if session is not None:
         from agents.negotiation_agent.repository import get_repository  # type: ignore[import]
-        session = session.model_copy(update={"supplier_last_quote": float(price), "current_ask": float(price)})
+        # Its confirmation answered an order request that stated the buyer's
+        # packing, so its price includes that packing (it leaves our costs).
+        session = session.model_copy(update={"supplier_last_quote": float(price), "current_ask": float(price),
+                                             "packing_in_supplier_price": bool(getattr(session, "packing", None))})
+        from agents.negotiation_agent.service import refresh_cost_sheet  # type: ignore[import]
+        session = await refresh_cost_sheet(session)
         await get_repository().save_session(session)
     from shared.orchestration.continuations import pi_after_compliance
     return await pi_after_compliance(deal_id, agreed_price=rec.agreed_price, quantity_mt=rec.quantity_mt,
@@ -571,14 +604,57 @@ async def request_qc_readiness(deal_id: str, quantity_mt: float = 0.0) -> bool:
 async def book_qc_when_ready(deal_id: str) -> Any:
     """Book the inspection now if the goods-ready date is known (or not
     required); otherwise ask the supplier for it. Returns the QC order or None."""
-    from shared.orchestration import qc_schedule
+    from shared.orchestration import qc_schedule, supplier_address
     rec = await get(deal_id)
     if qc_schedule.readiness_required() and not (rec and rec.qc_ready_date):
         await request_qc_readiness(deal_id, rec.quantity_mt if rec else 0.0)
         logger.info("SupplierCommitment: deal %s — inspection waits for the supplier's goods-ready date", deal_id)
         return None
+    if supplier_address.required() and not (await supplier_address.current(deal_id))[1]:
+        await request_facility_address(deal_id, rec.quantity_mt if rec else 0.0)
+        logger.info("SupplierCommitment: deal %s — inspection waits for the supplier's facility address", deal_id)
+        return None
+    if rec is not None and rec.facility_address_status == "awaiting":
+        rec.facility_address_status = "received"
+        await _save(rec)
     from shared.orchestration.continuations import book_qc_for_deal
     return await book_qc_for_deal(deal_id)
+
+
+async def request_facility_address(deal_id: str, quantity_mt: float = 0.0) -> bool:
+    """Ask the supplier for the address the inspector goes to (once)."""
+    rec = await get(deal_id) or Commitment(deal_id=deal_id, agreed_price=0.0, quantity_mt=quantity_mt, status="confirmed")
+    if rec.facility_address_status in ("awaiting", "received"):
+        return False
+    rec.facility_address_status, rec.facility_address_asked_at = "awaiting", _now()
+    await _save(rec)
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        from shared.orchestration import notifications, supplier_address
+        deal = await get_deal(deal_id)
+        known, _ = await supplier_address.current(deal_id)
+        await notifications.notify_party(deal_id, "supplier", "facility_address_request", {
+            "supplier_name": notifications._party_name(deal, "supplier"), "known": known,
+        }, deal=deal)
+    except Exception as exc:  # noqa: BLE001 — the stall watcher raises it if nothing comes
+        logger.error("SupplierCommitment: facility address request for %s not sent: %s", deal_id, exc)
+    return True
+
+
+async def address_known(deal_id: str) -> Any:
+    """The facility address arrived (supplier e-mail or staff): book the
+    inspection that was waiting for it. Returns the QC order or None."""
+    rec = await get(deal_id)
+    if rec is None or rec.facility_address_status != "awaiting":
+        return None
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        deal = await get_deal(deal_id)
+        if str(getattr(deal.status, "value", deal.status)) != "PO_ISSUED" or rec.po_ack == "awaiting":
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return await book_qc_when_ready(deal_id)
 
 
 async def record_qc_readiness(deal_id: str, ready_date: Any, *, by: str, produced_pct: float | None = None,

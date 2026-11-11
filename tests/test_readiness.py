@@ -15,6 +15,8 @@ _ALL_VARS = [
     "GOOGLE_DRIVE_REFRESH_TOKEN", "SGS_API_KEY", "QIMA_API_KEY", "COGOPORT_API_KEY", "FREIGHTOS_API_KEY",
     "QIMA_API_ACCESS_TOKEN", "QIMA_ACCOUNT", "QIMA_PASSWORD", "QIMA_PASSWORD_MD5", "SGS_BOOKING_EMAIL",
     "BUREAU_VERITAS_BOOKING_EMAIL", "INTERTEK_API_KEY", "TUV_SUD_API_KEY", "QC_SANDBOX_PROVIDERS",
+    "INTEGRATION_MODE", "ESCROW_PROVIDERS_ENABLED", "ESCROW_DEFAULT_PROVIDER", "ESCROW_SANDBOX_PROVIDERS",
+    "PORTLESS_PUBLIC_BASE_URL", "ESCROW_PROOF_LINK_SECRET",
     "ICEGATE_API_KEY", "LLM_GATEWAY_URL", "LLM_GATEWAY_TOKEN", "LLM_GATEWAY_EMAIL",
     "LLM_GATEWAY_PASSWORD", "ENV_PROFILE", "READINESS_ENFORCE",
     "AUTH_GATEWAY_URL", "PORTLESS_ACCOUNT_ID", "LLM_GATEWAY_ACCOUNT_ID", "AUTH_TRUST_GATEWAY_HEADERS",
@@ -46,6 +48,8 @@ def _fill(monkeypatch):
     monkeypatch.setenv("TAZAPAY_API_KEY", "k")
     monkeypatch.setenv("TAZAPAY_API_SECRET", "s")
     monkeypatch.setenv("TAZAPAY_WEBHOOK_SECRET", "w")
+    monkeypatch.setenv("ESCROW_COM_API_KEY", "ek")
+    monkeypatch.setenv("ESCROW_COM_EMAIL", "escrow@portless.io")
     monkeypatch.setenv("PAYONEER_WEBHOOK_SECRET", "w2")
     monkeypatch.setenv("PAYONEER_CLIENT_ID", "p")
     monkeypatch.setenv("PAYONEER_CLIENT_SECRET", "ps")
@@ -162,6 +166,54 @@ def test_the_qc_sandbox_fails_in_production(bare_env):
 
     assert sandbox() == "ok"
     bare_env.setenv("QC_SANDBOX_PROVIDERS", "qima")
+    assert sandbox() == "ok", "the simulator is never used in live mode"
+    bare_env.setenv("INTEGRATION_MODE", "sandbox")
     assert sandbox() == "warn"
     bare_env.setenv("ENV_PROFILE", "production")
     assert sandbox() == "fail"
+
+
+def test_sandbox_integration_mode_fails_in_production(bare_env):
+    def mode():
+        return {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}["integration_mode"]
+
+    assert mode() == "ok"
+    bare_env.setenv("INTEGRATION_MODE", "sandbox")
+    assert mode() == "warn"
+    bare_env.setenv("ENV_PROFILE", "production")
+    assert mode() == "fail"
+
+
+def test_a_placeholder_key_is_not_a_configured_provider(bare_env):
+    def checks():
+        return {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}
+
+    bare_env.setenv("TAZAPAY_API_KEY", "your_tazapay_api_key_here")
+    bare_env.setenv("TAZAPAY_API_SECRET", "your_tazapay_api_secret_here")
+    bare_env.setenv("COGOPORT_API_KEY", "your_cogoport_api_key_here")
+    assert checks()["escrow_provider"] == "fail" and checks()["freight_provider"] != "ok"
+    bare_env.setenv("TAZAPAY_API_KEY", "tzp_live_123")
+    bare_env.setenv("TAZAPAY_API_SECRET", "s3cret")
+    assert checks()["escrow_provider"] == "fail"  # Escrow.com is offered to buyers but has no keys
+    bare_env.setenv("ESCROW_PROVIDERS_ENABLED", "tazapay")
+    assert checks()["escrow_provider"] == "ok"
+
+
+def test_every_offered_escrow_provider_needs_keys_and_the_sandbox_never_runs_in_production(bare_env):
+    def checks():
+        return {c["id"]: c for c in readiness.evaluate()["checks"]}
+
+    bare_env.setenv("ESCROW_COM_API_KEY", "ek")
+    bare_env.setenv("ESCROW_COM_EMAIL", "escrow@portless.io")
+    assert "Tazapay" in checks()["escrow_provider"]["detail"]
+    bare_env.setenv("TAZAPAY_API_KEY", "k")
+    bare_env.setenv("TAZAPAY_API_SECRET", "s")
+    assert checks()["escrow_provider"]["status"] == "ok"
+    assert checks()["escrow_proof_links"]["status"] == "warn"
+    bare_env.setenv("PORTLESS_PUBLIC_BASE_URL", "https://api.portless.io")
+    bare_env.setenv("ESCROW_PROOF_LINK_SECRET", "p")
+    assert checks()["escrow_proof_links"]["status"] == "ok"
+    bare_env.setenv("INTEGRATION_MODE", "sandbox")
+    bare_env.setenv("ESCROW_SANDBOX_PROVIDERS", "tazapay")
+    bare_env.setenv("ENV_PROFILE", "production")
+    assert checks()["escrow_sandbox"]["status"] == "fail"

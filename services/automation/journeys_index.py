@@ -16,4 +16,5 @@ JOURNEYS: list[dict[str, str]] = [
     {"id": "UC-12", "fn": "uc_bypass_attempts", "title": "Staff trying to go around the approval gates"},
     {"id": "UC-13", "fn": "uc_supplier_declines", "title": "The supplier declines the firm order; standby suppliers until one confirms"},
     {"id": "UC-14", "fn": "uc_supplier_silent", "title": "The supplier stays silent; the standby is asked, then nobody is left"},
+    {"id": "UC-15", "fn": "uc_full_flow", "title": "The whole positive flow, opportunity to cash, on every provider simulator"},
 ]

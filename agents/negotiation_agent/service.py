@@ -111,12 +111,14 @@ async def _quote_qc_cost_per_unit(
     """
     from shared.connectors.qc_providers import (
         QC_PROVIDER_CATALOG,
+        bookable_qc_provider,
         cheapest_qc_provider,
-        resolve_qc_provider,
     )
 
     qty = quantity_mt or _DEFAULT_QC_QUANTITY_MT
-    resolved = resolve_qc_provider(provider) if provider else None
+    # A provider that is not enabled (QC_PROVIDERS_ENABLED) is never booked,
+    # so it is never priced either: the enabled one stands in.
+    resolved = bookable_qc_provider(provider) if provider else None
     # Unopted → price on the cheapest catalog provider: that is who would be
     # booked if the buyer never picks one (see shield_link's fallback rule),
     # so the floor and the eventual booking always price the same inspector.
@@ -209,7 +211,9 @@ async def _apply_buyer_qc_choice(session: NegotiationSession, provider: str) -> 
     quoted = await _quote_qc_cost_per_unit(
         provider, session.quantity_mt, session.deal_id, session.product_code,
     )
-    session.qc_provider = provider
+    # The provider actually priced (and later booked): a choice that is not
+    # enabled (QC_PROVIDERS_ENABLED) is recorded as the enabled stand-in.
+    session.qc_provider = quoted[0] if quoted is not None else provider
     if quoted is not None:
         _, per_unit = quoted
         envelope = session.cost_envelope or CostEnvelope()
@@ -319,6 +323,34 @@ def _key_set(*names: str) -> bool:
     return any(os.getenv(n, "").strip() for n in names)
 
 
+def _capture_buyer_packing(session: NegotiationSession, message: str | None) -> NegotiationSession:
+    """Merge the packing the buyer wrote into the session (shared/orchestration/packing.py)."""
+    from shared.orchestration import packing
+    from .guards import _new_reply_text
+    found = packing.parse_packing(_new_reply_text(message or "") or message)
+    if found is not None:
+        session.packing = packing.merge(session.packing, found).model_dump(mode="json")
+        logger.info("Negotiation %s: buyer packing — %s", session.negotiation_id, packing.describe(session.packing))
+    return session
+
+
+async def _seed_packing_from_outreach(session: NegotiationSession) -> NegotiationSession:
+    """The buyer may have stated its packing already, replying to our introduction."""
+    try:
+        from shared.orchestration import packing
+        from .briefing import _load_deal, _selected_candidate
+        deal = await _load_deal(session.deal_id)
+        cand = _selected_candidate(deal, getattr(session, "buyer_email", None)) if deal else None
+        text = getattr(getattr(cand, "requirement", None), "packaging", None) if cand else None
+        if text:
+            spec = packing.parse_packing(text) or packing.PackingSpec(notes=str(text)[:300], raw=str(text))
+            spec.source = "buyer's reply to our introduction"
+            session.packing = spec.model_dump(mode="json")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Negotiation %s: outreach packing unavailable: %s", session.negotiation_id, exc)
+    return session
+
+
 async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
     """Work out every PortLess cost for this deal before anything is drafted.
     Never raises — on failure the session keeps its previous sheet."""
@@ -356,6 +388,7 @@ async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
             qc_is_quote=_key_set("SGS_API_KEY", "QIMA_API_KEY", "BUREAU_VERITAS_API_KEY", "INTERTEK_API_KEY", "TUV_SUD_API_KEY"),
             supplier_address=address, supplier_price_basis=session.supplier_price_basis,
             escrow_fee_pct=fee_pct, usd_inr_rate=rate,
+            packing=session.packing, packing_in_supplier_price=session.packing_in_supplier_price,
         )
         session.cost_sheet = sheet.model_dump(mode="json")
     except Exception as exc:  # noqa: BLE001
@@ -1061,6 +1094,28 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
         mention = detect_qc_provider_mention(request.inbound_message)
         if mention and mention != session.qc_provider:
             await _apply_buyer_qc_choice(session, mention)
+        # The buyer's escrow provider (Tazapay / Escrow.com), if this reply names one.
+        from shared.connectors.escrow import detect_escrow_provider_mention
+        from shared.orchestration import inspection_plan
+        phases = inspection_plan.detect_types(request.inbound_message)
+        if phases:
+            try:
+                await inspection_plan.set_plan(session.deal_id, phases, "buyer")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Negotiation %s: inspection plan not recorded: %s", negotiation_id, exc)
+        escrow_choice = detect_escrow_provider_mention(request.inbound_message)
+        if escrow_choice and escrow_choice != session.escrow_provider:
+            session.escrow_provider = escrow_choice
+            try:
+                from shared.orchestration import escrow_status
+                await escrow_status.set_choice(session.deal_id, escrow_choice, "buyer")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Negotiation %s: escrow choice not recorded on the deal: %s", negotiation_id, exc)
+        # The buyer's packing requirements, read from the NEW part of its reply
+        # (a quoted copy of our own question must not count as its answer).
+        session = _capture_buyer_packing(session, request.inbound_message)
+    if session.packing is None:
+        session = await _seed_packing_from_outreach(session)
 
     if request.party == "supplier":
         session.supplier_price_basis = supplier_basis_from(request.inbound_message, session.supplier_price_basis)
@@ -1118,7 +1173,8 @@ async def run_round(negotiation_id: str, request: RoundRequest) -> NegotiationRe
     classifier_mentions = final_state.get("mentioned_qc_providers")
     if request.party == "buyer" and classifier_mentions:
         if len(classifier_mentions) == 1:
-            chosen = classifier_mentions[0]
+            from shared.connectors.qc_providers import bookable_qc_provider
+            chosen = bookable_qc_provider(classifier_mentions[0])
         else:
             from shared.connectors.qc_providers import cheapest_qc_provider
             chosen = cheapest_qc_provider(classifier_mentions)

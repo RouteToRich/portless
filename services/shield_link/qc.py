@@ -148,7 +148,16 @@ def _history(tpo: ThirdPartyOrderRecord, status: str, source: str, **extra: Any)
     return [*tpo.status_history, entry]
 
 
-async def apply_update(
+async def apply_update(tpo: ThirdPartyOrderRecord, **kwargs: Any) -> dict[str, Any]:
+    """Apply a provider update (see ``_apply_update``) and recompute the deal's QC status."""
+    from shared.orchestration import qc_status
+    try:
+        return await _apply_update(tpo, **kwargs)
+    finally:
+        await qc_status.sync(tpo.deal_id)
+
+
+async def _apply_update(
     tpo: ThirdPartyOrderRecord,
     *,
     source: str,
@@ -229,6 +238,17 @@ async def apply_update(
     await repo.save(updated)
     loading = loading or {}
     ext_ref = tpo.ext_ref or tpo.tpo_id
+    if (tpo.inspection_type or "PSI") != "PSI":
+        # DUPRO / PEO: a phase result — the deal stays where it is; the PSI
+        # remains the release check (continuations.on_qc_phase_result).
+        await sl._emit(EventTopic.QC_PHASE_RESULT, tpo.deal_id, {
+            "tpo_id": tpo.tpo_id, "ext_ref": ext_ref, "inspection_type": tpo.inspection_type, "result": result,
+            "notes": notes, "defects": updated.qc_defects, "provider": tpo.provider,
+            "provider_order_number": updated.provider_order_number, "report_url": updated.qc_report_url,
+            "crf_hash": crf,
+        })
+        logger.info("ShieldLink: %s result %s (%s) for deal %s", tpo.inspection_type, result, source, tpo.deal_id)
+        return {"status": "ok", "result": result, "inspection_type": tpo.inspection_type, "deal_id": tpo.deal_id}
     if result == "PASS":
         try:
             await sl._transition_deal(tpo.deal_id, "QC_PASSED", f"QC passed — ref {ext_ref}")
@@ -394,7 +414,18 @@ async def get_deal_qc(deal_id: str) -> DealQcResponse:
                          "po_ack": rec.po_ack}
     except Exception as exc:  # noqa: BLE001
         logger.debug("ShieldLink: readiness lookup failed for %s: %s", deal_id, exc)
-    return DealQcResponse(deal_id=deal_id, orders=[_view(o) for o in orders], readiness=readiness,
+    status = label = detail = None
+    try:
+        from services.deals.repository import get_repository as deals_repo  # type: ignore[import]
+        from shared.orchestration import qc_status, supplier_commitment
+        deal = await deals_repo().get(deal_id)
+        if deal is not None:
+            st, detail = qc_status.compute(deal.status, await supplier_commitment.get(deal_id), orders)
+            status, label = (st.value, qc_status.LABELS[st]) if st else (None, None)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("ShieldLink: QC status for %s unavailable: %s", deal_id, exc)
+    return DealQcResponse(deal_id=deal_id, qc_status=status, qc_status_label=label, qc_status_detail=detail,
+                          orders=[_view(o) for o in orders], readiness=readiness,
                           next_step=_next_step(orders, readiness))
 
 

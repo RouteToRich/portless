@@ -184,14 +184,14 @@ def use_in_memory_repo():
 class TestShieldLinkQcProviders:
     def test_catalog_endpoint_lists_top_five(self):
         resp = list_qc_providers()
-        assert resp.default_provider == "sgs"
+        assert resp.default_provider == "qima"
         assert {p.provider for p in resp.providers} == set(QC_PROVIDER_CATALOG)
         assert all(p.available_in_india for p in resp.providers)
 
     @pytest.mark.asyncio
     async def test_quote_qc_default_provider(self):
         resp = await quote_qc(QcQuoteRequest(quantity_mt=20.0))
-        assert resp.provider == "sgs"
+        assert resp.provider == "qima"
         assert resp.fee_usd > 0
         assert resp.qc_cost_per_unit_usd == round(resp.fee_usd / 20.0, 4)
         assert resp.stub is True
@@ -273,7 +273,7 @@ class TestShieldLinkQcProviders:
             ),
         ):
             tpo = await book_qc(QcBookingRequest(deal_id="DEAL-QC-01"))
-        assert tpo.provider == "sgs"
+        assert tpo.provider == "qima"
 
 
 # ---------------------------------------------------------------------------

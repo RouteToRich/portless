@@ -315,6 +315,19 @@ def rfq_sender_supplier(rfq: Any, from_address: str | None) -> str | None:
     return hits.pop() if len(hits) == 1 else None
 
 
+async def _supplier_name(deal_id: str, supplier_id: str) -> str | None:
+    """The supplier's company name as the deal knows it (Match Engine results),
+    so an e-mailed quote does not reach the match board as a nameless offer."""
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        deal = await get_deal(deal_id)
+        return next((m.company_name for m in (getattr(deal, "match_results", None) or [])
+                     if m.supplier_id == supplier_id and m.company_name), None)
+    except Exception as exc:  # noqa: BLE001 — a quote without a name is still a quote
+        logger.debug("Supplier name lookup failed for %s / %s: %s", deal_id, supplier_id, exc)
+        return None
+
+
 async def receive_quote_by_email(
     rfq_id: str,
     from_address: str,
@@ -352,6 +365,8 @@ async def receive_quote_by_email(
         except Exception as exc:  # noqa: BLE001 — a quote without details is still a quote
             logger.warning("RFQ %s: offer details not read from the reply: %s", rfq_id, exc)
     validity = fields.get("validity_days")
+    if not company_name:
+        company_name = await _supplier_name(rfq.deal_id, supplier_id)
     return await receive_quote(QuoteIntakeRequest(
         rfq_id=rfq_id,
         deal_id=rfq.deal_id,

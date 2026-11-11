@@ -45,7 +45,9 @@ def enforce() -> bool:
 
 
 def _set(*names: str) -> bool:
-    return all(bool(os.getenv(n, "").strip()) for n in names)
+    """Every variable holds a real value — a ``.env`` placeholder (``your_..._here``) counts as unset."""
+    from shared.integration_mode import configured
+    return configured(*names)
 
 
 def _flag(name: str, default: str = "false") -> bool:
@@ -88,11 +90,23 @@ def evaluate() -> dict[str, Any]:
     ))
 
     # ── Money ──────────────────────────────────────────────────────────────
-    escrow_live = _set("TAZAPAY_API_KEY", "TAZAPAY_API_SECRET") or _set("ESCROW_COM_API_KEY", "ESCROW_COM_EMAIL")
+    from shared.connectors.escrow import default_provider, display_name, enabled_providers
+    escrow_creds = {"tazapay": ("TAZAPAY_API_KEY", "TAZAPAY_API_SECRET"),
+                    "escrow_com": ("ESCROW_COM_API_KEY", "ESCROW_COM_EMAIL")}
+    offered = enabled_providers()
+    missing = [display_name(p) for p in offered if not _set(*escrow_creds[p])]
     checks.append(_check(
-        "escrow_provider", "money", "Neutral escrow provider (Tazapay / Escrow.com)", escrow_live,
-        ok_detail="escrow opens on the provider; checkout links are real",
-        fail_detail="no escrow credentials — create_escrow returns a stub and the funding link in the buyer e-mail is fake",
+        "escrow_provider", "money", "Neutral escrow providers the buyer can choose", not missing,
+        ok_detail=f"credentials set for {', '.join(display_name(p) for p in offered)} (default {display_name(default_provider())})",
+        fail_detail=(f"no credentials for {', '.join(missing)} — a buyer who chooses it gets an escrow the provider "
+                     "refuses; set the keys or drop it from ESCROW_PROVIDERS_ENABLED"),
+    ))
+    checks.append(_check(
+        "escrow_proof_links", "money", "Release documents reach the escrow provider",
+        _set("PORTLESS_PUBLIC_BASE_URL", "ESCROW_PROOF_LINK_SECRET"), warn_only=True,
+        ok_detail="each stage's signed proof sheet is sent to the provider with the release request",
+        fail_detail=("PORTLESS_PUBLIC_BASE_URL / ESCROW_PROOF_LINK_SECRET unset — only proofs that are URLs "
+                     "(QC report, tracking page) reach Tazapay; it may ask for the documents by e-mail"),
     ))
     secrets_needed = ["TAZAPAY_WEBHOOK_SECRET", "ESCROW_COM_WEBHOOK_SECRET", "STRIPE_WEBHOOK_SECRET",
                       "PAYONEER_WEBHOOK_SECRET"]
@@ -243,17 +257,55 @@ def evaluate() -> dict[str, Any]:
         fail_detail="no inspector configured (QIMA_API_ACCESS_TOKEN + QIMA_ACCOUNT + QIMA_PASSWORD, or "
                     "SGS_BOOKING_EMAIL / BUREAU_VERITAS_BOOKING_EMAIL) — QC bookings are stubs or wait for an operator",
     ))
-    sandbox = os.getenv("QC_SANDBOX_PROVIDERS", "").strip()
+    from shared import integration_mode
+    checks.append(_check(
+        "integration_mode", "operations", "QC, freight and escrow call the real providers", integration_mode.live(),
+        warn_only=not prod,
+        ok_detail="INTEGRATION_MODE=live — every QC / freight / customs / escrow / payout call goes to the provider",
+        fail_detail="INTEGRATION_MODE=sandbox — QC, freight, customs, escrow and payouts answer from stubs (automation only)",
+    ))
+    sandbox = os.getenv("QC_SANDBOX_PROVIDERS", "").strip() if integration_mode.sandbox() else ""
     checks.append(_check(
         "qc_sandbox", "operations", "QC providers are real (no sandbox)", not sandbox, warn_only=not prod,
-        ok_detail="QC_SANDBOX_PROVIDERS unset",
+        ok_detail="no QC provider on the simulator",
         fail_detail=f"QC_SANDBOX_PROVIDERS={sandbox} — those inspection bookings go to the simulator, not the provider",
     ))
+    escrow_sandbox = os.getenv("ESCROW_SANDBOX_PROVIDERS", "").strip() if integration_mode.sandbox() else ""
     checks.append(_check(
-        "freight_provider", "operations", "Freight forwarder", _set("COGOPORT_API_KEY") or _set("FREIGHTOS_API_KEY"),
-        warn_only=not prod,
-        ok_detail="freight booking API configured",
-        fail_detail="no Cogoport / Freightos key — bookings are stubs and no ARRIVED milestone ever arrives",
+        "escrow_sandbox", "operations", "Escrow providers are real (no sandbox)", not escrow_sandbox, warn_only=not prod,
+        ok_detail="no escrow provider on the simulator",
+        fail_detail=f"ESCROW_SANDBOX_PROVIDERS={escrow_sandbox} — those escrows open on the simulator, not the provider",
+    ))
+    booking_provider = (os.getenv("FREIGHT_PROVIDER", "") or "maersk").strip().lower()
+    if booking_provider == "maersk":
+        maersk_ok = _set("MAERSK_CONSUMER_KEY", "MAERSK_CLIENT_SECRET", "MAERSK_CARRIER_SERVICE_CODE")
+        checks.append(_check(
+            "freight_provider", "operations", "Carrier booking (Maersk)", maersk_ok, warn_only=not prod,
+            ok_detail="Maersk consumer key, secret and service code set — booking, tracking, VGM and B/L run on Maersk",
+            fail_detail="MAERSK_CONSUMER_KEY / MAERSK_CLIENT_SECRET / MAERSK_CARRIER_SERVICE_CODE unset — Maersk refuses "
+                        "the booking and no container milestone arrives",
+        ))
+    else:
+        checks.append(_check(
+            "freight_provider", "operations", "Freight forwarder", _set("COGOPORT_API_KEY") or _set("FREIGHTOS_API_KEY"),
+            warn_only=not prod,
+            ok_detail="freight booking API configured",
+            fail_detail="no Cogoport / Freightos key — bookings are stubs and no ARRIVED milestone ever arrives",
+        ))
+    carrier_sandbox = os.getenv("CARRIER_SANDBOX_PROVIDERS", "").strip() if integration_mode.sandbox() else ""
+    checks.append(_check(
+        "carrier_sandbox", "operations", "Carrier is real (no sandbox)", not carrier_sandbox, warn_only=not prod,
+        ok_detail="no carrier on the simulator",
+        fail_detail=f"CARRIER_SANDBOX_PROVIDERS={carrier_sandbox} — bookings go to the simulator, not the carrier",
+    ))
+    from shared.orchestration import inspection_plan
+    peo_offered = "PEO" in inspection_plan.default_types() or os.getenv("QC_OFFER_PEO", "true").lower() in ("1", "true", "yes")
+    checks.append(_check(
+        "qc_peo_service_type", "operations", "QIMA can book a pre-customs inspection (PEO)",
+        (not peo_offered) or _set("QIMA_SERVICE_TYPE_PEO"), warn_only=True,
+        ok_detail="QIMA_SERVICE_TYPE_PEO set (or PEO not offered)",
+        fail_detail="QIMA documents no booking id for PEO — set QIMA_SERVICE_TYPE_PEO to the id QIMA gives the account, "
+                    "or a buyer's PEO request is refused at booking",
     ))
     checks.append(_check(
         "customs", "operations", "Customs filing (ICEGATE)", _set("ICEGATE_API_KEY"), warn_only=not prod,

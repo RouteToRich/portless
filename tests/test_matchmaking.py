@@ -229,6 +229,36 @@ class TestFlow:
         assert deal.status_history[-1].reason.startswith("Match confirmed: Buyer a")
 
     @pytest.mark.asyncio
+    async def test_confirming_a_match_withdraws_the_other_proposals(self, deals_repo, published, monkeypatch):
+        """The other pairs (and an unsent indicative offer) are moot once one pair is confirmed:
+        closed as superseded, no callback, no deal exception; gates of other actions stay open."""
+        from services.hitl_approval import repository as hitl_repo_mod
+        from services.hitl_approval import service as hitl
+        from services.hitl_approval.repository import InMemoryHitlApprovalRepository as HitlRepo
+        from services.hitl_approval.schemas import ApprovalRecord
+        from tests.factories import make
+        repo = HitlRepo()
+        monkeypatch.setattr(hitl_repo_mod, "_repository", repo)
+        monkeypatch.setattr(hitl, "notify", AsyncMock())
+        cand = _cand("a", "interested", reply_address="maria@a.es",
+                     requirement=BuyerRequirement(target_price_usd_per_mt=950.0, target_price_basis="stated", quantity_mt=30))
+        await deals_repo.save(_deal([cand, _cand("b", "interested")], [_offer("s1", 650.0), _offer("s2", 690.0)]))
+        for i, (action, payload) in enumerate([
+            ("CONFIRM_MATCH", {"candidate_id": "a", "offer_id": "OFR-s2"}),
+            ("CONFIRM_MATCH", {"candidate_id": "b", "offer_id": "OFR-s1"}),
+            ("SEND_INDICATIVE_OFFER", {"candidate_id": "b", "offer_id": "OFR-s2"}),
+            ("PARSE_INBOUND_EMAIL", {}),
+        ]):
+            await repo.save(make(ApprovalRecord, approval_id=f"G{i}", deal_id="DEAL-M1", action=action, status="PENDING",
+                                 callback_payload={"deal_id": "DEAL-M1", **payload}, created_at=NOW, updated_at=NOW))
+        with patch("services.sourcing.service.list_rfqs", new=AsyncMock(return_value=[])):
+            await mm.confirm_match("DEAL-M1", {"candidate_id": "a", "offer_id": "OFR-s1"})
+        status = {g: (await repo.get(g)).status for g in ("G0", "G1", "G2", "G3")}
+        assert status == {"G0": "REJECTED", "G1": "REJECTED", "G2": "REJECTED", "G3": "PENDING"}
+        assert (await repo.get("G0")).resolved_by == "system:superseded"
+        assert not [e for e in published if getattr(e.topic, "value", e.topic) == "deal.exception"]
+
+    @pytest.mark.asyncio
     async def test_offers_from_other_prospects_of_the_same_hs_code_are_matched(self, deals_repo, gates):
         await deals_repo.save(_deal([], [_offer("s9", 640.0, origin_deal_id="DEAL-OTHER")], deal_id="DEAL-OTHER"))
         await deals_repo.save(_deal([_cand("a", "interested")], []))

@@ -348,6 +348,12 @@ async def _process_inbound(
     except Exception as exc:
         logger.debug("record_inbound_email (non-fatal): %s", exc)
 
+    # The deal's own supplier, verified: its facility address (where the goods are
+    # inspected) is read from whatever it writes, at any stage.
+    if mapping.party == "supplier" and deal_id:
+        from shared.orchestration import supplier_address
+        await supplier_address.capture(deal_id, raw.body_text or "", by=f"supplier e-mail {inbound_id}")
+
     # ── Post-agreement reply (PI acceptance etc.) — never a negotiation round ──
     if mapping.session_status == "AGREED":
         return await _handle_post_agreement_reply(record, raw, mapping)

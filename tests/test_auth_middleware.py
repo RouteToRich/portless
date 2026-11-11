@@ -162,7 +162,8 @@ def _post_funded(client, headers=None):
 
 
 def _tazapay_signature(secret: str) -> dict:
-    return {"x-tazapay-signature": hmac.new(secret.encode(), _FUNDED, hashlib.sha256).hexdigest()}
+    from shared.connectors.escrow import tazapay_signature
+    return {"signature": tazapay_signature(secret, _FUNDED)}
 
 
 def test_anonymous_webhook_without_a_secret_moves_nothing(client, funded):

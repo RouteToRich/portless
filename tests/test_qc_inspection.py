@@ -46,7 +46,7 @@ def clean_state(monkeypatch, tmp_path):
     for var in ("QIMA_API_ACCESS_TOKEN", "QIMA_API_KEY", "QIMA_ACCOUNT", "QIMA_PASSWORD", "QIMA_PASSWORD_MD5",
                 "QIMA_PRODUCT_CATEGORY_ID", "QIMA_PRODUCT_FAMILY_ID", "QIMA_PRODUCT_TYPE_ID", "QC_SANDBOX_URL",
                 "SGS_BOOKING_EMAIL", "BUREAU_VERITAS_BOOKING_EMAIL", "SGS_WEBHOOK_SECRET", "BUREAU_VERITAS_WEBHOOK_SECRET"):
-        monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv(var, "")  # blank, not deleted: a later load_dotenv must not refill it from .env
     monkeypatch.setenv("SHIELD_LINK_STORAGE_DIR", str(tmp_path / "qc-docs"))
     import services.shield_link.repository as repo_mod
     from services.shield_link.repository import InMemoryShieldLinkRepository
@@ -304,6 +304,7 @@ class TestQimaConnector:
         assert result["inspection_date"] == "2026-11-20" and result["channel"] == "sandbox"
 
     async def test_live_calls_send_the_documented_headers_and_md5_password(self, monkeypatch):
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         monkeypatch.setenv("QIMA_API_ACCESS_TOKEN", "app-token")
         monkeypatch.setenv("QIMA_ACCOUNT", "portless")
         monkeypatch.setenv("QIMA_PASSWORD", "secret")
@@ -335,6 +336,7 @@ class TestQimaConnector:
         assert result["ext_ref"] == "O1" and result["inspection_date"] == "2026-11-20" and result["channel"] == "api"
 
     async def test_live_booking_without_a_product_category_is_refused(self, monkeypatch):
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         monkeypatch.setenv("QIMA_API_ACCESS_TOKEN", "t")
         monkeypatch.setenv("QIMA_ACCOUNT", "a")
         monkeypatch.setenv("QIMA_PASSWORD_MD5", "0" * 32)
@@ -348,6 +350,7 @@ class TestQimaConnector:
             await connector.book(_request())
 
     async def test_sign_in_failure_is_a_connector_error(self, monkeypatch):
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         monkeypatch.setenv("QIMA_API_ACCESS_TOKEN", "t")
         monkeypatch.setenv("QIMA_ACCOUNT", "a")
         monkeypatch.setenv("QIMA_PASSWORD", "wrong")
@@ -404,7 +407,9 @@ class TestQimaConnector:
 class TestPortalConnectors:
     @pytest.mark.parametrize(("cls", "portal", "prefix"), [
         (qc.SgsConnector, "SGS SMART", "SGS-REQ-"), (qc.BureauVeritasConnector, "BV OneSource Connect", "BV-REQ-")])
-    async def test_booking_request_holds_what_the_booking_form_needs(self, cls, portal, prefix):
+    async def test_booking_request_holds_what_the_booking_form_needs(self, cls, portal, prefix, monkeypatch):
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
+        monkeypatch.setenv(f"{cls.env_prefix}_BOOKING_EMAIL", "bookings@desk.invalid")
         result = await cls().book(_request())
         assert result["channel"] == "portal" and result["portal"] == portal and result["ext_ref"].startswith(prefix)
         assert result["provider_status"] == qc.REQUESTED and result["stub"] is False
@@ -413,9 +418,11 @@ class TestPortalConnectors:
         assert req["inspection_site"]["company"] == "Godavari Rice Mills" and req["product"]["hs_code"] == "10063020"
         assert req["sampling"]["standard"] == "ISO 2859-1" and req["readiness"] == {"produced_pct": 100, "packed_pct_min": 80}
 
-    async def test_portal_status_is_pushed_never_polled(self):
+    async def test_portal_status_is_pushed_never_polled(self, monkeypatch):
         connector = qc.SgsConnector()
-        assert connector.pollable is False and connector.is_configured() is True
+        assert connector.pollable is False and connector.is_configured() is False
+        monkeypatch.setenv("SGS_BOOKING_EMAIL", "bookings@sgs.invalid")
+        assert qc.SgsConnector().is_configured() is True
         assert "no status API" in (await connector.status("SGS-REQ-1"))["detail"]
         assert (await connector.cancel("SGS-REQ-1", "x"))["cancelled"] is False
 
@@ -508,6 +515,7 @@ class TestBookingOnTheReadyDate:
         from services.shield_link.repository import get_repository
         from services.shield_link.schemas import QcBookingRequest
         from services.shield_link.service import book_qc
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
         monkeypatch.setenv("BUREAU_VERITAS_BOOKING_EMAIL", "bookings@bv.invalid")
         sent = AsyncMock(return_value=SendEmailResult(outcome=SendOutcome.SENT, message_id="<m1>"))
         monkeypatch.setattr(sender, "send_email", sent)
@@ -518,13 +526,41 @@ class TestBookingOnTheReadyDate:
         tpo = await get_repository().get(res.tpo_id)
         assert tpo.provider_payload["booking_email_outcome"]["outcome"] == "sent" and tpo.channel == "portal"
 
-    async def test_portal_booking_without_a_desk_address_waits_for_an_operator(self, wired_service):
+    @pytest.mark.parametrize("address", ["", "your_sgs_booking_desk_email_here"])
+    async def test_live_portal_booking_without_a_real_desk_address_is_refused(self, wired_service, monkeypatch, address):
         from services.shield_link.repository import get_repository
         from services.shield_link.schemas import QcBookingRequest
+        from services.shield_link.service import ConnectorCallError, book_qc
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
+        monkeypatch.setenv("SGS_BOOKING_EMAIL", address)
+        with pytest.raises(ConnectorCallError, match="SGS_BOOKING_EMAIL"):
+            await book_qc(QcBookingRequest(deal_id="DEAL-QC-1", provider="sgs"))
+        orders = await get_repository().list_by_deal("DEAL-QC-1")
+        assert [o.status for o in orders] == ["FAILED"] and wired_service.transitions == []
+
+    async def test_live_portal_booking_that_never_reached_the_desk_fails(self, wired_service, monkeypatch):
+        from services.email_gateway import sender
+        from services.email_gateway.schemas import SendEmailResult, SendOutcome
+        from services.shield_link.repository import get_repository
+        from services.shield_link.schemas import QcBookingRequest
+        from services.shield_link.service import ConnectorCallError, book_qc
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
+        monkeypatch.setenv("SGS_BOOKING_EMAIL", "bookings@sgs.invalid")
+        monkeypatch.setattr(sender, "send_email", AsyncMock(return_value=SendEmailResult(outcome=SendOutcome.LOGGED)))
+        with pytest.raises(ConnectorCallError, match="did not reach the SGS booking desk"):
+            await book_qc(QcBookingRequest(deal_id="DEAL-QC-1", provider="sgs"))
+        orders = await get_repository().list_by_deal("DEAL-QC-1")
+        assert orders[0].status == "FAILED" and wired_service.transitions == []
+
+    async def test_sandbox_portal_booking_is_a_stub_with_no_e_mail(self, wired_service, monkeypatch):
+        from services.email_gateway import sender
+        from services.shield_link.schemas import QcBookingRequest
         from services.shield_link.service import book_qc
+        sent = AsyncMock()
+        monkeypatch.setattr(sender, "send_email", sent)
         res = await book_qc(QcBookingRequest(deal_id="DEAL-QC-1", provider="sgs"))
-        tpo = await get_repository().get(res.tpo_id)
-        assert tpo.provider_payload["booking_email_outcome"]["outcome"] == "operator"
+        assert res.channel == "stub" and wired_service.transitions == ["SUPPLIER_DISPATCH_READY"]
+        sent.assert_not_awaited()
 
 
 async def _qima_booking(wired_service):
@@ -973,3 +1009,237 @@ class TestAutomationEnvironment:
         monkeypatch.setenv("QIMA_PASSWORD", "real")
         with pytest.raises(SystemExit, match="QIMA_PASSWORD"):
             safety.assert_isolated()
+
+
+# ---------------------------------------------------------------------------
+# One implementation: live calls the provider, sandbox (automation) stubs
+# ---------------------------------------------------------------------------
+
+class TestIntegrationMode:
+    def test_mode_and_placeholders(self, monkeypatch):
+        from shared import integration_mode as im
+        assert im.sandbox(), "the suite runs in sandbox (tests/conftest.py)"
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
+        assert im.live() and not im.sandbox()
+        monkeypatch.delenv("INTEGRATION_MODE")
+        assert im.live(), "live is the default"
+        assert im.is_placeholder("your_qima_api_access_token_here") and not im.is_placeholder("tok_123")
+        monkeypatch.setenv("COGOPORT_API_KEY", "your_cogoport_api_key_here")
+        assert not im.configured("COGOPORT_API_KEY")
+
+    def test_the_simulator_never_runs_in_live_mode(self, monkeypatch):
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
+        monkeypatch.setenv("QC_SANDBOX_PROVIDERS", "all")
+        assert not qc.in_sandbox("qima") and qc.QimaConnector().stubbed is False
+
+    async def test_live_qima_sends_a_placeholder_key_to_qima(self, monkeypatch):
+        """No silent stub: the placeholder goes to QIMA, QIMA refuses it, the caller sees why."""
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
+        monkeypatch.setenv("QIMA_API_ACCESS_TOKEN", "your_qima_api_access_token_here")
+        seen: list[httpx.Request] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen.append(req)
+            return httpx.Response(403, json={"message": "Ai-Api-Access-Token is invalid"})
+
+        connector = qc.QimaConnector()
+        monkeypatch.setattr(connector, "_client", lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://ppapi.qima.com"))
+        with pytest.raises(qc.ConnectorError, match="403"):
+            await connector.book(_request())
+        assert seen and seen[0].headers["Ai-Api-Access-Token"] == "your_qima_api_access_token_here"
+
+    @pytest.mark.parametrize(("module", "cls", "arg"), [
+        ("shared.connectors.shields", "CogoportConnector", {}),
+        ("shared.connectors.shields", "FreightosConnector", {}),
+        ("shared.connectors.shields", "IcegateConnector", {}),
+        ("shared.connectors.escrow", "TazapayEscrowConnector", {"amount": 10}),
+        ("shared.connectors.escrow", "EscrowComConnector", {"amount": 10, "buyer": {"email": "buyer@buyer.invalid"}}),
+        ("shared.connectors.payments", "StripeTreasuryConnector", {"amount": 10}),
+        ("shared.connectors.payments", "PayoneerConnector", {"amount": 10}),
+        ("shared.connectors.qc_providers", "IntertekConnector", {}),
+    ])
+    async def test_live_freight_escrow_and_payouts_always_call_the_provider(self, monkeypatch, module, cls, arg):
+        import importlib
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
+        calls: list[str] = []
+        real = httpx.AsyncClient
+
+        def client(**kw):
+            def handler(req: httpx.Request) -> httpx.Response:
+                calls.append(str(req.url))
+                return httpx.Response(401, json={"error": "invalid credentials"})
+            kw.pop("transport", None)
+            return real(transport=httpx.MockTransport(handler), **kw)
+
+        monkeypatch.setattr(httpx, "AsyncClient", client)
+        mod = importlib.import_module(module)
+        with pytest.raises(Exception) as err:
+            await getattr(mod, cls)().book(arg)
+        assert calls, f"{cls} answered without calling the provider"
+        assert "ConnectorError" in type(err.value).__name__
+
+    @pytest.mark.parametrize(("module", "cls", "arg"), [
+        ("shared.connectors.shields", "CogoportConnector", {}),
+        ("shared.connectors.escrow", "TazapayEscrowConnector", {"amount": 10}),
+        ("shared.connectors.payments", "PayoneerConnector", {"amount": 10}),
+        ("shared.connectors.qc_providers", "QimaConnector", _request()),
+    ])
+    async def test_sandbox_answers_from_the_stub_even_with_a_key(self, monkeypatch, module, cls, arg):
+        import importlib
+        for key in ("COGOPORT_API_KEY", "TAZAPAY_API_KEY", "PAYONEER_CLIENT_ID", "QIMA_API_ACCESS_TOKEN"):
+            monkeypatch.setenv(key, "real-looking-key")
+        mod = importlib.import_module(module)
+        assert (await getattr(mod, cls)().book(arg))["stub"] is True
+
+    def test_automation_refuses_to_run_live(self, monkeypatch):
+        from services.automation import safety
+        monkeypatch.setenv("MONGO_DB_NAME", safety.AUTOMATION_DB)
+        monkeypatch.setenv("AUTOMATION_WORKER", "1")
+        for key in safety._MUST_BE_BLANK:
+            monkeypatch.setenv(key, "")
+        safety.assert_isolated()
+        monkeypatch.setenv("INTEGRATION_MODE", "live")
+        with pytest.raises(SystemExit, match="INTEGRATION_MODE"):
+            safety.assert_isolated()
+        assert safety.worker_env()["INTEGRATION_MODE"] == "sandbox"
+
+
+# ---------------------------------------------------------------------------
+# Only QIMA is booked (QC_PROVIDERS_ENABLED default "qima")
+# ---------------------------------------------------------------------------
+
+class TestQimaOnly:
+    @pytest.fixture(autouse=True)
+    def qima_only(self, monkeypatch):
+        monkeypatch.delenv("QC_PROVIDERS_ENABLED", raising=False)
+
+    def test_only_qima_is_enabled_and_offered(self):
+        from agents.negotiation_agent.graph import _qc_provider_options_summary
+        from services.shield_link.service import list_qc_providers
+        assert qc.enabled_qc_providers() == ["qima"] and qc.cheapest_qc_provider(["sgs", "bv"]) == "qima"
+        catalog = list_qc_providers()
+        assert catalog.default_provider == "qima" and [p.provider for p in catalog.providers] == ["qima"]
+        summary = _qc_provider_options_summary()
+        assert "QIMA" in summary and "SGS" not in summary and "Bureau Veritas" not in summary
+
+    def test_the_switch_can_widen_the_list(self, monkeypatch):
+        monkeypatch.setenv("QC_PROVIDERS_ENABLED", "qima, Bureau Veritas")
+        assert qc.enabled_qc_providers() == ["qima", "bv"]
+        monkeypatch.setenv("QC_PROVIDERS_ENABLED", "all")
+        assert len(qc.enabled_qc_providers()) == 5
+
+    async def test_an_explicit_request_for_another_provider_is_refused(self, wired_service):
+        from services.shield_link.schemas import QcBookingRequest, QcQuoteRequest
+        from services.shield_link.service import UnknownQcProviderError, book_qc, quote_qc
+        with pytest.raises(UnknownQcProviderError, match="supported: qima"):
+            await book_qc(QcBookingRequest(deal_id="DEAL-QC-1", provider="sgs"))
+        with pytest.raises(UnknownQcProviderError):
+            await quote_qc(QcQuoteRequest(provider="bv", quantity_mt=20))
+
+    async def test_a_buyer_who_chose_sgs_is_inspected_by_qima(self, wired_service, monkeypatch):
+        from services.shield_link import service as sl
+        from services.shield_link.schemas import QcBookingRequest
+        monkeypatch.setattr(sl, "_buyer_opted_qc_provider", AsyncMock(return_value="sgs"))
+        res = await sl.book_qc(QcBookingRequest(deal_id="DEAL-QC-1"))
+        assert res.provider == "qima"
+
+    async def test_the_negotiation_prices_and_records_qima_for_a_disabled_choice(self, monkeypatch):
+        from agents.negotiation_agent import service as neg
+        provider, per_unit = await neg._quote_qc_cost_per_unit("SGS", 20.0, "D1", "10063020")
+        assert provider == "qima" and per_unit > 0
+
+
+# ---------------------------------------------------------------------------
+# The deal's QC status (shared/orchestration/qc_status.py)
+# ---------------------------------------------------------------------------
+
+def _order(**kw):
+    from services.shield_link.schemas import ThirdPartyOrderRecord
+    base = {"tpo_id": "T1", "deal_id": "D1", "order_type": "QC", "provider": "qima", "status": "BOOKED",
+            "provider_status": "REQUESTED", "inspection_date": (qc_schedule.today() + timedelta(days=5)).isoformat(),
+            "created_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}
+    base.update(kw)
+    return ThirdPartyOrderRecord(**base)
+
+
+class TestQcStatus:
+    def _c(self, **kw):
+        return SimpleNamespace(**{"po_ack": None, "qc_ready_status": None, "qc_ready_asked_at": None, **kw})
+
+    def test_every_stage(self):
+        from shared.domain.enums import QcStatus as S
+        from shared.orchestration.qc_status import compute
+        past = (qc_schedule.today() - timedelta(days=5)).isoformat()
+        earlier = datetime.now(timezone.utc) - timedelta(days=9)
+        cases = [
+            ("ESCROW_FUNDED", None, [], None),
+            ("PO_ISSUED", self._c(po_ack="awaiting"), [], S.AWAITING_PO_ACK),
+            ("PO_ISSUED", self._c(po_ack="acknowledged", qc_ready_status="awaiting"), [], S.AWAITING_READY_DATE),
+            ("PO_ISSUED", None, [], S.NOT_BOOKED),
+            ("PO_ISSUED", None, [_order(status="FAILED", provider_status=None)], S.BOOKING_FAILED),
+            ("SUPPLIER_DISPATCH_READY", None, [_order()], S.REQUESTED),
+            ("SUPPLIER_DISPATCH_READY", None, [_order(provider_status="CONFIRMED")], S.SCHEDULED),
+            ("SUPPLIER_DISPATCH_READY", None, [_order(provider_status="INSPECTED")], S.INSPECTED),
+            ("SUPPLIER_DISPATCH_READY", None, [_order(inspection_date=past)], S.OVERDUE),
+            ("SUPPLIER_DISPATCH_READY", None, [_order(qc_result="PENDING", provider_status="REPORT_ISSUED")], S.RESULT_PENDING),
+            ("SUPPLIER_DISPATCH_READY", None, [_order(tpo_id="T0", status="FAILED", qc_result="FAIL", created_at=earlier),
+                                               _order(provider_status="CONFIRMED")], S.REINSPECTION),
+            ("QC_FAILED", None, [_order(status="FAILED", qc_result="FAIL")], S.FAILED),
+            ("DISPUTE", None, [_order(status="FAILED", qc_result="FAIL")], S.FAILED),
+            ("REFUNDED", None, [_order(status="FAILED", qc_result="FAIL")], S.FAILED),
+            ("QC_PASSED", None, [_order(status="COMPLETED", qc_result="PASS", provider_order_number="Q26-1")], S.PASSED),
+            ("IN_TRANSIT", None, [_order(status="COMPLETED", qc_result="PASS")], S.PASSED),
+            ("CANCELLED", None, [], None),
+        ]
+        for status, commitment, orders, want in cases:
+            got, detail = compute(status, commitment, orders)
+            assert got == want, (status, got, detail)
+            assert (detail is None) == (want is None)
+
+    def test_a_cancelled_booking_does_not_count(self):
+        from shared.domain.enums import QcStatus as S
+        from shared.orchestration.qc_status import compute
+        got, detail = compute("SUPPLIER_DISPATCH_READY", None, [_order(status="CANCELLED"), _order(tpo_id="T2", provider_status="CONFIRMED", provider_order_number="Q26-9")])
+        assert got == S.SCHEDULED and "Q26-9" in detail
+
+    async def test_the_workflow_keeps_it_on_the_deal(self, sandbox, monkeypatch):
+        """Real deal, real transitions: the QC status follows booking → poll → report."""
+        from services.deals.repository import get_repository as deals_repo
+        from services.deals.schemas import DealRecord
+        from services.shield_link import qc as lifecycle
+        from services.shield_link.schemas import QcBookingRequest
+        from services.shield_link.service import book_qc
+        from shared.domain.enums import DealStatus, QcStatus as S
+        import services.deals.repository as drepo
+        drepo._repository = drepo.InMemoryFallbackRepository()
+        now = datetime.now(timezone.utc)
+        from shared.domain.enums import PartyRole
+        from shared.domain.models import Party
+        supplier = Party(role=PartyRole.SUPPLIER, legal_name="Godavari Rice Mills", country="IN",
+                         email="sales@godavari.invalid", address="Plot 4, Industrial Estate, Kakinada, 533003")
+        await deals_repo().save(DealRecord(deal_id="DEAL-QS-1", operator_id="op", org_id="o", hs_code="10063020",
+                                           market="AE", status=DealStatus.PO_ISSUED, parties=[supplier],
+                                           created_at=now, updated_at=now))
+        await book_qc(QcBookingRequest(deal_id="DEAL-QS-1", provider="qima", quantity_mt=20))
+        deal = await deals_repo().get("DEAL-QS-1")
+        assert deal.status == DealStatus.SUPPLIER_DISPATCH_READY and deal.qc_status == S.REQUESTED
+        assert "QIMA inspection requested for" in deal.qc_status_detail
+        tpo = (await lifecycle.get_deal_qc("DEAL-QS-1")).orders[0]
+        await sandbox.post(f"/_sandbox/qima/orders/{tpo.ext_ref}/validate", json={})
+        await lifecycle.poll_qc("DEAL-QS-1", force=True)
+        assert (await deals_repo().get("DEAL-QS-1")).qc_status == S.SCHEDULED
+        await sandbox.post(f"/_sandbox/qima/orders/{tpo.ext_ref}/inspect", json={"result": "FAIL"})
+        await lifecycle.poll_qc("DEAL-QS-1", force=True)
+        deal = await deals_repo().get("DEAL-QS-1")
+        assert deal.status == DealStatus.QC_FAILED and deal.qc_status == S.FAILED
+        view = await lifecycle.get_deal_qc("DEAL-QS-1")
+        assert view.qc_status == "FAILED" and view.qc_status_label == "Failed"
+        drepo._repository = None
+
+    async def test_sync_never_raises(self, monkeypatch):
+        from shared.orchestration import qc_status
+        import services.deals.repository as drepo
+        monkeypatch.setattr(drepo, "get_repository", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+        assert await qc_status.sync("D1") is None
+        assert await qc_status.sync(None) is None

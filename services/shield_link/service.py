@@ -39,6 +39,7 @@ WebhookVerifyError    401 — webhook signature invalid
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -47,8 +48,12 @@ from uuid import uuid4
 from shared.bus import get_publisher
 from shared.connectors.qc_providers import (
     QC_PROVIDER_CATALOG,
+    bookable_qc_provider,
     cheapest_qc_provider,
+    enabled_qc_catalog,
+    enabled_qc_providers,
     get_qc_connector,
+    qc_provider_enabled,
     resolve_qc_provider,
 )
 from shared.connectors.shields import (
@@ -118,9 +123,14 @@ class WebhookVerifyError(Exception):
 
 class UnknownQcProviderError(Exception):
     def __init__(self, provider: str) -> None:
-        supported = ", ".join(sorted(QC_PROVIDER_CATALOG))
-        super().__init__(f"Unknown QC provider {provider!r}; supported: {supported}")
+        supported = ", ".join(enabled_qc_providers())
+        super().__init__(f"QC provider {provider!r} is not supported; supported: {supported} (QC_PROVIDERS_ENABLED)")
         self.provider = provider
+
+
+def _default_qc_provider() -> str:
+    d = resolve_qc_provider(settings.default_qc_provider)
+    return d if qc_provider_enabled(d) else cheapest_qc_provider()
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +192,8 @@ async def _emit(topic: EventTopic, deal_id: str, payload: dict) -> None:
 def list_qc_providers() -> QcProvidersResponse:
     """Supported QC inspection providers — the buyer-facing catalog."""
     return QcProvidersResponse(
-        default_provider=settings.default_qc_provider,
-        providers=[QcProviderInfo(**meta) for meta in QC_PROVIDER_CATALOG.values()],
+        default_provider=_default_qc_provider(),
+        providers=[QcProviderInfo(**meta) for meta in enabled_qc_catalog().values()],
     )
 
 
@@ -193,8 +203,8 @@ async def quote_qc(req: QcQuoteRequest) -> QcQuoteResponse:
     Called before/at negotiation start so the QC cost of the buyer's opted
     provider is baked into the CIF price floor.
     """
-    provider = resolve_qc_provider(req.provider) if req.provider else settings.default_qc_provider
-    if provider is None or provider not in QC_PROVIDER_CATALOG:
+    provider = resolve_qc_provider(req.provider) if req.provider else _default_qc_provider()
+    if provider is None or not qc_provider_enabled(provider):
         raise UnknownQcProviderError(str(req.provider))
 
     connector = get_qc_connector(provider)
@@ -224,6 +234,17 @@ async def quote_qc(req: QcQuoteRequest) -> QcQuoteResponse:
         evidence=result.get("evidence") or meta["evidence"],
         stub=bool(result.get("stub", False)),
     )
+
+
+async def _buyer_packing(deal_id: str) -> dict[str, Any] | None:
+    """The buyer's packing requirements from the negotiation — the inspector checks them."""
+    try:
+        from agents.negotiation_agent.repository import get_repository as _neg_repo  # type: ignore[import]
+        session = await _neg_repo().get_session_by_deal(deal_id)
+        return getattr(session, "packing", None) if session else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("ShieldLink: packing for %s unavailable: %s", deal_id, exc)
+        return None
 
 
 async def _buyer_opted_qc_provider(deal_id: str) -> str | None:
@@ -316,6 +337,17 @@ async def _email_booking_desk(connector: Any, tpo_id: str, deal_id: str, booking
 
 async def book_qc(req: QcBookingRequest, *, reinspection: bool = False,
                   previous: ThirdPartyOrderRecord | None = None) -> ThirdPartyOrderResponse:
+    """Book the inspection (see ``_book_qc``); the deal's QC status line is
+    recomputed whatever the outcome — booked, refused or failed."""
+    from shared.orchestration import qc_status
+    try:
+        return await _book_qc(req, reinspection=reinspection, previous=previous)
+    finally:
+        await qc_status.sync(req.deal_id)
+
+
+async def _book_qc(req: QcBookingRequest, *, reinspection: bool = False,
+                   previous: ThirdPartyOrderRecord | None = None) -> ThirdPartyOrderResponse:
     """Book a QC inspection with the configured provider.
 
     Pre-condition: deal must be in ``PO_ISSUED`` state.
@@ -340,7 +372,17 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False,
     deal = await _fetch_deal(req.deal_id)
     deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
     from shared.domain.enums import DealStatus
-    if reinspection:
+    from shared.orchestration import inspection_plan
+    phase = (req.inspection_type or "PSI").upper()
+    if phase not in inspection_plan.ORDER:
+        raise InvalidDealState(req.deal_id, f"inspection type {phase}", "DUPRO / PSI / PEO")
+    if phase == "DUPRO":
+        if deal_status not in ("PO_ISSUED", "SUPPLIER_DISPATCH_READY"):
+            raise InvalidDealState(req.deal_id, deal_status, "PO_ISSUED (production under way)")
+    elif phase == "PEO":
+        if deal_status not in ("QC_PASSED", "IN_TRANSIT"):
+            raise InvalidDealState(req.deal_id, deal_status, "QC_PASSED (goods passed the PSI, before customs)")
+    elif reinspection:
         if deal_status != "SUPPLIER_DISPATCH_READY":
             raise InvalidDealState(req.deal_id, deal_status, "SUPPLIER_DISPATCH_READY")
     else:
@@ -353,25 +395,43 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False,
     # negotiation session) → fallback strategy ("cheapest" catalog provider by
     # default — a buyer who never opted gets the most economical inspector;
     # "default" books settings.default_qc_provider instead).
+    # Only enabled providers are booked (QC_PROVIDERS_ENABLED, default QIMA):
+    # an explicit request for another is refused; a buyer's earlier choice of
+    # a provider that is not enabled books the enabled one instead.
     if req.provider:
         provider = resolve_qc_provider(req.provider)
-        if provider is None:
+        if provider is None or not qc_provider_enabled(provider):
             raise UnknownQcProviderError(req.provider)
     else:
-        provider = await _buyer_opted_qc_provider(req.deal_id)
+        opted = await _buyer_opted_qc_provider(req.deal_id)
+        if opted is not None and not qc_provider_enabled(opted):
+            logger.info("ShieldLink: buyer opted %s for deal %s, which is not enabled — booking %s",
+                        opted, req.deal_id, bookable_qc_provider(opted))
+            opted = bookable_qc_provider(opted)
+        provider = opted
         if provider is None:
             provider = (
                 cheapest_qc_provider()
                 if settings.qc_fallback_strategy == "cheapest"
-                else settings.default_qc_provider
+                else _default_qc_provider()
             )
     from shared.orchestration import qc_schedule
     now = datetime.now(timezone.utc)
     tpo_id = _new_tpo_id("QC")
     requested = qc_schedule.to_date(req.inspection_date)
     earliest = qc_schedule.earliest_inspection_date()
-    inspection = (qc_schedule.next_business_day(requested) if requested and requested >= earliest
-                  else qc_schedule.inspection_date_for(req.goods_ready_date))
+    if requested and requested >= earliest:
+        inspection = qc_schedule.next_business_day(requested)
+    elif phase == "DUPRO":
+        inspection = inspection_plan.dupro_date(req.goods_ready_date) or earliest
+    elif phase == "PEO":
+        inspection = inspection_plan.peo_date()
+    else:
+        inspection = qc_schedule.inspection_date_for(req.goods_ready_date)
+    from shared.orchestration import trade_brief
+    brief = await trade_brief.brief(req.deal_id)
+    note = trade_brief.note({**brief, "inspection_types": [phase]}, "inspector",
+                            extra=f"{inspection_plan.label(phase)}: {inspection_plan.META[phase]['when']}")
     hs_code = req.hs_code or getattr(deal, "hs_code", "")
     supplier = _supplier_facts(deal)
     connector = get_qc_connector(provider)
@@ -387,6 +447,8 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False,
         pickup_ready_at=req.pickup_ready_at,
         goods_ready_date=req.goods_ready_date,
         inspection_date=inspection.isoformat(),
+        inspection_type=phase,
+        note=note,
         idempotency_key=req.idempotency_key,
         created_at=now,
         updated_at=now,
@@ -410,9 +472,13 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False,
             "supplier": supplier,
             "min_packed_pct": qc_schedule.min_packed_pct(),
             "previous_order_number": previous.provider_order_number if previous else None,
+            "packing": await _buyer_packing(req.deal_id),
             # Pre-shipment inspection AND supervision of the container
             # stuffing + sealing, so what was inspected is what ships.
-            "services": _qc_services(),
+            "services": _qc_services(phase),
+            "inspection_type": phase,
+            "expected_finished_pct": inspection_plan.production_pct(phase),
+            "note": note,
         })
     except ConnectorError as exc:
         failed = record.model_copy(update={"status": "FAILED", "updated_at": datetime.now(timezone.utc)})
@@ -420,8 +486,19 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False,
         raise ConnectorCallError(f"QC booking failed for deal {req.deal_id}: {exc}") from exc
 
     provider_status = result.get("provider_status") or "REQUESTED"
-    if connector.channel == "portal" and result.get("booking_request"):
-        result["booking_email_outcome"] = await _email_booking_desk(connector, tpo_id, req.deal_id, result["booking_request"])
+    if result.get("channel") == "portal" and result.get("booking_request"):
+        # Live portal booking: the request must reach the provider's booking
+        # desk, or nothing is booked — fail loudly instead of a silent "requested".
+        outcome = await _email_booking_desk(connector, tpo_id, req.deal_id, result["booking_request"])
+        result["booking_email_outcome"] = outcome
+        if outcome.get("outcome") != "sent":
+            failed = record.model_copy(update={"status": "FAILED", "provider_payload": result,
+                                               "updated_at": datetime.now(timezone.utc)})
+            await repo.save(failed)
+            raise ConnectorCallError(
+                f"QC booking request for deal {req.deal_id} did not reach the {connector.display_name} booking desk "
+                f"({outcome.get('outcome')}: {outcome.get('detail') or outcome.get('to')}) — send it or enter it on "
+                f"{connector.portal_name}, then record the booking")
     updated = record.model_copy(update={
         "status": "BOOKED",
         "ext_ref": result.get("ext_ref"),
@@ -438,17 +515,18 @@ async def book_qc(req: QcBookingRequest, *, reinspection: bool = False,
     })
     await repo.save(updated)
 
-    if not reinspection:
+    if not reinspection and phase == "PSI":
         await _transition_deal(req.deal_id, "SUPPLIER_DISPATCH_READY", f"QC booked — ref {result.get('ext_ref')}")
     await _emit(EventTopic.QC_BOOKED, req.deal_id, {
         "tpo_id": tpo_id,
+        "inspection_type": phase,
         "provider": provider,
         "ext_ref": result.get("ext_ref"),
         "provider_order_number": updated.provider_order_number,
         "channel": updated.channel,
         "inspection_date": updated.inspection_date,
         "goods_ready_date": req.goods_ready_date,
-        "loading_supervision": "LOADING_SUPERVISION" in _qc_services(),
+        "loading_supervision": "LOADING_SUPERVISION" in _qc_services(phase),
         "stub": result.get("stub", False),
         "reinspection": reinspection,
         "rescheduled_from": previous.tpo_id if previous else None,
@@ -519,7 +597,7 @@ async def quote_freight(req: FreightQuoteRequest) -> FreightQuoteResponse:
     """
     import math
 
-    provider = (req.provider or settings.default_freight_provider).lower()
+    provider = (req.provider or settings.freight_quote_provider).lower()
     connector = get_freight_connector(provider)
     try:
         result = await connector.quote({
@@ -581,9 +659,14 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
     if not can_transition(DealStatus(deal_status), DealStatus.IN_TRANSIT):
         raise InvalidDealState(req.deal_id, deal_status, "QC_PASSED")
 
-    provider = req.provider or settings.default_freight_provider
+    provider = (req.provider or settings.default_freight_provider).lower()
     now = datetime.now(timezone.utc)
     tpo_id = _new_tpo_id("FRT")
+    from shared.orchestration import trade_brief
+    brief = await trade_brief.brief(req.deal_id)
+    origin = req.origin_port or brief.get("port_of_loading")
+    destination = req.destination_port or brief.get("port_of_destination")
+    note = trade_brief.note(brief, "carrier")
 
     record = ThirdPartyOrderRecord(
         tpo_id=tpo_id,
@@ -592,8 +675,9 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
         provider=provider,
         status="PENDING",
         incoterm=req.incoterm,
-        origin_port=req.origin_port,
-        destination_port=req.destination_port,
+        origin_port=origin,
+        destination_port=destination,
+        note=note,
         idempotency_key=req.idempotency_key,
         created_at=now,
         updated_at=now,
@@ -601,15 +685,28 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
     await repo.save(record)
 
     connector = get_freight_connector(provider)
+    hs_code = req.hs_code or getattr(deal, "hs_code", "")
+    quantity = req.quantity_mt or brief.get("quantity_mt") or getattr(deal, "quantity_mt", None) or 0.0
+    from shared import company_profile
     try:
         result = await connector.book({
             "deal_id": req.deal_id,
-            "origin_port": req.origin_port or "",
-            "destination_port": req.destination_port or "",
-            "container_type": req.container_type,
-            "hs_code": req.hs_code or getattr(deal, "hs_code", ""),
-            "quantity_mt": req.quantity_mt or 0.0,
+            "po_number": brief.get("po_id"),
+            "origin_port": origin or "",
+            "destination_port": destination or "",
+            "origin_unlocode": trade_brief.unlocode(origin),
+            "destination_unlocode": trade_brief.unlocode(destination),
+            "container_type": _iso_equipment(req.container_type),
+            "container_numbers": req.container_numbers,
+            "hs_code": hs_code,
+            "commodity": brief.get("product"),
+            "quantity_mt": quantity,
             "incoterm": req.incoterm,
+            "note": note,
+            "brief": brief,
+            "contacts": [{"name": company_profile.legal_name(),
+                          "email": os.getenv("PORTLESS_CONTACT_EMAIL", "").strip(),
+                          "phone": os.getenv("PORTLESS_PHONE", "").strip()}],
         })
     except ConnectorError as exc:
         failed = record.model_copy(update={"status": "FAILED", "updated_at": datetime.now(timezone.utc)})
@@ -619,6 +716,8 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
     updated = record.model_copy(update={
         "status": "BOOKED",
         "ext_ref": result.get("ext_ref"),
+        "carrier": result.get("carrier"),
+        "booking_status": result.get("booking_status"),
         "vessel": result.get("vessel"),
         "voyage": result.get("voyage"),
         "container_number": result.get("container_number"),
@@ -628,6 +727,13 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
         "updated_at": datetime.now(timezone.utc),
     })
     await repo.save(updated)
+    from . import freight as freight_mod
+    if freight_mod.is_carrier(updated) and not result.get("stub"):
+        await freight_mod.sync_shipment(updated, source="booking")
+        updated = await repo.get(tpo_id) or updated
+    else:
+        from shared.orchestration import freight_status
+        await freight_status.sync(req.deal_id)
 
     await _transition_deal(req.deal_id, "IN_TRANSIT", f"Freight booked — ref {result.get('ext_ref')}")
     await _emit(EventTopic.FREIGHT_BOOKED, req.deal_id, {
@@ -636,13 +742,25 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
         "ext_ref": result.get("ext_ref"),
         "vessel": result.get("vessel"),
         "voyage": result.get("voyage"),
-        "etd": result.get("etd"),
-        "eta": result.get("eta"),
+        "etd": updated.etd or result.get("etd"),
+        "eta": updated.eta or result.get("eta"),
+        "booking_status": updated.booking_status,
+        "containers": [c.get("equipment_reference") for c in updated.containers],
         "stub": result.get("stub", False),
     })
 
     logger.info("ShieldLink: freight booked %s for deal %s (ref=%s)", tpo_id, req.deal_id, result.get("ext_ref"))
     return ThirdPartyOrderResponse.from_record(updated)
+
+
+_ISO_EQUIPMENT = {"20GP": "22GP", "20DV": "22GP", "20": "22GP", "40GP": "42GP", "40DV": "42GP", "40": "42GP",
+                  "40HC": "45G1", "40HQ": "45G1", "20RF": "22R1", "40RF": "45R1"}
+
+
+def _iso_equipment(container_type: str | None) -> str:
+    """Trade names (40HC, 20GP …) → ISO 6346 size-type codes the carrier expects."""
+    value = (container_type or "").upper().replace("'", "").replace(" ", "")
+    return _ISO_EQUIPMENT.get(value, value or os.getenv("MAERSK_DEFAULT_EQUIPMENT", "42GP"))
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +872,8 @@ async def _apply_milestone(
         except Exception as exc:
             logger.error("ShieldLink: CLEARED-on-delivery transition failed for deal %s: %s", tpo.deal_id, exc)
 
+    from shared.orchestration import freight_status
+    await freight_status.sync(tpo.deal_id)
     logger.info("ShieldLink: milestone %s (%s) for deal %s", milestone, source, tpo.deal_id)
     return {"status": "ok", "milestone": milestone, "deal_id": tpo.deal_id}
 
@@ -773,9 +893,17 @@ async def record_milestone(ref: str, req: RecordMilestoneRequest) -> dict[str, s
     )
 
 
-def _qc_services() -> list[str]:
+_PHASE_SERVICE = {"DUPRO": "DURING_PRODUCTION_INSPECTION", "PSI": "PRE_SHIPMENT_INSPECTION",
+                  "PEO": "PRE_CUSTOMS_CLEARANCE_INSPECTION"}
+
+
+def _qc_services(phase: str = "PSI") -> list[str]:
+    """The services booked for a phase; the PSI also supervises the stuffing and sealing."""
     from shared.orchestration.compliance import loading_check_required
-    return ["PRE_SHIPMENT_INSPECTION"] + (["LOADING_SUPERVISION"] if loading_check_required() else [])
+    services = [_PHASE_SERVICE.get(phase, "PRE_SHIPMENT_INSPECTION")]
+    if phase == "PSI" and loading_check_required():
+        services.append("LOADING_SUPERVISION")
+    return services
 
 
 async def record_loading(deal_id: str, req: LoadingRecordRequest) -> dict[str, Any]:
@@ -814,6 +942,10 @@ async def poll_tracking(deal_id: str) -> dict[str, Any]:
         return {"status": "no_booking", "deal_id": deal_id}
     if not (tpo.container_number or tpo.ext_ref):
         return {"status": "no_reference", "deal_id": deal_id, "tpo_id": tpo.tpo_id}
+    from . import freight as freight_mod
+    if freight_mod.is_carrier(tpo):  # the carrier's own Track & Trace API
+        result = await freight_mod.sync_shipment(tpo, source="poll")
+        return {**result, "tpo_id": tpo.tpo_id, "status": result.get("status") if not result.get("milestone") else "ok"}
     try:
         from shared.connectors.registry import get_connector
         connector = get_connector("apify_carrier_tracking")
@@ -885,11 +1017,13 @@ async def file_cha(req: ChaFilingRequest) -> ThirdPartyOrderResponse:
     from shared.connectors.shields import IcegateConnector
     connector = IcegateConnector()
     try:
+        from shared.orchestration import trade_brief
         result = await connector.book({
             "deal_id": req.deal_id,
             "documents": req.documents,
             "rodtep_declaration": req.rodtep_declaration,
             "hs_code": getattr(deal, "hs_code", ""),
+            "note": trade_brief.note(await trade_brief.brief(req.deal_id), "customs"),
         })
     except ConnectorError as exc:
         failed = record.model_copy(update={"status": "FAILED", "updated_at": datetime.now(timezone.utc)})

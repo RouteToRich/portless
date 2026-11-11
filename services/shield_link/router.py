@@ -285,8 +285,47 @@ async def api_record_loading(deal_id: str, req: LoadingRecordRequest) -> dict[st
 
 @router.post("/deals/{deal_id}/track")
 async def api_poll_tracking(deal_id: str) -> dict[str, Any]:
-    """Poll the carrier-tracking actor for the deal's container now."""
+    """Read the deal's shipment now: the carrier's own API (Maersk booking, events,
+    B/L) or, for a forwarder booking, the carrier-tracking actor."""
     return await poll_tracking(deal_id)
+
+
+@router.get("/deals/{deal_id}/shipment")
+async def api_shipment(deal_id: str) -> dict[str, Any]:
+    """Booking, containers, B/L / VGM state and the container event timeline."""
+    from . import freight
+    return await freight.shipment_view(deal_id)
+
+
+@router.post("/carrier/maersk/webhook")
+async def api_maersk_webhook(request: Request) -> dict[str, Any]:
+    """Maersk booking-status webhook. Register ``…/carrier/maersk/webhook?token=<MAERSK_WEBHOOK_SECRET>``
+    (Maersk publishes no signature); the booking is always re-read before anything changes."""
+    import json as _json
+
+    from shared.connectors.maersk import MaerskConnector
+    from shared.webhooks import signature_valid
+
+    from . import freight
+    from .repository import get_repository as _repo
+    raw_body = await request.body()
+    headers = dict(request.headers)
+    token = request.query_params.get("token")
+    if token:
+        headers["x-portless-webhook-token"] = token
+    if not await signature_valid(MaerskConnector(), headers, raw_body, require_signature=signature_required(request)):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Maersk webhook token invalid")
+    try:
+        body = _json.loads(raw_body or b"{}")
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Webhook body is not valid JSON") from exc
+    data = body.get("data") if isinstance(body.get("data"), dict) else body
+    ref = (data.get("carrierBookingReference") or data.get("carrierBookingRequestReference")
+           or (data.get("booking") or {}).get("carrierBookingReference"))
+    tpo = await _repo().get_by_ext_ref(str(ref)) if ref else None
+    if tpo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no booking {ref}")
+    return await freight.sync_shipment(tpo, source="webhook")
 
 
 @router.post("/freight/webhook")

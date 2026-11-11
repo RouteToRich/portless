@@ -295,12 +295,14 @@ class TestDealsMissing:
 class TestDealsContacts:
     async def test_supplier_contact_from_the_opportunity(self, repo):
         deal = await _deal(repo, opportunity_id="O1")
-        seller = SimpleNamespace(candidate_id="S1", company_name="C", email="e@c.co", website="w", phone="p", gstin="g", iec="i", country="IN", source="s")
+        seller = SimpleNamespace(candidate_id="S1", company_name="C", email="e@c.co", website="w", phone="p", gstin="g", iec="i", country="IN", source="s",
+                                 location_city="Thanjavur", location_state="Tamil Nadu")
         other = SimpleNamespace(candidate_id="S2")
         with patch("services.sourcing.service.list_rfqs", new=AsyncMock(return_value=[])), \
              patch.object(deals, "_fetch_opportunity", new=AsyncMock(return_value=SimpleNamespace(seller_candidates=[other, seller]))):
             info = await deals._supplier_contact(deal, "S1")
         assert (info["legal_name"], info["email"], info["gstin"], info["iec"]) == ("C", "e@c.co", "g", "i")
+        assert info["address"] == "Thanjavur, Tamil Nadu"  # where the inspection is booked until the supplier corrects it
 
     async def test_supplier_contact_lookup_failures(self, repo):
         deal = await _deal(repo, opportunity_id="O1")
