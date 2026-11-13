@@ -115,3 +115,36 @@ async def test_a_scan_searches_the_product_name_the_operator_picked(monkeypatch)
 
 async def _none():
     return None
+
+
+async def test_a_skipped_actor_run_is_never_cached(monkeypatch):
+    """No token / no run budget → the connector answers a stub. Caching it would hide the real
+    result for the whole TTL (a week for the company search) once the token works."""
+    from services.trade_min import service
+    stored = []
+
+    class Stub:
+        async def quote(self, req):
+            return {"companies": [], "total": 0, "stub": True}
+
+    class Live:
+        async def quote(self, req):
+            return {"companies": [{"name": "Real Co"}], "total": 1}
+
+    monkeypatch.setattr(service.settings, "trade_cache_enabled", True)
+    monkeypatch.setattr(service, "cache_get", lambda key: _value(None))
+    monkeypatch.setattr(service, "cache_set", lambda key, name, value, ttl: _record(stored, value))
+    monkeypatch.setattr(service, "_build_connector", lambda name: Stub())
+    assert (await service._quote_raw("apify_export_markets", {"hs_code": "100610"}))["stub"] is True
+    assert stored == []
+    monkeypatch.setattr(service, "_build_connector", lambda name: Live())
+    await service._quote_raw("apify_export_markets", {"hs_code": "100610"})
+    assert stored == [{"companies": [{"name": "Real Co"}], "total": 1}]
+
+
+async def _value(v):
+    return v
+
+
+async def _record(stored, value):
+    stored.append(value)

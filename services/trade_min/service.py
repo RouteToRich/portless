@@ -246,7 +246,9 @@ async def _quote_raw(name: str, req: dict) -> dict | None:
         logger.warning("Connector %r quote() failed: %s", name, exc)
         return None
 
-    if cache_key is not None and isinstance(result, dict) and result:
+    # A stub ("nothing ran": no Apify token, run budget used up) is not an answer —
+    # caching it would hide the real result for the whole TTL once the token works.
+    if cache_key is not None and isinstance(result, dict) and result and not result.get("stub"):
         await cache_set(cache_key, name, result, ttl)  # type: ignore[arg-type]
     return result
 
