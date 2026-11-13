@@ -82,6 +82,31 @@ def _db() -> Any:
     return database(settings.mongo_uri)
 
 
+def serverless() -> str | None:
+    """The serverless platform this backend runs on, if any (Vercel, AWS Lambda, Google Cloud Run jobs aside).
+
+    A serverless function is frozen once it answers and killed after its time limit, so it
+    cannot keep the automation view server or a run worker alive."""
+    if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
+        return "Vercel"
+    if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        return "AWS Lambda"
+    if os.getenv("FUNCTIONS_WORKER_RUNTIME"):
+        return "Azure Functions"
+    return None
+
+
+def _refuse_on_serverless() -> None:
+    platform = serverless()
+    if platform:
+        raise AutomationError(
+            501,
+            f"Automation mode needs a long-running server: this backend runs on {platform} serverless functions, "
+            "which cannot keep the automation backend or a test run alive between requests. Run the backend on a "
+            "long-running host (VM, Render, Railway, Docker) or run automation locally.",
+        )
+
+
 def _refuse_in_production() -> None:
     import os
     if os.environ.get("ENV_PROFILE", "dev").lower() == "production":
@@ -138,6 +163,7 @@ def _clean(doc: dict[str, Any] | None) -> dict[str, Any] | None:
 async def start_run(by: str, *, scope: str = "all", phase: str = "", priority: str = "") -> dict[str, Any]:
     global _process
     _refuse_in_production()
+    _refuse_on_serverless()
     db = _db()
     if _alive():
         raise AutomationError(409, "A run is already in progress.")
@@ -210,6 +236,7 @@ async def _ensure_view_server(client: httpx.AsyncClient) -> None:
     if await _view_ready(client):
         return
     _refuse_in_production()
+    _refuse_on_serverless()
     _db()
     async with _view_lock:
         if await _view_ready(client):
@@ -235,7 +262,7 @@ async def warm_up() -> None:
     """Start the view server with the backend, so the first Automation-mode page does not
     wait for a whole application to boot. Off on production, without Mongo, inside an
     automation process, or with AUTOMATION_VIEW_AUTOSTART=false."""
-    if os.getenv("AUTOMATION_WORKER") == "1" or os.getenv("ENV_PROFILE", "dev").lower() == "production":
+    if os.getenv("AUTOMATION_WORKER") == "1" or os.getenv("ENV_PROFILE", "dev").lower() == "production" or serverless():
         return
     if os.getenv("AUTOMATION_VIEW_AUTOSTART", "true").strip().lower() in ("0", "false", "no", "off"):
         return
@@ -263,7 +290,8 @@ async def diagnostics() -> dict[str, Any]:
 
     return {
         "env_profile": os.getenv("ENV_PROFILE", "dev"),
-        "runs_allowed": os.getenv("ENV_PROFILE", "dev").lower() != "production",
+        "serverless": serverless(),
+        "runs_allowed": os.getenv("ENV_PROFILE", "dev").lower() != "production" and not serverless(),
         "mongo_configured": bool(settings.mongo_uri),
         "database": AUTOMATION_DB,
         "view": {"url": _VIEW_URL, "ready": ready, "wait_seconds": _view_wait_seconds(), **proc(_view_process, "view")},

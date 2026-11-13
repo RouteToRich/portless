@@ -186,6 +186,7 @@ Everything here is P0; the areas are named in brackets.
 - [ ] **(Eng)** Lint and type checks in CI: `ruff` (configured in pyproject, not enforced), `mypy` on `shared/` and the money services, `tsc --noEmit` for the UI.
 
 ### 7 Platform, infrastructure and operations
+- [ ] **(Eng)** **The backend runs on Vercel serverless functions** (seen in the deployed logs: `/var/task`). A function is frozen once it answers and killed after its time limit, so nothing long-running works there: the automation view server and test runs (now refused with a clear 501), the deal watcher (reminders, stall alerts), the approval timeout watcher, the escrow / QC / freight pollers, the 15-minute IMAP poll, the daily digest, durable NATS consumers and the long-lived approvals stream (SSE). Move the backend to a long-running host (VM, Render, Railway, Fly, Docker) — or keep the API on Vercel and run the background jobs and automation on a separate long-running worker.
 - [ ] **(Eng)** Durable event bus (NATS) — 1.5.
 - [ ] **(Eng)** **Background watchers have no lock.** The deal watcher, escrow watcher, HITL timeout watcher, QC / freight / escrow pollers and the digest run in every process. Two backend replicas would send every reminder twice and sweep twice. Add a leader lock (Mongo lease) or run them in one worker.
 - [ ] **(Eng)** Backups: Mongo Atlas continuous backup with point-in-time restore; a restore drill; Google Drive document folder backed up.

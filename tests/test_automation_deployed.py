@@ -150,3 +150,21 @@ async def test_diagnostics_reports_the_view_server_and_its_log(monkeypatch):
     assert report["mongo_configured"] is True and report["database"] == safety.AUTOMATION_DB
     assert report["view"]["ready"] is False and report["view"]["exit_code"] == 1
     assert report["view"]["log_tail"] == ["Traceback: boom"]
+
+
+@pytest.mark.parametrize("var", ["VERCEL", "AWS_LAMBDA_FUNCTION_NAME"])
+async def test_serverless_says_why_instead_of_spawning(monkeypatch, var):
+    """A serverless function cannot keep the view server or a run alive: refuse in plain words."""
+    monkeypatch.delenv("ENV_PROFILE", raising=False)
+    monkeypatch.setenv(var, "1")
+    monkeypatch.setattr(service, "_view_ready", AsyncMock(return_value=False))
+    spawned = []
+    monkeypatch.setattr(service, "_start_view_process", lambda: spawned.append(True))
+    with pytest.raises(AutomationError) as err:
+        await service._ensure_view_server(SimpleNamespace())
+    assert err.value.status == 501 and "long-running server" in err.value.detail
+    with pytest.raises(AutomationError):
+        await service.start_run("staff")
+    await service.warm_up()
+    assert not spawned
+    assert (await service.diagnostics())["runs_allowed"] is False
