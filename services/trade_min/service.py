@@ -19,6 +19,7 @@ Every connector call goes through ``_safe_quote()``, which:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -255,9 +256,22 @@ async def _noop() -> None:
     return None
 
 
+# Product names the operator picked for the scan in progress (ScanRequest.product_names);
+# a context variable so concurrent scans never see each other's names.
+_SCAN_PRODUCT_NAMES: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar("scan_product_names", default={})
+
+
+def _scan_name(hs_code: str) -> str | None:
+    name = (_SCAN_PRODUCT_NAMES.get().get(str(hs_code).strip()) or "").strip()
+    return name or None
+
+
 def _keyword_for(hs_code: str) -> str:
-    """Search keyword for an HS code: the catalogue's product name when the
-    operator defined one, else the static HS → keyword map."""
+    """Search keyword for an HS code: the product name picked for this scan, else the
+    catalogue's product name when the operator defined one, else the static HS → keyword map."""
+    picked = _scan_name(hs_code)
+    if picked:
+        return picked
     try:
         from shared import catalogue
         name = catalogue.product_name_for(hs_code)
@@ -279,6 +293,9 @@ def _web_searchable(keyword: str) -> bool:
 
 def _products_for(hs_code: str) -> list[str]:
     """Bill-of-lading / RFQ words the PortLess actors search for."""
+    picked = _scan_name(hs_code)
+    if picked:
+        return [picked]
     try:
         from shared import catalogue
         words = catalogue.products_for(hs_code)
@@ -1148,6 +1165,15 @@ async def _phase5_assemble_and_persist(
 
 async def scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
     """Run the 5-phase pipeline for every HS-code × market combination."""
+    names = {str(k).strip(): v for k, v in (payload.product_names or {}).items() if v and v.strip()}
+    token = _SCAN_PRODUCT_NAMES.set(names)  # this scan only — reset below for the caller
+    try:
+        return await _scan_opportunities(payload)
+    finally:
+        _SCAN_PRODUCT_NAMES.reset(token)
+
+
+async def _scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
     config = DEFAULT_CONFIG
     min_rank = max(payload.min_arbitrage_rank, config.min_arbitrage_rank)
     pairs = _scan_pairs(payload, config)

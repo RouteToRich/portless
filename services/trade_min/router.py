@@ -40,6 +40,14 @@ async def get_catalogue() -> dict:
     return _catalogue_view()
 
 
+@router.get("/hs-search")
+async def hs_search(q: str = Query("", description="HS code prefix or product words"),
+                    limit: int = Query(20, ge=1, le=50)) -> dict:
+    """The console's HS code picker: matching codes with their product name and official description."""
+    from shared import hs_names
+    return {"results": hs_names.search(q, limit)}
+
+
 @router.get("/hs-names")
 async def hs_names(codes: str = Query("", description="Comma-separated HS codes, at most 100")) -> dict:
     """The product name the console shows next to each HS code (catalogue name, curated short name,

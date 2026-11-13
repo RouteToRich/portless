@@ -72,3 +72,46 @@ def test_organisation_users_may_read_hs_names():
     """Their deals page shows HS codes too; the names are nothing deal-specific."""
     assert ("GET", "/trade-min/hs-names") in middleware._NON_PORTLESS_ALLOWED
     assert ("GET", "/trade-min/catalogue") not in middleware._NON_PORTLESS_ALLOWED
+
+
+@pytest.mark.parametrize("query,first", [
+    ("basmati", "10063020"),
+    ("1006", "100610"),
+    ("chilli powder", "090422"),
+    ("mannitol", "290543"),
+])
+def test_hs_search_by_words_or_code(query, first):
+    from shared import hs_names
+    results = hs_names.search(query, 10)
+    assert results and results[0]["code"] == first
+    assert all(r["name"] and r["description"] for r in results)
+
+
+def test_hs_search_endpoint():
+    app = FastAPI()
+    app.include_router(router)
+    body = TestClient(app).get("/trade-min/hs-search", params={"q": "rice", "limit": 3}).json()
+    assert len(body["results"]) == 3 and all(r["code"].startswith("1006") for r in body["results"])
+    assert TestClient(app).get("/trade-min/hs-search", params={"q": ""}).json() == {"results": []}
+
+
+async def test_a_scan_searches_the_product_name_the_operator_picked(monkeypatch):
+    """A code without a catalogue line is web-searched under the name picked in the console."""
+    from services.trade_min import service
+    from services.trade_min.schemas import ScanRequest
+    seen = {}
+
+    async def one(hs, market, config):
+        seen[(hs, market)] = (service._keyword_for(hs), service._products_for(hs))
+        return None
+
+    monkeypatch.setattr(service, "_scan_one", one)
+    monkeypatch.setattr(service, "_worldwide_counterparties", lambda hs: _none())
+    await service.scan_opportunities(ScanRequest(hs_codes=["080132"], target_markets=["AE"], worldwide_search=False,
+                                                 product_names={"080132": "shelled cashew kernels"}))
+    assert seen[("080132", "AE")] == ("shelled cashew kernels", ["shelled cashew kernels"])
+    assert service._keyword_for("080132") != "shelled cashew kernels"   # the next scan starts clean
+
+
+async def _none():
+    return None

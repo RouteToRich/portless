@@ -74,3 +74,32 @@ def display_name(code: str | None) -> str | None:
         return curated
     text = official(hs)
     return _short(text) if text else None
+
+
+def search(query: str, limit: int = 20) -> list[dict[str, str | None]]:
+    """HS codes for the console's picker: by code prefix ("1006") or by words ("basmati",
+    "chilli powder") over the curated names and the official descriptions. Curated
+    8-digit lines and 6-digit subheadings first, then headings."""
+    from shared import product_label as pl
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    table = _nomenclature()
+    codes: list[str] = sorted({*table.keys(), *(k for k in pl._DISPLAY if len(k) == 8)})
+    digits = _digits(q)
+    words = [w for w in q.replace(",", " ").split() if not w.isdigit()]
+    hits: list[tuple[int, str]] = []
+    for code in codes:
+        if len(code) < 4:
+            continue
+        if digits and not words:
+            if code.startswith(digits) or digits.startswith(code):
+                hits.append((0 if len(code) >= 6 else 1, code))
+            continue
+        text = f"{pl._DISPLAY.get(code, '')} {table.get(code, '')}".lower()
+        if words and all(w in text for w in words) and (not digits or code.startswith(digits)):
+            curated = 0 if code in pl._DISPLAY else 1
+            hits.append((curated * 2 + (0 if len(code) >= 6 else 1), code))
+    hits.sort(key=lambda h: (h[0], h[1]))
+    return [{"code": c, "name": display_name(c), "description": official(c)} for _, c in hits[:limit]]
+

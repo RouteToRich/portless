@@ -62,6 +62,10 @@ class ScanRequest(BaseModel):
     """When True, skip any cached results and run a fresh scan."""
 
     worldwide_search: bool = True
+    product_names: dict[str, str] | None = None
+    """HS code → the product name to search for in THIS scan ("basmati rice"), chosen by the
+    operator in the console. Wins over the catalogue and the built-in keyword list; without a
+    product name a code is not web-searched (a bare number finds junk)."""
     """Also search importers and manufacturers / exporters of each product in
     every country (one search pair per product, kept in the buyer / supplier
     directory only). The console's "Worldwide" toggle; False → only the scanned
