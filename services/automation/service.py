@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 import sys
 import tempfile
-from collections import defaultdict
+import threading
+from collections import defaultdict, deque
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,42 @@ _LIVE_DATA = ("trade_counterparties", "opportunities")
 _view_process: subprocess.Popen[bytes] | None = None
 _view_lock = asyncio.Lock()
 _VIEW_URL = f"http://127.0.0.1:{VIEW_PORT}"
+_logs: dict[str, deque[str]] = {"view": deque(maxlen=200), "worker": deque(maxlen=200)}
+_started: dict[str, Any] = {}
+
+
+def _view_wait_seconds() -> float:
+    """How long one console request waits for the view server before answering "starting".
+    Kept short: a serverless gateway in front of the backend gives up long before 90 s."""
+    try:
+        return float(os.getenv("AUTOMATION_VIEW_WAIT_SECONDS", "8") or 8)
+    except ValueError:
+        return 8.0
+
+
+def _spawn(kind: str, command: list[str], env: dict[str, str], log: Path) -> subprocess.Popen[bytes]:
+    """Start a child process whose output goes to its log file, to this server's own log
+    (visible on any hosting platform) and to an in-memory tail for /automation/diagnostics."""
+    process = subprocess.Popen(command, env=env, cwd=str(REPO_ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    tail = _logs[kind]
+    tail.clear()
+    _started[kind] = now()
+    child_logger = logging.getLogger(f"{__name__}.{kind}")
+
+    def pump() -> None:
+        assert process.stdout is not None
+        with log.open("ab") as out:
+            for raw in iter(process.stdout.readline, b""):
+                out.write(raw)
+                out.flush()
+                line = raw.decode("utf-8", "replace").rstrip()
+                if line:
+                    tail.append(line)
+                    child_logger.info("[automation-%s] %s", kind, line[:500])
+        child_logger.warning("[automation-%s] process exited with code %s", kind, process.wait())
+
+    threading.Thread(target=pump, name=f"automation-{kind}-log", daemon=True).start()
+    return process
 
 
 class AutomationError(Exception):
@@ -112,9 +150,7 @@ async def start_run(by: str, *, scope: str = "all", phase: str = "", priority: s
     if priority:
         command += ["--priority", priority]
     log = Path(tempfile.gettempdir()) / f"portless-automation-{run_id}.log"
-    with log.open("wb") as out:
-        env = worker_env(live_apify=scope in ("all", "live"))
-        _process = subprocess.Popen(command, env=env, cwd=str(REPO_ROOT), stdout=out, stderr=subprocess.STDOUT)
+    _process = _spawn("worker", command, worker_env(live_apify=scope in ("all", "live")), log)
     logger.info("Automation: run %s started by %s (%s)", run_id, by, scope)
     return {"run_id": run_id, "status": "STARTING"}
 
@@ -157,9 +193,20 @@ async def _view_ready(client: httpx.AsyncClient) -> bool:
         return False
 
 
-async def _ensure_view_server(client: httpx.AsyncClient) -> None:
-    """Start the automation backend the first time the console needs it."""
+def _start_view_process() -> None:
     global _view_process
+    if _view_process is None or _view_process.poll() is not None:
+        log = Path(tempfile.gettempdir()) / "portless-automation-view.log"
+        _view_process = _spawn("view", [sys.executable, "-X", "utf8", "-W", "ignore", "-m", "services.automation.view_server"],
+                               worker_env(view=True), log)
+        logger.info("Automation: view server starting on 127.0.0.1:%s (pid %s)", VIEW_PORT, _view_process.pid)
+
+
+async def _ensure_view_server(client: httpx.AsyncClient) -> None:
+    """Make sure the automation backend is up; start it the first time the console needs it.
+
+    Answers within AUTOMATION_VIEW_WAIT_SECONDS: while the process is still booting the
+    console gets a 503 "starting" (and retries) instead of a request the gateway cuts off."""
     if await _view_ready(client):
         return
     _refuse_in_production()
@@ -167,20 +214,62 @@ async def _ensure_view_server(client: httpx.AsyncClient) -> None:
     async with _view_lock:
         if await _view_ready(client):
             return
-        if _view_process is None or _view_process.poll() is not None:
-            log = Path(tempfile.gettempdir()) / "portless-automation-view.log"
-            with log.open("ab") as out:
-                _view_process = subprocess.Popen(
-                    [sys.executable, "-X", "utf8", "-W", "ignore", "-m", "services.automation.view_server"],
-                    env=worker_env(view=True), cwd=str(REPO_ROOT), stdout=out, stderr=subprocess.STDOUT,
-                )
-        for _ in range(90):
-            await asyncio.sleep(1)
+        _start_view_process()
+        assert _view_process is not None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _view_wait_seconds()
+        while loop.time() < deadline:
+            await asyncio.sleep(0.5)
             if await _view_ready(client):
                 return
             if _view_process.poll() is not None:
                 break
-    raise AutomationError(503, "The automation backend did not start; see portless-automation-view.log.")
+    if _view_process is not None and _view_process.poll() is None:
+        booting = int((now() - _started["view"]).total_seconds()) if _started.get("view") else 0
+        raise AutomationError(503, f"The automation backend is starting ({booting} s so far) — try again in a few seconds.")
+    last = " | ".join(list(_logs["view"])[-3:]) or "no output"
+    raise AutomationError(503, f"The automation backend stopped while starting: {last[:400]} (see GET /automation/diagnostics).")
+
+
+async def warm_up() -> None:
+    """Start the view server with the backend, so the first Automation-mode page does not
+    wait for a whole application to boot. Off on production, without Mongo, inside an
+    automation process, or with AUTOMATION_VIEW_AUTOSTART=false."""
+    if os.getenv("AUTOMATION_WORKER") == "1" or os.getenv("ENV_PROFILE", "dev").lower() == "production":
+        return
+    if os.getenv("AUTOMATION_VIEW_AUTOSTART", "true").strip().lower() in ("0", "false", "no", "off"):
+        return
+    from shared.config import settings
+    if not settings.mongo_uri:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            if not await _view_ready(client):
+                _start_view_process()
+    except Exception as exc:  # noqa: BLE001 — automation never stops the backend from booting
+        logger.warning("Automation: view server not pre-started: %s", exc)
+
+
+async def diagnostics() -> dict[str, Any]:
+    """Why Automation mode does or does not work on this server (staff only)."""
+    from shared.config import settings
+    async with httpx.AsyncClient(timeout=3) as client:
+        ready = await _view_ready(client)
+
+    def proc(p: subprocess.Popen[bytes] | None, kind: str) -> dict[str, Any]:
+        return {"running": p is not None and p.poll() is None, "pid": p.pid if p else None,
+                "exit_code": p.poll() if p else None, "started_at": _started.get(kind),
+                "log_tail": list(_logs[kind])[-40:]}
+
+    return {
+        "env_profile": os.getenv("ENV_PROFILE", "dev"),
+        "runs_allowed": os.getenv("ENV_PROFILE", "dev").lower() != "production",
+        "mongo_configured": bool(settings.mongo_uri),
+        "database": AUTOMATION_DB,
+        "view": {"url": _VIEW_URL, "ready": ready, "wait_seconds": _view_wait_seconds(), **proc(_view_process, "view")},
+        "worker": proc(_process, "worker"),
+        "llm_gateway_configured": bool(os.getenv("LLM_GATEWAY_URL") or getattr(settings, "llm_gateway_url", "")),
+    }
 
 
 async def forward_to_view(method: str, path: str, query: str, body: bytes, content_type: str | None, user: Any) -> httpx.Response:

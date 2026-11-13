@@ -798,3 +798,14 @@
 {"request_id": "e9c94ab9-8bfc-4bb4-a21a-0fac8d03fa30", "ts": "2026-11-11T20:27:28.720612+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
 {"_marker": "session_start", "ts": "2026-11-11T20:27:29.256778+00:00"}
 {"request_id": "1c1799cb-7c3e-4b4d-9a6a-5069440c7bc2", "ts": "2026-11-11T20:27:29.259766+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-13T05:43:05.633838+00:00"}
+{"request_id": "d72ca7be-b5dc-4fba-b460-27baa7414b8e", "ts": "2026-11-13T05:43:05.647588+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-13T05:43:05.649270+00:00"}
+{"request_id": "42e89e8c-9a06-4771-a820-5695478ce455", "ts": "2026-11-13T05:43:05.649662+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-13T05:43:05.755645+00:00"}
+{"_marker": "session_start", "ts": "2026-11-13T05:43:18.743222+00:00"}
+{"request_id": "e9243b5c-2029-4dbc-b44a-7789fcb207cb", "ts": "2026-11-13T05:43:18.744820+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-13T05:43:18.750636+00:00"}
+{"request_id": "906be873-8f40-400c-b192-e75d8df51fe0", "ts": "2026-11-13T05:43:18.751031+00:00", "caller": "extract_buyer", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}
+{"_marker": "session_start", "ts": "2026-11-13T05:43:18.871463+00:00"}
+{"request_id": "8e1db484-a79c-4ddf-b3ed-f20a5bf35357", "ts": "2026-11-13T05:43:18.871832+00:00", "caller": "extract_supplier", "model": "llm-gateway", "status": "error", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0, "retry_count": 0, "fallback_model": "", "error": "gateway not configured"}

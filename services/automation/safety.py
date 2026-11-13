@@ -15,7 +15,25 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 AUTOMATION_DB = "portless_automation"
-VIEW_PORT = 8082
+VIEW_PORT = int(os.getenv("AUTOMATION_VIEW_PORT", "8082") or 8082)
+"""Local port of the automation view server (127.0.0.1 only, inside the backend's host)."""
+
+# Settings a child process needs to start on any OS; everything else is dropped
+# from a run's environment, whether it came from a .env file (local) or from the
+# hosting platform's settings (deployed — there is no .env file there).
+_SYSTEM_VARS = frozenset({
+    "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR", "HOME",
+    "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+    "COMMONPROGRAMFILES", "HOMEDRIVE", "HOMEPATH", "USERNAME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ",
+    "VIRTUAL_ENV", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NUMBER_OF_PROCESSORS",
+    "OS", "HOSTNAME", "SHELL", "TERM", "PWD", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "NO_PROXY", "HTTP_PROXY",
+    "HTTPS_PROXY", "no_proxy", "http_proxy", "https_proxy",
+})
+_SYSTEM_PREFIXES = ("LC_", "PYTHON", "PROCESSOR_", "CONDA", "PIP_", "UV_")
+
+
+def _is_system(key: str) -> bool:
+    return key in _SYSTEM_VARS or key.upper() in _SYSTEM_VARS or key.upper().startswith(_SYSTEM_PREFIXES)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 STAFF_EMAILS = ("qa-staff@portless-qa.invalid", "qa-staff2@portless-qa.invalid")
@@ -52,7 +70,10 @@ def worker_env(use_mongo: bool = True, *, live_apify: bool = False, view: bool =
     from dotenv import dotenv_values
 
     real = {k: (v or "") for k, v in dotenv_values(REPO_ROOT / ".env").items()}
-    env = dict(os.environ)
+    # Only system variables survive: a deployed backend has its real settings in
+    # the platform's environment, not in a .env file, and none of them may reach
+    # a run. Removed rather than blanked, so typed settings fall back to defaults.
+    env = {k: v for k, v in os.environ.items() if _is_system(k)}
     for key in real:
         env[key] = ""
     for prefix in _SERVICE_PREFIXES:  # removed, not blanked: a blank value would switch that service to memory
@@ -60,8 +81,12 @@ def worker_env(use_mongo: bool = True, *, live_apify: bool = False, view: bool =
         env.pop(f"{prefix}_MONGO_DB_NAME", None)
     for key in _MUST_BE_BLANK:
         env[key] = ""
+    def configured(key: str) -> str:
+        """A setting from .env locally, or from the platform's environment when deployed."""
+        return real.get(key) or os.environ.get(key, "")
+
     for key in _KEPT_SECRETS:
-        env[key] = real.get(key) or os.environ.get(key, "")
+        env[key] = configured(key)
     if not use_mongo:
         env["MONGO_URI"] = ""
     env.pop("APIFY_BASE_URL", None)  # a blank value would break the connector's own default
@@ -69,6 +94,7 @@ def worker_env(use_mongo: bool = True, *, live_apify: bool = False, view: bool =
     env.update({
         "ENV_PROFILE": "dev",
         "MONGO_DB_NAME": AUTOMATION_DB,
+        "AUTOMATION_VIEW_PORT": str(VIEW_PORT),
         "AUTOMATION_WORKER": "1",
         "EVENT_BUS_BACKEND": "inprocess",
         "AUTH_TRUST_GATEWAY_HEADERS": "true",
@@ -106,10 +132,10 @@ def worker_env(use_mongo: bool = True, *, live_apify: bool = False, view: bool =
         "MAERSK_CARRIER_SERVICE_CODE": "QA1",
     })
     if live_apify:
-        env.update({"APIFY_TOKEN": real.get("APIFY_TOKEN", ""), "AUTOMATION_APIFY": "1",
-                    "APIFY_MAX_RUNS_PER_DAY": real.get("APIFY_MAX_RUNS_PER_DAY") or "40"})
+        env.update({"APIFY_TOKEN": configured("APIFY_TOKEN"), "AUTOMATION_APIFY": "1",
+                    "APIFY_MAX_RUNS_PER_DAY": configured("APIFY_MAX_RUNS_PER_DAY") or "40"})
     if view:
-        env["AUTH_PORTLESS_EMAILS"] = ",".join([*STAFF_EMAILS, *filter(None, (real.get("AUTH_PORTLESS_EMAILS") or "").split(","))])
+        env["AUTH_PORTLESS_EMAILS"] = ",".join([*STAFF_EMAILS, *filter(None, configured("AUTH_PORTLESS_EMAILS").split(","))])
     return env
 
 

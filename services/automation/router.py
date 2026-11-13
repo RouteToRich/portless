@@ -31,6 +31,12 @@ async def _answer(call: Any) -> Any:
         raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
 
 
+@router.get("/diagnostics")
+async def api_diagnostics() -> dict[str, Any]:
+    """Whether Automation mode works on this server: profile, database, view server and worker, last log lines."""
+    return await _answer(service.diagnostics())
+
+
 @router.get("/status")
 async def api_status() -> dict[str, Any]:
     """Database in use, the latest run, catalogue size and how much test data exists."""

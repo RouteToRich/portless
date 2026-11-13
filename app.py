@@ -251,6 +251,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("Digest scheduler start failed: %s", exc)
 
+    # ── Automation mode: pre-start the view server (not on production) ────
+    try:
+        from services.automation.service import warm_up as automation_warm_up
+        _asyncio.create_task(automation_warm_up())
+    except Exception as exc:
+        logger.warning("Automation view server pre-start skipped: %s", exc)
+
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
