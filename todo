@@ -33,6 +33,7 @@ Everything here is P0; the areas are named in brackets.
 
 - [ ] Real credentials for every provider in the money path, each verified against the provider's own sandbox first (section 1, section 2).
 - [ ] Legal set-up of the exporter, the escrow route and the supplier payment route signed off by a lawyer / CA (section 3).
+- [ ] The company exists and is registered: incorporated, PAN / TAN, GSTIN, IEC, LUT, AD code, RCMC for each product, AD-bank current + EEFC account, website and e-mail on its own domain (section 14).
 - [ ] Decide how Indian suppliers are paid (INR in India vs Payoneer USD) — today's design may not be legal for a domestic purchase (section 3.3).
 - [ ] Money writes made atomic and reconciled daily against the provider statements (section 4).
 - [ ] PI acceptance that names a different price must not pass as an acceptance (section 5.1).
@@ -47,7 +48,7 @@ Everything here is P0; the areas are named in brackets.
 
 ## P0 — must be done before the first real trade
 
-84 items.
+99 items.
 
 ### 1.1 Money — Accounts, credentials and configuration (readiness gate)
 - [ ] **(Biz/Eng)** `escrow_provider` FAIL — open Tazapay and Escrow.com business accounts; set `TAZAPAY_API_KEY` / `_API_SECRET` / `_WEBHOOK_SECRET` / `_ENV` and `ESCROW_COM_API_KEY` / `_EMAIL` / `_WEBHOOK_SECRET`. Drop a provider from `ESCROW_PROVIDERS_ENABLED` until its account is live.
@@ -207,11 +208,36 @@ Everything here is P0; the areas are named in brackets.
 - [ ] **(Biz/Eng)** **API Setu GSTN path is a placeholder** (the guessed route answers 404; `GstnConnector` notes it). Subscribe to the GSTN Tax Payer product, set the real path, and verify one known GSTIN end to end. Until then no GST check ever answers: at scan time GST shows "unchecked", at quote intake see the item above.
 - [ ] **(Eng)** Readiness check `counterparty_validation`: fail in production when `TRADE_MIN_VALIDATION_ENABLED=false` or the screening actor runs in stub mode (no `APIFY_TOKEN`) — otherwise the radar's "Verified only" view is silently empty and every counterparty reaches outreach unscreened.
 
+### 14.1 Legal entity — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz/Legal)** Choose the legal form: private limited company (recommended: escrow providers, banks and foreign buyers expect it, and it limits personal liability), LLP or proprietorship. Decide before anything else — every registration below is in the entity's name.
+- [ ] **(Biz/Legal)** Class 3 digital signature certificates (DSC) for every director / partner — needed for incorporation, DGFT (IEC), GST, ICEGATE and income-tax filings.
+- [ ] **(Legal)** Incorporate on the MCA portal (SPICe+): name approval (check the "PortLess" name and trademark are free first), DIN for directors, MoA / AoA, Certificate of Incorporation with CIN; the company's PAN and TAN are issued with it.
+- [ ] **(Biz)** Registered office: a real address with proof (rent / lease agreement, owner's NOC, recent utility bill). GST officers may visit; this address goes on every document (`PORTLESS_ADDRESS`).
+
+### 14.2 Tax and trade registrations — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Legal)** GST registration (GSTIN) for the principal place of business — needed for every export, the LUT and refunds (also 3.1).
+- [ ] **(Legal)** IEC (Importer-Exporter Code) from DGFT, linked to the company PAN (also 3.1). **Update it on the DGFT portal every year (April – June) or it is deactivated.**
+- [ ] **(Legal)** GST LUT (letter of undertaking, form RFD-11) for the current financial year — export without paying IGST; renew every April (also 3.1).
+- [ ] **(Legal/Ops)** ICEGATE registration and the bank's AD code registered with customs at each port of export (also 3.1).
+- [ ] **(Legal)** Registration-cum-Membership Certificate (RCMC) from the export promotion body for each product traded: **Spices Board CRES for spices (HS 0904 pepper / chilli, used in testing — mandatory for spice exporters)**, **APEDA for basmati and other agri products** (basmati contracts also registered with APEDA, see 3.1), FIEO for products with no specific council.
+
+### 14.3 Bank and payment accounts — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz)** Current account in the company's name with an **AD Category-I bank** (one that handles foreign exchange), with internet banking, SWIFT details for the PI, and an **EEFC account** to hold export proceeds in USD. EDPMS reporting of every shipping bill runs through this bank (also 3.1, 3.2).
+- [ ] **(Biz)** Business (KYB) accounts with Tazapay, Escrow.com and the supplier payout route (also 1.1, 3.3). They ask for the incorporation certificate, PAN, GST, IEC, director KYC, the website and a description of the business — finish 14.1 – 14.4 first.
+
+### 14.4 Brand, website and contact details — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz/Ops)** Domain name and business e-mail on it (trade desk, accounts, inspections), with SPF / DKIM / DMARC (also 1.3).
+- [ ] **(Biz/Ops)** Company website: who PortLess is, products and markets, how an order works (escrow stages, third-party inspection), registered address, CIN / IEC / GSTIN, contact, privacy policy and terms. Escrow providers, banks and buyers check it, and it must match the details given at KYB.
+
+### 14.5 Advisers and service providers — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz)** Chartered accountant on retainer: GST returns and refunds, LUT, books, tax.
+- [ ] **(Biz/Ops)** Licensed customs broker (CHA) under contract at the ports used — files the shipping bill until ICEGATE filing works (also 1.2, 5.2).
+
 ---
 
 ## P1 — needed before running more than a handful of deals a month
 
-150 items.
+206 items.
 
 ### 1.1 Money — Accounts, credentials and configuration (readiness gate)
 - [ ] **(Eng)** `escrow_proof_links` WARN — set `PORTLESS_PUBLIC_BASE_URL` (public HTTPS address of the backend) and `ESCROW_PROOF_LINK_SECRET` so every stage release uploads a signed proof sheet to Tazapay.
@@ -453,11 +479,119 @@ Everything here is P0; the areas are named in brackets.
 - [ ] **(QA)** Gherkin cases + automation: radar verified view hides unverified / failed, failed buyer never gets outreach, failed supplier never becomes the supplier party, reuse of a fresh result (no second actor run), no Apify token → nothing verified; browser case for the "Verified only / All" toggle and the directory filter.
 - [ ] **(Eng)** Cost: show the validation actor runs per scan in the digest / cost dashboard (`APIFY_MAX_RUNS_PER_DAY` budget is shared with discovery — a large scan can starve the check).
 
+### 13.1 Keep a qualifying opportunity open — Deal composition after negotiation
+- [ ] **(Eng)** Switch `DEAL_COMPOSITION_ENABLED` (off by default until 13.4 is done): a prospect whose best pair scores at or above the threshold (`COMPOSITION_MIN_SCORE`, default = `MATCH_MIN_PROBABILITY`) is never dropped while one qualifying buyer and one qualifying supplier are still in play. A buyer declining, a supplier declining or one funnel running out no longer ends it; `deal_watcher` does not count a prospect with live offers as a stall.
+- [ ] **(Eng)** Stop fixing the pair before negotiation. Today `matchmaking.confirm_match` sets one buyer + one supplier and `_withdraw_other_proposals` closes every other pair; the outreach funnel turns the first interested buyer into the buyer party (`outreach.py`, status `selected`) and stops contacting others; the RFQ winner becomes the supplier party. With composition on, every interested verified buyer and every quoting verified supplier stays a **candidate in negotiation**; buyer / supplier parties are set only by the composition decision (13.3).
+- [ ] **(Eng)** Outreach keeps going after the first "interested" reply, up to `COMPOSITION_MAX_BUYERS` per prospect, so there is more than one buyer to compose for.
+- [ ] **(Eng)** RFQ asks more than the top 3 when the buyers' total quantity is above the shortlisted suppliers' stated capacity (`RFQ_MAX_SUPPLIERS` is the cap).
+
+### 13.2 Negotiate with every candidate on its own terms — Deal composition after negotiation
+- [ ] **(Eng)** One negotiation thread per counterparty. Today a `NegotiationSession` holds exactly one buyer and one supplier (`agents/negotiation_agent/schemas.py`). Each buyer thread negotiates the buyer's full requirement (`BuyerRequirement`: grade, quantity, incoterm, destination port, target price, delivery window, packing, inspection plan, escrow provider). Each supplier thread negotiates the supplier's full ability (`SupplierOffer`: grade, FOB / EXW price, MOQ, monthly capacity, port of loading, goods-ready date, packing, facility address).
+- [ ] **(Eng)** A negotiation ends at a **firm offer**, not an agreement. Buyer: "Q MT of grade G at P, CIF port X, shipment by D, valid until V". Supplier: "up to Q MT of grade G at P FOB port Y, ready by D, valid until V". Store each one as a `FirmOffer` record with its validity. The e-mails say "subject to final order confirmation". Until composition there is no `CONFIRM_NEGOTIATION_AGREEMENT`, no PI and no firm order request.
+- [ ] **(Eng)** Pricing per thread (`pricing.py`): the buyer band comes from the best supply mix currently available and the supplier ceiling from the best buyer price currently available. Today each comes from the one counterpart of the session. The margin floor is checked on the combination (13.3) as well as on each leg.
+- [ ] **(Eng)** Partial quantity is not a reason to drop a supplier. When a supplier's capacity or offer is below what the buyers need, ask it for its maximum quantity and ready date, keep it, and ask the other suppliers for the rest of the quantity at the same grade.
+- [ ] **(Eng)** Ask for a firm offer's validity and refresh it before it expires (one reminder, then mark it `expired`). An expired offer never enters a composition without a fresh price.
+- [ ] **(Eng)** Privacy holds with N parties per prospect: a buyer never learns how many suppliers there are or who they are, and a supplier never learns about the buyers or the other suppliers. Extend `email_safety.preflight`, the draft leak checks and `knowledge_filter` from "the other party" to "every other party of the prospect".
+
+### 13.3 Deal composition agent — choose the best deal after negotiation — Deal composition after negotiation
+- [ ] **(Eng)** New `shared/orchestration/composition.py`. Code makes the decision; the LLM only explains it, and no money decision depends on the LLM. Input: every live `FirmOffer` of the prospect, plus supplier offers of other prospects with the same HS code that are still valid. Output: proposed deals of one buyer × 1..N suppliers. Example: the buyer needs 1000 MT, supplier A offers 800 MT and supplier B 200 MT, so one deal is made with one buyer and two supplier legs. The objective is the highest expected margin after landed cost (each supplier's inland transport, port, freight plan from 13.5, one inspection per facility, escrow fee).
+- [ ] **(Eng)** Hard rules for every combination:
+  - compatible grade / spec;
+  - every supplier's MOQ respected;
+  - total within `COMPOSITION_QTY_TOLERANCE_PCT` of the buyer's quantity;
+  - every leg ready before the buyer's shipment date;
+  - ports of loading the same or consolidatable (13.5);
+  - every party verified and clear of compliance holds, including related-party checks between the suppliers;
+  - at most `COMPOSITION_MAX_SUPPLIERS` legs (start at 2–3);
+  - margin floor on the total and on each leg.
+- [ ] **(Eng)** No decision the moment a negotiation ends. Re-run the composition when an offer arrives, changes, is withdrawn or nears expiry, and when the buyer's deadline gets close. The agent answers **close now** (before the earliest validity in the best combination expires) or **wait** (more quotes pending that could beat it, with the expected gain). Always show the best single-supplier deal next to the composed one.
+- [ ] **(Eng)** New gate `CONFIRM_DEAL_COMPOSITION` (L0, money-related: never auto-approved by a value threshold) showing the combination, the per-leg quantity / price / port / ready date, the margin per leg and in total, the freight plan, the risks and the runner-up combinations. APPROVE sets the buyer party and the supplier legs, sends each supplier a firm order request (`supplier_commitment` per leg), then confirms the buyer's agreement and issues the PI at the combined quantity.
+- [ ] **(Eng)** A leg that declines or stays silent after APPROVE triggers a new composition from the remaining offers for that leg's quantity only. This generalises today's single standby supplier. If no valid combination is left, raise `deal.exception` `COMPOSITION:no_cover`.
+- [ ] **(Eng)** Candidates that were not chosen stay in the pool with their offers for the next composition or a second deal. They get no "closed" e-mail while their offer is valid. `outcomes.py` records the predicted vs realised margin of every composition for calibration.
+- [ ] **(Eng)** `GET /deals/{id}/composition` (live offers, candidate combinations, score breakdown, why one won, what would change the answer) and `POST /deals/{id}/composition/run` (staff).
+- [ ] **(Eng)** Console (portless-ui): a composition card on the prospect page with offers per side, the proposed combination, alternatives and validity countdowns. The approval card shows the legs.
+
+### 13.4 Running a deal with more than one supplier — Deal composition after negotiation
+Everything after the match assumes one supplier party today: PO, QC, loading, payouts, retention, ledger, documents, compliance, notifications.
+- [ ] **(Eng)** Data model: `DealRecord.supplier_legs` (supplier, quantity, price, basis, port of loading, ready date, facility address, PO, QC orders, status). Money, QC and documents read the legs instead of the single supplier party. A migration turns every existing deal into one leg; one-supplier deals behave exactly as today.
+- [ ] **(Eng)** One PO per leg, with the margin guard on each leg and on the total. PO acknowledgement, goods-ready date and facility address are tracked per leg, and the watcher sends reminders per leg.
+- [ ] **(Eng)** QC per facility: one QIMA order per leg, loading supervision and seals per leg. The deal's `qc_status` passes only when every leg passed. A failed leg is replaced (13.3 recomposition) or that leg's quantity is cancelled with the buyer's consent; one leg does not take the whole deal into `DISPUTE`.
+- [ ] **(Eng)** Money: the buyer still has one escrow. Payouts, supplier retention, `available_for_payout`, the ledger and the journal are kept per leg (released tranches split pro rata by leg value). The deal is `PAID` only when every leg is paid in full. Four-eyes and the compliance money block apply per payout.
+- [ ] **(Eng)** Documents. The buyer side is unchanged: one PI / Sales Contract / CI / PL at the combined quantity, and no supplier is named. The CI / PL list the containers and seals of every leg. On the supplier side, each PO and notice names only that supplier's own leg. Whether the SDF / Shipping Bill is one or one per port of loading follows the CHA decision.
+- [ ] **(Eng)** Compliance: trade check, screening and related-party check for every leg. The shipment check applies the quantity tolerance to the total loaded against the PI and to each leg against its PO.
+- [ ] **(Eng)** Deal board / timeline / evidence pack: a status per leg plus the aggregate (e.g. "QC 1 of 2 passed"); the evidence pack has a section per leg.
+
+### 13.5 Freight — fewer containers and cheaper boxes — Deal composition after negotiation
+- [ ] **(Eng)** Container plan instead of a fixed 25 MT per box. Today both `trade_costs.py` (`round(qty / 25 + 0.49)`) and `MaerskConnector.build_booking` (`MAERSK_MT_PER_CONTAINER`, 25) assume 25 MT. Plan per product line: payload and volume limits by equipment (20 ft / 40 ft / 40 HC), bag size and density from the packing spec, and the remainder as a smaller box or LCL. Suggest rounding the offer quantity to full containers when that raises the margin. The cost sheet shows the plan.
+- [ ] **(Eng)** Inside a multi-supplier deal, compare per leg and pick the cheapest option that meets the ready dates:
+  - (a) each supplier stuffs its own containers at its own port;
+  - (b) truck one leg to the other leg's port or a CFS and stuff together;
+  - (c) send a small leg as LCL.
+
+  The inspector supervises each stuffing point. The choice feeds the composition score (13.3).
+- [ ] **(Eng)** Get freight quotes from the endpoints that exist: `CogoportConnector.quote` (already FCL / LCL; pass container type, cargo weight and LCL volume), `FreightosConnector.quote` and Maersk. `MaerskConnector.quote` today returns only the contract rate from `MAERSK_RATE_USD_PER_CONTAINER`; confirm the Maersk Product Offers / spot-rate API on the account and wire it. Compare quotes for each container plan and record the chosen quote with its source on the cost sheet. This overlaps 11.2 "freight quotes from more than one source".
+
+### 13.6 Apify actors for quality trade and trade information — Deal composition after negotiation
+Build each one with `/actor-pipeline` on the `rich_minds` account. That plan cannot run Store actors, so they must be PortLess's own actors. Each one needs a connector + normaliser in `shared/connectors/apify.py`, a readiness check, a place in the `APIFY_MAX_RUNS_PER_DAY` budget, and pinned stub mode in tests.
+- [ ] **(Eng)** **Supplier quality / certification check**: FSSAI licence, APEDA RCMC, Spices Board / commodity-board registration, organic (NPOP), and ISO / BRC / HACCP certificates from public registries and the supplier's site. Feeds supplier trust, the composition's grade fit, and the documents the buyer asks for.
+- [ ] **(Eng)** **Rejection history**: EU RASFF notifications and US FDA import refusals by product and by Indian exporter. A risk flag per supplier and per HS × market; a recent refusal forces the composition gate to show it.
+- [ ] **(QA)** Gherkin cases + automation:
+  - 1000 MT buyer covered by 800 + 200 MT suppliers, through to PAID;
+  - supplier B declines after APPROVE, the composition re-runs for 200 MT;
+  - an expired offer is excluded;
+  - margin floor broken on the total although one leg clears it;
+  - a buyer e-mail never reveals the number of suppliers;
+  - one leg fails QC, only that leg is replaced;
+  - payouts per leg and PAID only when both legs are paid.
+
+  Plus an LLM journey UC-17: like UC-15, with one buyer and two suppliers.
+
+### 14.1 Legal entity — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Legal)** After incorporation: first board meeting, statutory auditor appointed within 30 days (ADT-1), commencement of business declaration (INC-20A) within 180 days, share certificates issued.
+- [ ] **(Biz/Legal)** Founders' / shareholders' agreement (roles, equity, vesting, who signs and who approves money).
+- [ ] **(Legal)** Trademark application for "PortLess" (name and logo) in the relevant classes (trading / logistics services).
+
+### 14.2 Tax and trade registrations — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Legal)** Udyam (MSME) registration — free; gives priority-sector lending, protection against late payment, and access to MSME export schemes.
+- [ ] **(Legal)** FSSAI licence for food products — confirm with the CA / FSSAI which licence a merchant exporter of your products needs (central licence is typical for exporters).
+- [ ] **(Legal/Ops)** Plant-quarantine registration for agri exports so the phytosanitary certificate can be applied for (also 3.5).
+- [ ] **(Legal)** State registrations: Shops & Establishments licence for the office, professional tax (employer and directors).
+- [ ] **(Legal/Ops)** Portals the business must use: DGFT, ICEGATE, GST, e-way bill (inland truck to port, also 3.5) and e-invoicing once turnover crosses the threshold.
+
+### 14.3 Bank and payment accounts — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz)** Pre-shipment / packing credit line with the bank (finances the supplier advance when a buyer's escrow is not yet released) and post-shipment credit if needed.
+- [ ] **(Biz)** ECGC export credit insurance (policy and buyer limits) — cover against buyer default or country risk outside the escrow.
+- [ ] **(Biz/Ops)** Open marine cargo insurance policy with an insurer or broker (also 1.4 `PORTLESS_MARINE_POLICY`).
+- [ ] **(Biz)** Accounting software (Tally / Zoho Books) from day one, chart of accounts agreed with the CA (also 4).
+- [ ] **(Biz)** Forward-contract (FX hedging) facility with the bank for large USD receipts (also 11.1).
+
+### 14.4 Brand, website and contact details — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz/Ops)** Business phone and WhatsApp Business number (local suppliers often answer only there), shown on the website and in the signature (`PORTLESS_PHONE`).
+- [ ] **(Biz)** LinkedIn company page and a Google Business Profile for the office — buyers check both before replying to a first e-mail.
+- [ ] **(Biz)** Company profile / brochure PDF, letterhead, rubber stamp for signed export documents, visiting cards.
+- [ ] **(Biz)** D-U-N-S number (Dun & Bradstreet, free) — many foreign buyers and their banks look a supplier up by it.
+- [ ] **(Biz)** Fill the company profile settings once these exist: `PORTLESS_LEGAL_NAME`, `PORTLESS_WEBSITE`, `PORTLESS_CONTACT_EMAIL`, `PORTLESS_PHONE`, `PORTLESS_IEC`, `PORTLESS_GSTIN` (also 1.4).
+
+### 14.5 Advisers and service providers — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz)** Company secretary (ROC filings) and a trade lawyer for the contracts (also 3.6).
+- [ ] **(Biz/Ops)** Accounts with the providers the workflow uses: QIMA (inspection), Maersk (carrier) and one freight forwarder as a back-up (also 1.2, 2.3).
+- [ ] **(Biz/Ops)** Courier account (DHL / FedEx / Aramex) for sending original documents (B/L, certificate of origin) to buyers' banks and samples to buyers.
+
+### 14.6 Office, people and records — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz)** Name board at the registered office (GST verification may check it) and a filing system for original documents (export documents must be kept for years, also 3.7).
+- [ ] **(Biz)** People for the roles the platform expects: trade desk operator, money approver (second person for four-eyes), compliance officer (also 4, 8).
+
+### 14.7 Product and market requirements — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Legal/Ops)** Per destination: what the buyer's country needs before the goods arrive — e.g. US FDA food-facility registration and prior notice, Gulf halal certificate / SFDA (Saudi), EU pesticide residue limits (MRL) and certificate of analysis. Record it per product line in the catalogue.
+
+### 14.8 Ongoing compliance calendar — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Legal/Ops)** One calendar with an owner for every recurring filing: monthly GST returns (GSTR-1, GSTR-3B), TDS returns, IEC annual update (April – June), LUT renewal (April), RCMC renewal, ROC annual filings (AOC-4, MGT-7), directors' KYC (DIR-3 KYC), income-tax return and tax audit, DSC renewal, insurance renewals.
+
 ---
 
 ## P2 — improvements
 
-24 items.
+35 items.
 
 ### 2.5 Payoneer, ICEGATE, Stripe — Provider contracts not yet confirmed
 - [ ] **(Eng)** Stripe Treasury hold is legacy — remove it or confirm it is never offered.
@@ -511,13 +645,38 @@ Everything here is P0; the areas are named in brackets.
 - [ ] **(Biz)** **Trade finance**: partner financing for buyers (pay later) or suppliers (early payment against the PO) — fee income.
 - [ ] **(Biz)** **Cargo insurance** through a broker (commission) instead of a fixed % cost.
 - [ ] **(Biz)** **Supplier early-payment discount**: offer a larger production advance from escrow in exchange for a lower price.
-- [ ] **(Biz)** **Order aggregation**: combine several buyers' small orders into full containers, or split a large order across verified suppliers.
+- [ ] **(Biz)** **Order aggregation**: combine several buyers' small orders into full containers. Splitting a large order across verified suppliers is now area 13 (P1).
 - [ ] **(Biz)** Sourcing-agent referral commissions for introduced buyers / suppliers.
 
 ### 12 Buyer and supplier validation (Opportunity Radar)
 - [ ] **(Eng)** Indian supplier age and size at scan time: MCA (company age from CIN) and Udyam need numbers a web search does not return — read them from the supplier's website / GST record when available.
 - [ ] **(Eng)** Phone check for phone-only local suppliers (number valid, WhatsApp reachable) so they can be verified without an e-mail.
 - [ ] **(Eng)** Link the screening evidence certificate (`validation.evidence_url`) from the badge and the evidence pack.
+
+### 13.3 Deal composition agent — Deal composition after negotiation
+- [ ] **(Eng)** N buyers × 1 supplier: one supplier's surplus capacity sold to a second buyer in a second deal from the same composition run (two PIs, two escrows; supplier legs share one facility inspection where the dates allow).
+
+### 13.5 Freight — fewer containers and cheaper boxes — Deal composition after negotiation
+- [ ] **(Eng)** Across deals: group legs with the same port of loading → port of discharge inside one sailing window into one carrier booking (rate tier, fewer B/L and documentation fees). Each buyer keeps its own containers and B/L.
+- [ ] **(Biz/Eng)** Sharing one container between buyers through an LCL consolidator (only after a lawyer / CA confirms documents, insurance and claims per buyer).
+
+### 13.6 Apify actors for quality trade and trade information — Deal composition after negotiation
+- [ ] **(Eng)** **Market quality requirements** per HS × destination: pesticide MRLs, phytosanitary and labelling rules. These become the QC spec, the packing spec and the QIMA booking comments.
+- [ ] **(Eng)** **Freight rate index per lane**, to check a quote against the market when only one quote exists, plus sailing schedules / port congestion for the ready-date check in 13.5.
+- [ ] **(Eng)** **Commodity price feeds** per HS code into the price book (`price_observations`) as a market prior next to Comtrade.
+
+### 14.1 Legal entity — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz)** Startup India (DPIIT) recognition — check whether the business qualifies and whether the benefits are worth it.
+
+### 14.2 Tax and trade registrations — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Legal)** Legal Entity Identifier (LEI) for the company — required by RBI only for large cross-border transactions, but banks and screening tools use it.
+- [ ] **(Biz)** Quality / trust certificates that help with buyers: ISO 9001 for the trading process, organic (NPOP) trading registration if organic products are traded.
+
+### 14.4 Brand, website and contact details — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz)** Trade fairs and buyer-seller meets (Gulfood, Anuga, SIAL, export promotion council events) and membership listings in council directories.
+
+### 14.6 Office, people and records — Starting the company (non-technical: registrations, accounts, set-up)
+- [ ] **(Biz)** Business insurance: office, professional indemnity, directors' and officers' cover.
 
 ---
 
@@ -537,9 +696,16 @@ Sorted by priority; each names the area it belongs to.
 - [ ] **P1** Which buyer currencies to support and from which rate source (5.4).
 - [ ] **P1** Outreach / RFQ to verified counterparties only, or also to unverified ones (today: unverified yes, failed never) (12). **Recommendation:** verified only for buyers once screening is live (cold e-mail to an unscreened company is the bigger risk); keep unverified suppliers in the RFQ because GST / IEC are verified at quote anyway.
 - [ ] **P1** Source for proof that a buyer imports the product: paid bill-of-lading data (Volza / ImportGenius), Apify plan upgrade, or a new PortLess actor on public US bill-of-lading data (12).
+- [ ] **P1** Firm offers before composition: may PortLess take a buyer's "yes, subject to final order confirmation" and a supplier's firm price without committing to either until the composition gate? Each side needs to know how long its offer binds. Needs a lawyer's wording (13.2, 3.6).
+- [ ] **P1** Lots from more than one supplier under one contract: tell the buyer in advance ("may be supplied from more than one mill / origin, same specification") or ask each time? How many suppliers are allowed per deal (`COMPOSITION_MAX_SUPPLIERS`)? (13.3) **Recommendation:** a standard clause in the Sales Contract, at most 2 suppliers at the start, same grade only.
+- [ ] **P1** One Shipping Bill for goods from several suppliers / ports, or one per port of loading — confirm with the CHA (13.4).
+- [ ] **P1** Composition gate always L0, or auto-approve when the margin is above a set level and every party is verified (13.3). **Recommendation:** always L0 until 20 compositions are resolved (`outcomes.py` calibration).
 - [ ] **P2** Buyers & Suppliers page default: all companies (today) or verified only like the radar (12).
 
 ---
+- [ ] **P0** Legal form of the company (private limited, LLP or proprietorship) and the state of the registered office — every registration depends on it (14.1). **Recommendation:** private limited.
+- [ ] **P0** Which AD Category-I bank (forex desk, export credit, EDPMS support, charges) (14.3).
+- [ ] **P1** Which products to register for first (decides the RCMC: Spices Board, APEDA, FIEO) (14.2).
 
 ## Done in the latest rounds (for reference)
 
@@ -549,6 +715,7 @@ Sorted by priority; each names the area it belongs to.
 - Prices to Indian suppliers in INR with the USD contract price and rate; quotations mirrored in their own currency.
 - Confirming a match closes the deal's other proposals.
 - Buyer / supplier check at scan time (12): the top buyers and suppliers of every opportunity are screened (sanctions, e-mail, GST / IEC) before the radar shows them; the radar shows verified ones by default ("Verified only / All" toggle, hidden counts), the directory filters by result and can check one company now, a failed counterparty never seeds outreach or a supplier party, and a deal from an opportunity no longer records an unchecked supplier as verified.
+- Pre-deal rescore (12): the radar's Rescore / Start prospect fills the best pairs' gaps without contacting anyone (counterparty check, supplier address / GSTIN from its website, plant-to-port distance, an estimated supplier price labelled as an estimate), scores them again and shows before → after; a web-search buyer's product fit is no longer overstated as "same subheading".
 
 ---
 
@@ -596,3 +763,44 @@ pitch one before anyone looked.
 Verdict rules: `verified` only on positive answers (sanctions clear + deliverable or catch-all
 e-mail + no registry red flag); `failed` only on negative answers (sanctions block, GST / IEC
 inactive, DGFT denied); everything else `unverified`. Without an Apify token nothing is verified.
+
+### 13 Deal composition after negotiation (more buyers, more suppliers, cheaper freight)
+
+**The idea.** A scan gives many buyer and supplier candidates per opportunity. Today PortLess picks
+one buyer and one supplier *before* negotiating: the match board's CONFIRM_MATCH or the first
+interested buyer plus the RFQ winner. After that, every other candidate is closed, and the deal
+fails if that one pair fails. The new flow keeps a good opportunity open. It negotiates with every
+qualifying buyer on the buyer's full requirement and with every qualifying supplier on the
+supplier's full ability, collects firm offers with a validity date, and only then lets a
+composition agent decide the most profitable deal from what was actually offered.
+
+**Example.** A buyer needs 1000 MT. Supplier A can supply 800 MT, and supplier B offers 200 MT of
+the same grade. The deal becomes one buyer with two supplier legs, not a lost 1000 MT order. The
+same agent plans freight: how many containers of which size, whether to stuff at one port, and
+whether a small leg goes as LCL. It uses quotes from Cogoport / Freightos / Maersk instead of a
+fixed 25 MT per container.
+
+**Order of work.** 13.4 (a deal with several supplier legs) has to exist before 13.3 can approve a
+composition with two suppliers. 13.1 and 13.2 can start first behind `DEAL_COMPOSITION_ENABLED`,
+with compositions limited to one supplier until 13.4 lands. The decisions on firm-offer wording,
+lot mixing and the Shipping Bill come before the first two-supplier trade.
+
+### 14 Starting the company (non-technical: registrations, accounts, set-up)
+
+Everything a person must do outside the code to run an Indian export-import company legally. The
+software cannot issue a PI or PO without most of it (exporter IEC / GSTIN / LUT / AD code on every
+document), and escrow and payout providers will not open accounts without the company documents and
+a website. Items already listed elsewhere are repeated here with "also n.n" so this area can be used
+as the one start-up checklist.
+
+**Order to do it in** (each step needs the one before):
+1. Decide the legal form and the registered office (decisions).
+2. Directors' DSC → incorporation (CIN, company PAN and TAN).
+3. AD Category-I bank current account + EEFC account.
+4. GST registration → IEC → ICEGATE + AD code at the ports → LUT for the year.
+5. RCMC for each product (Spices Board, APEDA, FIEO) and Udyam; FSSAI / plant quarantine as the products need.
+6. Domain, e-mail and website (needed for KYB) → escrow / payout provider accounts → QIMA, Maersk, forwarder, CHA, insurer.
+7. CA, compliance calendar and accounting from the first day of trading.
+
+Fees, forms and deadlines change; confirm each step with the CA before filing. The product examples
+(spices, basmati) follow the HS codes used in testing; the real list comes from the catalogue.
