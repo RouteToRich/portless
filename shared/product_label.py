@@ -8,10 +8,18 @@ fall back to ``"the HS <code> product"`` instead of inventing a name.
 """
 from __future__ import annotations
 
-# 6-digit entries are looked up before the 4-digit heading.
+# 8-digit (Indian ITC-HS tariff line) entries are looked up first, then 6-digit, then the 4-digit heading.
 _DISPLAY: dict[str, str] = {
+    "10063010": "parboiled rice",
+    "10063020": "basmati rice",
+    "10063090": "non-basmati rice",
+    "100610": "paddy rice",
+    "100620": "brown rice",
+    "100640": "broken rice",
     "090411": "black pepper",
     "090412": "ground black pepper",
+    "090421": "dried chillies",
+    "090422": "chilli powder",
     "0904": "pepper",
     "0902": "tea",
     "0901": "coffee",
@@ -29,6 +37,8 @@ _DISPLAY: dict[str, str] = {
     "1513": "coconut oil",
     "1515": "vegetable oil",
     "1520": "crude glycerine",
+    "290543": "mannitol",
+    "290544": "sorbitol",
     "290545": "refined glycerine",
     "0306": "shrimp",
     "5201": "raw cotton",
@@ -49,7 +59,7 @@ def product_label(hs_code: str | None) -> str | None:
             return name.strip()
     except Exception:  # noqa: BLE001 — catalogue not loaded / unavailable
         pass
-    return _DISPLAY.get(hs[:6]) or _DISPLAY.get(hs[:4])
+    return _DISPLAY.get(hs[:8]) or _DISPLAY.get(hs[:6]) or _DISPLAY.get(hs[:4])
 
 
 def product_phrase(hs_code: str | None) -> str:

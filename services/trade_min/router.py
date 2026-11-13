@@ -40,6 +40,17 @@ async def get_catalogue() -> dict:
     return _catalogue_view()
 
 
+@router.get("/hs-names")
+async def hs_names(codes: str = Query("", description="Comma-separated HS codes, at most 100")) -> dict:
+    """The product name the console shows next to each HS code (catalogue name, curated short name,
+    else the official HS description — shared/hs_names.py) and the full official description for the
+    tooltip; null only for a code no source knows. Readable by every signed-in user."""
+    from shared import hs_names
+    wanted = [c.strip() for c in codes.split(",") if c.strip()][:100]
+    return {"names": {code: hs_names.display_name(code) for code in wanted},
+            "descriptions": {code: hs_names.official(code) for code in wanted}}
+
+
 @router.put("/catalogue")
 async def put_catalogue(payload: CatalogueUpdate) -> dict:
     """Replace the catalogue (Mongo-persisted; in-memory without MONGO_URI)."""

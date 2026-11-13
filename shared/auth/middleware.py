@@ -47,6 +47,7 @@ _PUBLIC_PREFIXES = (
 _NON_PORTLESS_ALLOWED = frozenset({
     ("GET", "/identity/me"),
     ("GET", "/deals"),
+    ("GET", "/trade-min/hs-names"),   # product names for HS codes — nothing deal-specific
 })
 
 # Paths where the browser's native EventSource API is the only client (SSE) —
