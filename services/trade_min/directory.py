@@ -54,7 +54,27 @@ def _union(old: list[str], new: list[str]) -> list[str]:
     return out[-_MAX_LIST:]
 
 
+def clean_record(rec: CounterpartyRecord) -> CounterpartyRecord:
+    """The same clean-up as the company search (shared/connectors/apify.py), applied to a
+    stored record: a marketing clause or address dropped from the name, a usable e-mail
+    only (phone digits glued to the front removed), and the country the company's own
+    website / e-mail / phone points to rather than the market that was searched."""
+    from shared.connectors.apify import _clean_name, clean_email, company_country
+    name = _clean_name(rec.name) or rec.name
+    email = clean_email(rec.email)
+    domain = _domain(rec.website)
+    evidence = company_country({"domain": domain, "email": email or "", "phone": rec.phone})
+    country = (evidence or rec.country or "").upper() or None
+    if (name, email, country) == (rec.name, rec.email, rec.country):
+        return rec
+    return rec.model_copy(update={"name": name, "email": email, "country": country})
+
+
 def _merge(old: CounterpartyRecord | None, new: CounterpartyRecord) -> CounterpartyRecord:
+    return clean_record(_merge_raw(old, new))
+
+
+def _merge_raw(old: CounterpartyRecord | None, new: CounterpartyRecord) -> CounterpartyRecord:
     if old is None:
         return new
     data = old.model_dump()
@@ -73,6 +93,9 @@ def _merge(old: CounterpartyRecord | None, new: CounterpartyRecord) -> Counterpa
                       else new.last_outcome or old.last_outcome),
         times_seen=old.times_seen + 1,
         last_seen_at=new.last_seen_at,
+        # A newer check replaces the stored one; a scan that checked nothing keeps it.
+        validation=(new.validation.model_dump() if new.validation is not None
+                    else (old.validation.model_dump() if old.validation is not None else None)),
     )
     return CounterpartyRecord.model_validate(data)
 
@@ -90,11 +113,18 @@ class InMemoryDirectory:
         self._store[rec.id] = merged
         return merged
 
+    async def get(self, record_id: str) -> CounterpartyRecord | None:
+        return self._store.get(record_id)
+
+    async def set_validation(self, rec: CounterpartyRecord) -> None:
+        if rec.id in self._store:
+            self._store[rec.id] = self._store[rec.id].model_copy(update={"validation": rec.validation})
+
     async def list(self, role: str, *, hs_code: str | None = None, market: str | None = None,
                    q: str | None = None, country: str | None = None,
-                   limit: int = 200) -> list[CounterpartyRecord]:
+                   limit: int = 200, validation: str | None = None) -> list[CounterpartyRecord]:
         rows = [r for r in self._store.values()
-                if r.role == role and _matches(r, hs_code, market, q, country)]
+                if r.role == role and _matches(r, hs_code, market, q, country, validation)]
         rows.sort(key=lambda r: r.last_seen_at, reverse=True)
         return rows[:limit]
 
@@ -121,10 +151,30 @@ class MongoDirectory:
         await self._col.replace_one({"_id": merged.id}, out, upsert=True)
         return merged
 
+    async def get(self, record_id: str) -> CounterpartyRecord | None:
+        doc = await self._col.find_one({"_id": record_id})
+        if not doc:
+            return None
+        doc.pop("_id", None)
+        try:
+            return CounterpartyRecord.model_validate(doc)
+        except Exception:  # noqa: BLE001 - a malformed row counts as unknown
+            return None
+
+    async def set_validation(self, rec: CounterpartyRecord) -> None:
+        await self._col.update_one(
+            {"_id": rec.id},
+            {"$set": {"validation": rec.validation.model_dump(mode="json") if rec.validation else None}},
+        )
+
     async def list(self, role: str, *, hs_code: str | None = None, market: str | None = None,
                    q: str | None = None, country: str | None = None,
-                   limit: int = 200) -> list[CounterpartyRecord]:
+                   limit: int = 200, validation: str | None = None) -> list[CounterpartyRecord]:
         query: dict[str, Any] = {"role": role}
+        if validation == "unverified":
+            query["$and"] = [{"$or": [{"validation": None}, {"validation.status": "unverified"}]}]
+        elif validation:
+            query["validation.status"] = validation
         if country:
             query["country"] = country.upper()
         if hs_code:
@@ -148,7 +198,9 @@ class MongoDirectory:
 
 
 def _matches(r: CounterpartyRecord, hs_code: str | None, market: str | None, q: str | None,
-             country: str | None = None) -> bool:
+             country: str | None = None, validation: str | None = None) -> bool:
+    if validation and (r.validation.status if r.validation else "unverified") != validation:
+        return False
     if country and (r.country or "").upper() != country.upper():
         return False
     if hs_code and hs_code not in r.hs_codes:
@@ -209,7 +261,7 @@ def _buyer_record(b: BuyerSignal, hs_code: str, market: str, outcome: str,
         source=b.source, sources=[b.source], fit_score=b.fit_score, fit_reason=b.fit_reason,
         hs_codes=[hs_code], markets=[market.upper()] if market else [],  # the corridor scanned
         opportunity_ids=[opportunity_id] if opportunity_id else [],
-        last_outcome=outcome, first_seen_at=now, last_seen_at=now,
+        last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=b.validation,
     )
 
 
@@ -226,7 +278,7 @@ def _supplier_record(s: SellerCandidate, hs_code: str, market: str, outcome: str
         gstin=s.gstin, iec=s.iec, estimated_fob_price_usd=s.estimated_fob_price_usd,
         hs_codes=[hs_code], markets=[market.upper()] if market else [],
         opportunity_ids=[opportunity_id] if opportunity_id else [],
-        last_outcome=outcome, first_seen_at=now, last_seen_at=now,
+        last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=s.validation,
     )
 
 
@@ -246,6 +298,33 @@ async def record_scan(hs_code: str, market: str, buyers: list[BuyerSignal], sell
     except Exception as exc:  # noqa: BLE001 - the directory must never break a scan
         logger.error("Directory: could not record %s×%s: %s", hs_code, market, exc)
     return stored[0], stored[1]
+
+
+async def clean_existing() -> int:
+    """Apply ``clean_record`` to every stored buyer and supplier (ids kept, so links to
+    opportunities stay). Returns how many records changed."""
+    directory = await get_directory()
+    changed = 0
+    if isinstance(directory, MongoDirectory):
+        async for doc in directory._col.find({}):
+            doc_id = doc.pop("_id", None)
+            try:
+                rec = CounterpartyRecord.model_validate(doc)
+            except Exception:  # noqa: BLE001 - leave a malformed row alone
+                continue
+            cleaned = clean_record(rec)
+            if cleaned is not rec:
+                out = cleaned.model_dump(mode="json")
+                out["_id"] = doc_id
+                await directory._col.replace_one({"_id": doc_id}, out)
+                changed += 1
+    else:
+        for key, rec in list(directory._store.items()):
+            cleaned = clean_record(rec)
+            if cleaned is not rec:
+                directory._store[key] = cleaned
+                changed += 1
+    return changed
 
 
 async def list_counterparties(role: str, **filters: Any) -> list[CounterpartyRecord]:

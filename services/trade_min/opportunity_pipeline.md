@@ -1,11 +1,14 @@
 # Opportunity Preparation Pipeline — Endpoints & Third-Party Connectors
 
 Covers everything from `POST /trade-min/scan` (opportunity discovery) through
-`POST /deals` (seeding a deal from an opportunity). Regulatory verification
-(GSTN / DGFT / MCA / Udyam) is **not** part of this stage — `deals/service.py`
-stubs verification as `gst_verified=True, iec_active=True, dgft_denied=False`
-when seeding from an opportunity; real GSTN/DGFT/MCA/Udyam calls happen later,
-at quote intake (`POST /sourcing/quotes`, `sourcing/service.py`).
+`POST /deals` (seeding a deal from an opportunity). Before an opportunity is
+saved, its top buyers and suppliers are checked (`services/trade_min/validation.py`:
+sanctions screening, e-mail deliverability, GSTN / DGFT IEC when the number is
+known) and each carries a `validation` (`verified` / `unverified` / `failed`).
+`deals/service.py` scores sellers with those results: a failed check fails the
+Match Engine gatekeeper, a check not run yet is scored provisionally and recorded
+as `verification="unverified"` (never as verified). The full GSTN / DGFT / MCA /
+Udyam verification still runs at quote intake (`POST /sourcing/quotes`).
 
 ---
 

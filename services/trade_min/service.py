@@ -29,7 +29,7 @@ from uuid import uuid4
 from shared.bus import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 
-from . import directory, pair_match, ranking
+from . import directory, pair_match, ranking, validation
 from .cache import cache_get, cache_set, make_cache_key
 from .config import DEFAULT_CONFIG, TradeMinConfig, settings
 from .repository import get_repository
@@ -717,6 +717,7 @@ async def _phase2_live_signals(
                 fit_reason=(c.get("summary") or c.get("page_title") or None),
                 pitch_angle=c.get("first_line") or None,
                 hs_codes=[hs_code],
+                email_status=c.get("email_status"),
             ))
 
     if rfq_r is not None:
@@ -954,6 +955,7 @@ async def _phase4_seller_discovery(
                 "listing_url": c.get("contact_page_url") or c.get("website"),
                 "fit_score": c.get("fit_score"),
                 "country": "IN",
+                "email_status": c.get("email_status"),
             }, "apify_company_search")
 
     if im_r is not None:
@@ -1016,6 +1018,7 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         fit_score=s.get("fit_score"),
         country=(s.get("country") or None) if "country" in s else "IN",
         price_unit="USD/MT",
+        email_status=s.get("email_status") or None,
     )
 
 
@@ -1231,6 +1234,7 @@ async def _worldwide_counterparties(hs_code: str) -> None:
             address=c.get("address"),
             fit_score=c.get("fit_score"),
             fit_reason=(c.get("summary") or c.get("page_title") or None),
+            email_status=c.get("email_status"),
         )
         for c in (buyers_r or {}).get("companies", [])
     ]
@@ -1244,6 +1248,7 @@ async def _worldwide_counterparties(hs_code: str) -> None:
             "listing_url": c.get("contact_page_url") or c.get("website"),
             "fit_score": c.get("fit_score"),
             "country": c.get("country"),
+            "email_status": c.get("email_status"),
         }, "apify_company_search", hs_code)
         for c in (sellers_r or {}).get("companies", [])
     ]
@@ -1311,6 +1316,10 @@ async def _scan_one(
                         f"the {config.tariff_hard_discard_floor:.0f}% floor",
             )
             return None
+        # Check the top buyers / suppliers before the opportunity is shown on the
+        # radar (sanctions, e-mail, Indian registries) — written onto the same
+        # objects, so the opportunity and the directory both carry the result.
+        await validation.validate_scan(buyers, sellers)
         opp = await _phase5_assemble_and_persist(
             hs_code, market, phase1, phase2, tariff, sellers, config
         )
@@ -1326,10 +1335,31 @@ async def _scan_one(
         return None
 
 
+def _count_by_status(items: list) -> dict[str, int]:
+    out = {"verified": 0, "unverified": 0, "failed": 0}
+    for item in items:
+        out[validation.status_of(item)] += 1
+    return out
+
+
+def _with_counterparties(opp: EnrichedOpportunity, which: str = "all") -> EnrichedOpportunity:
+    """The opportunity as the radar shows it: validation counts always; with
+    ``which="verified"`` only verified buyers / suppliers (pairs re-scored on them).
+    A copy — the stored opportunity and the deal seed keep every counterparty."""
+    counts = {"buyers": _count_by_status(opp.buyer_signals),
+              "suppliers": _count_by_status(opp.seller_candidates)}
+    update: dict = {"counterparty_counts": counts, "counterparty_filter": which}
+    if which == "verified":
+        update["buyer_signals"] = [b for b in opp.buyer_signals if validation.status_of(b) == "verified"]
+        update["seller_candidates"] = [s for s in opp.seller_candidates if validation.status_of(s) == "verified"]
+    return pair_match.attach(opp.model_copy(update=update))
+
+
 async def list_opportunities(
     limit: int = 100,
     min_rank: float = 0.0,
     urgency_tier: int | None = None,
+    counterparties: str = "all",
 ) -> list[EnrichedOpportunity]:
     repo = await get_repository()
     opps = await repo.list_active(limit=limit * 2, min_rank=min_rank)
@@ -1341,7 +1371,8 @@ async def list_opportunities(
         key = (o.hs_code, o.market)
         if key not in latest or o.scanned_at > latest[key].scanned_at:
             latest[key] = o
-    return [pair_match.attach(o) for o in [o for o in opps if latest[(o.hs_code, o.market)] is o][:limit]]
+    return [_with_counterparties(o, counterparties)
+            for o in [o for o in opps if latest[(o.hs_code, o.market)] is o][:limit]]
 
 
 async def _opportunity_id_for(hs_code: str, market: str) -> str:
@@ -1360,10 +1391,10 @@ async def _opportunity_id_for(hs_code: str, market: str) -> str:
     return _new_opportunity_id()
 
 
-async def get_opportunity(opportunity_id: str) -> EnrichedOpportunity | None:
+async def get_opportunity(opportunity_id: str, counterparties: str = "all") -> EnrichedOpportunity | None:
     repo = await get_repository()
     opp = await repo.get(opportunity_id)
-    return pair_match.attach(opp) if opp else None
+    return _with_counterparties(opp, counterparties) if opp else None
 
 
 async def get_match_seed(opportunity_id: str) -> MatchEngineSeed | None:
@@ -1397,6 +1428,13 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
     else:
         buyer_target_price = None
 
+    # A counterparty the scan-time check failed (sanctions block, GST / IEC
+    # inactive) never seeds a deal; verified ones come first (stable otherwise).
+    _order = {"verified": 0, "unverified": 1}
+    sellers = sorted((s for s in opp.seller_candidates if validation.status_of(s) != "failed"),
+                     key=lambda s: _order[validation.status_of(s)])
+    buyers = [b for b in opp.buyer_signals if validation.status_of(b) != "failed"]
+
     top_sellers = [
         {
             "supplier_id":        s.candidate_id,
@@ -1416,13 +1454,15 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
             "udyam":              s.udyam,
             "export_shipments_12m": s.export_shipments_12m,
             "fit_score":          s.fit_score,
+            "validation":         s.validation.model_dump(mode="json") if s.validation else None,
         }
-        for s in opp.seller_candidates[:5]
+        for s in sellers[:5]
     ]
 
     def _buyer_rank(b: BuyerSignal) -> tuple:
         has_contact = bool(b.email or b.website or b.contact_url)
-        return (-(b.fit_score or 0), not has_contact, -(b.urgency_tier or 0))
+        return (_order[validation.status_of(b)], -(b.fit_score or 0), not has_contact,
+                -(b.urgency_tier or 0))
 
     top_buyers = [
         {
@@ -1444,8 +1484,9 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
             "risk_score":   b.risk_score,
             "quantity":     b.quantity,
             "quantity_unit": b.quantity_unit,
+            "validation":   b.validation.model_dump(mode="json") if b.validation else None,
         }
-        for b in sorted(opp.buyer_signals, key=_buyer_rank)[:5]
+        for b in sorted(buyers, key=_buyer_rank)[:5]
     ]
 
     return MatchEngineSeed(

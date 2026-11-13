@@ -89,6 +89,43 @@ class DemandSignal(BaseModel):
     fetched_at: datetime
 
 
+ValidationStatus = Literal["verified", "unverified", "failed"]
+
+
+class CounterpartyValidation(BaseModel):
+    """Is this buyer / supplier a real company PortLess may contact and trade with?
+
+    Set at scan time by ``services/trade_min/validation.py`` for the top
+    counterparties of an opportunity, and kept on the directory record.
+
+    - ``verified``   — sanctions screening ``clear``, a deliverable (or catch-all)
+      e-mail, and no registry answered "inactive / denied".
+    - ``failed``     — sanctions ``block``, GST / IEC inactive, or on the DGFT
+      denied list: never shown by default, never contacted, never a deal party.
+    - ``unverified`` — anything not checked yet or needing a person (sanctions
+      ``review``, undeliverable e-mail, no Apify token, outside the top N).
+
+    The GST / IEC registries are checked when the number is known and the
+    registry answers; a registry that is not configured is a reason, not a
+    failure — the supplier is verified again at quote intake (sourcing).
+    """
+
+    status: ValidationStatus = "unverified"
+    reasons: list[str] = Field(default_factory=list)
+    email: str | None = None
+    """``ok`` / ``risky`` (catch-all) / ``invalid`` / ``unverified`` / ``missing``."""
+    sanctions: str = "unchecked"
+    """``clear`` / ``review`` / ``block`` / ``unchecked``."""
+    sanctions_reason: str | None = None
+    evidence_url: str | None = None
+    gst: str | None = None
+    """Indian suppliers: ``active`` / ``inactive`` / ``unchecked`` / ``missing``."""
+    iec: str | None = None
+    dgft_denied: str | None = None
+    """``clear`` / ``denied`` / ``unchecked`` (the DGFT list is a stub today → unchecked)."""
+    checked_at: datetime | None = None
+
+
 class BuyerSignal(BaseModel):
     """A named overseas buyer identified from manifests, RFQs, or tenders."""
 
@@ -125,6 +162,10 @@ class BuyerSignal(BaseModel):
     quantity_unit: str | None = None
     shipments_12m: int | None = None
     hs_codes: list[str] = Field(default_factory=list)
+    email_status: str | None = None
+    """What the source said about ``email`` (``ok`` / ``risky`` / ``invalid`` / ``unverified``)."""
+    validation: CounterpartyValidation | None = None
+    """Scan-time check; None = not checked (outside the top N or validation off)."""
 
 
 class TariffData(BaseModel):
@@ -179,6 +220,9 @@ class SellerCandidate(BaseModel):
     the worldwide search records the company's own country (None when unknown)."""
     price_unit: str | None = "USD/MT"
     """``estimated_fob_price_usd`` is normalised to USD per MT (kg prices × 1000)."""
+    email_status: str | None = None
+    validation: CounterpartyValidation | None = None
+    """Scan-time check; None = not checked (outside the top N or validation off)."""
 
 
 CounterpartyRole = Literal["buyer", "supplier"]
@@ -217,6 +261,8 @@ class CounterpartyRecord(BaseModel):
     times_seen: int = 1
     first_seen_at: datetime
     last_seen_at: datetime
+    validation: CounterpartyValidation | None = None
+    """Latest scan-time check (kept across scans until a newer one replaces it)."""
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +384,14 @@ class EnrichedOpportunity(BaseModel):
     pair_matches: list[PairMatch] = Field(default_factory=list)
     """Scored buyer × seller pairs, one-to-one recommended pairs first."""
     best_match_score: float | None = None
+
+    # ── Scan-time counterparty validation (validation.py) ─────────────────
+    counterparty_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
+    """``{"buyers": {"verified": n, "unverified": n, "failed": n}, "suppliers": {...}}``
+    over the whole opportunity — the radar's "N hidden" hint when it shows only
+    verified counterparties."""
+    counterparty_filter: Literal["verified", "all"] = "all"
+    """Which counterparties ``buyer_signals`` / ``seller_candidates`` hold in this response."""
 
 
 # ---------------------------------------------------------------------------

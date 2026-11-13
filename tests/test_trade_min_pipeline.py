@@ -502,9 +502,9 @@ class TestDirectory:
         assert len(dr._union([str(i) for i in range(60)], ["x", "", "x"])) == dr._MAX_LIST
 
     async def test_merge_keeps_old_values_and_counts(self, store):
-        await store.upsert(_record(email="a@b.c", hs_codes=["1"], last_outcome="first"))
+        await store.upsert(_record(email="a@b.co", hs_codes=["1"], last_outcome="first"))
         merged = await store.upsert(_record(email=None, hs_codes=["2"], phone="9", last_outcome="second"))
-        assert (merged.email, merged.phone, merged.hs_codes, merged.times_seen, merged.last_outcome) == ("a@b.c", "9", ["1", "2"], 2, "second")
+        assert (merged.email, merged.phone, merged.hs_codes, merged.times_seen, merged.last_outcome) == ("a@b.co", "9", ["1", "2"], 2, "second")
 
     async def test_worldwide_outcome_does_not_replace_a_corridor_outcome(self, store):
         await store.upsert(_record(last_outcome="corridor"))

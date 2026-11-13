@@ -41,12 +41,13 @@ Everything here is P0; the areas are named in brackets.
 - [ ] CI on both repos; the 24 P0 catalogue cases automated; UC-01 … UC-15 green on a nightly run (section 6).
 - [ ] One pilot trade with a small, real lot, a known buyer and a known supplier, before opening the funnel (section 6.7).
 - [ ] Test strategy in place: unit, integration, sanity / smoke and regression suites defined, in CI and green (6.9 – 6.13).
+- [ ] Buyer / supplier checks actually answer: Apify screening live, GSTN path fixed, and quote intake no longer passes an unchecked supplier as verified (section 12).
 
 ---
 
 ## P0 — must be done before the first real trade
 
-81 items.
+84 items.
 
 ### 1.1 Money — Accounts, credentials and configuration (readiness gate)
 - [ ] **(Biz/Eng)** `escrow_provider` FAIL — open Tazapay and Escrow.com business accounts; set `TAZAPAY_API_KEY` / `_API_SECRET` / `_WEBHOOK_SECRET` / `_ENV` and `ESCROW_COM_API_KEY` / `_EMAIL` / `_WEBHOOK_SECRET`. Drop a provider from `ESCROW_PROVIDERS_ENABLED` until its account is live.
@@ -201,11 +202,16 @@ Everything here is P0; the areas are named in brackets.
 ### 9 Operator console (portless-ui)
 - [ ] **(Eng)** CI and tests (6.2, 6.8).
 
+### 12 Buyer and supplier validation (Opportunity Radar)
+- [ ] **(Eng)** **Quote intake still treats an unanswered registry as a pass.** `sourcing._verify_supplier` starts from `gst_verified=True, iec_active=True` and keeps them when GSTN / DGFT do not answer (no `API_SETU_KEY`, timeout, wrong path), so the Match Engine gatekeeper passes an unchecked supplier. Record "unchecked" separately from "active", keep the gatekeeper's provisional pass if wanted, but never show or log the supplier as verified, and force `CONFIRM_SUPPLIER_SELECTION` to L0 with a flag `registry_unchecked`. (The scan-time check already keeps "unchecked" apart — see Done.)
+- [ ] **(Biz/Eng)** **API Setu GSTN path is a placeholder** (the guessed route answers 404; `GstnConnector` notes it). Subscribe to the GSTN Tax Payer product, set the real path, and verify one known GSTIN end to end. Until then no GST check ever answers: at scan time GST shows "unchecked", at quote intake see the item above.
+- [ ] **(Eng)** Readiness check `counterparty_validation`: fail in production when `TRADE_MIN_VALIDATION_ENABLED=false` or the screening actor runs in stub mode (no `APIFY_TOKEN`) — otherwise the radar's "Verified only" view is silently empty and every counterparty reaches outreach unscreened.
+
 ---
 
 ## P1 — needed before running more than a handful of deals a month
 
-139 items.
+150 items.
 
 ### 1.1 Money — Accounts, credentials and configuration (readiness gate)
 - [ ] **(Eng)** `escrow_proof_links` WARN — set `PORTLESS_PUBLIC_BASE_URL` (public HTTPS address of the backend) and `ESCROW_PROOF_LINK_SECRET` so every stage release uploads a signed proof sheet to Tazapay.
@@ -434,11 +440,24 @@ Everything here is P0; the areas are named in brackets.
 - [ ] **(Eng)** **Buyer scoring for outreach**: focus the funnel on buyers most likely to close (reply rate, import history, fit score) — less outreach cost per deal.
 - [ ] **(Eng)** Funnel analytics: scans → prospects → interested → matched → PI → paid, with time and cost per step.
 
+### 12 Buyer and supplier validation (Opportunity Radar)
+- [ ] **(Biz/Eng)** **Proof that a buyer actually imports this product.** Today a verified buyer is a real company with a working mailbox and a clean sanctions result, not a proven importer of the HS code. Needs import records (bill-of-lading data): paid Volza / ImportGenius, an Apify plan that can run the Store importer actors, or a new PortLess actor on public US customs bill-of-lading data (US-only coverage). See the decision below.
+- [ ] **(Eng)** Outreach and RFQ only to verified counterparties (switch, e.g. `OUTREACH_VERIFIED_ONLY` / `RFQ_VERIFIED_ONLY`): today a failed buyer / supplier is never contacted, but an unverified one still is. Decide first (decisions).
+- [ ] **(Eng)** Sanctions "review" queue: counterparties whose screening returned `review` (possible match or a list unavailable) listed for staff, cleared or failed with a reason, audited like the compliance hold clearances; today they simply stay "unverified".
+- [ ] **(Eng)** Re-check schedule: sanctions lists change — re-screen verified buyers / suppliers that are linked to open prospects or deals when their result passes `TRADE_MIN_VALIDATION_MAX_AGE_DAYS`, not only when a new scan finds them again.
+- [ ] **(Eng)** Confidence score counts the check: today `confidence_score` ignores validation (a corridor with 0 verified counterparties can score the same as one with 5). Add points for verified buyers / suppliers and show it in the radar's Confidence tooltip.
+- [ ] **(Eng)** Pair matching in the "All" view: mark or down-rank a pair with an unverified side; the Best Match column in "All" can currently name an unverified pair.
+- [ ] **(Eng)** Foreign buyer company existence beyond the website: LEI (GLEIF, already returned by the screening actor), EU VIES for EU buyers (returned), and a company-register / domain-age check for other countries; show them on the badge.
+- [ ] **(Eng)** Console: show the supplier's `MatchResult.verification` + reasons on the prospect / deal page, and `BuyerCandidate.validation_status` in the outreach funnel list (backend fields exist, the deal pages do not show them yet).
+- [ ] **(Ops)** Directory hygiene with the check: run "Check now" on worldwide-search companies before they are used (they are never checked automatically — cost), and a bulk "check all unverified" action with a cost estimate first.
+- [ ] **(QA)** Gherkin cases + automation: radar verified view hides unverified / failed, failed buyer never gets outreach, failed supplier never becomes the supplier party, reuse of a fresh result (no second actor run), no Apify token → nothing verified; browser case for the "Verified only / All" toggle and the directory filter.
+- [ ] **(Eng)** Cost: show the validation actor runs per scan in the digest / cost dashboard (`APIFY_MAX_RUNS_PER_DAY` budget is shared with discovery — a large scan can starve the check).
+
 ---
 
 ## P2 — improvements
 
-21 items.
+24 items.
 
 ### 2.5 Payoneer, ICEGATE, Stripe — Provider contracts not yet confirmed
 - [ ] **(Eng)** Stripe Treasury hold is legacy — remove it or confirm it is never offered.
@@ -495,6 +514,11 @@ Everything here is P0; the areas are named in brackets.
 - [ ] **(Biz)** **Order aggregation**: combine several buyers' small orders into full containers, or split a large order across verified suppliers.
 - [ ] **(Biz)** Sourcing-agent referral commissions for introduced buyers / suppliers.
 
+### 12 Buyer and supplier validation (Opportunity Radar)
+- [ ] **(Eng)** Indian supplier age and size at scan time: MCA (company age from CIN) and Udyam need numbers a web search does not return — read them from the supplier's website / GST record when available.
+- [ ] **(Eng)** Phone check for phone-only local suppliers (number valid, WhatsApp reachable) so they can be verified without an e-mail.
+- [ ] **(Eng)** Link the screening evidence certificate (`validation.evidence_url`) from the badge and the evidence pack.
+
 ---
 
 ## Decisions needed
@@ -511,6 +535,9 @@ Sorted by priority; each names the area it belongs to.
 - [ ] **P1** Apify plan upgrade vs other data sources (2.6).
 - [ ] **P1** Monolith vs microservices in production (7).
 - [ ] **P1** Which buyer currencies to support and from which rate source (5.4).
+- [ ] **P1** Outreach / RFQ to verified counterparties only, or also to unverified ones (today: unverified yes, failed never) (12). **Recommendation:** verified only for buyers once screening is live (cold e-mail to an unscreened company is the bigger risk); keep unverified suppliers in the RFQ because GST / IEC are verified at quote anyway.
+- [ ] **P1** Source for proof that a buyer imports the product: paid bill-of-lading data (Volza / ImportGenius), Apify plan upgrade, or a new PortLess actor on public US bill-of-lading data (12).
+- [ ] **P2** Buyers & Suppliers page default: all companies (today) or verified only like the radar (12).
 
 ---
 
@@ -521,6 +548,7 @@ Sorted by priority; each names the area it belongs to.
 - Supplier facility address asked, read from e-mails and required before the inspection (`QC_FACILITY_ADDRESS_REQUIRED`).
 - Prices to Indian suppliers in INR with the USD contract price and rate; quotations mirrored in their own currency.
 - Confirming a match closes the deal's other proposals.
+- Buyer / supplier check at scan time (12): the top buyers and suppliers of every opportunity are screened (sanctions, e-mail, GST / IEC) before the radar shows them; the radar shows verified ones by default ("Verified only / All" toggle, hidden counts), the directory filters by result and can check one company now, a failed counterparty never seeds outreach or a supplier party, and a deal from an opportunity no longer records an unchecked supplier as verified.
 
 ---
 
@@ -552,3 +580,19 @@ QA
 ### 11 New features to raise profit per deal (product)
 
 Ordered by expected impact on margin. Each should be measured on closed deals (realised margin vs cost sheet).
+
+### 12 Buyer and supplier validation (Opportunity Radar)
+
+**Where the check belongs: the radar first, the deal again.** A company that is sanctioned, fake or
+unreachable should never be shown as an opportunity's buyer or supplier, never get an outreach
+e-mail and never become a deal party, so the first check runs in the scan, before the opportunity
+is saved, on the companies the radar would show (top N per role, results reused for 30 days to keep
+Apify cost down). The deal keeps its own checks because facts change between the scan and the
+money: the buyer is screened again before the PI, the supplier's GST / IEC are verified at quote
+intake, and trade compliance runs at deal creation and before the PI. Checking only on the deal
+board (the old design) meant the radar listed unchecked companies and the outreach funnel could
+pitch one before anyone looked.
+
+Verdict rules: `verified` only on positive answers (sanctions clear + deliverable or catch-all
+e-mail + no registry red flag); `failed` only on negative answers (sanctions block, GST / IEC
+inactive, DGFT denied); everything else `unverified`. Without an Apify token nothing is verified.

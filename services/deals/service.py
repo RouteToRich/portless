@@ -138,14 +138,20 @@ async def _score_seller(
 ) -> MatchResult | None:
     """Score one seller candidate via Match Engine.
 
-    Verification flags (gst_verified, iec_active, dgft_denied) are stubbed as
-    passing because the real GSTN / DGFT checks run in the Sourcing phase.
-    The CMS gatekeeper multiplier will be 1.0 (pass) until Sourcing resolves
-    these values and calls ``update_financials`` with the corrected scores.
+    The gatekeeper flags come from the opportunity's scan-time check
+    (``seller["validation"]``, trade_min/validation.py): a registry that answered
+    "inactive" / "denied", or a failed check (e.g. sanctions block), fails the
+    gatekeeper → DISCARD. A check that has not run yet is scored provisionally
+    (gatekeeper pass) and the result says ``verification="unverified"`` — never
+    "verified"; the real GSTN / DGFT checks still run at quote intake (Sourcing),
+    which re-scores with ``update_financials``.
     """
     fob = seller.get("fob_price_usd")
     if fob is None:
         return None
+    check = seller.get("validation") or {}
+    status = check.get("status") or "unverified"
+    failed = status == "failed"
     try:
         from services.match_engine.service import score_match  # type: ignore[import]
         from services.match_engine.schemas import ScoreRequest, SupplierVerification  # type: ignore[import]
@@ -157,9 +163,9 @@ async def _score_seller(
             supplier_quote_price=float(fob),
             currency="USD",
             verification=SupplierVerification(
-                gst_verified=True,
-                iec_active=True,
-                dgft_denied=False,
+                gst_verified=not failed and check.get("gst") != "inactive",
+                iec_active=not failed and check.get("iec") != "inactive",
+                dgft_denied=check.get("dgft_denied") == "denied",
             ),
             supplier_to_port_km=float(seller.get("supplier_to_port_km") or 300.0),
             business_age_years=0.0,
@@ -180,6 +186,8 @@ async def _score_seller(
             fob_price_usd=float(fob),
             supplier_to_port_km=seller.get("supplier_to_port_km"),
             export_shipments_12m=(int(seller["export_shipments_12m"]) if seller.get("export_shipments_12m") else None),
+            verification=status if status in ("verified", "unverified", "failed") else "unverified",
+            verification_reasons=list(check.get("reasons") or [])[:10],
         )
     except Exception as exc:
         logger.warning(
@@ -212,6 +220,27 @@ def _new_deal_id() -> str:
 # ---------------------------------------------------------------------------
 # Public service API
 # ---------------------------------------------------------------------------
+
+def _party_check_fields(check: Any, email: str | None) -> dict[str, Any]:
+    """What a Party may say about its checks when seeded from an opportunity:
+    exactly what the scan-time check found, never more. No check → unverified /
+    unchecked, so the enrichment and compliance legs run in full."""
+    if check is None:
+        return {"email_status": "unverified" if email else None,
+                "sanctions_status": "unchecked", "verification_status": "unverified"}
+    sanctions = getattr(check, "sanctions", None) or "unchecked"
+    email_word = getattr(check, "email", None)
+    return {
+        "email_status": (email_word if email_word in ("ok", "risky", "invalid") else
+                         ("unverified" if email else None)),
+        "sanctions_status": sanctions,
+        "sanctions_reason": getattr(check, "sanctions_reason", None),
+        "sanctions_checked_at": getattr(check, "checked_at", None) if sanctions != "unchecked" else None,
+        # "scan_verified" only on a positive check; anything else stays "unverified"
+        # so the enrichment leg can still record a registry match.
+        "verification_status": "scan_verified" if getattr(check, "status", None) == "verified" else "unverified",
+    }
+
 
 def _seed_parties_from_opportunity(
     opportunity: Any,
@@ -259,8 +288,7 @@ def _seed_parties_from_opportunity(
                 address=getattr(top, "address", None),
                 contact_source=(f"opportunity:{getattr(top, 'source', '')}"
                                 if (email or getattr(top, "website", None)) else None),
-                email_status="unverified" if email else None,
-                sanctions_status="unchecked",
+                **_party_check_fields(getattr(top, "validation", None), email),
             ))
         candidates = getattr(opportunity, "seller_candidates", None) or []
         winner = next(
@@ -281,8 +309,7 @@ def _seed_parties_from_opportunity(
                 phone=getattr(winner, "phone", None),
                 contact_source=(f"opportunity:{getattr(winner, 'source', '')}"
                                 if (s_email or getattr(winner, "website", None)) else None),
-                email_status="unverified" if s_email else None,
-                sanctions_status="unchecked",
+                **_party_check_fields(getattr(winner, "validation", None), s_email),
             ))
     except Exception as exc:  # noqa: BLE001 — party seeding must never block creation
         logger.warning("Could not seed parties from opportunity: %s", exc)
@@ -313,8 +340,8 @@ def _buyer_candidates_from_seed(seed: dict[str, Any]) -> list[BuyerCandidate]:
     seen: set[str] = set()
     for i, b in enumerate(seed.get("top_buyers") or []):
         name = (b.get("buyer_name") or "").strip()
-        if not name:
-            continue
+        if not name or (b.get("validation") or {}).get("status") == "failed":
+            continue  # a buyer the scan-time check failed is never contacted
         key = name.lower()
         if key in seen:
             continue
@@ -330,6 +357,7 @@ def _buyer_candidates_from_seed(seed: dict[str, Any]) -> list[BuyerCandidate]:
             fit_score=b.get("fit_score"),
             pitch_angle=b.get("pitch_angle"),
             quantity_mt=_quantity_to_mt(b.get("quantity"), b.get("quantity_unit")),
+            validation_status=(b.get("validation") or {}).get("status") or "unverified",
         ))
     return out
 

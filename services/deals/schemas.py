@@ -46,6 +46,11 @@ class MatchResult(BaseModel):
     export_shipments_12m: int | None = None
     """Supplier's export shipments in the last 12 months (customs records via
     the supplier actor) — the reliability input the Match Engine lacked."""
+    verification: Literal["verified", "unverified", "failed"] = "unverified"
+    """The opportunity's scan-time check of this supplier (trade_min/validation.py).
+    ``unverified`` = scored provisionally: GST / IEC are checked for real at quote
+    intake (sourcing). Never read as "verified" unless the check said so."""
+    verification_reasons: list[str] = Field(default_factory=list)
 
 
 class BuyerRequirement(BaseModel):
@@ -135,6 +140,8 @@ class BuyerCandidate(BaseModel):
     fit_score: int | None = None
     pitch_angle: str | None = None
     quantity_mt: float | None = None
+    validation_status: str | None = None
+    """Scan-time check of this buyer (``verified`` / ``unverified``; ``failed`` ones are never candidates)."""
     status: Literal["pending", "contacted", "followed_up", "interested", "declined", "no_reply", "selected"] = "pending"
     contacted_at: datetime | None = None
     followed_up_at: datetime | None = None

@@ -61,6 +61,19 @@ class TradeMinSettings(BaseSettings):
     indiamart_mobile: str = ""
     tradeindia_api_key: str = ""
 
+    # ── Counterparty validation at scan time (services/trade_min/validation.py) ──
+    # Screen the top buyers / suppliers of every opportunity (sanctions, e-mail,
+    # Indian registries) before the radar shows them. Off → every counterparty
+    # stays "unverified" and the radar's verified-only view is empty.
+    trade_min_validation_enabled: bool = Field(
+        default=True, validation_alias=AliasChoices("TRADE_MIN_VALIDATION_ENABLED"))
+    # Counterparties checked per role per opportunity (each check run costs money).
+    trade_min_validation_top_n: int = Field(
+        default=5, validation_alias=AliasChoices("TRADE_MIN_VALIDATION_TOP_N"))
+    # A stored result younger than this is reused instead of re-running the actors.
+    trade_min_validation_max_age_days: int = Field(
+        default=30, validation_alias=AliasChoices("TRADE_MIN_VALIDATION_MAX_AGE_DAYS"))
+
     # ── Scheduling (cron expressions) ─────────────────────────────────────
     scheduler_nightly_cron: str = "0 2 * * *"   # 02:00 UTC daily
     scheduler_reorder_cron: str = "0 */6 * * *"  # every 6 h

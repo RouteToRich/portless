@@ -969,13 +969,25 @@ _LEGAL_SUFFIX = re.compile(
     r"\b(?:l\.?l\.?c|ltd|limited|pvt|private|inc|corp|gmbh|fze|fzco|fzc|llp|trading|co\.)\b", re.IGNORECASE)
 
 
+# A marketing clause before the name: "For over a decade, Punjab Foodstuff Trading LLC",
+# "Since 1985, Acme Rice Mills", "Established in 2001, X Exports".
+_LEAD_CLAUSE = re.compile(
+    r"^(?:for\s+(?:over|more\s+than)|since|with\s+(?:over|more\s+than)|established|founded|serving|trusted|"
+    r"leading|over\s+\d+|more\s+than\s+\d+|we\s+are|we're)\b[^,]{0,60},\s*(?P<name>.+)$",
+    re.IGNORECASE)
+_NOT_A_NAME_START = re.compile(r"^(?:we|our|us|they|it|this)\b", re.IGNORECASE)
+
+
 def _clean_name(text: str) -> str:
     text = re.sub(r"^\s*welcome\s+to\s+(?:the\s+)?", "", text or "", flags=re.IGNORECASE).strip(" ,.-|")
+    lead = _LEAD_CLAUSE.match(text)
+    if lead and len(lead.group("name").split()) >= 2 and not _NOT_A_NAME_START.match(lead.group("name")):
+        text = lead.group("name").strip(" ,.-|")
     # "21, Warsan 1, Dubai, UAE, PO BOX 455012 Arham Foodstuff Trading L.L.C" → the name after the address
     if "," in text and re.search(r"\d|p\.?\s?o\.?\s?box", text, re.IGNORECASE):
         tail = text.rsplit(",", 1)[-1]
         tail = re.sub(r"^.*?p\.?\s?o\.?\s?box\s*\d+\s*", "", tail, flags=re.IGNORECASE).strip()
-        if _LEGAL_SUFFIX.search(tail) or len(tail.split()) >= 2:
+        if (_LEGAL_SUFFIX.search(tail) or len(tail.split()) >= 2) and not _NOT_A_NAME_START.match(tail):
             text = tail
     return " ".join(text.split())
 
@@ -1039,6 +1051,61 @@ def _not_a_company(row: dict[str, Any]) -> bool:
     return any(bad in domain for bad in _NOT_A_COMPANY_DOMAINS) or bool(_NOT_A_COMPANY_NAME.search(title or ""))
 
 
+_EMAIL = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$")
+_NOT_A_MAILBOX = re.compile(
+    r"\.(?:png|jpe?g|gif|webp|svg|bmp|ico|css|js)$|@(?:example|domain|yourdomain|email|sentry|wixpress|"
+    r"sentry-next\.wixpress|godaddy|test)\.", re.IGNORECASE)
+
+
+def clean_email(email: Any) -> str | None:
+    """A usable mailbox or None: lower-cased, "mailto:" removed, phone digits glued to the
+    front dropped ("38844info@acme.com" → "info@acme.com"), file names and placeholder
+    domains refused."""
+    e = str(email or "").strip().lower().removeprefix("mailto:").strip(" .,;<>")
+    if not e:
+        return None
+    e = re.sub(r"^\d{3,}(?=[a-z])", "", e)
+    if not _EMAIL.match(e) or _NOT_A_MAILBOX.search(e):
+        return None
+    return e
+
+
+# Country calling codes → ISO-2, longest prefix first (+1 is read as the US).
+_PHONE_COUNTRY = {
+    "971": "AE", "966": "SA", "974": "QA", "968": "OM", "973": "BH", "965": "KW", "961": "LB", "962": "JO",
+    "964": "IQ", "880": "BD", "977": "NP", "234": "NG", "254": "KE", "212": "MA", "216": "TN", "213": "DZ",
+    "91": "IN", "44": "GB", "49": "DE", "34": "ES", "33": "FR", "31": "NL", "39": "IT", "32": "BE",
+    "41": "CH", "43": "AT", "65": "SG", "60": "MY", "62": "ID", "66": "TH", "84": "VN", "86": "CN",
+    "81": "JP", "82": "KR", "61": "AU", "64": "NZ", "27": "ZA", "20": "EG", "90": "TR", "92": "PK",
+    "94": "LK", "98": "IR", "55": "BR", "52": "MX", "7": "RU", "1": "US",
+}
+
+
+def country_from_phone(phone: Any) -> str | None:
+    digits = re.sub(r"[^\d+]", "", str(phone or ""))
+    if digits.startswith("00"):
+        digits = "+" + digits[2:]
+    if not digits.startswith("+"):
+        return None
+    digits = digits[1:]
+    for size in (3, 2, 1):
+        code = _PHONE_COUNTRY.get(digits[:size])
+        if code:
+            return code
+    return None
+
+
+def company_country(row: dict[str, Any], searched: str | None = None) -> str | None:
+    """Where the company is: its website's ccTLD, else its e-mail's, else its phone's
+    country code, else the market that was searched — so a Dutch firm found by a UAE
+    search is filed as NL, not as a UAE buyer."""
+    email = row.get("email") or ""
+    return (country_from_domain(row.get("domain"))
+            or country_from_domain(email.rsplit("@", 1)[-1] if "@" in email else None)
+            or country_from_phone(row.get("phone"))
+            or (searched or None))
+
+
 def refine_companies(companies: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Re-apply the current filters and name cleanup to company-search rows.
 
@@ -1050,6 +1117,14 @@ def refine_companies(companies: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not isinstance(c, dict) or _not_a_company(c):
             continue
         row = dict(c)
+        had_contact = bool(row.get("email") or row.get("emails") or row.get("phone"))
+        emails = [m for m in (clean_email(x) for x in (row.get("emails") or [])) if m]
+        row["email"] = clean_email(row.get("email")) or (emails[0] if emails else None)
+        row["emails"] = list(dict.fromkeys(([row["email"]] if row["email"] else []) + emails))
+        if had_contact and not (row["email"] or row.get("phone")):
+            continue  # every address it had was unusable — nothing left to reach them by
+        row.setdefault("searched_country", row.get("country"))
+        row["country"] = company_country(row, row.get("searched_country"))
         if "page_title" in row:  # quote() kept the page title in page_title; name is ours
             row["company_name"] = _company_name({**row, "name": row.get("page_title")})
         else:
