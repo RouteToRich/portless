@@ -1,0 +1,553 @@
+# PortLess — production readiness to-do
+
+Everything that has to be true before PortLess moves real buyer and supplier money, plus the
+features that would raise profit per deal. Written 2026-11-13 from the code on `main`
+(backend `df50ecc`, UI `f229046`), the production readiness gate, the test catalogue and the
+end-to-end automation runs.
+
+**Priority** — **P0**: blocks the first real trade (money, law or data can be lost or wrong).
+**P1**: needed before running more than a handful of deals a month. **P2**: improvement.
+**Owner** — (Eng) engineering · (Ops) operations / trade desk · (Legal) lawyer or chartered
+accountant · (Biz) founder / business · (QA) quality.
+
+---
+
+**Layout** — grouped by priority first (P0, then P1, then P2), then by area. Area numbers (1.1, 3.3, 5.5 …) are kept in every priority so a reference such as "see 3.3" points to the same area wherever its items sit. Background for an area is in the appendix at the end.
+
+---
+
+## Where things stand today
+
+- [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
+- Backend tests: 4574 passed, 1 skipped. Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure).
+- End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
+- Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
+- UI repo: type-check passes; **no tests of any kind, no CI**.
+- Neither repo has CI. Nothing runs the test suites automatically on a push to `main`.
+
+---
+
+## Go-live blockers — the short list
+
+Everything here is P0; the areas are named in brackets.
+
+- [ ] Real credentials for every provider in the money path, each verified against the provider's own sandbox first (section 1, section 2).
+- [ ] Legal set-up of the exporter, the escrow route and the supplier payment route signed off by a lawyer / CA (section 3).
+- [ ] Decide how Indian suppliers are paid (INR in India vs Payoneer USD) — today's design may not be legal for a domestic purchase (section 3.3).
+- [ ] Money writes made atomic and reconciled daily against the provider statements (section 4).
+- [ ] PI acceptance that names a different price must not pass as an acceptance (section 5.1).
+- [ ] Local suppliers can be added by hand and start the workflow (section 5.5).
+- [ ] Durable event bus, backups, monitoring, alerting and single-instance background watchers (section 7).
+- [ ] CI on both repos; the 24 P0 catalogue cases automated; UC-01 … UC-15 green on a nightly run (section 6).
+- [ ] One pilot trade with a small, real lot, a known buyer and a known supplier, before opening the funnel (section 6.7).
+- [ ] Test strategy in place: unit, integration, sanity / smoke and regression suites defined, in CI and green (6.9 – 6.13).
+
+---
+
+## P0 — must be done before the first real trade
+
+81 items.
+
+### 1.1 Money — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Biz/Eng)** `escrow_provider` FAIL — open Tazapay and Escrow.com business accounts; set `TAZAPAY_API_KEY` / `_API_SECRET` / `_WEBHOOK_SECRET` / `_ENV` and `ESCROW_COM_API_KEY` / `_EMAIL` / `_WEBHOOK_SECRET`. Drop a provider from `ESCROW_PROVIDERS_ENABLED` until its account is live.
+- [ ] **(Eng)** `money_webhook_secrets` FAIL — set every money webhook secret (`TAZAPAY_WEBHOOK_SECRET`, `ESCROW_COM_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`, `PAYONEER_WEBHOOK_SECRET`); today escrow-funded and payout webhooks are accepted unsigned.
+- [ ] **(Biz/Eng)** `payout_rail` FAIL — `PAYONEER_CLIENT_ID` / `_CLIENT_SECRET` unset, supplier payouts are stubs. Do not set this until section 3.3 is decided.
+- [ ] **(Biz)** Set `FOUR_EYES_THRESHOLD_USD` (`.env.example` suggests 25000). Unset means one person can release any amount.
+- [ ] **(Biz)** Keep `AUTONOMY_MONEY_CEILING=L1` (or L0) and no `AUTONOMY_MONEY_AUTO_APPROVE_BELOW_USD` for the first months (readiness shows both ok today — keep them that way).
+
+### 1.2 Inspection, freight, customs — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Biz/Eng)** `qc_provider` FAIL — QIMA account: `QIMA_API_ACCESS_TOKEN`, `QIMA_ACCOUNT`, `QIMA_PASSWORD`, plus `QIMA_PRODUCT_CATEGORY_ID` / `_FAMILY_ID` / `_TYPE_ID` from `GET /parameter/v2/product-tree` for each product line.
+- [ ] **(Biz)** `qc_peo_service_type` WARN — QIMA documents no booking id for the pre-customs inspection (PEO). Ask QIMA for the id on your account and set `QIMA_SERVICE_TYPE_PEO`, or a buyer's PEO request is refused at booking.
+- [ ] **(Biz/Eng)** `freight_provider` FAIL — Maersk account: `MAERSK_CONSUMER_KEY`, `MAERSK_CLIENT_SECRET`, `MAERSK_CUSTOMER_CODE`, `MAERSK_SERVICE_CONTRACT`, `MAERSK_WEBHOOK_SECRET`, and **`MAERSK_CARRIER_SERVICE_CODE` (the Maersk service on your lane — booking fails without it)**.
+- [ ] **(Biz/Eng)** `customs` FAIL — `ICEGATE_API_KEY` unset, the Shipping Bill / LEO filing is a stub. Either get ICEGATE access or decide that the customs broker (CHA) files manually and record that in the flow.
+
+### 1.3 E-mail — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Eng/Ops)** `smtp` FAIL — outbound mailbox (`GMAIL_SENDER_ADDRESS` / `GMAIL_APP_PASSWORD` or a transactional provider). Today every PI, PO and negotiation e-mail is log-only.
+- [ ] **(Eng/Ops)** `imap` FAIL — inbound polling (`IMAP_USER` / `IMAP_PASSWORD`), or SendGrid / Mailgun inbound with `SENDGRID_WEBHOOK_PUBLIC_KEY` / `MAILGUN_SIGNING_KEY`. Without it every reply is pasted in by hand.
+
+### 1.4 Documents and identity — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Eng)** `document_store` FAIL — Google Drive (`GOOGLE_DRIVE_CLIENT_ID` / `_CLIENT_SECRET` / `_REFRESH_TOKEN` via `scripts/google_drive_authorize.py`). Today documents land on local disk and are lost with the container.
+- [ ] **(Legal/Ops)** `exporter_identity` FAIL — `DEALMAKER_PORTLESS_ENTITY_IEC` / `_GSTIN`; the PI and PO carry a placeholder exporter.
+- [ ] **(Legal/Ops)** `documents_exporter` FAIL — `PORTLESS_ADDRESS`, `PORTLESS_IEC`, `PORTLESS_GSTIN`, `PORTLESS_LUT_ARN`, `PORTLESS_AD_CODE`; without them the CI / PL / SDF / Shipping Bill checklist are issued as DRAFT.
+- [ ] **(Legal)** `documents_contract_law` WARN — `PORTLESS_CONTRACT_LAW` (governing law + arbitration seat); the sales contract is DRAFT without it.
+
+### 1.5 Platform — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Eng)** `event_bus` FAIL — NATS JetStream (Synadia `.creds` file or `NATS_CREDS_FILE`). With the in-process bus an event published during a crash is lost.
+- [ ] **(Eng)** Sign-in: `PORTLESS_ACCOUNT_ID` from auth-service (still awaited), `AUTH_GATEWAY_URL`, `AUTH_PORTLESS_EMAILS` (staff allowlist), `FRONTEND_URL`. Keep `AUTH_TRUST_GATEWAY_HEADERS=false` unless only the gateway can reach the backend.
+
+### 2.1 Tazapay (escrow) — Provider contracts not yet confirmed
+- [ ] **(Biz/Eng)** Tazapay v3 documents no release endpoint and no escrow webhook event names. PortLess books a stage as released when an uploaded document shows `verified` or a webhook type in `TAZAPAY_RELEASE_EVENTS` arrives. Confirm with Tazapay: the event names, whether one escrow can pay out in four stages (30/40/20/10), and who triggers each payout.
+- [ ] **(Eng/QA)** Run the full escrow life cycle on Tazapay's **own sandbox** (`TAZAPAY_ENV=sandbox`): create, buyer pays, partial pay, document per stage, payout, refund, expire, webhook signature.
+
+### 2.3 Maersk (carrier) — Provider contracts not yet confirmed
+- [ ] **(Biz/Eng)** The Maersk contract was built from mirrored OpenAPI files (DCSA-aligned), not from Maersk's portal. Check on your Maersk account: **(1) the token request fields, (2) the webhook payload and signature, (3) shipping instructions** — these are not in the mirrored APIs, so they are submitted on the Maersk portal for now and PortLess picks up the draft B/L.
+
+### 2.4 QIMA (inspection) — Provider contracts not yet confirmed
+- [ ] **(Biz)** PEO service type id (see 1.2).
+- [ ] **(Eng/QA)** Run book → validate → inspect → report → PDF → cancel on QIMA's real pre-production API (`ppapi.qima.com`) with your account; the simulator is built from the public docs.
+
+### 2.5 Payoneer, ICEGATE, Stripe — Provider contracts not yet confirmed
+- [ ] **(Legal/Biz)** Payoneer — see 3.3 before integrating.
+
+### 2.6 Data providers — Provider contracts not yet confirmed
+- [ ] **(Legal/Eng)** **DGFT denied-entity check is a stub** (`DgftConnector.book` always answers "not denied"). Load a real copy of the DGFT denied list (it is published as a document, not an API) and refresh it on a schedule.
+
+### 3.1 Exporter registration — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal)** IEC, GSTIN, GST LUT (letter of undertaking for zero-rated exports), AD bank code registered with customs, and the bank's EDPMS set-up.
+- [ ] **(Legal)** Export promotion registration for the commodities traded (e.g. APEDA RCMC for agricultural products). **Basmati rice (HS 10063020, the product used in testing) export contracts must be registered with APEDA before shipment — confirm and add the step to the flow.**
+- [ ] **(Legal/Ops)** Commodity-specific export policy changes often (bans, minimum export prices, duties). Confirm every HS code against current DGFT notifications and record it with `PUT /deals/compliance/hs-policy/{hs}`; set an owner to review DGFT notifications weekly.
+
+### 3.2 Money route and foreign exchange — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal)** Receiving export proceeds through Tazapay / Escrow.com: confirm the route complies with FEMA and RBI rules for cross-border payment aggregators, that proceeds reach PortLess's AD bank in time, and that an e-BRC / FIRC can be obtained for each shipment (needed for GST refunds and EDPMS closure).
+- [ ] **(Legal)** Export proceeds must be realised within the RBI time limit and reported against the Shipping Bill in EDPMS — add tracking of realisation per Shipping Bill.
+- [ ] **(Legal)** Purpose codes and buyer KYC as required by the AD bank.
+
+### 3.3 Paying Indian suppliers — decision needed — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal/Biz)** **Today supplier payouts go through Payoneer in USD.** A purchase from an Indian supplier by an Indian exporter is a domestic purchase, normally invoiced in INR with GST and paid from an Indian bank account. Decide the supplier payment route (INR bank transfer / payment gateway vs Payoneer) before setting Payoneer credentials.
+- [ ] **(Legal/Biz)** **PO currency**: the PO is in USD while the supplier's GST invoice is in INR. Decide INR POs for Indian suppliers (with the FX risk on PortLess) or USD POs with an agreed conversion rule. The e-mails already show INR first with the USD contract price and rate (shared/currency.py); the PO document is still USD only.
+
+### 3.4 Sanctions, KYC, AML — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal/Eng)** Counterparty screening uses the Apify `counterparty-check-ai` actor. Confirm it is an acceptable sanctions source for your bank and the escrow provider, or add a licensed screening provider; keep the evidence per deal.
+- [ ] **(Eng)** Replace the DGFT stub (2.6).
+
+### 3.5 Documents that do not exist yet — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal/Ops)** Phytosanitary certificate (plant quarantine) for grain and other agricultural exports — not generated or tracked today.
+- [ ] **(Legal/Ops)** Certificate of origin issued by the authorised body (the system issues an application, not the certificate) — track the issued certificate number.
+
+### 3.6 Contracts and terms — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal)** Standard buyer terms (sales contract template), supplier purchase terms, and escrow terms — reviewed by counsel; quality claim procedure, force majeure, demurrage responsibility, governing law and arbitration.
+- [ ] **(Legal)** Terms for the platform itself (privacy policy, terms of use) if buyers or suppliers sign in.
+
+### 4 Money safety and financial controls
+- [ ] **(Eng)** **No Mongo transactions anywhere.** A tranche release, a payout and the ledger / journal are written as separate documents. Wrap every money state change (escrow hold + tranche + ledger + deal status) in a transaction or an idempotent outbox, so a crash in the middle cannot leave money booked twice or not at all.
+- [ ] **(Eng)** Daily reconciliation job: PortLess escrow ledger vs Tazapay / Escrow.com statement, payouts vs payout provider statement, bank receipts vs e-BRC. Any difference → `deal.exception` and the digest.
+- [ ] **(Eng/QA)** Idempotency audit of every money endpoint and webhook (replay the same webhook 2×, 10× concurrently; release the same tranche from two operators at once). Catalogue case "staff and staff2 approve the gate at the same moment → exactly one call answers 200" is not automated yet.
+- [ ] **(Biz)** Exposure limits: maximum value per deal, per buyer, per supplier, per day, and total money in escrow; refuse or escalate above them.
+- [ ] **(Biz/Eng)** Roles: separate "can approve money" from "can operate deals"; today any allowlisted staff can approve any gate (four-eyes only above the threshold).
+
+### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
+- [ ] **(Eng)** **PI acceptance does not check the price.** In UC-15 the LLM-played buyer wrote "We accept the Proforma Invoice … at USD 1,180" for a PI at USD 1,225; it was read as a plain acceptance and opened `CONFIRM_PI_ACCEPTANCE` with no flag. Compare any price in the acceptance with the PI and force review (`pi_price_mismatch`).
+
+### 5.2 Steps that are still manual or stubbed — Workflow gaps found end to end
+- [ ] **(Ops)** Customs filing (ICEGATE stub) — define the manual CHA process and the evidence recorded until the API works.
+
+### 5.5 Add suppliers manually (local suppliers) — Workflow gaps found end to end
+- [ ] **(Eng)** Supplier directory endpoints: `POST / PUT / DELETE /trade-min/suppliers` (staff). Fields: legal name, contact person, e-mail, phone / WhatsApp, full facility address with PIN code, GSTIN, IEC, Udyam, FSSAI / APEDA registration, products (HS codes, grades), capacity and MOQ in MT, usual price (INR or USD, FOB or ex-works), port of loading and distance to it, bank details for payment. Stored with `source="manual"`; a later scan never overwrites it; duplicates found by GSTIN, domain or phone.
+- [ ] **(Eng)** On add or edit, run the same checks as a scanned supplier: GSTN / DGFT IEC / MCA / Udyam verification, sanctions screening and e-mail check; show the result on the record; a failed check flags the supplier and forces every gate that uses it to L0.
+- [ ] **(Eng)** **Start the workflow from a manual supplier**, three ways:
+  - *Add to an existing prospect or deal*: the supplier joins the RFQ shortlist (RFQ e-mail with the `[RFQ:]` token through the `DISPATCH_RFQ` gate), or staff record the price heard by phone as its quote (`POST /sourcing/quotes`) — verification, match board and `CONFIRM_MATCH` follow as for any quote.
+  - *Supply-first deal*: staff start a deal from a manual supplier and a product; PortLess runs the buyer search for the product's markets, the buyer outreach funnel, the match board and the negotiation as usual.
+  - *Pre-arranged trade*: buyer and supplier both known and entered by staff — skip outreach and matching and open the negotiation (or record the agreed prices and go to the supplier's firm order request → PI).
+- [ ] **(Eng)** RFQ leg: include the deal's supplier party, its supplier offers and directory suppliers linked to the deal in `_rfq_candidates`, so a hand-made deal never parks without an RFQ.
+- [ ] **(Eng)** Suppliers page: "Add supplier" form, edit, verification badges, import CSV.
+- [ ] **(Eng)** On a prospect / deal: "Add supplier to this deal" (pick from the directory or add new), "Record phone quote", and "Start a deal from this supplier".
+
+### 6.1 Automation coverage — Quality assurance gaps
+- [ ] **(QA/Eng)** Automate the 24 P0 catalogue cases that still have unautomated steps: TC-E2E-001 … TC-E2E-009 (written for the console), TC-EXC-005, TC-EXC-006, TC-FRT-017, TC-HIT-008, TC-HIT-017, TC-INT-012, TC-LED-006, TC-LED-008, TC-MAT-002, TC-MAT-014, TC-NEG-014, TC-NEG-017, TC-PAY-001, TC-PI-018, TC-REL-008.
+- [ ] **(QA/Eng)** Automate the production-risk scenarios (`TEST_CASES.md` section 9, TC-RSK-001 … TC-RSK-095; 52 P0): money crashes and concurrency, escrow provider surprises, gates under pressure, ambiguous / foreign / automatic / hostile e-mails, supplier quotes in other units, compliance holds, inspection and carrier reality, restarts and outages, security, document consistency, currency and facility address, manual suppliers. Untagged cases must be confirmed on their first run; tag any that fail `@known-defect`.
+- [ ] **(Eng)** Fix the defects the production-risk cases record (`TEST_CASES.md` section 10, DEF-12 … DEF-21) and decide DEC-08 … DEC-10 (overpayment, failed DUPRO, partial quality claims).
+
+### 6.2 Browser (console) tests — Quality assurance gaps
+- [ ] **(QA/Eng)** Browser automation as its own task in a **separate repository `portless-e2e` with Playwright** (chosen over Cypress: two operators in one test for four-eyes, several tabs for live updates and the Kill Switch, downloads, several origins, WebKit, free parallel runs). Plan, repository layout, sign-in stub and order of work: `docs/testing/BROWSER_SCENARIOS.md`.
+- [ ] **(Eng)** Prerequisite for it: `data-testid` attributes on every console button and money figure (DEF-05).
+- [ ] **(QA)** Automate the 17 P0 `@ui` cases and the money / security browser cases first (TC-WEB-001 … TC-WEB-008, TC-WEB-017, TC-WEB-019, TC-WEB-023, TC-WEB-025).
+
+### 6.3 Real provider sandboxes — Quality assurance gaps
+- [ ] **(QA)** Contract tests against each provider's own sandbox (Tazapay, QIMA ppapi, Maersk test environment, Escrow.com sandbox) — the in-house simulators follow public docs, which is exactly what is unconfirmed (section 2).
+
+### 6.5 Security testing — Quality assurance gaps
+- [ ] **(QA/Eng)** Penetration test before go-live: auth bypass, organisation isolation (one org reading another's deal), webhook forgery and replay, SSE token in query string, injection through e-mail bodies into LLM prompts.
+
+### 6.7 Pilot — Quality assurance gaps
+- [ ] **(Biz/Ops/QA)** One pilot trade end to end with real money in a small lot, known counterparties, every gate L0, a person watching each step; write down every manual intervention and fix it before the next deal.
+
+### 6.8 Test infrastructure — Quality assurance gaps
+- [ ] **(Eng)** CI for the backend: `pytest -q` (≈10 min) on every push and pull request, block merges to `main` on failure; re-measure coverage.
+- [ ] **(Eng)** CI for the UI: `npm run lint` and `npm run build` on every push.
+
+### 6.9 Unit tests — Quality assurance gaps
+- [ ] **(Eng)** Keep the backend unit suite green on every change (4574 passed, 1 skipped on 2026-11-12) and re-measure coverage — 95.46 % line + branch was measured on 2026-11-09, before the latest features.
+- [ ] **(Eng)** Coverage gate in CI: fail the build below 95 % overall and below 100 % branch coverage for the money modules (`escrow_guard` service / ledger / journal, `trade_costs`, `pricing`, `shared/currency.py`, `supplier_commitment`, `compliance`).
+
+### 6.10 Integration tests — Quality assurance gaps
+- [ ] **(Eng)** Integration tests against a real MongoDB (disposable container or a test Atlas cluster), not `mongomock`: transactions once added (DEF-13), unique indexes, concurrent updates of the same deal / escrow, `set_fields` atomicity, large documents.
+- [ ] **(QA/Eng)** Provider contract tests against each provider's own sandbox (Tazapay, QIMA ppapi, Maersk test environment, Escrow.com sandbox) — see 6.3; run nightly and before every release.
+
+### 6.11 Sanity and smoke checks — Quality assurance gaps
+- [ ] **(Eng)** Post-deploy smoke test that blocks the rollout: `/health` of every service, `GET /health/readiness` all ok, database reachable, one read per service, SSE stream connects, an unsigned webhook is refused, the console loads and signs in.
+- [ ] **(Eng/Ops)** Daily production sanity check (synthetic, alerting on failure): readiness, background watchers alive (heartbeat per watcher), event-bus consumer lag, mailbox send + receive, provider credentials still valid (QIMA token, Maersk OAuth, Tazapay key, Payoneer), Drive writable, LLM gateway answers.
+- [ ] **(Eng)** Configuration sanity at boot: every required setting present, typed and not a `your_..._here` placeholder for the active profile (readiness covers most — add the missing ones, e.g. `FOUR_EYES_THRESHOLD_USD`, `PORTLESS_PUBLIC_BASE_URL`).
+
+### 6.12 Regression suite — Quality assurance gaps
+- [ ] **(QA/Eng)** Define the regression suite and when it runs — every pull request: backend unit + integration, UI lint + build + unit, catalogue `@P0 and not @known-defect`; every merge to `main`: + LLM journeys UC-01 and UC-15; nightly: whole catalogue, all 15 LLM journeys, browser `@ui`, provider sandboxes; before a release: everything plus the full browser matrix and a load run.
+- [ ] **(QA)** Rule: every production incident and every bug fixed gets a regression test (unit or catalogue case) in the same change as the fix.
+
+### 6.13 Static checks and test hygiene — Quality assurance gaps
+- [ ] **(Eng)** Lint and type checks in CI: `ruff` (configured in pyproject, not enforced), `mypy` on `shared/` and the money services, `tsc --noEmit` for the UI.
+
+### 7 Platform, infrastructure and operations
+- [ ] **(Eng)** Durable event bus (NATS) — 1.5.
+- [ ] **(Eng)** **Background watchers have no lock.** The deal watcher, escrow watcher, HITL timeout watcher, QC / freight / escrow pollers and the digest run in every process. Two backend replicas would send every reminder twice and sweep twice. Add a leader lock (Mongo lease) or run them in one worker.
+- [ ] **(Eng)** Backups: Mongo Atlas continuous backup with point-in-time restore; a restore drill; Google Drive document folder backed up.
+- [ ] **(Eng)** Monitoring and alerting: error rate, webhook failures, stuck deals, open exceptions, money gate age, provider error rates, LLM failure rate; alerts to Telegram / e-mail; on-call owner.
+- [ ] **(Eng)** Deployment: decide the monolith (`app.py`) vs per-service containers for production, health checks, rolling deploy, zero-downtime migrations.
+
+### 8 Security and access
+- [ ] **(Eng)** `PORTLESS_ACCOUNT_ID` set so other RouteToRich apps' tokens are refused.
+- [ ] **(Biz/Eng)** Roles inside staff: trade desk, money approver, compliance officer, admin — today it is staff vs organisation user only.
+- [ ] **(Eng)** Audit log that cannot be edited (approvals, kill switch, hold clearances, PI extensions, staff relays) — stored separately or hash-chained.
+
+### 9 Operator console (portless-ui)
+- [ ] **(Eng)** CI and tests (6.2, 6.8).
+
+---
+
+## P1 — needed before running more than a handful of deals a month
+
+139 items.
+
+### 1.1 Money — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Eng)** `escrow_proof_links` WARN — set `PORTLESS_PUBLIC_BASE_URL` (public HTTPS address of the backend) and `ESCROW_PROOF_LINK_SECRET` so every stage release uploads a signed proof sheet to Tazapay.
+
+### 1.2 Inspection, freight, customs — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Biz)** If SGS / Bureau Veritas will be offered: real booking-desk addresses in `SGS_BOOKING_EMAIL` / `BUREAU_VERITAS_BOOKING_EMAIL`, their webhook secrets, and `QC_PROVIDERS_ENABLED` updated (only QIMA is enabled today).
+- [ ] **(Biz)** Freight forwarder for quotes and non-Maersk lanes: `COGOPORT_API_KEY` or `FREIGHTOS_API_KEY` (+ webhook secrets).
+
+### 1.3 E-mail — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Ops)** `email_domain` WARN — send from your own domain (`PORTLESS_EMAIL_DOMAIN`) with SPF, DKIM and DMARC; a personal Gmail hurts deliverability and trust with buyers.
+- [ ] **(Ops)** Separate mailboxes or aliases per role (trade desk, accounts, inspections) so replies route cleanly.
+
+### 1.4 Documents and identity — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Ops)** `PORTLESS_MARINE_POLICY` (open marine policy number) for the insurance declaration on CIF deals.
+- [ ] **(Ops)** Company profile for every e-mail: `PORTLESS_LEGAL_NAME`, `PORTLESS_SENDER_NAME` / `_TITLE`, `PORTLESS_WEBSITE`, `PORTLESS_PHONE`, `PORTLESS_CONTACT_EMAIL`.
+
+### 1.5 Platform — Accounts, credentials and configuration (readiness gate)
+- [ ] **(Ops)** `catalogue` WARN — load the real product lines and corridors (`PUT /trade-min/catalogue`); empty means the scanner runs built-in sample HS codes.
+- [ ] **(Biz)** Telegram alerts: `HITL_TELEGRAM_BOT_TOKEN` / `HITL_TELEGRAM_CHAT_ID`, `DIGEST_EMAIL_TO`.
+- [ ] **(Eng)** Make sure production never sets `INTEGRATION_MODE=sandbox`, `QC_SANDBOX_PROVIDERS`, `ESCROW_SANDBOX_PROVIDERS`, `CARRIER_SANDBOX_PROVIDERS` or `AUTO_FLOW_ENABLED` (readiness checks them; keep them in the deploy review).
+
+### 2.1 Tazapay (escrow) — Provider contracts not yet confirmed
+- [ ] **(Biz)** Confirm Tazapay's fee per transaction and per payout, settlement currency and timing, and the documents it accepts for each stage (proof sheet link vs files).
+
+### 2.2 Escrow.com — Provider contracts not yet confirmed
+- [ ] **(Eng)** Escrow.com signs no webhook — PortLess uses a URL token and re-reads the transaction. Confirm the milestone (one item per tranche) flow, buyer acceptance per milestone and the inspection period on a sandbox account.
+
+### 2.3 Maersk (carrier) — Provider contracts not yet confirmed
+- [ ] **(Eng)** Booking 2.0 fields beyond the minimum (`shipmentLocations`, `references`, `equipmentReferences`, `remarks`) and Track & Trace event-code field names follow DCSA — confirm Maersk accepts and returns them. Every endpoint path can be overridden in env.
+- [ ] **(Ops/Eng)** Order of steps: in real shipping the carrier booking comes before container stuffing. Today freight is booked after QC and supervised loading (the compliance check needs the sealed container) and the stuffed container numbers are passed into the booking. Decide the real order with the trade desk: book space earlier (after PSI is scheduled), then attach containers and seals; if numbers differ from what Maersk holds, the VGM gate flags it.
+- [ ] **(Eng)** Submit shipping instructions by API once Maersk confirms the endpoint, so the draft B/L does not need the portal.
+
+### 2.4 QIMA (inspection) — Provider contracts not yet confirmed
+- [ ] **(Eng)** QIMA has no webhook — results arrive by polling (`QC_POLL_MINUTES`). Confirm acceptable delay; consider a shorter poll on inspection day.
+- [ ] **(Biz)** Confirm the product tree ids per HS code and the AQL / sample level for each commodity (QIMA defaults are for consumer goods, not grain).
+
+### 2.5 Payoneer, ICEGATE, Stripe — Provider contracts not yet confirmed
+- [ ] **(Eng)** ICEGATE — confirm the API access model (direct, via an aggregator, or via the CHA) and the Shipping Bill / LEO response format.
+
+### 2.6 Data providers — Provider contracts not yet confirmed
+- [ ] **(Biz)** Apify plan (`rich_minds`) cannot run third-party Store actors: the buyer finders and `multi-carrier-tracking-ai` return 0 rows (`source_refused`). Upgrade the plan or replace those sources. Maersk Track & Trace covers Maersk bookings only.
+- [ ] **(Biz)** Apify model access is refused on the plan (`APIFY_ENABLE_AI=false`) — decide whether the AI tier is needed.
+- [ ] **(Biz)** Trade data keys: `COMTRADE_SUBSCRIPTION_KEY`, `API_SETU_KEY` (GSTN / MCA / Udyam), `VOLZA_API_KEY`, `INDIAMART_API_KEY`, `MACMAP_API_KEY` — readiness reports live demand data only when set.
+- [ ] **(Biz)** `TAVILY_API_KEY` for the market check and live USD/INR rate (Google News RSS and the static fallback rate are used without it).
+
+### 2.7 LLM gateway — Provider contracts not yet confirmed
+- [ ] **(Eng)** The gateway returned blank replies for long prompts in the automation runs (the LLM-played buyer facing the PI e-mail). Check the same for PortLess's own drafting calls with long threads; add a budget / timeout alarm per caller.
+- [ ] **(Biz)** Monthly LLM cost budget and alert (calls are tracked in `llm_requests`).
+
+### 3.2 Money route and foreign exchange — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal)** Refunds to buyers (escrow refunds, credit notes) — confirm the reporting needed when proceeds are returned.
+
+### 3.3 Paying Indian suppliers — decision needed — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal)** Merchant-exporter concessional GST on procurement (0.1 %) — confirm eligibility and conditions, and generate the documents the supplier needs.
+- [ ] **(Legal)** TDS / TCS obligations on payments to suppliers, if any.
+
+### 3.4 Sanctions, KYC, AML — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal)** Written KYC / AML policy: buyer identity and beneficial owners, source of funds, enhanced checks for review-country buyers, record retention.
+- [ ] **(Legal)** Review the embargo and review-country lists in `COMPLIANCE_BLOCKED_COUNTRIES` / `COMPLIANCE_REVIEW_COUNTRIES` with counsel.
+
+### 3.5 Documents that do not exist yet — Legal, regulatory and trade compliance (India export)
+- [ ] **(Ops)** Fumigation certificate when the buyer asks for fumigation (packing spec carries it; the certificate is not tracked).
+- [ ] **(Ops)** Insurance certificate from the insurer (only the declaration is generated).
+- [ ] **(Ops)** E-way bill for the inland truck from supplier to port (domestic movement of goods).
+- [ ] **(Ops)** Original / telex-release / eBL hand-over rules to the buyer tied to the escrow stage (who releases the B/L and when).
+- [ ] **(Legal)** Invoice numbering series and GST invoice format for export invoices.
+
+### 3.6 Contracts and terms — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal)** Inspection result as the quality reference: write into both contracts that the named inspector's PSI result is final for release of the stage payments.
+
+### 3.7 Data protection and records — Legal, regulatory and trade compliance (India export)
+- [ ] **(Legal/Eng)** India DPDP Act 2023: lawful basis and notice for counterparty personal data (names, e-mails, phones from scans), retention limits, deletion on request.
+- [ ] **(Legal/Eng)** Statutory record retention for GST, customs and FEMA records (several years) — backups and the evidence pack must outlive it.
+- [ ] **(Legal)** Cold outreach e-mails to buyers found by scans: anti-spam rules in each destination market (opt-out is already in the template; check consent rules for the EU and others).
+
+### 4 Money safety and financial controls
+- [ ] **(Eng)** Export the double-entry journal to the accounting system (Tally / Zoho Books / your CA's format) — CSV exists (`/escrow-guard/journals`); add account codes agreed with the CA.
+- [ ] **(Eng)** FX: record the rate at each receipt and payout and post FX gain / loss to the journal (today amounts are USD only).
+- [ ] **(Eng)** Fees: reconcile the escrow provider fee, payout fee and bank charges per deal against the fee % assumed in the cost sheet; alert when actual > assumed.
+- [ ] **(Biz)** Kill Switch drill: pause, confirm every money path refuses, resume — monthly.
+- [ ] **(Eng)** Alert when realised margin on a closed deal is below the margin floor (cost sheet estimate vs actual costs).
+- [ ] **(Eng)** Supplier retention (10 % held until buyer acceptance): confirm the supplier contract states it, and the payout e-mail explains it.
+
+### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
+- [ ] **(Eng)** Facility address: the watcher reminds the supplier about the goods-ready date, but there is no reminder for a missing facility address (`facility_address_request` is sent once). Add a reminder and a stall exception.
+- [ ] **(Eng/QA)** Standby supplier switch (UC-13 / UC-14): a standby supplier from a scan has only a town, so its inspection now waits for an address — re-run both journeys and confirm the request goes to the new supplier.
+- [ ] **(Eng)** Cross-prospect offers: the match board pairs a buyer with supplier offers from other deals of the same HS code, including old ones. Confirm `MATCH_OFFER_VALIDITY_DAYS` expiry is enough, and never propose an offer from a CANCELLED / failed deal without a fresh price.
+- [ ] **(Eng)** Negotiation drafts still sometimes say things like "As soon as we have the inspector selected, we will send the proforma invoice" — review a sample of real drafts each week (stage wording, missing-information order).
+
+### 5.2 Steps that are still manual or stubbed — Workflow gaps found end to end
+- [ ] **(Ops)** Shipping instructions on the Maersk portal (2.3).
+- [ ] **(Ops)** Carrier tracking for non-Maersk bookings depends on the refused Apify actor; the operator milestone endpoint (`POST /shield-link/freight/{ref}/milestone`) is the fallback — write it into the runbook.
+- [ ] **(Ops)** SGS / BV results arrive by staff relay or signed webhook — runbook for the relay.
+- [ ] **(Eng)** e-BRC / realisation tracking per Shipping Bill (3.2) — not in the system.
+- [ ] **(Eng)** Basmati contract registration step (3.1) — not in the system.
+
+### 5.3 Process design to confirm with the trade desk — Workflow gaps found end to end
+- [ ] **(Ops)** Who approves which gate, response-time targets per gate, and the backup approver when the first is away (L1 timeouts default: negotiation e-mails 4 h → approve, money 24 h → reject).
+- [ ] **(Ops)** What happens on a QC FAIL at the second attempt (playbook cancels / refunds — confirm the business rule and supplier penalty).
+- [ ] **(Ops)** Demurrage / detention: who pays when the buyer clears late; nothing tracks it today.
+- [ ] **(Ops)** Quality claims after delivery beyond the acceptance window (warranty period, evidence, partial refund) — only full dispute / refund exists.
+
+### 5.4 Currency — Workflow gaps found end to end
+- [ ] **(Eng)** Only INR has a local rate; every other country is written to in USD (shared/currency.py). Add a rate source before adding a country (AED, EUR …) for buyers.
+- [ ] **(Eng)** The live USD/INR rate needs `TAVILY_API_KEY` and `NEGOTIATION_MARKET_SEARCH_ENABLED`; otherwise the static `NEGOTIATION_FALLBACK_USD_INR_RATE` is used. Use an official rate source (RBI reference rate or the bank's card rate) and update the fallback automatically.
+- [ ] **(Eng)** The PI / PO documents show USD only — follow the decision in 3.3.
+
+### 5.5 Add suppliers manually (local suppliers) — Workflow gaps found end to end
+- [ ] **(Eng)** `POST /deals/{id}/supplier-offers` triggers verification and `matchmaking.evaluate` automatically.
+- [ ] **(Eng)** Manual suppliers can be standby suppliers in the supplier commitment step (today the standby list comes from Match Engine results and received quotes only).
+- [ ] **(Eng)** Bulk import of local suppliers from CSV / Excel with a dry-run report (rows accepted, duplicates, failed checks).
+- [ ] **(Eng/Ops)** Local suppliers often answer by phone or WhatsApp, not e-mail. Make sure every supplier-side step has a staff relay with evidence (call note, photo of the signed PO): quote, order confirmation, PO acknowledgement, goods-ready date, facility address, bank details. Relays exist today for order confirmation, PO acknowledgement and goods-ready date; add quote, address and bank details.
+- [ ] **(Ops/Eng)** Supplier onboarding documents stored with the record (GST certificate, cancelled cheque / bank letter, FSSAI, APEDA): bank account verified before the first payout.
+- [ ] **(QA)** Gherkin cases and automation: manual supplier added → verified → added to a prospect → RFQ / phone quote → match → negotiation → PAID; failed GST check → L0 gates; scan does not overwrite a manual supplier; duplicate GSTIN refused.
+- [ ] **(QA)** An LLM journey (UC-16) like UC-15 but starting from a manually added local supplier, and one for a pre-arranged trade.
+
+### 6.1 Automation coverage — Quality assurance gaps
+- [ ] **(QA/Eng)** The remaining 10 backend cases with unautomated steps (34 in total). Most common missing steps: "an opportunity with a scored supplier and buyer candidates", "the deal is driven to settlement", "the payout gate amounts in order are …", concurrent approval, ledger-breach fixtures, SSE stream connection.
+- [ ] **(QA/Eng)** Link TC-E2E-002 … TC-E2E-010 to LLM journeys with `@journey:` (as TC-E2E-000 is) or rewrite them for the backend runner.
+- [ ] **(QA)** Re-run all 15 LLM journeys (UC-01 … UC-15) after every change to the negotiation, commitment or money code; today only UC-01 and UC-15 ran after the latest changes.
+- [ ] **(QA)** Run the whole catalogue once and record the baseline (no full catalogue run is stored in the automation database).
+
+### 6.2 Browser (console) tests — Quality assurance gaps
+- [ ] **(QA)** Rewrite TC-E2E-001 … TC-E2E-010 as browser journeys (console for every decision, providers on the simulators).
+- [ ] **(QA)** The remaining 64 `@ui` cases and TC-WEB-009 … TC-WEB-032 (the `@known-defect` ones as each feature lands).
+- [ ] **(Eng)** Browser results written to the same `qa_*` collections so the Automation dashboard shows browser and backend results together; `@P0 and @ui` on every pull request to either repo, all `@ui` nightly, full browser matrix before a release.
+- [ ] **(Eng)** The UI repo has **no unit or component tests**. Add tests for money displays (amount, currency, tranche order), gate actions and status chips.
+
+### 6.3 Real provider sandboxes — Quality assurance gaps
+- [ ] **(QA)** A staging environment wired to provider sandboxes, separate database, separate mailbox, running nightly.
+
+### 6.4 Failure and load — Quality assurance gaps
+- [ ] **(QA)** Chaos runs: NATS down, Mongo failover, LLM gateway down / blank replies, provider 5xx and timeouts, webhook arriving before the API response, webhook never arriving (poll path).
+- [ ] **(QA)** Concurrency: two operators on the same gate, two deals with the same supplier, two webhooks for one escrow, many deals at once (e-mail routing tests exist; money concurrency does not).
+- [ ] **(QA)** Load: 50 / 200 concurrent deals, SSE with many open consoles, IMAP poll with a large inbox.
+
+### 6.5 Security testing — Quality assurance gaps
+- [ ] **(Eng)** Dependency and secret scanning in CI for both repos.
+
+### 6.6 Content quality — Quality assurance gaps
+- [ ] **(QA)** Golden-file tests for every trade document (PI, PO, the 13 DocuGen documents) reviewed once by the trade desk and a CA; any change shows a diff.
+- [ ] **(QA)** E-mail rendering in Gmail / Outlook / mobile; plain-text fallback.
+- [ ] **(QA)** Weekly human review of a sample of LLM drafts (price stated = price decided, no leak of the other side, correct stage, correct currency).
+
+### 6.8 Test infrastructure — Quality assurance gaps
+- [ ] **(Eng)** Nightly: catalogue run + LLM journeys on the automation database, results posted to Telegram.
+- [ ] **(Eng)** The LLM-played counterparties are not deterministic: keep the retry, and record transcripts so a failing journey can be replayed.
+
+### 6.9 Unit tests — Quality assurance gaps
+- [ ] **(Eng)** Property-based tests (Hypothesis) for the money arithmetic: tranche split, fees, rounding to cents, payout cap and retention, ledger reconciliation, journal trial balance — for any amount, quantity and fee, the invariants hold.
+- [ ] **(Eng)** Property-based tests for the text readers that decide money: price extraction from e-mails (units, currencies, separators), goods-ready date parsing, facility address parsing, acceptance detection.
+- [ ] **(Eng)** UI unit and component tests (Vitest + React Testing Library) in portless-ui: money formatting, INR / USD display, status chips, gate approve / reject buttons, four-eyes state, error states. Today the UI has none.
+- [ ] **(Eng)** pytest markers so suites can be run on their own: `unit`, `integration`, `smoke`, `regression`, `slow`, `money` (no markers exist today; every test runs as one suite).
+
+### 6.10 Integration tests — Quality assurance gaps
+- [ ] **(Eng)** Real NATS JetStream in CI: durable consumers survive a restart, redelivery with backoff after a handler failure, dead-letter `deal.exception` after `NATS_MAX_DELIVER`, poison messages terminated.
+- [ ] **(Eng)** E-mail integration against a local test mail server (e.g. GreenMail / MailHog): SMTP send, IMAP poll, threading by In-Reply-To / References, `[NEG:]` / `[RFQ:]` / `[BUY:]` tokens, attachments, non-ASCII bodies, HTML-only mails.
+- [ ] **(Eng)** LLM gateway contract test: sign-in with the service account, token refresh on 401, timeout, blank and malformed replies, and the template fallback when it is down.
+- [ ] **(Eng)** Google Drive integration on a test folder: upload, overwrite, folder per deal, and the local-disk fallback when Drive refuses.
+- [ ] **(Eng)** auth-service integration on staging: real `GET /auth/me`, revoked token, another application's token refused, cache expiry.
+- [ ] **(Eng)** Microservice mode: run the services standalone and drive one deal through their HTTP clients (`client.py`) — the monolith calls `service.py` in process, so the HTTP path is barely exercised.
+- [ ] **(Eng)** UI ↔ backend API contract: generate the console's API types from the backend's OpenAPI schema (or test them against it) so a renamed field fails the build instead of a page.
+
+### 6.11 Sanity and smoke checks — Quality assurance gaps
+- [ ] **(Ops)** Pre-trade sanity checklist the trade desk runs on each deal before approving the PO: parties screened, HS policy confirmed, facility address complete, inspection plan agreed, escrow funded by the buyer, cost sheet margin above the floor.
+- [ ] **(Eng)** Smoke suite in the catalogue: tag the fastest P0 cases `@smoke` (auth, deal create, gate approve, webhook signature, ledger read) to run in under 2 minutes after every deploy.
+
+### 6.12 Regression suite — Quality assurance gaps
+- [ ] **(QA)** Track the regression baseline per run (pass / fail / not automated counts, duration) and a flaky-test list with a quarantine policy (a flaky test is fixed or removed within a week, never ignored).
+- [ ] **(QA)** Regression for documents and e-mails through golden files (see 6.6): any change to a PI, PO, CI, PL or notice shows a reviewed diff.
+- [ ] **(QA/Eng)** Performance regression: response-time budgets for the key endpoints (deal list, approvals, ledger, webhook handlers) checked in the nightly run.
+- [ ] **(Eng)** Data migration regression: every schema change is run against an anonymised copy of production data before it ships.
+- [ ] **(QA)** Release test report: what ran, what failed, what was skipped and why — signed off before each release.
+
+### 6.13 Static checks and test hygiene — Quality assurance gaps
+- [ ] **(Eng)** Security scans in CI: `bandit` for Python, `pip-audit` and `npm audit` for dependencies, secret scanning on every push.
+- [ ] **(Eng)** Pre-commit hooks (ruff, formatting, secret scan) so problems are caught before a push.
+- [ ] **(QA)** Test data management: an anonymised, production-like data set for staging; `tests/factories.py` extended for every new record type; no test may depend on the order of others.
+- [ ] **(QA/Ops)** User acceptance testing with the trade desk before go-live and before each release that changes a gate, an e-mail or a document; exploratory test session on each new feature.
+
+### 7 Platform, infrastructure and operations
+- [ ] **(Eng)** Secrets in a secrets manager, not a `.env` file; rotation plan for every provider key.
+- [ ] **(Eng)** Rate limiting on public endpoints (none today) and a WAF in front of the backend.
+- [ ] **(Eng)** Structured logs with PII redaction (e-mail bodies, phone numbers) and retention.
+- [ ] **(Eng)** Runbooks: provider outage, stuck escrow, webhook never arrived, wrong payout, kill switch, mailbox blocked, LLM gateway down.
+- [ ] **(Eng)** Disaster recovery: region outage plan, RPO / RTO targets.
+- [ ] **(Eng)** Cost dashboards: LLM, Apify (daily run budget exists), Tavily, Atlas, hosting.
+- [ ] **(Eng)** The standalone API gateway (`services/api_gateway`) still has TODOs for signature verification, idempotency keys and request enrichment — finish them or do not deploy it.
+
+### 8 Security and access
+- [ ] **(Eng)** Token revocation delay is the introspection cache (60 s, `AUTH_INTROSPECTION_CACHE_SECONDS`) — confirm acceptable, shorten for money approvers.
+- [ ] **(Eng)** Encrypt sensitive fields at rest (bank details, KYC documents, phone numbers).
+- [ ] **(Eng)** Prompt-injection defence for inbound e-mails: the drafting agents already treat counterparty text as data — add tests with hostile e-mails.
+
+### 9 Operator console (portless-ui)
+- [ ] **(Eng)** Show the supplier's facility address and whether the inspection waits for it on the deal page, with an edit field (backend `PATCH /deals/{id}/parties/supplier` books the waiting inspection).
+- [ ] **(Eng)** Show superseded match gates as "closed — another pair was confirmed", not as rejected.
+- [ ] **(Eng)** Show prices to the operator in USD with the supplier's INR figure beside it where relevant.
+- [ ] **(Eng)** Readiness page: show `GET /health/readiness` so operators see what is stubbed.
+- [ ] **(Eng)** Money screens: clear four-eyes state (who signed, who is still needed), tranche order, payout cap and retention.
+- [ ] **(Eng)** Error and empty states for every page; SSE reconnect banner.
+
+### 10 Data quality
+- [ ] **(Ops)** Real product catalogue and corridors (1.5).
+- [ ] **(Ops)** Directory hygiene: duplicate companies, wrong countries, bounced e-mails (`email-list-qualifier-ai` result per address).
+- [ ] **(Ops)** Price book cold start: seed observed prices per HS code and market so the match board's estimates are not empty for the first deals.
+- [ ] **(Ops)** Product tree ids, packing standards, AQL and quality specs per product line (QIMA booking needs them).
+
+### 11.1 Capture money already owed to the exporter — New features to raise profit per deal (product)
+- [ ] **(Biz/Eng)** **Export incentives as income**: RoDTEP credits and duty drawback where the product qualifies — put them on the cost sheet as income per deal, track the claim and the credit received. Confirm eligibility for a merchant exporter per HS code with the CA.
+- [ ] **(Biz/Eng)** **GST working capital**: export under LUT (no IGST outflow) and procure at the merchant-exporter concessional rate where eligible (3.3) — less cash locked per deal.
+- [ ] **(Biz/Eng)** **FX margin**: buy in INR, sell in USD; time the conversion, compare the AD bank rate with the escrow provider's rate, and add a small FX buffer to supplier offers. Optional forward cover for large deals.
+
+### 11.2 Cut costs on every shipment — New features to raise profit per deal (product)
+- [ ] **(Eng)** **Freight quotes from more than one source** (Maersk + forwarders) and book the cheapest that meets the date; today Maersk is booked by default.
+- [ ] **(Eng)** **Container fill**: maximise MT per container (20 ft vs 40 ft, bag weight) in the cost sheet and the offer quantity.
+- [ ] **(Eng)** **Inspection cost**: compare inspector quotes per booking; offer the buyer a cheaper inspection plan when it is enough.
+- [ ] **(Eng)** **Escrow provider by cost**: pick the cheaper provider per deal size when the buyer has no preference; pass the escrow fee to the buyer as a line item where allowed.
+
+### 11.3 Price better — New features to raise profit per deal (product)
+- [ ] **(Eng)** **Margin by corridor and buyer**: learn from accepted / countered indicative offers (outcomes already recorded) to set the target margin per HS code × market × buyer tier instead of one floor.
+- [ ] **(Eng)** **Value-added services priced explicitly**: private label packing, fumigation, palletising, extra inspections — a markup per service, shown in the offer.
+
+### 11.4 Win more and repeat — New features to raise profit per deal (product)
+- [ ] **(Biz/Eng)** **Repeat orders and annual contracts**: a "reorder" button, reminders before the buyer's next usual order date, framework contracts with monthly lifts.
+- [ ] **(Eng)** **Buyer scoring for outreach**: focus the funnel on buyers most likely to close (reply rate, import history, fit score) — less outreach cost per deal.
+- [ ] **(Eng)** Funnel analytics: scans → prospects → interested → matched → PI → paid, with time and cost per step.
+
+---
+
+## P2 — improvements
+
+21 items.
+
+### 2.5 Payoneer, ICEGATE, Stripe — Provider contracts not yet confirmed
+- [ ] **(Eng)** Stripe Treasury hold is legacy — remove it or confirm it is never offered.
+
+### 4 Money safety and financial controls
+- [ ] **(Eng)** Interest / float on funds in escrow — record if the provider pays any.
+
+### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
+- [ ] **(Eng)** The supplier's address read from an e-mail replaces an earlier one read from an e-mail (only an operator-entered one is protected). Keep a history of addresses and show the operator when it changed.
+
+### 5.3 Process design to confirm with the trade desk — Workflow gaps found end to end
+- [ ] **(Ops)** Partial shipments and multiple containers with different seals per deal — supported in data, not tested end to end.
+
+### 5.5 Add suppliers manually (local suppliers) — Workflow gaps found end to end
+- [ ] **(Eng)** Supplier track record per supplier (deals, on-time ready dates, QC pass rate, price vs market) to rank manual and scanned suppliers together.
+
+### 6.4 Failure and load — Quality assurance gaps
+- [ ] **(QA)** Long-running timing: L1 timeouts, inspection window lapse, PI expiry, funding grace — with a controllable clock.
+
+### 6.6 Content quality — Quality assurance gaps
+- [ ] **(QA)** Mutation testing on the money modules (escrow_guard, ledger, journal, pricing) to prove the tests catch real mistakes.
+
+### 6.9 Unit tests — Quality assurance gaps
+- [ ] **(QA)** Review the 1 skipped test and either fix it or delete it with a reason.
+
+### 6.13 Static checks and test hygiene — Quality assurance gaps
+- [ ] **(Eng)** Test environments with parity: dev (simulators), staging (provider sandboxes, separate database and mailbox), production — the same settings schema in all three.
+
+### 7 Platform, infrastructure and operations
+- [ ] **(Eng)** The SSE stream goes straight to the backend (a serverless gateway cannot hold it open) — confirm the production hosting supports long-lived connections.
+
+### 8 Security and access
+- [ ] **(Eng)** Device / IP restrictions for staff approving money.
+
+### 9 Operator console (portless-ui)
+- [ ] **(Eng)** Accessibility (keyboard, contrast) and mobile layout for approvals on the go.
+
+### 10 Data quality
+- [ ] **(Eng)** Data retention and clean-up for prospects that never converted.
+
+### 11.2 Cut costs on every shipment — New features to raise profit per deal (product)
+- [ ] **(Eng)** Demurrage / detention alerts before free days run out.
+
+### 11.3 Price better — New features to raise profit per deal (product)
+- [ ] **(Eng)** Price alerts: buy when the price book shows supplier prices dipping; hold offers when they spike.
+
+### 11.4 Win more and repeat — New features to raise profit per deal (product)
+- [ ] **(Biz)** Local currency for buyers (AED, EUR …) once a rate source exists (5.4) — easier to say yes.
+
+### 11.5 New revenue lines — New features to raise profit per deal (product)
+- [ ] **(Biz)** **Trade finance**: partner financing for buyers (pay later) or suppliers (early payment against the PO) — fee income.
+- [ ] **(Biz)** **Cargo insurance** through a broker (commission) instead of a fixed % cost.
+- [ ] **(Biz)** **Supplier early-payment discount**: offer a larger production advance from escrow in exchange for a lower price.
+- [ ] **(Biz)** **Order aggregation**: combine several buyers' small orders into full containers, or split a large order across verified suppliers.
+- [ ] **(Biz)** Sourcing-agent referral commissions for introduced buyers / suppliers.
+
+---
+
+## Decisions needed
+
+Sorted by priority; each names the area it belongs to.
+
+- [ ] **P0** How Indian suppliers are paid and in which currency the PO is written (3.3).
+- [ ] **P0** Whether the CHA files customs manually until ICEGATE works (1.2, 5.2).
+- [ ] **P0** Exposure limits and four-eyes threshold (1.1, 4).
+- [ ] **P0** Who holds the money-approver role (4, 8).
+- [ ] **P0** For a manually added supplier whose price is already known: skip the RFQ e-mail and record the price, or still send the RFQ so the supplier commits in writing (5.5). **Recommendation:** allow both, default to recording the phone price — the firm order request before the PI already makes the supplier confirm in writing, so the RFQ adds little. To be built later.
+- [ ] **P1** Real order of carrier booking vs stuffing (2.3).
+- [ ] **P1** Which inspectors to offer beyond QIMA (1.2).
+- [ ] **P1** Apify plan upgrade vs other data sources (2.6).
+- [ ] **P1** Monolith vs microservices in production (7).
+- [ ] **P1** Which buyer currencies to support and from which rate source (5.4).
+
+---
+
+## Done in the latest rounds (for reference)
+
+- Full-flow journey TC-E2E-000 / UC-15 on every simulator; `@journey:` link between Gherkin and journeys.
+- Fixed: RFQ to scan-found suppliers, SDF / Shipping Bill on CIF deals, nameless e-mailed quotes, QIMA booking without a supplier address, Tazapay proof links in automation.
+- Supplier facility address asked, read from e-mails and required before the inspection (`QC_FACILITY_ADDRESS_REQUIRED`).
+- Prices to Indian suppliers in INR with the USD contract price and rate; quotations mirrored in their own currency.
+- Confirming a match closes the deal's other proposals.
+
+---
+
+## Appendix — background per area
+
+### 1 Accounts, credentials and configuration (readiness gate)
+
+Each item is a failing or warning readiness check today.
+
+### 2 Provider contracts not yet confirmed
+
+Each provider was built from public documentation; these points were not confirmed by the provider and must be checked against a real account before money moves.
+
+### 3 Legal, regulatory and trade compliance (India export)
+
+PortLess is the exporter of record, buys from Indian suppliers and sells to foreign buyers. Every point needs a lawyer / chartered accountant's sign-off; the seed lists in the code are not the law.
+
+### 5.5 Add suppliers manually (local suppliers)
+
+The trade desk knows local suppliers that no scan will find. Today they cannot be added so that
+the workflow takes over:
+- the supplier directory (`trade_counterparties`) is written only by a scan — there is no add / edit endpoint and no console screen (buyers can be added to a deal, suppliers cannot);
+- a deal created by hand with a supplier party but no scan opportunity gets **no RFQ**: the RFQ leg finds no candidates (`_rfq_candidates` reads only Match Engine results or the opportunity) and leaves the deal parked in MATCHING;
+- `POST /deals/{id}/supplier-offers` (an offer entered by staff) runs neither the GST / IEC verification nor the match board — someone has to call `/match/evaluate` by hand.
+Backend
+Console (portless-ui)
+QA
+
+### 11 New features to raise profit per deal (product)
+
+Ordered by expected impact on margin. Each should be measured on closed deals (realised margin vs cost sheet).
