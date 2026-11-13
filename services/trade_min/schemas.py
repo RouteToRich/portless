@@ -223,6 +223,12 @@ class SellerCandidate(BaseModel):
     email_status: str | None = None
     validation: CounterpartyValidation | None = None
     """Scan-time check; None = not checked (outside the top N or validation off)."""
+    fob_estimate_usd_per_mt: float | None = None
+    """No price from the supplier yet: the price book's estimate (pre-deal rescore). Pair
+    matching uses it as an *estimate* (lower price confidence), never as a quote."""
+    fob_estimate_basis: str | None = None
+    address: str | None = None
+    """Facility / office address when the contact finder found one (pre-deal rescore)."""
 
 
 CounterpartyRole = Literal["buyer", "supplier"]
@@ -392,6 +398,11 @@ class EnrichedOpportunity(BaseModel):
     verified counterparties."""
     counterparty_filter: Literal["verified", "all"] = "all"
     """Which counterparties ``buyer_signals`` / ``seller_candidates`` hold in this response."""
+
+    # ── Pre-deal rescore (rescore.py) ─────────────────────────────────────
+    rescored_at: datetime | None = None
+    rescore: dict[str, Any] | None = None
+    """The latest rescore: pairs before → after, what was filled, what still needs the deal."""
 
 
 # ---------------------------------------------------------------------------

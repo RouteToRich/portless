@@ -248,13 +248,25 @@ def supplier_trust(s: SellerCandidate, cfg: PairMatchConfig = DEFAULT_PAIR_CONFI
         parts.append("Udyam")
     if s.export_shipments_12m:
         pts += 30 * min(s.export_shipments_12m / cfg.shipments_full_supplier, 1.0)
+    v = getattr(s, "validation", None)
+    checked = ""
+    if v is not None:
+        if v.status == "verified":
+            pts += 15
+            checked = "; screened (sanctions clear, e-mail delivers)"
+        if v.gst == "active":
+            pts += 5
+            parts = [p if p != "GSTIN" else "GSTIN active" for p in parts]
+        if v.iec == "active":
+            pts += 5
+            parts = [p if p != "IEC" else "IEC active" for p in parts]
     credentials = pts
     if s.fit_score is not None:
         credentials = 0.75 * pts + 0.25 * s.fit_score
-    if not parts and not s.export_shipments_12m and s.fit_score is None:
+    if not parts and not s.export_shipments_12m and s.fit_score is None and not checked:
         return None, "No credentials or export history on record"
     have = ", ".join(parts) if parts else "no registrations"
-    return round(_clamp(credentials), 1), f"{have}; {s.export_shipments_12m or 0} export shipments/12m"
+    return round(_clamp(credentials), 1), f"{have}; {s.export_shipments_12m or 0} export shipments/12m{checked}"
 
 
 def buyer_quality(b: BuyerSignal, cfg: PairMatchConfig = DEFAULT_PAIR_CONFIG) -> tuple[float | None, str]:
@@ -269,6 +281,10 @@ def buyer_quality(b: BuyerSignal, cfg: PairMatchConfig = DEFAULT_PAIR_CONFIG) ->
     if b.fit_score is not None:
         vals.append(float(b.fit_score))
         bits.append(f"fit {b.fit_score}")
+    v = getattr(b, "validation", None)
+    if v is not None and v.status == "verified":
+        vals.append(100.0)
+        bits.append("screened (sanctions clear, e-mail delivers)")
     if not vals:
         return None, "No risk, import history or fit score for the buyer"
     return round(sum(vals) / len(vals), 1), ", ".join(bits)
@@ -388,7 +404,14 @@ def score_pair(
     reasons: dict[str, str] = {}
     f: dict[str, float | None] = {}
 
-    f["product_fit"], reasons["product_fit"] = product_fit(b.hs_codes, s.hs_code, opp.hs_code)
+    # A web-search buyer's HS list is only the code we searched with, not their own
+    # import list, so it cannot confirm the product (scored as implied, 85).
+    buyer_hs = [] if b.signal_type == "web_search" else b.hs_codes
+    f["product_fit"], reasons["product_fit"] = product_fit(buyer_hs, s.hs_code, opp.hs_code)
+    for side, who in ((b, "Buyer"), (s, "Supplier")):
+        v = getattr(side, "validation", None)
+        if v is not None and v.status == "failed":
+            blockers.append(f"{who} failed the counterparty check")
     if f["product_fit"] == 0.0:
         blockers.append("Different product chapter")
 
@@ -397,6 +420,11 @@ def score_pair(
     floor = lc.default_margin_floor_pct()
     margin_pct = margin_usd = landed_cost = None
     fob = s.estimated_fob_price_usd if _is_mt(s.price_unit) else None
+    fob_estimated = False
+    if not fob and s.fob_estimate_usd_per_mt:
+        # No price from the supplier: the price book's estimate (India's export unit
+        # value + observed quotes), shown as an estimate, never as a quote.
+        fob, fob_estimated = s.fob_estimate_usd_per_mt, True
     if buyer_price and fob and fob > 0:
         lcost = lc.landed(fob, market, demand, incoterm="CIF", margin_floor_pct=0.0)
         landed_cost = lcost.cost_usd_per_mt
@@ -404,7 +432,11 @@ def score_pair(
         margin_pct = round(margin_usd / buyer_price * 100.0, 2)
         f["margin"] = margin_score(margin_pct, floor, cfg)
         reasons["margin"] = (f"Buyer ${buyer_price:,.0f}/MT ({basis.replace('_', ' ')}) vs "
-                             f"landed ${landed_cost:,.0f}/MT → {margin_pct:.1f}% (floor {floor:.0f}%)")
+                             f"landed ${landed_cost:,.0f}/MT → {margin_pct:.1f}% (floor {floor:.0f}%)"
+                             + (f"; supplier price estimated ${fob:,.0f}/MT ({s.fob_estimate_basis or 'price book'})"
+                                if fob_estimated else ""))
+        if fob_estimated:
+            improve.append("Get the supplier's FOB quote (RFQ): the margin uses an estimated supplier price")
         if margin_pct <= 0:
             blockers.append("Buyer price below landed cost")
         elif margin_pct < floor:
@@ -419,10 +451,12 @@ def score_pair(
 
     f["price_confidence"] = {"buyer_stated": 100.0, "market_benchmark": 60.0}.get(basis or "", 0.0) \
         if fob else (30.0 if basis else None)
+    if fob_estimated and f["price_confidence"]:
+        f["price_confidence"] = round(f["price_confidence"] * 0.6, 1)  # neither side quoted yet
     reasons["price_confidence"] = (
         "Buyer stated their price" if basis == "buyer_stated"
         else "Buyer price is the market's Comtrade unit value" if basis == "market_benchmark"
-        else "No buyer price")
+        else "No buyer price") + ("; supplier price is an estimate" if fob_estimated else "")
     if basis == "market_benchmark":
         improve.append("Ask the buyer for their target price (score uses the market benchmark)")
 
@@ -441,6 +475,9 @@ def score_pair(
         improve.append("Verify the supplier's IEC (needed to export)")
     if not _has(s.gstin):
         improve.append("Verify the supplier's GSTIN")
+    for side, who in ((b, "buyer"), (s, "supplier")):
+        if getattr(side, "validation", None) is None:
+            improve.append(f"Run the counterparty check on the {who} (sanctions, e-mail)")
 
     f["buyer_quality"], reasons["buyer_quality"] = buyer_quality(b, cfg)
     if f["buyer_quality"] is None:

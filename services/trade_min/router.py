@@ -226,6 +226,25 @@ async def list_opportunities(
     )
 
 
+@router.post("/opportunities/{opportunity_id}/rescore", response_model=EnrichedOpportunity)
+async def rescore_opportunity(
+    opportunity_id: str,
+    pairs: int = Query(default=3, ge=1, le=5, description="Best pairs to improve (each costs Apify runs)"),
+    counterparties: Literal["verified", "all"] = Query(default="all"),
+) -> EnrichedOpportunity:
+    """Before starting a deal: fill what can be filled without contacting anyone for the
+    best buyer × seller pairs (counterparty check, supplier address / GSTIN from its
+    website, plant-to-port distance, an estimated supplier price), score the pairs
+    again and save. ``rescore`` on the response lists each pair before → after, what
+    was filled and what still needs the deal (RFQ / outreach)."""
+    from . import rescore as _rescore
+    opp = await _rescore.rescore(opportunity_id, pairs=pairs)
+    if opp is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Opportunity {opportunity_id!r} not found")
+    return service._with_counterparties(opp, counterparties)
+
+
 @router.get("/opportunities/{opportunity_id}", response_model=EnrichedOpportunity)
 async def get_opportunity(
     opportunity_id: str,

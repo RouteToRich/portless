@@ -362,6 +362,25 @@ def _buyer_candidates_from_seed(seed: dict[str, Any]) -> list[BuyerCandidate]:
     return out
 
 
+async def _rescore_opportunity(opportunity_id: str) -> None:
+    """Pre-deal rescore (trade_min/rescore.py) unless it ran in the last hour — the
+    deal then seeds from the checked counterparties, the supplier's plant-to-port
+    distance and GSTIN found on its website. Best-effort: never blocks creation.
+    ``DEAL_RESCORE_BEFORE_CREATE=false`` switches it off."""
+    import os
+    if os.environ.get("DEAL_RESCORE_BEFORE_CREATE", "true").strip().lower() in ("0", "false", "no", "off"):
+        return
+    try:
+        from services.trade_min import rescore as trade_rescore  # type: ignore[import]
+        from services.trade_min.service import get_opportunity  # type: ignore[import]
+        opp = await get_opportunity(opportunity_id)
+        if opp is None or trade_rescore.recently_rescored(opp):
+            return
+        await trade_rescore.rescore(opportunity_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Pre-deal rescore of %s failed: %s", opportunity_id, exc)
+
+
 async def _fetch_opportunity(opportunity_id: str) -> Any | None:
     """Best-effort fetch of the full EnrichedOpportunity (for party seeding)."""
     try:
@@ -401,6 +420,7 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
     initial_status = DealStatus.DRAFT
 
     if payload.opportunity_id:
+        await _rescore_opportunity(payload.opportunity_id)
         seed = await _fetch_match_seed(payload.opportunity_id)
         if seed is not None:
             buyer_target_price = seed.get("buyer_target_price_usd")

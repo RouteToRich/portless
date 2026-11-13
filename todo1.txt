@@ -1,0 +1,11 @@
+as we have many buyer and seller candidates, if the score is more than the thresold, then do not leave the trading opportunity and based on the negotiation result, try to create deal matching the reply from bth buyer seller intelligently, so that more money can be mde out of it.
+means try to match the buyer seller based on their accepted quotes - no need to decide or pre commited the buyer and seller for a deal, 
+crete a deal matching algo or Agent to decide best pair to make the deal happen AFTER negotiation.
+no need to decide rhe deal immediately after the negotition, just use an agent for best deal out of negotiation.
+negotiation based on all buyer requirement parameters to a seller and all seller ability tothe buyer and then agent will decide.
+for eg. a buyer needs 1000MT BUT  a seller can to 800mt, so merge the deal with one moire seller with 200mt and the deal should have 1 buyer and 2 seller. 
+
+also technique/agent to make the frieght chaeges minimum by merginbg the container. use endpoint if available 
+
+
+apify actors to support quality trade and info

@@ -260,17 +260,21 @@ def _rank(item: Any) -> tuple:
 
 
 async def validate_scan(buyers: list[BuyerSignal], sellers: list[SellerCandidate],
-                        *, now: datetime | None = None) -> dict[str, int]:
+                        *, now: datetime | None = None, top_n: int | None = None,
+                        force: bool = False) -> dict[str, int]:
     """Check the top N buyers and suppliers of one opportunity in place.
 
-    Returns counts per status (``verified`` / ``unverified`` / ``failed`` /
-    ``reused``). Never raises — a failure leaves the counterparties unchecked.
+    ``top_n`` overrides ``TRADE_MIN_VALIDATION_TOP_N`` (the pre-deal rescore passes
+    exactly the pair's buyer and seller); ``force`` re-runs the checks even when a
+    fresh stored result exists. Returns counts per status (``verified`` /
+    ``unverified`` / ``failed`` / ``reused``). Never raises — a failure leaves the
+    counterparties unchecked.
     """
     counts = {"verified": 0, "unverified": 0, "failed": 0, "reused": 0}
     if not settings.trade_min_validation_enabled:
         return counts
     now = now or datetime.now(timezone.utc)
-    top_n = max(0, settings.trade_min_validation_top_n)
+    top_n = max(0, settings.trade_min_validation_top_n if top_n is None else top_n)
     try:
         from . import directory
         store = await directory.get_directory()
@@ -282,7 +286,7 @@ async def validate_scan(buyers: list[BuyerSignal], sellers: list[SellerCandidate
             ranked = [x for x in sorted(items, key=_rank) if (name_of(x) or "").strip()][:top_n]
             for item in ranked:
                 old = await store.get(directory.record_key(role, name_of(item), item.website))
-                if old is not None and is_fresh(old.validation, now):
+                if not force and old is not None and is_fresh(old.validation, now):
                     item.validation = old.validation
                     counts["reused"] += 1
                 else:
