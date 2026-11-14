@@ -12,7 +12,7 @@ accountant · (Biz) founder / business · (QA) quality.
 
 ---
 
-**Layout** — grouped by priority first (P0, then P1, then P2), then by area. Area numbers (1.1, 3.3, 5.5 …) are kept in every priority so a reference such as "see 3.3" points to the same area wherever its items sit. Background for an area is in the appendix at the end.
+**Layout** — the owner's accounts and keys are in their own section (right after the go-live blockers) so they can be done in parallel. The rest is grouped by priority first (P0, then P1, then P2), then by area. Area numbers (1.1, 3.3, 5.5 …) are kept in every priority so a reference such as "see 3.3" points to the same area wherever its items sit. Background for an area is in the appendix at the end.
 
 ---
 
@@ -43,6 +43,47 @@ Everything here is P0; the areas are named in brackets.
 - [ ] One pilot trade with a small, real lot, a known buyer and a known supplier, before opening the funnel (section 6.7).
 - [ ] Test strategy in place: unit, integration, sanity / smoke and regression suites defined, in CI and green (6.9 – 6.13).
 - [ ] Buyer / supplier checks actually answer: Apify screening live, GSTN path fixed, and quote intake no longer passes an unchecked supplier as verified (section 12).
+
+---
+
+## Owner's parallel track — accounts, API keys and tokens to hand over
+
+Things only the founder can do: open the accounts, accept the terms, pass the provider's KYC / KYB and copy the keys. Work through this list while engineering works on the rest. Put each value in the backend's environment (local `.env`, and the hosting platform's environment variables for the deployed backend). **Never paste a key into chat, an e-mail or a commit.** After setting a group, run `GET /health/readiness` (System Health page) and `python scripts/check_trade_api_connections.py`, then tick the box. The section numbers in brackets point to the detailed item.
+
+### A. Can be done now (no company registration needed)
+- [ ] **auth-service app account** — ask the RouteToRich auth-service admin for PortLess's account id → `PORTLESS_ACCOUNT_ID`; set `AUTH_GATEWAY_URL`, `FRONTEND_URL` and the staff allowlist `AUTH_PORTLESS_EMAILS` (1.5, 8).
+- [ ] **LLM gateway service account** — `LLM_GATEWAY_URL`, `LLM_GATEWAY_EMAIL`, `LLM_GATEWAY_PASSWORD`, `LLM_GATEWAY_ACCOUNT_ID` (or a pre-minted `LLM_GATEWAY_TOKEN`) on the deployed backend; set a monthly cost budget (2.7).
+- [ ] **MongoDB Atlas** — production cluster, `MONGO_URI` + `MONGO_DB_NAME`; turn on continuous backup (7).
+- [ ] **Synadia Cloud (NATS)** — create the account, download the user `.creds` file → `NATS_CREDS_FILE` (1.5).
+- [ ] **Google Drive** — OAuth "Desktop app" client in console.cloud.google.com → `GOOGLE_DRIVE_CLIENT_ID` / `_CLIENT_SECRET`; run `python scripts/google_drive_authorize.py` once → `GOOGLE_DRIVE_REFRESH_TOKEN` (1.4).
+- [ ] **Apify** — API token from console.apify.com (Settings → Integrations) → `APIFY_TOKEN`; set `APIFY_MAX_RUNS_PER_DAY`; decide the plan upgrade so Store actors (buyer finders, carrier tracking) run (2.6, 12).
+- [ ] **Telegram alerts** — create a bot with @BotFather → `HITL_TELEGRAM_BOT_TOKEN`; the operators' group chat id → `HITL_TELEGRAM_CHAT_ID`; `DIGEST_EMAIL_TO` (1.5).
+- [ ] **Tavily** — API key → `TAVILY_API_KEY` (market check, live USD/INR rate) (2.6, 5.4).
+- [ ] **UN Comtrade** — subscription key from comtradedeveloper.un.org → `COMTRADE_SUBSCRIPTION_KEY` (2.6).
+- [ ] **Free trade-data keys you want** — `MACMAP_API_KEY`, `CENSUS_API_KEY` (optional) (2.6).
+- [ ] **Signing secrets** — generate random strings (e.g. `python -c "import secrets; print(secrets.token_hex(32))"`) for `ESCROW_PROOF_LINK_SECRET` and `HITL_NOTIFY_WEBHOOK_SECRET`; set `PORTLESS_PUBLIC_BASE_URL` to the backend's public HTTPS address (1.1).
+- [ ] **Controls** — choose `FOUR_EYES_THRESHOLD_USD` (suggested 25000) and keep `AUTONOMY_MONEY_CEILING=L1` (1.1).
+
+### B. Needs the company's domain and mailbox (14.4)
+- [ ] **Outbound mail** — trade-desk mailbox on the company domain: `GMAIL_SENDER_ADDRESS` + `GMAIL_APP_PASSWORD` (Google Workspace app password) or a transactional provider; `PORTLESS_EMAIL_DOMAIN` with SPF, DKIM and DMARC records at the DNS host (1.3).
+- [ ] **Inbound mail** — `IMAP_USER` / `IMAP_PASSWORD`, or SendGrid Inbound Parse (`SENDGRID_WEBHOOK_PUBLIC_KEY`) / Mailgun routes (`MAILGUN_SIGNING_KEY`) (1.3).
+- [ ] **Company profile in e-mails** — `PORTLESS_LEGAL_NAME`, `PORTLESS_BRAND_NAME`, `PORTLESS_SENDER_NAME` / `_TITLE`, `PORTLESS_WEBSITE`, `PORTLESS_PHONE`, `PORTLESS_CONTACT_EMAIL` (1.4).
+
+### C. Needs the registered company (section 14 first)
+- [ ] **Exporter facts on every document** — `PORTLESS_ADDRESS`, `PORTLESS_IEC`, `PORTLESS_GSTIN`, `PORTLESS_PAN`, `PORTLESS_LUT_ARN`, `PORTLESS_AD_CODE`, `PORTLESS_SIGNATORY_NAME` / `_TITLE`, `DEALMAKER_PORTLESS_ENTITY_IEC` / `_GSTIN`, `PORTLESS_CONTRACT_LAW` (governing law + arbitration seat), `PORTLESS_MARINE_POLICY` (open marine policy number) (1.4).
+- [ ] **API Setu (GSTN / MCA / Udyam)** — subscribe on apisetu.gov.in (GSTN Tax Payer product) → `API_SETU_KEY`; tell engineering the real GSTN path (12).
+- [ ] **Tazapay** — business account + KYB; from the dashboard: `TAZAPAY_API_KEY`, `TAZAPAY_API_SECRET`, `TAZAPAY_WEBHOOK_SECRET`; start with `TAZAPAY_ENV=sandbox`, switch to `production` after the sandbox run; ask Tazapay for the release event names and the 4-stage payout (1.1, 2.1).
+- [ ] **Escrow.com** — business account; `ESCROW_COM_API_KEY`, `ESCROW_COM_EMAIL`, `ESCROW_COM_WEBHOOK_SECRET` (any random string; it goes into the webhook URL); or drop `escrow_com` from `ESCROW_PROVIDERS_ENABLED` until it is live (1.1, 2.2).
+- [ ] **QIMA** — client account + Public API access: `QIMA_API_ACCESS_TOKEN`, `QIMA_ACCOUNT`, `QIMA_PASSWORD`; product tree ids per product line → `QIMA_PRODUCT_CATEGORY_ID` / `_FAMILY_ID` / `_TYPE_ID`; ask QIMA for the PEO service type → `QIMA_SERVICE_TYPE_PEO` (1.2, 2.4).
+- [ ] **Maersk** — customer account + developer.maersk.com app: `MAERSK_CONSUMER_KEY`, `MAERSK_CLIENT_SECRET`, `MAERSK_CUSTOMER_CODE`, `MAERSK_SERVICE_CONTRACT`, `MAERSK_CARRIER_SERVICE_CODE` (your lane's service), `MAERSK_WEBHOOK_SECRET` (1.2, 2.3).
+- [ ] **Freight forwarder (quotes, non-Maersk lanes)** — `COGOPORT_API_KEY` + `COGOPORT_WEBHOOK_SECRET` or `FREIGHTOS_API_KEY` + `FREIGHTOS_WEBHOOK_SECRET` (1.2).
+- [ ] **ICEGATE** — API access (direct, aggregator or via the CHA) → `ICEGATE_API_KEY`; or confirm the CHA files manually (1.2, 5.2).
+- [ ] **Supplier payouts** — only after decision 3.3: `PAYONEER_CLIENT_ID`, `PAYONEER_CLIENT_SECRET`, `PAYONEER_WEBHOOK_SECRET` (or the INR bank / gateway credentials chosen instead) (1.1, 3.3).
+- [ ] **Optional sources** — `VOLZA_API_KEY`, `INDIAMART_API_KEY` / `INDIAMART_MOBILE`, `ALIBABA_APP_KEY` / `_APP_SECRET`; `SGS_BOOKING_EMAIL` / `BUREAU_VERITAS_BOOKING_EMAIL` if those inspectors will be offered (1.2, 2.6).
+
+### D. After the keys are in
+- [ ] Load the real product lines and corridors on the Catalogue page (`PUT /trade-min/catalogue`) (1.5).
+- [ ] Tell engineering which groups are set, so each provider's sandbox run (6.3) can start; readiness should show no `fail` before `ENV_PROFILE=production`.
 
 ---
 
