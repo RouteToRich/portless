@@ -206,7 +206,6 @@ Everything here is P0; the areas are named in brackets.
 ### 12 Buyer and supplier validation (Opportunity Radar)
 - [ ] **(Eng)** **Quote intake still treats an unanswered registry as a pass.** `sourcing._verify_supplier` starts from `gst_verified=True, iec_active=True` and keeps them when GSTN / DGFT do not answer (no `API_SETU_KEY`, timeout, wrong path), so the Match Engine gatekeeper passes an unchecked supplier. Record "unchecked" separately from "active", keep the gatekeeper's provisional pass if wanted, but never show or log the supplier as verified, and force `CONFIRM_SUPPLIER_SELECTION` to L0 with a flag `registry_unchecked`. (The scan-time check already keeps "unchecked" apart — see Done.)
 - [ ] **(Biz/Eng)** **API Setu GSTN path is a placeholder** (the guessed route answers 404; `GstnConnector` notes it). Subscribe to the GSTN Tax Payer product, set the real path, and verify one known GSTIN end to end. Until then no GST check ever answers: at scan time GST shows "unchecked", at quote intake see the item above.
-- [ ] **(Eng)** Readiness check `counterparty_validation`: fail in production when `TRADE_MIN_VALIDATION_ENABLED=false` or the screening actor runs in stub mode (no `APIFY_TOKEN`) — otherwise the radar's "Verified only" view is silently empty and every counterparty reaches outreach unscreened.
 
 ### 14.1 Legal entity — Starting the company (non-technical: registrations, accounts, set-up)
 - [ ] **(Biz/Legal)** Choose the legal form: private limited company (recommended: escrow providers, banks and foreign buyers expect it, and it limits personal liability), LLP or proprietorship. Decide before anything else — every registration below is in the entity's name.
@@ -716,6 +715,7 @@ Sorted by priority; each names the area it belongs to.
 - Confirming a match closes the deal's other proposals.
 - Buyer / supplier check at scan time (12): the top buyers and suppliers of every opportunity are screened (sanctions, e-mail, GST / IEC) before the radar shows them; the radar shows verified ones by default ("Verified only / All" toggle, hidden counts), the directory filters by result and can check one company now, a failed counterparty never seeds outreach or a supplier party, and a deal from an opportunity no longer records an unchecked supplier as verified.
 - Pre-deal rescore (12): the radar's Rescore / Start prospect fills the best pairs' gaps without contacting anyone (counterparty check, supplier address / GSTIN from its website, plant-to-port distance, an estimated supplier price labelled as an estimate), scores them again and shows before → after; a web-search buyer's product fit is no longer overstated as "same subheading".
+- Readiness check `counterparty_validation` (12): fails in production (warns elsewhere) when `TRADE_MIN_VALIDATION_ENABLED=false` or the screening actor has no `APIFY_TOKEN`, so the radar's "Verified only" view can no longer be silently empty.
 
 ---
 

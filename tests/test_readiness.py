@@ -144,6 +144,26 @@ def test_compliance_switched_off_fails_in_production(bare_env):
     assert ids["compliance_trade"] == ids["compliance_loading"] == ids["compliance_unscreened"] == "fail"
 
 
+def test_counterparty_validation_needs_the_switch_and_live_screening(bare_env):
+    from services.trade_min.config import settings as tm
+    bare_env.setattr(tm, "trade_min_validation_enabled", True)
+    _fill(bare_env)
+    checks = {c["id"]: c for c in readiness.evaluate()["checks"]}
+    assert checks["counterparty_validation"]["status"] == "warn"  # no Apify token, dev profile
+    assert "APIFY_TOKEN" in checks["counterparty_validation"]["detail"]
+
+    bare_env.setenv("ENV_PROFILE", "production")
+    assert {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}["counterparty_validation"] == "fail"
+
+    bare_env.setenv("APIFY_TOKEN", "apify_api_real")
+    assert {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}["counterparty_validation"] == "ok"
+
+    bare_env.setattr(tm, "trade_min_validation_enabled", False)
+    checks = {c["id"]: c for c in readiness.evaluate()["checks"]}
+    assert checks["counterparty_validation"]["status"] == "fail"
+    assert "TRADE_MIN_VALIDATION_ENABLED=false" in checks["counterparty_validation"]["detail"]
+
+
 def test_qc_provider_counts_the_qima_api_and_the_portal_desks(bare_env):
     def qc():
         return {c["id"]: c for c in readiness.evaluate()["checks"]}["qc_provider"]

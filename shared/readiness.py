@@ -179,6 +179,21 @@ def evaluate() -> dict[str, Any]:
         fail_detail="APIFY_MAX_RUNS_PER_DAY unset — nothing caps actor spend if a schedule misfires",
     ))
     try:
+        from services.trade_min.config import settings as _tm
+        validation_on = bool(_tm.trade_min_validation_enabled)
+    except Exception:  # noqa: BLE001
+        validation_on = False
+    screening_live = bool(apify.get("token_present"))
+    checks.append(_check(
+        "counterparty_validation", "data", "Scan-time buyer / supplier check (radar \"Verified only\")",
+        validation_on and screening_live, warn_only=not prod,
+        ok_detail="top buyers / suppliers of every opportunity are screened before the radar shows them",
+        fail_detail=("TRADE_MIN_VALIDATION_ENABLED=false — " if not validation_on else
+                     "APIFY_TOKEN unset, the screening actor runs as a stub — ")
+                    + "no counterparty is ever verified: the radar's \"Verified only\" view stays empty "
+                      "and every counterparty reaches outreach unscreened",
+    ))
+    try:
         from shared import catalogue as _cat
         lines = _cat.active_lines()
     except Exception:  # noqa: BLE001
