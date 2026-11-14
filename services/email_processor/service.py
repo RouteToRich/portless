@@ -722,6 +722,10 @@ async def _handle_post_agreement_reply(
         from services.dealmaker.service import is_pi_expired  # type: ignore[import]
         pi_expired = is_pi_expired(pi)
 
+    mismatched_price: float | None = None
+    if accepted and pi is not None and pi.status == "SENT":
+        mismatched_price = await _pi_price_mismatch(raw.body_text or "", pi)
+
     if (
         mapping.party == "buyer"
         and deal_status == "PI_SENT"
@@ -730,7 +734,7 @@ async def _handle_post_agreement_reply(
         and accepted
         and not pi_expired
     ):
-        hitl_id = await _create_pi_acceptance_hitl(record, pi)
+        hitl_id = await _create_pi_acceptance_hitl(record, pi, mismatched_price=mismatched_price)
         record = record.model_copy(update={
             "status": InboundEmailStatus.PROCESSED,
             "hitl_approval_id": hitl_id,
@@ -906,22 +910,92 @@ async def _handle_delivery_reply(record: InboundEmailRecord, raw: InboundRawEmai
     )
 
 
-async def _create_pi_acceptance_hitl(record: InboundEmailRecord, pi) -> str:
+# "USD 1,180" / "US$ 1,180" / "INR 98,000" — the currency in front of the figure,
+# which the negotiation price patterns (built for counters) do not all cover.
+_CURRENCY_FIRST = re.compile(r"(?:USD|US\$|INR|Rs\.?)\s*([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE)
+
+
+async def _pi_price_mismatch(body: str, pi) -> float | None:
+    """A price the buyer names in its acceptance that is neither the PI's unit
+    price nor its total — "we accept the PI at USD 1,180" for a PI at 1,225.
+
+    Returns the first such figure (USD), or None when every figure matches the
+    PI (or none is named: a bare acceptance accepts the PI as issued). Only the
+    new part of the reply counts; quoted history is dropped.
+    """
+    try:
+        from agents.negotiation_agent.guards import _new_reply_text  # type: ignore[import]
+        text = _new_reply_text(body) or body
+    except Exception:  # noqa: BLE001
+        text = body
+    unit = float(getattr(pi, "agreed_price", 0) or 0)
+    total = float(getattr(pi, "total_value", 0) or 0)
+    references = [r for r in (unit, total) if r > 0]
+    if not references:
+        return None
+
+    rate: float | None = None
+    seen: set[int] = set()
+    figures: list[tuple[int, float]] = []
+    for pattern in (*_PRICE_PATTERNS, _CURRENCY_FIRST):
+        for m in pattern.finditer(text):
+            start = m.start(1)
+            if start in seen:
+                continue
+            seen.add(start)
+            try:
+                value = float(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if value <= 0:
+                continue
+            if _looks_like_inr(text, m) or re.match(r"(?:INR|Rs)", m.group(0), re.IGNORECASE):
+                rate = rate or await _usd_inr_rate()
+                # A rupee figure is a conversion, so allow 1 % for the rate used.
+                usd = value / rate
+                if any(abs(usd - r) <= r * 0.01 for r in references):
+                    continue
+                figures.append((start, round(usd, 2)))
+                continue
+            if any(abs(value - r) <= max(0.01, r * 0.0005) for r in references):
+                continue
+            figures.append((start, value))
+    if not figures:
+        return None
+    return sorted(figures)[0][1]
+
+
+async def _create_pi_acceptance_hitl(record: InboundEmailRecord, pi,
+                                     mismatched_price: float | None = None) -> str:
+    """CONFIRM_PI_ACCEPTANCE for a buyer's e-mailed acceptance. When the e-mail
+    names a price that is not the PI's, the gate is forced to L0 with flag
+    ``pi_price_mismatch`` and the summary names both prices — APPROVE would
+    record the PI as issued, so a person confirms the price with the buyer first."""
     try:
         from services.hitl_approval.service import create_approval  # type: ignore[import]
         from services.hitl_approval.schemas import CreateApprovalRequest  # type: ignore[import]
         from shared.orchestration.autonomy_policy import resolve_level
 
+        mismatch_note = ""
+        if mismatched_price is not None:
+            unit = float(getattr(pi, "agreed_price", 0) or 0)
+            mismatch_note = (
+                f"PRICE MISMATCH: the e-mail names {pi.currency} {mismatched_price:,.2f}, the PI is "
+                f"{pi.currency} {unit:,.2f} per MT / {pi.currency} {float(pi.total_value):,.2f} total — "
+                "confirm the price with the buyer before approving (approval records the PI as issued). "
+            )
         req = CreateApprovalRequest(
             deal_id=record.deal_id or "",
             action="CONFIRM_PI_ACCEPTANCE",
             summary=(
                 f"Buyer {record.from_address} appears to accept PI {pi.pi_id} "
-                f"({pi.currency} {pi.total_value:,.2f}). Preview: {record.body_text[:200]}"
+                f"({pi.currency} {pi.total_value:,.2f}). {mismatch_note}Preview: {record.body_text[:200]}"
             ),
             financial_impact_usd=float(pi.total_value),
-            risk_flags=["buyer_acceptance_detected"],
-            autonomy_level=resolve_level("CONFIRM_PI_ACCEPTANCE"),
+            risk_flags=["buyer_acceptance_detected",
+                        *(["pi_price_mismatch"] if mismatched_price is not None else [])],
+            autonomy_level=("L0" if mismatched_price is not None
+                            else resolve_level("CONFIRM_PI_ACCEPTANCE")),
             callback_payload={
                 "pi_id": pi.pi_id,
                 "deal_id": record.deal_id,

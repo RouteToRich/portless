@@ -191,3 +191,64 @@ async def test_parse_inbound_email_is_a_valid_hitl_action(monkeypatch):
         deal_id=DEAL, action="PARSE_INBOUND_EMAIL", autonomy_level="L0",
     ))
     assert appr.status == "PENDING"
+
+
+def _priced_pi(wiring):
+    from datetime import datetime as _dt, timezone as _tz
+    wiring.dm_repo.get_pi_by_deal.return_value = SimpleNamespace(
+        pi_id="PI-1", status="SENT", agreed_price=1225.0, total_value=30625.0, currency="USD",
+        expires_at=_dt(2099, 1, 1, tzinfo=_tz.utc),
+    )
+
+
+@pytest.mark.asyncio
+async def test_acceptance_naming_another_price_is_forced_to_review(wiring, monkeypatch):
+    """UC-15 / TC-RSK-024: "we accept the PI … at USD 1,180" for a PI at USD 1,225
+    is not a plain acceptance — the gate is L0 with flag pi_price_mismatch."""
+    monkeypatch.setenv("AUTONOMY_CONFIRM_PI_ACCEPTANCE", "L2")  # no policy lifts it
+    _priced_pi(wiring)
+    await wiring.neg.save_session(_session())
+    await wiring.email.save(_outbound_to_buyer())
+
+    await process_inbound(_raw(
+        "Dear team, we accept the Proforma Invoice PI-1 at USD 1,180 per MT. Please send the escrow details."))
+
+    req = wiring.create_approval.await_args.args[0]
+    assert req.action == "CONFIRM_PI_ACCEPTANCE"
+    assert req.autonomy_level == "L0"
+    assert "pi_price_mismatch" in req.risk_flags
+    assert "1,180.00" in req.summary and "1,225.00" in req.summary
+
+
+@pytest.mark.asyncio
+async def test_acceptance_repeating_the_pi_price_and_total_is_accepted(wiring):
+    _priced_pi(wiring)
+    await wiring.neg.save_session(_session())
+    await wiring.email.save(_outbound_to_buyer())
+
+    result = await process_inbound(_raw(
+        "We accept the Proforma Invoice at USD 1,225 per MT, total USD 30,625.00. Regards"))
+
+    assert result.status == InboundEmailStatus.PROCESSED
+    req = wiring.create_approval.await_args.args[0]
+    assert req.action == "CONFIRM_PI_ACCEPTANCE"
+    assert "pi_price_mismatch" not in req.risk_flags
+
+
+@pytest.mark.asyncio
+async def test_rupee_figure_is_compared_after_conversion(wiring, monkeypatch):
+    _priced_pi(wiring)
+    monkeypatch.setattr("services.email_processor.service._usd_inr_rate", AsyncMock(return_value=80.0))
+    await wiring.neg.save_session(_session())
+    await wiring.email.save(_outbound_to_buyer())
+
+    ok = await process_inbound(_raw("We accept the Proforma Invoice at INR 98,000 per MT."))  # = USD 1,225
+    assert ok.status == InboundEmailStatus.PROCESSED
+
+    wiring.create_approval.reset_mock()
+    from services.email_processor.service import _pi_price_mismatch
+    pi = wiring.dm_repo.get_pi_by_deal.return_value
+    assert await _pi_price_mismatch("We accept the PI at Rs. 90,000 per MT.", pi) == 1125.0
+    assert await _pi_price_mismatch("We accept the PI.", pi) is None
+    assert await _pi_price_mismatch(
+        "Accepted.\n\nOn Mon, PortLess wrote:\n> Our offer is USD 1,300 per MT", pi) is None

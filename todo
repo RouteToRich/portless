@@ -36,7 +36,6 @@ Everything here is P0; the areas are named in brackets.
 - [ ] The company exists and is registered: incorporated, PAN / TAN, GSTIN, IEC, LUT, AD code, RCMC for each product, AD-bank current + EEFC account, website and e-mail on its own domain (section 14).
 - [ ] Decide how Indian suppliers are paid (INR in India vs Payoneer USD) — today's design may not be legal for a domestic purchase (section 3.3).
 - [ ] Money writes made atomic and reconciled daily against the provider statements (section 4).
-- [ ] PI acceptance that names a different price must not pass as an acceptance (section 5.1).
 - [ ] Local suppliers can be added by hand and start the workflow (section 5.5).
 - [ ] Durable event bus, backups, monitoring, alerting and single-instance background watchers (section 7).
 - [ ] CI on both repos; the 24 P0 catalogue cases automated; UC-01 … UC-15 green on a nightly run (section 6).
@@ -89,7 +88,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ## P0 — must be done before the first real trade
 
-99 items.
+98 items.
 
 ### 1.1 Money — Accounts, credentials and configuration (readiness gate)
 - [ ] **(Biz/Eng)** `escrow_provider` FAIL — open Tazapay and Escrow.com business accounts; set `TAZAPAY_API_KEY` / `_API_SECRET` / `_WEBHOOK_SECRET` / `_ENV` and `ESCROW_COM_API_KEY` / `_EMAIL` / `_WEBHOOK_SECRET`. Drop a provider from `ESCROW_PROVIDERS_ENABLED` until its account is live.
@@ -168,9 +167,6 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Biz)** Exposure limits: maximum value per deal, per buyer, per supplier, per day, and total money in escrow; refuse or escalate above them.
 - [ ] **(Biz/Eng)** Roles: separate "can approve money" from "can operate deals"; today any allowlisted staff can approve any gate (four-eyes only above the threshold).
 
-### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
-- [ ] **(Eng)** **PI acceptance does not check the price.** In UC-15 the LLM-played buyer wrote "We accept the Proforma Invoice … at USD 1,180" for a PI at USD 1,225; it was read as a plain acceptance and opened `CONFIRM_PI_ACCEPTANCE` with no flag. Compare any price in the acceptance with the PI and force review (`pi_price_mismatch`).
-
 ### 5.2 Steps that are still manual or stubbed — Workflow gaps found end to end
 - [ ] **(Ops)** Customs filing (ICEGATE stub) — define the manual CHA process and the evidence recorded until the API works.
 
@@ -188,7 +184,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 6.1 Automation coverage — Quality assurance gaps
 - [ ] **(QA/Eng)** Automate the 24 P0 catalogue cases that still have unautomated steps: TC-E2E-001 … TC-E2E-009 (written for the console), TC-EXC-005, TC-EXC-006, TC-FRT-017, TC-HIT-008, TC-HIT-017, TC-INT-012, TC-LED-006, TC-LED-008, TC-MAT-002, TC-MAT-014, TC-NEG-014, TC-NEG-017, TC-PAY-001, TC-PI-018, TC-REL-008.
 - [ ] **(QA/Eng)** Automate the production-risk scenarios (`TEST_CASES.md` section 9, TC-RSK-001 … TC-RSK-095; 52 P0): money crashes and concurrency, escrow provider surprises, gates under pressure, ambiguous / foreign / automatic / hostile e-mails, supplier quotes in other units, compliance holds, inspection and carrier reality, restarts and outages, security, document consistency, currency and facility address, manual suppliers. Untagged cases must be confirmed on their first run; tag any that fail `@known-defect`.
-- [ ] **(Eng)** Fix the defects the production-risk cases record (`TEST_CASES.md` section 10, DEF-12 … DEF-21) and decide DEC-08 … DEC-10 (overpayment, failed DUPRO, partial quality claims).
+- [ ] **(Eng)** Fix the defects the production-risk cases record (`TEST_CASES.md` section 10, DEF-13 … DEF-21; DEF-12 fixed) and decide DEC-08 … DEC-10 (overpayment, failed DUPRO, partial quality claims).
 
 ### 6.2 Browser (console) tests — Quality assurance gaps
 - [ ] **(QA/Eng)** Browser automation as its own task in a **separate repository `portless-e2e` with Playwright** (chosen over Cypress: two operators in one test for four-eyes, several tabs for live updates and the Kill Switch, downloads, several origins, WebKit, free parallel runs). Plan, repository layout, sign-in stub and order of work: `docs/testing/BROWSER_SCENARIOS.md`.
@@ -757,6 +753,7 @@ Sorted by priority; each names the area it belongs to.
 - Buyer / supplier check at scan time (12): the top buyers and suppliers of every opportunity are screened (sanctions, e-mail, GST / IEC) before the radar shows them; the radar shows verified ones by default ("Verified only / All" toggle, hidden counts), the directory filters by result and can check one company now, a failed counterparty never seeds outreach or a supplier party, and a deal from an opportunity no longer records an unchecked supplier as verified.
 - Pre-deal rescore (12): the radar's Rescore / Start prospect fills the best pairs' gaps without contacting anyone (counterparty check, supplier address / GSTIN from its website, plant-to-port distance, an estimated supplier price labelled as an estimate), scores them again and shows before → after; a web-search buyer's product fit is no longer overstated as "same subheading".
 - Readiness check `counterparty_validation` (12): fails in production (warns elsewhere) when `TRADE_MIN_VALIDATION_ENABLED=false` or the screening actor has no `APIFY_TOKEN`, so the radar's "Verified only" view can no longer be silently empty.
+- PI acceptance price check (5.1, DEF-12 / TC-RSK-024): a buyer e-mail that accepts the PI but names another price (unit or total, rupees converted) opens `CONFIRM_PI_ACCEPTANCE` at L0 with flag `pi_price_mismatch` and both prices in the summary; repeating the PI price or total, or naming none, stays a plain acceptance.
 
 ---
 

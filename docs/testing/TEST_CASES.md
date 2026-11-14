@@ -5999,7 +5999,7 @@ Feature: Every inbound e-mail is read correctly or handed to a person
     Given I am "staff"
     And a deal "D" at status "NEGOTIATING" from fixture "FX-STD"
 
-  @TC-RSK-024 @P0 @negative @known-defect
+  @TC-RSK-024 @P0 @negative
   Scenario: A PI acceptance that names a different price is not a plain acceptance
     Given deal "D" is driven to "PI_SENT"
     When the buyer replies "We accept the Proforma Invoice at USD 1,180 per MT."
@@ -6610,7 +6610,7 @@ These came from reading the code. They are not changes already made.
 | DEF-09 | Defect, document | The PI printed "Destination Port, AE". | TC-PI-022, TC-PI-023 | Fixed: the buyer's port, or says it is open |
 | DEF-10 | Defect, wording | A draft could say escrow money was already there. | TC-NEG-021 | Fixed: prompt rule and a flag that forces review |
 | DEF-11 | Workflow | "We accept your offer" with no price stopped at an operator. | TC-NEG-019, TC-NEG-020 | Fixed: accepts our last offer, still confirmed by a person |
-| DEF-12 | Defect, money | A PI acceptance that names a different price is read as a plain acceptance. | TC-RSK-024 | Open |
+| DEF-12 | Defect, money | A PI acceptance that names a different price is read as a plain acceptance. | TC-RSK-024 | Fixed: the gate is forced to L0 with flag `pi_price_mismatch` and names both prices |
 | DEF-13 | Defect, money | Money state changes are separate writes (no transaction or outbox); a crash can leave a provider payout unbooked. | TC-RSK-001 | Open |
 | DEF-14 | Defect, money | No daily reconciliation against provider statements; no exposure limits; no fee-vs-assumption alert. | TC-RSK-007 to TC-RSK-009 | Open |
 | DEF-15 | Defect, money | Overpayment and a funding currency other than the PI's are not detected; a payout PortLess never submitted is booked. | TC-RSK-010, TC-RSK-011, TC-RSK-014 | Open |
