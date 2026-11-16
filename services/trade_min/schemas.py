@@ -262,6 +262,11 @@ class CounterpartyRecord(BaseModel):
     markets: list[str] = Field(default_factory=list)
     """Buyers: their market. Suppliers: the markets they were scanned for."""
     opportunity_ids: list[str] = Field(default_factory=list)
+    """Every opportunity a scan ever found it in — history; many have since expired,
+    become a deal or been replaced by a newer scan."""
+    open_opportunity_ids: list[str] | None = None
+    """Those of ``opportunity_ids`` the Opportunity Radar lists now. Filled when the
+    directory is read, never stored; ``None`` = could not be worked out."""
     last_outcome: str = ""
     """What the latest scan that found it produced: ``opportunity <id>`` or why there was none."""
     times_seen: int = 1

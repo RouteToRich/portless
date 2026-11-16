@@ -327,5 +327,22 @@ async def clean_existing() -> int:
     return changed
 
 
+async def with_open_opportunities(rows: list[CounterpartyRecord]) -> list[CounterpartyRecord]:
+    """Copies of ``rows`` with ``open_opportunity_ids``: which of each company's
+    opportunities the radar lists now. ``opportunity_ids`` is history — an opportunity
+    expires (1 to 7 days), becomes a deal, or is replaced by a newer scan of its
+    corridor, and the id stays on the record. Never raises: unknown stays ``None``."""
+    if not any(r.opportunity_ids for r in rows):
+        return [r.model_copy(update={"open_opportunity_ids": []}) for r in rows]
+    try:
+        from . import service  # imported here: service imports this module
+        open_ids = {o.opportunity_id for o in await service.open_opportunities(limit=500)}
+    except Exception as exc:  # noqa: BLE001 - the directory still lists without it
+        logger.warning("Directory: open opportunities not readable: %s", exc)
+        return rows
+    return [r.model_copy(update={"open_opportunity_ids": [i for i in r.opportunity_ids if i in open_ids]})
+            for r in rows]
+
+
 async def list_counterparties(role: str, **filters: Any) -> list[CounterpartyRecord]:
-    return await (await get_directory()).list(role, **filters)
+    return await with_open_opportunities(await (await get_directory()).list(role, **filters))

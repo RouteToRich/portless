@@ -192,7 +192,7 @@ async def validate_counterparty(role: Literal["buyers", "suppliers"], record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{record_id!r} not found")
     rec = await validation.validate_record(rec)
     await store.set_validation(rec)
-    return rec
+    return (await directory.with_open_opportunities([rec]))[0]
 
 
 @router.get("/opportunities/sourcing-status")

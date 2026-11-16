@@ -1361,6 +1361,18 @@ async def list_opportunities(
     urgency_tier: int | None = None,
     counterparties: str = "all",
 ) -> list[EnrichedOpportunity]:
+    return [_with_counterparties(o, counterparties)
+            for o in await open_opportunities(limit=limit, min_rank=min_rank, urgency_tier=urgency_tier)]
+
+
+async def open_opportunities(
+    limit: int = 100,
+    min_rank: float = 0.0,
+    urgency_tier: int | None = None,
+) -> list[EnrichedOpportunity]:
+    """The opportunities the radar lists: open (ACTIVE / MARGINAL, not expired), one
+    per corridor. The directory counts a company's opportunities against this same
+    list, so the two pages cannot disagree."""
     repo = await get_repository()
     opps = await repo.list_active(limit=limit * 2, min_rank=min_rank)
     if urgency_tier is not None:
@@ -1371,8 +1383,7 @@ async def list_opportunities(
         key = (o.hs_code, o.market)
         if key not in latest or o.scanned_at > latest[key].scanned_at:
             latest[key] = o
-    return [_with_counterparties(o, counterparties)
-            for o in [o for o in opps if latest[(o.hs_code, o.market)] is o][:limit]]
+    return [o for o in opps if latest[(o.hs_code, o.market)] is o][:limit]
 
 
 async def _opportunity_id_for(hs_code: str, market: str) -> str:

@@ -66,6 +66,54 @@ class TestRecordScan:
         assert [b.name for b in await directory.list_counterparties("buyer", q="SPICE")] == ["Spice Importers Inc"]
 
 
+class TestOpenOpportunities:
+    """The directory's badge counts what the Opportunity Radar lists, not history."""
+
+    @pytest.mark.asyncio
+    async def test_only_opportunities_the_radar_lists_count_as_open(self):
+        from datetime import timedelta
+
+        from services.trade_min import repository as repo_mod
+        from tests.factories import make
+
+        now = datetime.now(timezone.utc)
+        repo_mod._repository = repo = repo_mod.InMemoryFallbackRepository()
+        try:
+            base = dict(hs_code="100630", status="ACTIVE", arbitrage_rank=50.0, urgency_tier=1,
+                        expires_at=now + timedelta(days=1))
+            await repo.save(make(svc.EnrichedOpportunity, opportunity_id="OPEN", market="AE", scanned_at=now, **base))
+            await repo.save(make(svc.EnrichedOpportunity, opportunity_id="DEAL", market="SA", scanned_at=now,
+                                 **{**base, "status": "CONVERTED"}))
+            await repo.save(make(svc.EnrichedOpportunity, opportunity_id="EXPIRED", market="DE", scanned_at=now,
+                                 **{**base, "expires_at": now - timedelta(hours=1)}))
+            for oid in ("OPEN", "DEAL", "EXPIRED", "DELETED"):
+                await directory.record_scan("100630", "AE", [_buyer()], [], outcome=f"opportunity {oid}",
+                                            opportunity_id=oid)
+            await directory.record_scan("100630", "AE", [], [_seller()], outcome="no opportunity: x")
+
+            [b] = await directory.list_counterparties("buyer")
+            [s] = await directory.list_counterparties("supplier")
+            assert b.opportunity_ids == ["OPEN", "DEAL", "EXPIRED", "DELETED"]      # history kept
+            assert b.open_opportunity_ids == ["OPEN"]
+            assert b.open_opportunity_ids == [o.opportunity_id for o in await svc.list_opportunities()]
+            assert s.open_opportunity_ids == []
+            # never written back to the store
+            assert (await (await directory.get_directory()).get(b.id)).open_opportunity_ids is None
+        finally:
+            repo_mod._repository = None
+
+    @pytest.mark.asyncio
+    async def test_unreadable_opportunities_leave_the_count_unknown(self):
+        await directory.record_scan("100630", "AE", [_buyer()], [], outcome="opportunity O1", opportunity_id="O1")
+
+        async def boom(**_):
+            raise RuntimeError("store down")
+
+        with patch.object(svc, "open_opportunities", boom):
+            [b] = await directory.list_counterparties("buyer")
+        assert b.opportunity_ids == ["O1"] and b.open_opportunity_ids is None
+
+
 class TestScanWiring:
     @pytest.mark.asyncio
     async def test_tariff_discarded_corridor_still_records_counterparties(self):
