@@ -273,7 +273,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ## P1 — needed before running more than a handful of deals a month
 
-206 items.
+223 items.
 
 ### 1.1 Money — Accounts, credentials and configuration (readiness gate)
 - [ ] **(Eng)** `escrow_proof_links` WARN — set `PORTLESS_PUBLIC_BASE_URL` (public HTTPS address of the backend) and `ESCROW_PROOF_LINK_SECRET` so every stage release uploads a signed proof sheet to Tazapay.
@@ -499,6 +499,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ### 11.4 Win more and repeat — New features to raise profit per deal (product)
 - [ ] **(Biz/Eng)** **Repeat orders and annual contracts**: a "reorder" button, reminders before the buyer's next usual order date, framework contracts with monthly lifts.
+- [ ] **(Eng)** **Already-traded buyers and suppliers first**: a company PortLess has completed a deal with (PAID, no dispute or refund) is tried before a new one of the same product. Mark it on the directory record ("traded": deals completed, last deal, HS codes, dispute / refund count) and show it on Buyers & Suppliers and the radar. Use it in four places: (1) the scan adds traded companies for the HS code to the opportunity's buyers / suppliers even when the web search did not find them; (2) the outreach funnel contacts traded buyers first and the RFQ shortlist (`RFQ_MAX_SUPPLIERS`) always includes traded suppliers; (3) pair scoring and the match board rank a traded pair higher (today `outcomes.py` only adjusts the chance of closing); (4) before a negotiation opens with a new company, check whether a traded one can take the order (product, quantity, market, still passes validation) and ask it first. Never overrides a failed validation, a compliance hold or the margin floor; a past dispute or refund lowers the priority instead of raising it.
 - [ ] **(Eng)** **Buyer scoring for outreach**: focus the funnel on buyers most likely to close (reply rate, import history, fit score) — less outreach cost per deal.
 - [ ] **(Eng)** Funnel analytics: scans → prospects → interested → matched → PI → paid, with time and cost per step.
 
@@ -622,6 +623,28 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 
 ### 14.8 Ongoing compliance calendar — Starting the company (non-technical: registrations, accounts, set-up)
 - [ ] **(Legal/Ops)** One calendar with an owner for every recurring filing: monthly GST returns (GSTR-1, GSTR-3B), TDS returns, IEC annual update (April – June), LUT renewal (April), RCMC renewal, ROC annual filings (AOC-4, MGT-7), directors' KYC (DIR-3 KYC), income-tax return and tax audit, DSC renewal, insurance renewals.
+
+### 15.1 What is stored — Exact product requirement per buyer and supplier
+- [ ] **(Ops/Eng)** **Specification template per catalogue product**: each `ProductLine` lists the attributes that define a tradeable lot of that product, each with allowed values and a unit. Onion (HS 0703.10): form (fresh / dehydrated — a different HS code), variety and colour (Nashik red, pink, white, Bellary, Krishnapuram rose), bulb size in mm (45 to 55, 55+), crop (new / stored, month), quality tolerances (sprouting, rot, double bulbs, moisture), packing (5 / 10 / 25 / 50 kg mesh or jute bag), container (reefer or ventilated, MT per box). Without a template the product stays free text, as today.
+- [ ] **(Eng)** **Buyer requirement on the directory record, per product**: what this buyer wants of this product, not only that it "buys onion": the template attributes plus quantity per order, how often, destination port, incoterm, target price and its basis, certificates and documents asked for (phytosanitary, fumigation, origin, organic), shelf life on arrival, label / private label, payment terms, season it buys in.
+- [ ] **(Eng)** **Supplier offer on the directory record, per product**: what this supplier can actually supply: varieties, sizes and grades it packs, capacity per month, minimum order, months it has stock, packing options, price with its basis (ex-works / FOB) and date, certificates it holds (FSSAI, APEDA, GlobalG.A.P.), own packhouse or trader, plant location and nearest port.
+- [ ] **(Eng)** **Every fact carries its source and date**: company website, the buyer's / supplier's own e-mail, a completed deal, or staff. A fact nobody stated is shown as "not known", never filled from the HS code or a guess. A newer statement from the company replaces an older one; a staff entry is never overwritten by a scan.
+- [ ] **(Eng)** **Exact product code and name**: store the 8-digit ITC-HS code where known (the 6-digit code mixes different goods), one product name per catalogue line with its synonyms mapped to it (onion / shallot / "big onion"), and keep fresh, dried and processed forms as separate products.
+
+### 15.2 How it is filled — Exact product requirement per buyer and supplier
+- [ ] **(Eng)** **From the company's own website at scan time**: the contact finder already opens the site; read the product page into the template (varieties, sizes, packing, certificates) for the top N companies, with the page as the source.
+- [ ] **(Eng)** **From replies, and kept**: an outreach reply is already read into `BuyerRequirement` and a quote into `SupplierOffer`, but both live on the prospect and are lost to the directory when it closes. Copy them onto the company's record, and extend both readers to the template attributes (today: one free-text `grade` and `packaging`).
+- [ ] **(Eng)** **Ask for what is missing**: the buyer introduction and the RFQ list the product's unanswered template attributes as short questions (variety, size, packing, quantity per order, port), not a general "send your requirement"; the negotiation's `missing_information` uses the same list.
+- [ ] **(Eng)** **From completed deals**: at PAID, write the PI / PO specification, quantity, packing and price onto both companies' records as their proven requirement / offer (feeds 11.4 "already-traded first").
+- [ ] **(Eng)** **Staff edit**: a form on the company's page to enter or correct the requirement / offer per product (a phone call, a trade-fair meeting), audited.
+
+### 15.3 How it is used — Exact product requirement per buyer and supplier
+- [ ] **(Eng)** **Match on the specification, not the HS code**: a buyer of 55 mm+ red onion in 25 kg bags is paired only with a supplier that packs it; a conflict on variety, size, form or packing is a hard filter and each matching attribute raises the pair score. Today a web-search buyer's product fit is a fixed 85 and only `grade` conflicts are checked.
+- [ ] **(Eng)** **Buyers & Suppliers page**: one crisp line per product on each row ("Onion · red · 55 mm+ · 25 kg mesh · 2 × 40 ft reefer / month · CIF Jebel Ali"), how complete the requirement is (e.g. 6 of 9 known), a detail panel with each fact's source and date, and filters by product and attribute (variety, size, packing, port).
+- [ ] **(Eng)** **Radar and prospect pages** show the same line for each buyer and supplier, and what is still unknown before a deal starts; the pre-deal rescore lists the missing attributes under "still needed".
+- [ ] **(Eng)** **Carried into the deal**: the agreed specification fills the PI / PO description, the packing spec, the QC booking (inspection criteria, AQL, QIMA product ids) and the cost sheet (reefer vs dry box, MT per container) instead of being typed again at each step.
+- [ ] **(Eng)** **Export policy per exact product**: the trade check reads the 8-digit code and form; onion is a product India has restricted before (export ban, minimum export price), so the current DGFT notification is checked before outreach and again before the PI (3.4, compliance seed).
+- [ ] **(QA)** Gherkin cases + automation: a requirement read from a reply lands on the directory record with its source; an unknown attribute is never invented; a variety / size / packing conflict blocks the pair; the outreach e-mail asks only the unanswered attributes; a staff entry survives the next scan; browser case for the product line, completeness and filters.
 
 ---
 
@@ -842,3 +865,24 @@ as the one start-up checklist.
 
 Fees, forms and deadlines change; confirm each step with the CA before filing. The product examples
 (spices, basmati) follow the HS codes used in testing; the real list comes from the catalogue.
+
+### 15 Exact product requirement per buyer and supplier
+
+**The gap.** The directory knows that a company buys or sells an HS code ("onion"), not what it
+buys or sells. Two onion buyers can want different goods: one 55 mm+ red onion in 25 kg mesh bags
+by reefer every month, the other dehydrated flakes. Pairing, outreach and pricing treat them the
+same today, and the exact requirement is only learned late, inside one prospect, and is lost to the
+directory when that prospect closes.
+
+**The idea.** Each catalogue product has a short specification template. Each buyer and supplier
+record carries, per product, what that company itself has said about it, with the source and date
+of every fact, and "not known" for the rest. Outreach and RFQs ask for exactly the unknown facts;
+matching compares specifications; the agreed specification then travels unchanged into the PI, PO,
+packing, inspection and cost sheet.
+
+**Order of work.** 15.1 (template, then the two record shapes) first; 15.2 "from replies, and kept"
+and "staff edit" give data at no extra scan cost; the website reader costs Apify runs and comes
+after. 15.3 matching should only become a hard filter once enough records carry a specification,
+otherwise every pair is filtered out as "not known"; until then an unknown attribute lowers the
+score and is listed as still needed. Area 10 "product tree ids, packing standards, AQL and quality
+specs per product line" is the Ops half of the template.
