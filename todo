@@ -694,6 +694,17 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 - [ ] **(Eng)** Demand gate uses these sources too: a market with recent monthly imports from a national source is "live demand" even when Comtrade has nothing (89 buyers were dropped as "no live demand data" on 2026-11-17).
 - [ ] **(QA)** Tests per connector on recorded responses (`httpx.MockTransport`), the merge rule (freshest-with-quantity wins, disagreement flagged), and the actor's normaliser; readiness shows each source live / stub.
 
+
+### 18.1 Opportunities from companies, not only from market statistics — How opportunities are found
+- [ ] **(Eng)** **Company-led opportunities**: group the buyer / supplier directory by product × country; where at least `COMPANY_LED_MIN_BUYERS` (3) checked buyers with a usable e-mail and at least 2 reachable suppliers exist, create an opportunity even without a Comtrade gap. Price it from the price book / mandi / any market price, mark it "no market statistics" (`source=directory`), and let the profit ranking and the ready-to-start checklist judge it like any other. On 2026-11-17 the UAE had 42 named importers and no opportunity; 232 of 287 directory buyers were linked to none.
+- [ ] **(Eng)** **Profit gate instead of the gap gate**: today a corridor without a measured Comtrade gap builds no opportunity (`_scan_one`: "no live demand data" / "no measured price gap" dropped 126 buyers on 2026-11-17). Keep a corridor whenever buyer price (any source) − supplier price (any source) − landed costs clears the margin floor; the Comtrade gap becomes one input and a warning (`price_check_needed`, `no_market_statistics`), never the gate. Never invent a price: no price on one side still means no opportunity, listed in the scan report with what is missing.
+- [ ] **(Eng)** **The worldwide search adds markets**: a country where the worldwide buyer search (`_worldwide_counterparties`, 53 companies on 2026-11-17, "not tied to a scanned market") found at least N buyers of a product is proposed as a new market for that catalogue line (staff accept with one click on the Catalogue page) and scanned next time, instead of the companies staying in the directory only.
+- [ ] **(Eng)** **Demand signals create opportunities**: a buyer's inbound reply or enquiry (e-mail mapped to no deal), an RFQ or tender, a buyer who asked for another product during outreach, and a past buyer due to reorder (11.4 "repeat orders") each create or refresh an opportunity for that product × market with the buyer attached first — the strongest demand there is, today none of them can start one.
+- [ ] **(Eng)** **Supplier-led opportunities**: a checked Indian supplier with a price and capacity for a product (scan, RFQ reply, manual supplier 5.5) is matched against every market whose directory buyers want the product, not only the scanned corridors; surplus capacity offered by a supplier starts a search for buyers (links 5.5 "supply-first deal").
+- [ ] **(Eng/Ops)** **Clean the roles in the directory**: run the quality check (`quality.py`) over the stored directory — "buyers" in India for export markets and companies flagged `role_suspect` become suppliers (when they make the product) or are dropped from outreach; today the check only runs on new scans (30 Indian "buyers" on 2026-11-17).
+- [ ] **(Eng)** **Radar shows how each opportunity was found**: source chip "market statistics" / "directory" / "buyer enquiry" / "supplier offer" / "worldwide search", filter by it, and count per source in the scan report — so the operator can compare which source turns into deals (feeds 11.4 funnel analytics).
+- [ ] **(QA)** Tests: company-led opportunity from 3 checked buyers + 2 suppliers without Comtrade; profit gate keeps a corridor with no gap but a clearing margin and drops one with a price missing (scan report says what); a proposed market from the worldwide search; an inbound enquiry creates an opportunity; Indian "buyer" re-roled; browser case for the source chip and filter.
+
 ---
 
 ## P2 — improvements
@@ -916,6 +927,23 @@ as the one start-up checklist.
 
 Fees, forms and deadlines change; confirm each step with the CA before filing. The product examples
 (spices, basmati) follow the HS codes used in testing; the real list comes from the catalogue.
+
+### 18 How opportunities are found
+
+**Today.** Top-down only: product × market pairs (catalogue, scan dialog or defaults) → UN Comtrade demand
+and price gap → **gate** (no demand data or no measured gap = no opportunity) → web search for buyers and
+suppliers of that pair → pair scores → expected profit. The buyer / supplier directory is a by-product,
+never a source: on 2026-11-17 only 55 of 287 buyers were linked to an opportunity; 126 were dropped by the
+Comtrade gate and 53 worldwide-search companies were never tied to a market.
+
+**The idea.** Find opportunities from both ends: keep the market-led scan, and add opportunities that start
+from companies (directory, enquiries, suppliers' offers, the worldwide search). Every opportunity, whatever
+its source, is judged by the same expected profit and ready-to-start checklist (16), with its weaker price
+basis shown — so more opportunities do not mean less honest ones.
+
+**Order of work.** 18.1 company-led opportunities and the profit gate first (data already in the
+directory, no extra Apify runs); then demand signals and supplier-led; the worldwide-search markets and
+the role clean-up alongside; area 17 (fresher national statistics) makes the market-led half stronger.
 
 ### 17 Trade data beyond UN Comtrade
 
