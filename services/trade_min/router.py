@@ -1,7 +1,7 @@
 """HTTP routes for the Trade-Min service (FR-1, LLD 4.5, §10)."""
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -221,8 +221,43 @@ async def price_book(hs_code: str, market: str | None = Query(None, description=
             "observations": [o.model_dump(mode="json") for o in obs]}
 
 
-def _book(rows: list[CounterpartyRecord], *, stage: str | None, contactable: bool, sort: str) -> list[CounterpartyRecord]:
-    """Filter / order the annotated directory like a trading book."""
+# Sort keys for the directory. Each returns a value where larger = earlier in "desc".
+_STAGE_RANK = {"traded": 8, "in_deal": 7, "quoted": 6, "interested": 6, "replied": 5, "contacted": 4,
+               "new": 3, "declined": 1, "do_not_contact": 0}
+
+
+def _last_activity(r: CounterpartyRecord) -> str:
+    rel = r.relationship or {}
+    return max(filter(None, [rel.get("last_reply_at"), rel.get("last_contact_at"), rel.get("last_quote_at")]),
+               default="")
+
+
+def _price(r: CounterpartyRecord) -> float | None:
+    rel = r.relationship or {}
+    if r.role == "supplier":
+        return rel.get("last_quote_usd_per_mt") or r.estimated_fob_price_usd
+    return rel.get("target_price_usd_per_mt")
+
+
+SORTS: dict[str, tuple[Any, str]] = {
+    # key: (value function, default order)
+    "score": (lambda r: r.score or 0.0, "desc"),
+    "recent": (lambda r: r.last_seen_at.isoformat() if r.last_seen_at else "", "desc"),
+    "added": (lambda r: r.first_seen_at.isoformat() if r.first_seen_at else "", "desc"),
+    "activity": (_last_activity, "desc"),
+    "stage": (lambda r: _STAGE_RANK.get((r.relationship or {}).get("stage", "new"), 3), "desc"),
+    "name": (lambda r: (r.name or "").lower(), "asc"),
+    "country": (lambda r: (r.country or "~").upper(), "asc"),
+    "fit": (lambda r: r.fit_score if r.fit_score is not None else -1, "desc"),
+    "price": (_price, "asc"),
+    "seen": (lambda r: r.times_seen or 0, "desc"),
+}
+
+
+def _book(rows: list[CounterpartyRecord], *, stage: str | None, contactable: bool, sort: str,
+          order: str | None = None) -> list[CounterpartyRecord]:
+    """Filter / order the annotated directory like a trading book. Rows without a value
+    for the sort key (no price, no activity) always go last, whatever the order."""
     if stage:
         rows = [r for r in rows if (r.relationship or {}).get("stage", "new") == stage]
     if contactable:
@@ -230,9 +265,12 @@ def _book(rows: list[CounterpartyRecord], *, stage: str | None, contactable: boo
                 and (r.validation is None or r.validation.status != "failed")
                 and (r.relationship or {}).get("stage") != "declined"
                 and (r.email or r.phone)]
-    if sort == "score":
-        rows = sorted(rows, key=lambda r: (r.score or 0.0), reverse=True)
-    return rows
+    fn, default_order = SORTS.get(sort, SORTS["recent"])
+    desc = (order or default_order) == "desc"
+    have = [r for r in rows if fn(r) not in (None, "")]
+    missing = [r for r in rows if fn(r) in (None, "")]
+    have.sort(key=lambda r: (fn(r), (r.name or "").lower()), reverse=desc)
+    return have + missing
 
 
 @router.post("/directory/clean")
@@ -249,6 +287,33 @@ async def directory_summary() -> dict:
     which products / countries), verified, contactable, the hottest companies and the top scores."""
     from . import counterparty_profile
     return await counterparty_profile.summary()
+
+
+@router.get("/directory/{role}/page")
+async def directory_page(
+    role: Literal["buyers", "suppliers"],
+    hs_code: str | None = Query(default=None),
+    market: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    country: str | None = Query(default=None),
+    validation_status: Literal["verified", "unverified", "failed"] | None = Query(default=None, alias="validation"),
+    stage: str | None = Query(default=None),
+    contactable: bool = Query(default=False),
+    sort: str = Query(default="score"),
+    order: Literal["asc", "desc"] | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=60, ge=1, le=500),
+) -> dict:
+    """One page of the directory with the total: every matching company is cleaned, scored,
+    filtered and sorted first, then the page is cut — so the order and the count are right
+    for the whole directory, not only for the first 200 rows."""
+    rows = await directory.list_counterparties(role[:-1], hs_code=hs_code, market=market, q=q,
+                                               country=country, limit=100_000, validation=validation_status)
+    rows = _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort, order=order)
+    page = rows[offset:offset + limit]
+    return {"items": [r.model_dump(mode="json") for r in page], "total": len(rows), "offset": offset,
+            "limit": limit, "sort": sort if sort in SORTS else "recent",
+            "order": order or SORTS.get(sort, SORTS["recent"])[1]}
 
 
 @router.get("/{role}/{record_id:path}/profile")
@@ -317,7 +382,8 @@ async def list_buyers(
         default=None, alias="validation", description="Scan-time check result; omit for all"),
     stage: str | None = Query(default=None, description="Relationship stage: new, contacted, replied, interested, quoted, in_deal, traded, declined, do_not_contact"),
     contactable: bool = Query(default=False, description="Only companies outreach may write to (not failed, not do-not-contact, not declined)"),
-    sort: Literal["recent", "score"] = Query(default="recent"),
+    sort: str = Query(default="recent", description="score, recent, added, activity, stage, name, country, fit, price, seen"),
+    order: Literal["asc", "desc"] | None = Query(default=None, description="Default per sort (score desc, name asc …)"),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> list[CounterpartyRecord]:
     """Every buyer a scan found, in any country — with or without an opportunity
@@ -325,7 +391,7 @@ async def list_buyers(
     rows = await directory.list_counterparties("buyer", hs_code=hs_code, market=market, q=q,
                                                country=country, limit=limit,
                                                validation=validation_status)
-    return _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort)
+    return _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort, order=order)
 
 
 @router.get("/suppliers", response_model=list[CounterpartyRecord])
@@ -338,7 +404,8 @@ async def list_suppliers(
         default=None, alias="validation", description="Scan-time check result; omit for all"),
     stage: str | None = Query(default=None, description="Relationship stage: new, contacted, replied, interested, quoted, in_deal, traded, declined, do_not_contact"),
     contactable: bool = Query(default=False, description="Only companies outreach may write to (not failed, not do-not-contact, not declined)"),
-    sort: Literal["recent", "score"] = Query(default="recent"),
+    sort: str = Query(default="recent", description="score, recent, added, activity, stage, name, country, fit, price, seen"),
+    order: Literal["asc", "desc"] | None = Query(default=None, description="Default per sort (score desc, name asc …)"),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> list[CounterpartyRecord]:
     """Every supplier a scan found, in any country (``country=IN`` → India only) —
@@ -346,7 +413,7 @@ async def list_suppliers(
     rows = await directory.list_counterparties("supplier", hs_code=hs_code, market=market, q=q,
                                                country=country, limit=limit,
                                                validation=validation_status)
-    return _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort)
+    return _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort, order=order)
 
 
 @router.post("/{role}/{record_id:path}/validate", response_model=CounterpartyRecord)
