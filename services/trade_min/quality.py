@@ -24,6 +24,7 @@ from typing import Iterable
 from .schemas import BuyerSignal, SellerCandidate
 
 ROLE_SUSPECT = "role_suspect"
+WRONG_MARKET = "wrong_market"
 PRODUCT_MISMATCH = "product_mismatch"
 NAME_FROM_DOMAIN = "name_from_domain"
 
@@ -59,6 +60,7 @@ PRODUCT_WORDS: dict[str, tuple[str, ...]] = {
 _RED_PEPPER = re.compile(r"\bred\s+peppers?\b", re.IGNORECASE)
 
 _INDIAN_FORM = re.compile(r"\b(?:llp|pvt\.?|private\s+limited|\(opc\))\b", re.IGNORECASE)
+_EXPORTER_NAME = re.compile(r"\bexporters?\b", re.IGNORECASE)
 _EXPORTER_TEXT = re.compile(
     r"\b(?:exporters?|manufacturers?)\b[^.]{0,40}\b(?:india|indian)\b|\b(?:india|indian)\b[^.]{0,40}\bexporters?\b",
     re.IGNORECASE)
@@ -112,6 +114,8 @@ def looks_like_indian_exporter(b: BuyerSignal, market: str) -> bool:
         return True
     if _INDIAN_FORM.search(b.buyer_name or ""):
         return True
+    if _EXPORTER_NAME.search(b.buyer_name or ""):
+        return True  # "Hexa Global Exporters" pitched as a German importer
     return bool(_EXPORTER_TEXT.search(" ".join(x for x in (b.buyer_name, b.fit_reason) if x)))
 
 
@@ -121,12 +125,16 @@ def _add_flag(flags: list[str], flag: str) -> None:
 
 
 def check_buyers(buyers: list[BuyerSignal], market: str) -> int:
-    """Flag buyers that look like Indian exporters; returns how many were flagged."""
+    """Flag buyers that look like exporters, and buyers based outside the market they
+    were searched for; returns how many were flagged as exporters."""
     n = 0
     for b in buyers:
         if looks_like_indian_exporter(b, market):
             _add_flag(b.flags, ROLE_SUSPECT)
             n += 1
+        country = (b.buyer_country or "").upper()
+        if market and country and country != market.upper() and market.upper() != "IN":
+            _add_flag(b.flags, WRONG_MARKET)
         if b.name_source == "domain":
             _add_flag(b.flags, NAME_FROM_DOMAIN)
     return n

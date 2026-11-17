@@ -705,6 +705,89 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 - [ ] **(Eng)** **Radar shows how each opportunity was found**: source chip "market statistics" / "directory" / "buyer enquiry" / "supplier offer" / "worldwide search", filter by it, and count per source in the scan report — so the operator can compare which source turns into deals (feeds 11.4 funnel analytics).
 - [ ] **(QA)** Tests: company-led opportunity from 3 checked buyers + 2 suppliers without Comtrade; profit gate keeps a corridor with no gap but a clearing margin and drops one with a price missing (scan report says what); a proposed market from the worldwide search; an inbound enquiry creates an opportunity; Indian "buyer" re-roled; browser case for the source chip and filter.
 
+
+### 19.1 Prospect desk — trading the prospect stage
+- [x] **(Eng)** **Prospect desk** — done 2026-11-17 (`shared/orchestration/prospect_desk.py`, `GET /deals/prospects/desk`, Prospects page): per prospect the best buyer × supplier pair (margin/MT, chance, expected value, firm or estimate), the radar's original estimate, whose move it is (`us` / `buyers` / `buyer` / `suppliers`) and for how many days, stalled (idle ≥ `PROSPECT_STALL_DAYS` 5), quotes expiring / expired, undelivered introductions, and ranked next moves (confirm, send offer, push supplier, best and final, reconfirm quote, contact buyers, chase quotes, fix mailbox, park after `PROSPECT_DROP_DAYS` 21, drop). Summary cards: pipeline value, ready to confirm, our move, stalled, quotes to reconfirm; sort by priority / value / idle / newest; filter "Our move" / "Stalled".
+- [x] **(Eng)** **Walk-away and target prices per pair** — done 2026-11-17 (`matchmaking.negotiation_targets`): highest supplier FOB and lowest buyer price that keep the margin floor, and both at the target margin (`MATCH_TARGET_MARGIN_PCT` 12); "push the supplier to ≤ X FOB (−Y/MT) or the buyer to ≥ Z" as the next step when under the floor; match board column "Walk-away".
+- [x] **(Eng)** **Quotes: age, validity, leverage** — done 2026-11-17: quote age and days of validity left per pair, "expires in N days — ask to reconfirm" within 3 days, expired quotes listed on the board (still not scored), best quote and spread with "ask the other suppliers to match or beat it".
+- [x] **(Eng)** **One cost model for radar and match board** — done 2026-11-17: the board uses the radar's lane freight (`freight_lanes`), reefer per product and confirmed export incentives (`incentives`), shown in its assumptions.
+- [x] **(Eng)** **Outreach e-mail fixes found on live data** — done 2026-11-17: (1) the contact finder's note to the operator ("Write to einkauf@… — the purchasing inbox … (MX ok, listed on /kontakt/)") was the first line of every buyer introduction — now filtered (`outreach.usable_pitch`, also at scan time), the standard opener is used instead; (2) a send that fails in transport ("Connection lost") is recorded on the candidate (`send_error`, attempts) instead of leaving it "pending" as if untouched; (3) the introduction named five inspectors while only QIMA is booked — it now names only `QC_PROVIDERS_ENABLED`.
+- [ ] **(Eng/Ops) P0** **Outbound mail is failing**: on 2026-11-17 every buyer introduction of the 8 live prospects failed with "Connection lost" (10 `RESOLVE_EXCEPTION` gates pending, `CALLBACK_FAILED`); no buyer has been contacted, one prospect is 7 days old. Fix the SMTP / gateway connection (1.3), then resend from each prospect (Contact next buyers) — the candidates from before the fix carry no `send_error`, so check them by hand.
+- [ ] **(Eng)** **Retry transport failures automatically**: a failed outreach / RFQ send retries with back-off (e.g. 5 min, 30 min, 2 h) before it becomes a `deal.exception`, and the prospect shows "Retry sends" for the operator.
+- [ ] **(Ops/Eng)** Clean the stored operator notes out of `buyer_candidates[].pitch_angle` / directory records (the filter stops them reaching a buyer; the data still holds them).
+- [ ] **(Eng)** **Best-and-final round by e-mail**: today the desk only suggests it. A templated e-mail to every other quoted supplier ("our best price is X FOB for this quantity — can you match or beat it by <date>?", never naming the competitor) on the RFQ thread, behind a gate; replies flow into the normal quote intake.
+- [ ] **(Eng)** **Reconfirm a quote before it expires**: the deal watcher e-mails the supplier N days before `validity_days` runs out while the prospect is open ("please confirm your price of X stands until …"); a reply extends the quote, silence marks it expired.
+- [ ] **(Eng)** **Price discovery across buyers**: send the indicative offer to every interested buyer at once (each its own range from its own pair), keep the best reaction, and sell to the highest — today one buyer at a time.
+- [ ] **(Eng)** **Counter-offer ladder**: when a buyer counters, show the concession steps from our ask to the walk-away price (in 2–3 moves) so the operator never concedes past the floor in one go; reuse `agents/negotiation_agent/pricing.py`.
+- [ ] **(Eng)** **Park / drop as actions**: "Park" (stop reminders, keep the record) and "Drop" (close as NEGOTIATION_FAILED / CANCELLED with a reason feeding `outcomes`) buttons on the desk, with the reason recorded — today they are suggestions only.
+- [ ] **(Eng)** **Desk in the daily digest and Telegram**: the "our move" list and stalled prospects with their next move each morning (`shared/orchestration/digest.py`).
+- [ ] **(Eng)** **Effort per prospect**: e-mails sent, replies, Apify cost (16 scan cost) and operator touches next to its expected value, so prospects that eat time without moving show up.
+- [ ] **(QA)** Browser cases for the desk (TC-WEB-041 … TC-WEB-044 in `docs/testing/BROWSER_SCENARIOS.md`) — not automated (no browser runner yet, 6.2). Backend: `tests/test_prospect_desk.py` (23).
+
+
+### 20.1 Buyers & Suppliers as a trading book
+- [x] **(Eng)** **Relationship per company across every prospect and deal** — done 2026-11-17 (`services/trade_min/relationships.py`): stage (never contacted → contacted → replied → said yes / quoted → in a deal → traded, or declined / do not contact), prospects it is in, live and won deals, last contact and reply, reply rate; buyers' stated target price and requirement; suppliers' last quote and how it compares with the product's median. Joined by website / e-mail domain, else name (free-mail never joins companies).
+- [x] **(Eng)** **Counterparty score** — done 2026-11-17: 0–100 from the check, a usable e-mail, engagement, past outcomes, fit, a quote below the median; data-quality flags −30; failed / do-not-contact = 0; the basis in the tooltip. Directory sorted best first; filters by stage and "Contactable".
+- [x] **(Eng)** **Do-not-contact list** — done 2026-11-17: a "not interested" reply puts the company on it (the introduction promises "we will not write again" — before, the next prospect wrote to it again); staff set / clear it with a reason (`PUT /trade-min/{buyers,suppliers}/{id}/contact-preference`); no scan clears it; outreach skips it in every prospect (the declined address everywhere, the company's domain through its record).
+- [x] **(Eng)** **Exporter "buyers" kept out of outreach** — done 2026-11-17: the stored directory is checked with the quality rules on read (15 "buyers" flagged `role_suspect` on live data, e.g. Klarharvest, Elysiumagrico); outreach skips them with the reason on the candidate.
+- [x] **(Eng)** **Directory clean-up on read + "Clean directory"** — done 2026-11-17: names cut out of marketing sentences and split from run-together domains ("Jimmyandsons" → "Jimmy & Sons"), applied when listed; `POST /trade-min/directory/clean` (staff button) stores it. `clean_existing` was never called before.
+- [ ] **(Ops)** Press "Clean directory" once on production to store the cleaned names and flags.
+- [ ] **(Legal) P1** **Cold e-mail rules per market**: several target markets restrict unsolicited commercial e-mail even to businesses (Germany UWG §7 needs prior consent; EU ePrivacy; UK PECR treats corporate subscribers differently; US CAN-SPAM opt-out). Confirm per market what the buyer introduction may do (first contact by e-mail, phone or a form; legitimate-interest record; opt-out wording) — the do-not-contact list is necessary but not sufficient.
+- [x] **(Eng)** **Card view + company profile** — done 2026-11-17: Buyers & Suppliers opens as cards (initials, flag, score ring, stage, check, new / hot / do-not-contact badges, the key fact — buyer's wants and target, supplier's price vs median — activity, mail / phone / check / open) with a Cards / Table switch; a pipeline strip per role (never contacted → traded, click to filter), "New this week" (by product and country) and "Hot — replied or quoted" (`GET /trade-min/directory/summary`); a side panel per company (`GET /trade-min/{buyers,suppliers}/{id}/profile`): next moves, contact and trade facts, why this score, every prospect / deal it is in, a dated timeline, do not contact; **Add to prospect** (`POST …/{id}/add-to-prospect`): a buyer joins the prospect's outreach funnel, a supplier joins its match board with the quote pending — refused for do-not-contact, a failed check, an exporter posing as a buyer or a buyer without an e-mail.
+- [ ] **(Eng)** **Company page, the rest**: e-mails sent / received with the company (correspondence log across deals), its requirement / offer per product (15), and "start a prospect with this company" (supply-first / buyer-first deal, 5.5).
+- [ ] **(Eng)** **Supplier added to a prospect gets the RFQ**: today it joins the match board with the quote pending; send it the quote request e-mail through the `DISPATCH_RFQ` gate (5.5 "RFQ leg").
+- [ ] **(Eng)** **People, not only mailboxes**: contact persons per company (name, role — purchasing / export manager, e-mail, phone / WhatsApp, preferred language), the person each prospect wrote to, and which person replied.
+- [ ] **(Eng)** **Notes and follow-ups**: staff notes on a company (a call, a trade-fair meeting) and a reminder date; the notes also go to knowledge memory (`memory.remember_note`).
+- [ ] **(Eng)** **Supplier performance from real deals**: QC pass rate, on-time readiness vs the promised date, disputes, price kept vs re-quoted — on the record and in the score (today only signed / completed counts from `outcomes`).
+- [ ] **(Eng)** **Duplicates**: the same company under two domains or names (group site and local site) — suggest merges, staff confirm, history moves to one record.
+- [ ] **(Eng)** **Bulk actions and export**: check the selected (with the Apify cost first), do not contact, add to a prospect, export CSV.
+- [ ] **(Eng)** **Unsubscribe link** in every outreach e-mail that sets do-not-contact without a reply (pairs with the legal item above).
+- [ ] **(QA)** Browser cases TC-WEB-045 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`) — not automated (6.2). Backend: `tests/test_counterparty_book.py` (16), `tests/test_counterparty_profile.py` (13).
+
+
+### 21.1 Search quality — done 2026-11-17 — Apify: more about each buyer and supplier
+- [x] **(Eng)** The product name sent to the search is a trade name, never the official HS text: on 2026-11-17 cached searches show queries like "Vegetables; onions, whole, cut, sliced, broken or in powder but not… importers, AE". `hs_names.search_name` (curated name → term built from the official text: "dried onions", "turmeric", "frozen shrimp"), used by the picker (shows "searches “…”"), the scan (`search_keyword` replaces an unsearchable name) and `_keyword_for` (never a bare number); curated names added for 0910 / 0909 / 0908 / 0712 / 0703 / 0801 subheadings (turmeric was searched as "spices").
+- [x] **(Eng)** Junk results dropped: lead-list pages ("150+ verified buyers", "importers database"), trade-data and promotion sites (IBEF, Eximhub, Megafishnet …); a "buyer" whose own name says Exporters is flagged `role_suspect`; a buyer based outside the searched market is flagged `wrong_market` ("Other country").
+- [x] **(Eng)** Search panel: the search name filled in by the picker, a warning when the name reads like the official text, "Will search: … in AE, DE … (catalogue / default markets) · exporters in India · about N paid search lines", the last search's per-market result on the page, results sorted best first. IndiaMART / TradeIndia are no longer called with an empty key (a 403 on every scan).
+- [x] **(Eng)** Names: more run-together domains split ("magnafoodservice" → "Magna Food Service"), a leading "Today," / "Hello," dropped.
+
+### 21.2 More about each buyer and supplier — Apify: more about each buyer and supplier
+Own actors on the `rich_minds` account (`/actor-pipeline`, or `/actor-implement` on an existing one); each new field goes onto the scan rows → directory record → relationships score. Measure every addition's cost with the scan cost meter (16) before turning it on for every scan.
+- [ ] **(Eng)** **Search in the market's language** (no new actor — PortLess side): today every query is English ("dried onions importers, DE"). Add the local terms per market (DE "Großhändler / Importeur", ES "importador / distribuidor", FR "importateur / grossiste", IT, NL, AR for the Gulf) and the product name in that language (catalogue field per product line, or the LLM gateway once with a human check). Expect far more real importers in non-English markets.
+- [ ] **(Eng)** **Contact persons, not only mailboxes** — extend `company-contact-finder-ai` (profile mode) to read the team / about / contact pages for named people and roles (purchasing / import / export manager), and the company's LinkedIn page URL; feeds 20 "people".
+- [ ] **(Eng)** **What the buyer sells, from its own site** — `company-contact-finder-ai` already opens the site: classify the product range (the corridor's product listed or not, private label, pack sizes, organic) into a product-fit score for buyers (today a web-search buyer's product fit is a fixed 85) and drop sites that sell something else; the specification template of 15.1 is the structured half.
+- [ ] **(Eng)** **Trade-fair exhibitor lists** — new actor `trade-fair-exhibitors-ai`: Gulfood, Anuga, SIAL, Biofach, World Food India, Fruit Logistica, Seafood Expo … exhibitor directories (company, country, product categories, website). Exhibitors are active traders with a budget: a higher-quality source of buyers and suppliers than a web search; refresh per fair edition.
+- [ ] **(Eng)** **Company age, size and activity** — add to `counterparty-check-ai`: domain age (RDAP / WHOIS), website still updated, employee range (company page), registry age where a free register exists (UK Companies House has a free API — a direct connector, no actor). A one-month-old domain with a free-mail contact is a risk signal for the check and the score.
+- [ ] **(Eng)** **Reputation / adverse media** — add to `counterparty-check-ai`: news and forum hits for fraud / scam / default with the company's name, and its public review rating where one exists; a hit makes the check `review`, never `failed` on its own.
+- [ ] **(Eng)** **Stale contacts refresh** — re-run the contact finder for directory companies whose e-mail bounced or whose record is older than 90 days when they enter a new prospect (not on every scan — cost).
+- [ ] **(Eng)** **Search diagnostics** — the actor's OUTPUT per query (sites found, dropped as directories / no contact / wrong country) stored with the scan report, so a market or product that returns junk shows why; try alternative terms ("trader", "supplier", "distributor") where a line returns fewer than N companies.
+- [ ] **(Biz)** Decisions that unlock more (already listed): Apify plan upgrade for Store actors and the AI tier (2.6), import records for proof that a buyer imports the product (12).
+- [ ] **(QA)** Tests for each new field on recorded actor output (normaliser), and a live smoke run per actor on the sandbox account before it is enabled.
+
+### 21.3 More buyers and suppliers to choose from — new list actors — Apify: more about each buyer and supplier
+Today buyers and suppliers come from one source: a web search per product × market (`company-contact-finder-ai`), about 5 companies a line. These actors add lists that are larger and better qualified. All are PortLess's own actors (`/actor-pipeline`, the `rich_minds` plan cannot run Store actors), read public pages only (respect each site's terms and robots rules; no LinkedIn scraping), and feed the same path: rows → `quality.py` / `validation.py` → directory with `source` → radar, desk and score. Each row keeps where it came from, so 18.1 "how each opportunity was found" can compare sources by deals won.
+
+Suppliers (India) — authoritative lists first:
+- [ ] **(Eng) P1** **Indian exporter registries** — `india-exporter-registries-ai`: the public registered-exporter lists of the Spices Board (CRES), APEDA, MPEDA (seafood), Tea / Coffee Boards and FIEO's member directory: company, registration number, products, city / state, contact. Registered exporters of the exact product, with a number the check can verify (13.6 checks a known supplier; this finds them).
+- [ ] **(Eng) P1** **Indian B2B supplier listings** — `india-b2b-suppliers-ai` (the `india-supplier-finder-ai` slot that was never built): public seller pages of IndiaMART, TradeIndia and ExportersIndia per product: company, city, listed price and unit, MOQ, GST-verified badge, years in business. Gives prices for the radar's supplier side before any RFQ. Works without the paid IndiaMART API keys.
+- [ ] **(Eng) P2** **Mandi traders** — licensed commission agents / traders published by state agricultural marketing boards (APMC) for the commodity's main mandis: sourcing for raw agri goods (onion, chilli, turmeric) beyond exporters.
+
+Buyers (importers abroad):
+- [ ] **(Eng) P1** **Association member lists** — `trade-association-members-ai`: member directories of ASTA (US spices), European Spice Association and its national members, FEDIOL, national rice / seafood / nut federations, Gulf foodstuff traders' groups. Members are established importers of the exact product. (The search drops association sites as "not a company" — right for the site itself; their member lists are the value.)
+- [ ] **(Eng) P1** **Names out of "top importers" pages** — `importer-list-extractor-ai`: the "Top 20 spice importers in Germany" / "rice importers in Dubai" articles the search drops today are lists of real companies. Extract the named companies from those pages, then run the contact finder on each — turns the junk the search finds into leads.
+- [ ] **(Eng) P1** **Business directories with categories** — `b2b-directory-companies-ai`: free public listings of Europages, Kompass (free tier), Dubai Chamber / Saudi chambers' member search, German IHK company search, by activity code and country: company, activity, size class, website. Many importers that do not rank in a web search.
+- [ ] **(Eng) P1** **Local business listings** — `local-business-leads-ai` on the Google Places API (needs a Google Maps Platform key, paid per request — cheaper than a Store actor and allowed by Google's terms): "spice wholesaler Hamburg", "rice trader Deira": name, address, phone, website, rating. Strong for wholesale markets (Dubai, Hamburg, Rotterdam, New Jersey).
+- [ ] **(Eng) P2** **Public buy requests** — `buy-leads-ai`: buy-offer boards (go4WorldBusiness, TradeKey, ExportersIndia buy leads, Alibaba RFQ public pages): buyer country, product, quantity, date. Real demand signals for 18.1 "demand signals create opportunities"; many are brokers, so they go through the same checks and start as `unverified`.
+- [ ] **(Eng) P2** **Food procurement tenders** beyond EU TED — `food-tenders-ai`: UN Global Marketplace (UNGM), World Food Programme, Saudi Etimad, US SAM.gov food awards: buyer, product, quantity, deadline. Large, paid-on-time buyers; a tender is time-boxed (urgency tier 3).
+- [ ] **(Eng) P2** **Who buys from the competing origins** — `competitor-clients-ai`: the "our clients / where we export" pages of the leading exporters from the market's main competing origin (from the radar's `competitors`, e.g. Vietnamese pepper exporters): named importers already buying the product from someone else — the buyers India's price advantage (16) is pitched to.
+
+Both:
+- [ ] **(Eng) P1** **Trade-fair exhibitors** — already 21.2 (`trade-fair-exhibitors-ai`); add the Indian fairs (World Food India, AAHAR, India International Seafood Show, Spices fairs) for suppliers.
+- [ ] **(Eng)** **One de-duplication across sources** — the same company from three lists becomes one directory record (domain → registration number → name + city), with every source kept in `sources`; a company found by more sources scores higher (it is more likely real and active).
+- [ ] **(Eng)** **Per-source yield on the radar / directory** — companies found, verified, contacted, replied, quoted and traded per source and per Apify dollar, so the next actor money goes to the source that turns into deals.
+- [ ] **(Legal)** Confirm per source that reading and storing the listing is allowed (site terms, database rights in the EU) and that the outreach rules of 20 (cold e-mail per market) apply to every list.
+
+
 ---
 
 ## P2 — improvements
@@ -837,6 +920,10 @@ Sorted by priority; each names the area it belongs to.
 - Readiness check `counterparty_validation` (12): fails in production (warns elsewhere) when `TRADE_MIN_VALIDATION_ENABLED=false` or the screening actor has no `APIFY_TOKEN`, so the radar's "Verified only" view can no longer be silently empty.
 - Opportunity Radar ranked by expected profit (16): margin per MT / container / lot, chance of closing (pair score, verified buyers, outcome calibration, corridor history), each price with its basis (buyer quote → price book → India-to-market → market average; supplier price → price book → Agmarknet mandi → India export average); net gap = gross − duty − freight (VAT no longer subtracted); implausible gaps flagged; Indian exporters listed as buyers and suppliers of another product flagged; cleaner company names; chilli / turmeric / saffron keywords fixed; scan report with drop reasons; running-deal warning; outreach names India's price advantage when Comtrade shows it.
 - Unit test cases in Gherkin per module (`docs/testing/unit/`, `scripts/gen_unit_gherkin.py`).
+- Buyers & Suppliers card view and company profile (20): pipeline strip, new this week, hot companies, side panel with next moves / prospects / timeline, add to prospect.
+- Buyer / seller search quality (21.1): searchable trade names instead of the official HS text, junk pages dropped, exporter and other-country buyers flagged, search panel shows what it will search and the last result, IndiaMART / TradeIndia not called without keys.
+- Buyers & Suppliers as a trading book (20): relationship stage, activity, prices and score per company; do-not-contact list honoured across prospects; exporter "buyers" skipped; directory names and roles cleaned.
+- Prospect desk (19): worth / whose move / next moves per prospect, walk-away and target prices, quote age and leverage, one cost model with the radar; outreach no longer opens with the contact finder's operator note, failed sends are recorded, only booked inspectors are named.
 - Opportunity Radar hand-off and truer profit (16): ready-to-start checklist, radar estimate carried into the deal and compared with the realised margin, export policy / news / destination needs before a deal, data year, export incentives, freight per lane, container per product, profit range, live USD/INR and mandi trend, yearly potential, scan cost, "what's missing and where to get it", time-sensitive sort, origin opportunity on the deal page.
 - PI acceptance price check (5.1, DEF-12 / TC-RSK-024): a buyer e-mail that accepts the PI but names another price (unit or total, rupees converted) opens `CONFIRM_PI_ACCEPTANCE` at L0 with flag `pi_price_mismatch` and both prices in the summary; repeating the PI price or total, or naming none, stays a plain acceptance.
 
@@ -927,6 +1014,52 @@ as the one start-up checklist.
 
 Fees, forms and deadlines change; confirm each step with the CA before filing. The product examples
 (spices, basmati) follow the HS codes used in testing; the real list comes from the catalogue.
+
+### 21 Apify: more about each buyer and supplier
+
+**Search quality (2026-11-17).** A review of the cached searches showed the product name sent to Apify was
+sometimes the official HS description ("Vegetables; onions, whole, cut … importers, AE") or a vague
+heading ("spices" for turmeric), and that lead-list sites, promotion bodies and foreign exporters came
+back as buyers. Those are fixed (21.1). Results for a good name are mostly real companies (spice houses in
+Hamburg, Spanish seafood wholesalers, Gulf rice traders).
+
+**More companies.** Today one source (a web search, about 5 companies per line) supplies every buyer and
+supplier. 21.3 adds list actors, best first: Indian exporter registries (Spices Board / APEDA / MPEDA:
+registered exporters with a number to verify), Indian B2B listings with prices, importer association
+member lists, names extracted from the "top importers" articles the search drops today, business
+directories with activity codes, and Google Places listings for wholesale hubs; then buy requests,
+food tenders and the clients of competing-origin exporters.
+
+**More information.** The biggest gains, in order: searching in the market's language (no actor cost),
+contact persons and the buyer's own product range (extensions of the contact finder the scan already
+runs), trade-fair exhibitor lists (a new, higher-quality source), then company age / reputation in the
+screening actor.
+
+### 20 Buyers & Suppliers as a trading book
+
+**Why.** The directory listed what a scan found (check, fit, last scan outcome) but not what happened with
+each company: whether PortLess wrote to it, whether it replied, what it asked for or quoted, whether it
+traded. The outreach introduction promises "reply 'not interested' and we will not write again", yet a
+second prospect wrote again; exporter "buyers" stayed in the funnel; names stayed as scanned.
+
+**Where it stands.** Each company now shows its relationship stage, activity, prices and a score; the
+do-not-contact list is kept by replies and staff and honoured by outreach in every prospect. Open: the
+legal check on cold e-mail per market, a company page with people and notes, supplier performance from
+real deals, duplicates, bulk actions.
+
+### 19 Prospect desk — trading the prospect stage
+
+**Why.** A prospect is a bet that one of its buyers and one of its suppliers will trade at a margin.
+The trader's questions are: what is it worth, whose move is it and for how long, what price do I push
+each side to, which quotes are going stale, and is it still worth the effort. Before 2026-11-17 the
+Prospects page showed only funnel counts; the match board scored pairs but gave no walk-away prices, hid
+expired quotes, used a different freight than the radar, and the outreach e-mail opened with the contact
+finder's note to the operator.
+
+**Where it stands.** The desk answers those questions per prospect and ranks the prospects; the board
+shows walk-away / target prices and quote age. Open: outbound mail is failing on live data (P0), and the
+moves the desk suggests (best and final, reconfirm, price discovery, park / drop) still need their
+e-mails and buttons.
 
 ### 18 How opportunities are found
 

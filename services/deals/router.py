@@ -116,6 +116,17 @@ async def list_deals(
     )
 
 
+@router.get("/prospects/desk", response_model=list[dict])
+async def prospect_desk(user: AuthUser = Depends(get_current_user)) -> list[dict]:
+    """Every open prospect the way a trader works them: best pair (margin, chance,
+    expected value, firm or estimated), walk-away prices, whose move it is and for how
+    long, expiring quotes, the radar's original estimate and the next moves — highest
+    priority first (shared/orchestration/prospect_desk.py)."""
+    from shared.orchestration import prospect_desk as pd
+    deals = await service.list_deals(limit=500, org_id=require_org_scope(user))
+    return [row.model_dump(mode="json") for row in await pd.desk(deals)]
+
+
 @router.post("", response_model=DealRecord, status_code=status.HTTP_201_CREATED)
 async def create_deal(
     payload: CreateDealRequest,

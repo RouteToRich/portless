@@ -295,11 +295,21 @@ class TestPhase3:
 
 
 class TestPhase4:
-    async def test_directories_are_merged_without_duplicates(self, quotes):
+    async def test_directories_are_merged_without_duplicates(self, quotes, monkeypatch):
+        for k in ("INDIAMART_API_KEY", "INDIAMART_MOBILE", "TRADEINDIA_API_KEY"):
+            monkeypatch.setenv(k, "real-value")
         quotes["indiamart"] = {"sellers": [{"company_id": "1", "company_name": "Acme", "min_price": 1.0, "price_unit": "USD/kg"}]}
         quotes["tradeindia"] = {"sellers": [{"company_id": "2", "company_name": "ACME "}, {"company_id": "3", "company_name": "Beta"}]}
         sellers = await svc._phase4_seller_discovery("290543", CONFIG)
         assert sorted(s.company_name for s in sellers) == ["Acme", "Beta"]
+
+    async def test_unconfigured_directories_are_not_called(self, quotes, monkeypatch):
+        # an empty key (or a .env placeholder) would only earn a 403 on every scan
+        monkeypatch.setenv("INDIAMART_API_KEY", "")
+        monkeypatch.setenv("TRADEINDIA_API_KEY", "your_tradeindia_api_key_here")
+        quotes["indiamart"] = {"sellers": [{"company_id": "1", "company_name": "Acme"}]}
+        quotes["tradeindia"] = {"sellers": [{"company_id": "2", "company_name": "Beta"}]}
+        assert await svc._phase4_seller_discovery("290543", CONFIG) == []
 
 
 def _phase1(**kw):

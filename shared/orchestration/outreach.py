@@ -153,6 +153,21 @@ def _greeting(cand: Any) -> str:
     return f"Dear {name} team," if name else "Dear Sir or Madam,"
 
 
+# The contact finder's ``generatedText`` is a note for the operator ("Write to info@x.com
+# — the purchasing inbox of … (MX ok, listed on /contact/)"), not a sentence for the buyer.
+_OPERATOR_NOTE = re.compile(
+    r"^\s*(write|e-?mail|contact|reach out|send)\s+to\b|\bMX ok\b|\blisted on\b|\b(?:general|purchasing|sales) inbox\b|"
+    r"@[a-z0-9.-]+\.[a-z]{2,}", re.IGNORECASE)
+
+
+def usable_pitch(text: Any) -> str:
+    """The actor's pitch angle when it is a sentence for the buyer, else "" (the default opener)."""
+    pitch = str(text or "").strip()
+    if not pitch or _OPERATOR_NOTE.search(pitch) or len(pitch) < 20:
+        return ""
+    return pitch
+
+
 async def market_fact(deal: Any) -> str | None:
     """One data-backed line for the introduction when India sells the product into the
     buyer's market cheaper than the leading other origin (UN Comtrade unit values on
@@ -192,7 +207,7 @@ def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | No
 
     product = _product_label(deal)
     title = product_title(getattr(deal, "hs_code", "") or "")
-    pitch = (getattr(cand, "pitch_angle", None) or "").strip()
+    pitch = usable_pitch(getattr(cand, "pitch_angle", None))
     qty = getattr(cand, "quantity_mt", None) or getattr(deal, "quantity_mt", None)
     token = subject_token(deal.deal_id, getattr(cand, "candidate_id"))
     if followup:
@@ -286,6 +301,24 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
     active = [c for c in cands if _status(c) in ("contacted", "followed_up")]
     slots = max(0, (limit if limit is not None else parallel()) - len(active))
     pending = [c for c in cands if _status(c) == "pending" and getattr(c, "email", None)]
+    # "Reply 'not interested' and we will not write again" holds across prospects:
+    # a company on the do-not-contact list, or that declined in any prospect, is skipped.
+    blocked, suspect = await _blocked(), await _suspect()
+    if blocked or suspect:
+        from services.deals.service import update_buyer_candidate  # type: ignore[import]
+        keep = []
+        for c in pending:
+            reason = ("skipped: on the do-not-contact list (declined before or set by staff)" if _is_blocked(c, blocked)
+                      else "skipped: looks like an Indian exporter, not an importer (role_suspect)"
+                      if _is_blocked(c, suspect) else None)
+            if reason:
+                await update_buyer_candidate(deal.deal_id, c.candidate_id, {
+                    "status": "declined", "replied_at": datetime.now(timezone.utc), "reply_preview": reason,
+                })
+                logger.info("Outreach: %s skipped for deal %s — %s", c.candidate_id, deal.deal_id, reason)
+            else:
+                keep.append(c)
+        pending = keep
     sent = 0
     for cand in pending[:slots]:
         try:
@@ -302,6 +335,51 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
     return sent
 
 
+async def _blocked() -> set[str]:
+    try:
+        from services.trade_min.relationships import blocked_contacts  # type: ignore[import]
+        return await blocked_contacts()
+    except Exception as exc:  # noqa: BLE001 - never stop outreach on a lookup failure
+        logger.debug("Outreach: do-not-contact list unavailable: %s", exc)
+        return set()
+
+
+async def _suspect() -> set[str]:
+    try:
+        from services.trade_min.relationships import suspect_contacts  # type: ignore[import]
+        return await suspect_contacts()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Outreach: suspect-buyer list unavailable: %s", exc)
+        return set()
+
+
+def _is_blocked(cand: Any, blocked: set[str]) -> bool:
+    from services.trade_min.relationships import keys_for  # type: ignore[import]
+    email = (getattr(cand, "email", None) or "").lower()
+    if email and email in blocked:
+        return True
+    domains = {k[2:] for k in keys_for(getattr(cand, "email", None), getattr(cand, "website", None),
+                                       getattr(cand, "candidate_id", None)) if k.startswith("d:")}
+    return bool(domains & blocked)
+
+
+async def _mark_do_not_contact(cand: Any, deal_id: str, preview: str) -> None:
+    """A buyer that replied "not interested" goes on the directory's do-not-contact list."""
+    try:
+        from services.trade_min import directory, relationships  # type: ignore[import]
+        store = await directory.get_directory()
+        keys = relationships.keys_for(getattr(cand, "email", None), getattr(cand, "website", None),
+                                      getattr(cand, "candidate_id", None), name=getattr(cand, "legal_name", None))
+        for r in await store.list("buyer", limit=5000):
+            if relationships.record_keys(r) & keys and not r.do_not_contact:
+                await store.set_contact_preference(r.id, {
+                    "do_not_contact": True, "dnc_at": datetime.now(timezone.utc),
+                    "dnc_reason": f"replied not interested on {deal_id}: {preview[:120]}",
+                })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Outreach: could not record do-not-contact for %s: %s", getattr(cand, "candidate_id", "?"), exc)
+
+
 async def send_outreach(deal_id: str, candidate_id: str, to_address: str, subject: str, body: str,
                         kind: str = "intro") -> dict[str, Any]:
     """Approve callback: send the e-mail through the gateway and mark the candidate."""
@@ -310,9 +388,23 @@ async def send_outreach(deal_id: str, candidate_id: str, to_address: str, subjec
     from services.email_gateway.sender import send_email  # type: ignore[import]
 
     email_id = f"OUT{kind[:1].upper()}{deal_id.replace('-', '')[-10:]}{re.sub(r'[^A-Z0-9]', '', candidate_id.upper())[:12]}"
-    result = await send_email(SendEmailRequest(
-        to_address=to_address, subject=subject, body=body, negotiation_id="", round_no=0, email_id=email_id,
-    ))
+    try:
+        result = await send_email(SendEmailRequest(
+            to_address=to_address, subject=subject, body=body, negotiation_id="", round_no=0, email_id=email_id,
+        ))
+    except Exception as exc:
+        # A transport failure ("Connection lost") must show on the candidate, or the
+        # funnel looks untouched instead of broken; the callback failure still raises.
+        try:
+            deal = await get_deal(deal_id)
+            cand = next((c for c in deal.buyer_candidates if c.candidate_id == candidate_id), None)
+            await update_buyer_candidate(deal_id, candidate_id, {
+                "send_error": f"send failed: {exc}"[:300],
+                "send_attempts": (getattr(cand, "send_attempts", 0) or 0) + 1,
+            })
+        except Exception as inner:  # noqa: BLE001
+            logger.error("Outreach: could not record the send failure for %s/%s: %s", deal_id, candidate_id, inner)
+        raise
     outcome = getattr(getattr(result, "outcome", None), "value", getattr(result, "outcome", "sent"))
     now = datetime.now(timezone.utc)
     from agents.negotiation_agent.email_history import record_deal_email  # type: ignore[import]
@@ -431,6 +523,7 @@ async def handle_reply(deal_id: str, candidate_id: str | None, from_address: str
         await update_buyer_candidate(deal_id, cand.candidate_id, {
             "status": "declined", "replied_at": now, "reply_preview": preview,
         })
+        await _mark_do_not_contact(cand, deal_id, preview)
         nxt = await advance(deal_id)
         return {"verdict": verdict, "candidate_id": cand.candidate_id, "matched": True, **nxt}
 

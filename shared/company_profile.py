@@ -67,14 +67,29 @@ def one_line() -> str:
     )
 
 
+def _inspector_sentence() -> str:
+    """Name only the inspectors PortLess actually books (QC_PROVIDERS_ENABLED) — a buyer
+    must never be offered an agency it cannot get."""
+    try:
+        from shared.connectors.qc_providers import enabled_qc_catalog
+        names = [v.get("display_name") or k.upper() for k, v in enabled_qc_catalog().items()]
+    except Exception:  # noqa: BLE001
+        names = []
+    tail = ("inspects the goods at the factory before shipment and supervises the container loading and "
+            "seal; you receive the photo-documented report. The inspection cost is included in our price.")
+    if len(names) > 1:
+        return f"You choose the inspector. {', '.join(names[:-1])} or {names[-1]} {tail}"
+    if names:
+        return f"Independent inspection. {names[0]}, a third-party inspection company, {tail}"
+    return f"Independent inspection. A third-party inspection company {tail}"
+
+
 def buyer_reasons() -> list[str]:
     """Why an importer can buy from PortLess with confidence — all true by design."""
     return [
         "Your payment is protected. You pay into a neutral escrow account, never to us or to "
         "the manufacturer, and the money is released in stages only as the order progresses.",
-        "You choose the inspector. SGS, QIMA, Bureau Veritas, Intertek or TÜV SÜD inspects the goods at "
-        "the factory before shipment and supervises the container loading and seal; you receive the "
-        "photo-documented report. The inspection cost is included in our price.",
+        _inspector_sentence(),
         "Verified manufacturers only. Every supplier's GST registration and Import-Export Code are "
         "checked, and every party is screened against sanctions lists before a contract is issued.",
         "One accountable partner. We handle sourcing, ocean freight, export documentation and customs, "

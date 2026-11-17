@@ -254,7 +254,7 @@ class TestQuality:
         assert pair.score == 0 and any("Indian exporter" in x for x in pair.blockers)
 
     def test_real_importer_is_not_flagged(self):
-        b = _buyer(buyer_name="Gewürz Mayer GmbH", company_id="gewuerzmayer.de", phone="+49 89 1234",
+        b = _buyer(buyer_name="Gewürz Mayer GmbH", buyer_country="DE", company_id="gewuerzmayer.de", phone="+49 89 1234",
                    fit_reason="Importer and wholesaler of spices in Germany")
         assert q.check_buyers([b], "DE") == 0 and not b.flags
 

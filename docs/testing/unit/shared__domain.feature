@@ -655,7 +655,7 @@ Feature: shared/domain — unit tests
       Then doc.status == 'RENDERED' and doc.content_hash
       And '{{' not in html and '{%' not in html
       And '12 Commerce Street' not in html
-      And not re.search('\x08None\x08', re.sub('<[^>]+>', ' ', html))
+      And not re.search('\\bNone\\b', re.sub('<[^>]+>', ' ', html))
       And 'Rice' in html or 'rice' in html
 
       Examples:

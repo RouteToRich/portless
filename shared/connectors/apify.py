@@ -978,11 +978,18 @@ _NOT_A_COMPANY_DOMAINS = (
     # research publishers / market-data sites (2026-11-06 glycerol scan)
     "intechopen.", "isimarkets.", "researchgate.", "sciencedirect.", "springer.", "mdpi.",
     "ceicdata.", "mordorintelligence.", "grandviewresearch.", "imarcgroup.",
+    # lead lists, trade-data and promotion sites (2026-11-17 review of cached searches)
+    "ibef.org", "eximhub.", "megafishnet.", "tradeatlas.", "infodriveindia.", "exportimportdata.",
+    "52wmb.", "tendata.", "importgenius.", "trademo.", "eximtradeinfo.", "fieo.org", "agriexchange.",
+    "fibre2fashion.", "europages.", "exporthub.", "tradewheel.",
 )
 _NOT_A_COMPANY_NAME = re.compile(
     r"\b(association|council|federation|directory|marketplace|chamber|ministry|list of|"
     r"news|price (?:list|today|trend)|market (?:report|potential|data)|how to|spices board|commission|"
-    r"manufacturing process|wikipedia)\b|\.pdf\b|^https?://", re.IGNORECASE)
+    r"manufacturing process|wikipedia|brand equity|india inc)\b|\.pdf\b|^https?://|"
+    # lead-list pages: "Seafood Buyers in Spain: 150+ Verified Buyers", "importers database"
+    r"\b\d+\+?\s+(?:verified\s+)?(?:buyers|importers|suppliers|exporters|companies)\b|"
+    r"\b(?:buyers|importers|suppliers|exporters)\s+(?:list|database|data|directory)\b", re.IGNORECASE)
 # Page titles written for search engines, not company names.
 _SEO_TITLE = re.compile(
     r"^(?:best|top|leading|current|cheap|buy|premium|wholesale|indian|basmati|rice)\b|"
@@ -1000,7 +1007,7 @@ _LEGAL_SUFFIX = re.compile(
 # "Since 1985, Acme Rice Mills", "Established in 2001, X Exports".
 _LEAD_CLAUSE = re.compile(
     r"^(?:for\s+(?:over|more\s+than)|since|with\s+(?:over|more\s+than)|established|founded|serving|trusted|"
-    r"leading|over\s+\d+|more\s+than\s+\d+|we\s+are|we're)\b[^,]{0,60},\s*(?P<name>.+)$",
+    r"leading|over\s+\d+|more\s+than\s+\d+|we\s+are|we're|today|now|currently|here|hello|hi)\b[^,]{0,60},\s*(?P<name>.+)$",
     re.IGNORECASE)
 _NOT_A_NAME_START = re.compile(r"^(?:we|our|us|they|it|this)\b", re.IGNORECASE)
 
@@ -1062,6 +1069,8 @@ _DOMAIN_WORDS = (
     "traders", "exports", "export", "imports", "impex", "global", "spices", "spice", "foods",
     "food", "agro", "agri", "farms", "group", "sons", "and", "india", "masala", "mills",
     "pepper", "chilli", "herbs", "organic", "naturals", "natural", "world", "foodstuff", "company",
+    "service", "services", "wholesale", "wholesales", "wholesaler", "distribution", "distributors",
+    "supply", "supplies", "seafood", "fish", "fresh", "rice", "trade", "import", "commodities", "nuts",
 )
 _SENTENCE_LEAD = frozenset({"at", "by", "our", "the", "from", "with", "as", "in", "of"})
 

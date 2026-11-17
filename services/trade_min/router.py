@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from shared import catalogue as _catalogue
 from shared.catalogue import ProductLine
 
-from . import accuracy, directory, freight_lanes, incentives, scan_reports, service, validation
+from . import accuracy, directory, freight_lanes, incentives, relationships, scan_reports, service, validation
 from .config import DEFAULT_CONFIG
 from .schemas import CounterpartyRecord, EnrichedOpportunity, MatchEngineSeed, ScanReport, ScanRequest
 
@@ -221,6 +221,92 @@ async def price_book(hs_code: str, market: str | None = Query(None, description=
             "observations": [o.model_dump(mode="json") for o in obs]}
 
 
+def _book(rows: list[CounterpartyRecord], *, stage: str | None, contactable: bool, sort: str) -> list[CounterpartyRecord]:
+    """Filter / order the annotated directory like a trading book."""
+    if stage:
+        rows = [r for r in rows if (r.relationship or {}).get("stage", "new") == stage]
+    if contactable:
+        rows = [r for r in rows if not r.do_not_contact
+                and (r.validation is None or r.validation.status != "failed")
+                and (r.relationship or {}).get("stage") != "declined"
+                and (r.email or r.phone)]
+    if sort == "score":
+        rows = sorted(rows, key=lambda r: (r.score or 0.0), reverse=True)
+    return rows
+
+
+@router.post("/directory/clean")
+async def clean_directory(user=Depends(_staff())) -> dict:
+    """Store the current clean-up on every directory record: names cut out of marketing
+    sentences and split from run-together domains, usable e-mails, the company's own
+    country, and buyers that look like Indian exporters flagged ``role_suspect``."""
+    return {"changed": await directory.clean_existing()}
+
+
+@router.get("/directory/summary")
+async def directory_summary() -> dict:
+    """The book at a glance per role: companies per relationship stage, new this week (and for
+    which products / countries), verified, contactable, the hottest companies and the top scores."""
+    from . import counterparty_profile
+    return await counterparty_profile.summary()
+
+
+@router.get("/{role}/{record_id:path}/profile")
+async def counterparty_profile_view(role: Literal["buyers", "suppliers"], record_id: str) -> dict:
+    """One company with everything needed to act on it: score, relationship, every prospect /
+    deal it is in, a dated timeline, the open prospects of its products and the next actions."""
+    from . import counterparty_profile
+    try:
+        return await counterparty_profile.profile(role[:-1], record_id)
+    except counterparty_profile.ProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+class AddToProspect(BaseModel):
+    deal_id: str
+
+
+@router.post("/{role}/{record_id:path}/add-to-prospect")
+async def add_counterparty_to_prospect(role: Literal["buyers", "suppliers"], record_id: str,
+                                       body: AddToProspect) -> dict:
+    """A buyer joins the prospect's outreach funnel; a supplier joins its match board with the
+    quote pending. Refused for do-not-contact, a failed check or an exporter posing as a buyer."""
+    from . import counterparty_profile
+    try:
+        return await counterparty_profile.add_to_prospect(role[:-1], record_id, body.deal_id)
+    except counterparty_profile.ProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - deal not found / duplicate candidate
+        detail = str(exc)
+        code = status.HTTP_404_NOT_FOUND if "not found" in detail.lower() or exc.__class__.__name__ == "DealNotFoundError"             else status.HTTP_422_UNPROCESSABLE_ENTITY
+        raise HTTPException(status_code=code, detail=detail) from exc
+
+
+class ContactPreference(BaseModel):
+    do_not_contact: bool
+    reason: str | None = Field(default=None, max_length=300)
+
+
+@router.put("/{role}/{record_id:path}/contact-preference", response_model=CounterpartyRecord)
+async def put_contact_preference(role: Literal["buyers", "suppliers"], record_id: str, body: ContactPreference,
+                                 user=Depends(_staff())) -> CounterpartyRecord:
+    """Put a company on (or take it off) the do-not-contact list — outreach skips it in
+    every prospect. A reason is required to put it on."""
+    if body.do_not_contact and not (body.reason or "").strip():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="a reason is required")
+    from datetime import datetime, timezone
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    store = await directory.get_directory()
+    rec = await store.set_contact_preference(record_id, {
+        "do_not_contact": body.do_not_contact,
+        "dnc_reason": f"{body.reason.strip()} (by {who})" if body.do_not_contact else None,
+        "dnc_at": datetime.now(timezone.utc) if body.do_not_contact else None,
+    })
+    if rec is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such company in the directory")
+    return (await relationships.annotate([rec]))[0]
+
+
 @router.get("/buyers", response_model=list[CounterpartyRecord])
 async def list_buyers(
     hs_code: str | None = Query(default=None),
@@ -229,13 +315,17 @@ async def list_buyers(
     country: str | None = Query(default=None, description="ISO-2 country of the buyer itself, e.g. DE"),
     validation_status: Literal["verified", "unverified", "failed"] | None = Query(
         default=None, alias="validation", description="Scan-time check result; omit for all"),
+    stage: str | None = Query(default=None, description="Relationship stage: new, contacted, replied, interested, quoted, in_deal, traded, declined, do_not_contact"),
+    contactable: bool = Query(default=False, description="Only companies outreach may write to (not failed, not do-not-contact, not declined)"),
+    sort: Literal["recent", "score"] = Query(default="recent"),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> list[CounterpartyRecord]:
     """Every buyer a scan found, in any country — with or without an opportunity
     or deal — newest first, merged per company across scans."""
-    return await directory.list_counterparties("buyer", hs_code=hs_code, market=market, q=q,
+    rows = await directory.list_counterparties("buyer", hs_code=hs_code, market=market, q=q,
                                                country=country, limit=limit,
                                                validation=validation_status)
+    return _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort)
 
 
 @router.get("/suppliers", response_model=list[CounterpartyRecord])
@@ -246,13 +336,17 @@ async def list_suppliers(
     country: str | None = Query(default=None, description="ISO-2 country of the supplier, e.g. IN for India only"),
     validation_status: Literal["verified", "unverified", "failed"] | None = Query(
         default=None, alias="validation", description="Scan-time check result; omit for all"),
+    stage: str | None = Query(default=None, description="Relationship stage: new, contacted, replied, interested, quoted, in_deal, traded, declined, do_not_contact"),
+    contactable: bool = Query(default=False, description="Only companies outreach may write to (not failed, not do-not-contact, not declined)"),
+    sort: Literal["recent", "score"] = Query(default="recent"),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> list[CounterpartyRecord]:
     """Every supplier a scan found, in any country (``country=IN`` → India only) —
     with or without an opportunity or deal — newest first, merged per company."""
-    return await directory.list_counterparties("supplier", hs_code=hs_code, market=market, q=q,
+    rows = await directory.list_counterparties("supplier", hs_code=hs_code, market=market, q=q,
                                                country=country, limit=limit,
                                                validation=validation_status)
+    return _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort)
 
 
 @router.post("/{role}/{record_id:path}/validate", response_model=CounterpartyRecord)

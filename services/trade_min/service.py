@@ -273,6 +273,13 @@ async def _noop() -> None:
 _SCAN_PRODUCT_NAMES: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar("scan_product_names", default={})
 
 
+def _pitch(text: object) -> str | None:
+    """The contact finder's line when it is a sentence for the buyer, not its note to
+    the operator ("Write to info@x.com — the general inbox …")."""
+    from shared.orchestration.outreach import usable_pitch
+    return usable_pitch(text) or None
+
+
 def _scan_name(hs_code: str) -> str | None:
     name = (_SCAN_PRODUCT_NAMES.get().get(str(hs_code).strip()) or "").strip()
     return name or None
@@ -292,7 +299,12 @@ def _keyword_for(hs_code: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     from shared.connectors.trade_intel import hs_keyword
-    return hs_keyword(hs_code)
+    kw = hs_keyword(hs_code)
+    if kw == str(hs_code) or not kw:
+        # no curated keyword: a term from the official description beats a bare number
+        from shared import hs_names
+        return hs_names.search_name(hs_code) or kw
+    return kw
 
 
 def _web_searchable(keyword: str) -> bool:
@@ -776,7 +788,7 @@ async def _phase2_live_signals(
                 fit_score=c.get("fit_score"),
                 fit_reason=(c.get("summary") or c.get("page_title") or None),
                 name_source=c.get("name_source"),
-                pitch_angle=c.get("first_line") or None,
+                pitch_angle=_pitch(c.get("first_line")),
                 hs_codes=[hs_code],
                 email_status=c.get("email_status"),
             ))
@@ -980,9 +992,14 @@ async def _phase4_seller_discovery(
 ) -> list[SellerCandidate]:
     keyword = _keyword_for(hs_code)
 
+    # A key present but empty (or a .env placeholder) means the directory is not set up:
+    # skip it instead of sending an unauthenticated call that answers 403 on every scan.
+    from shared.integration_mode import configured
     im_r, ti_r, search_r = await asyncio.gather(
-        _safe_quote("indiamart", {"hs_code": hs_code, "page_size": 20}),
-        _safe_quote("tradeindia", {"hs_code": hs_code, "limit": 20}),
+        _safe_quote("indiamart", {"hs_code": hs_code, "page_size": 20})
+        if configured("INDIAMART_API_KEY", "INDIAMART_MOBILE") else _noop(),
+        _safe_quote("tradeindia", {"hs_code": hs_code, "limit": 20})
+        if configured("TRADEINDIA_API_KEY") else _noop(),
         # Indian exporters / manufacturers by web search (company-contact-finder-ai,
         # any Apify plan) — replaces india-supplier-finder-ai, which does not exist
         # on the account. Rows carry a checked contact; price / GSTIN come later
@@ -1272,7 +1289,15 @@ async def _phase5_assemble_and_persist(
 
 async def scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
     """Run the 5-phase pipeline for every HS-code × market combination."""
-    names = {str(k).strip(): v for k, v in (payload.product_names or {}).items() if v and v.strip()}
+    # A name the web search cannot use (an official HS description, a long phrase) is
+    # replaced by the code's search name, so "Vegetables; onions, whole, cut…" searches "dried onions".
+    from shared import hs_names
+    names = {}
+    for k, v in (payload.product_names or {}).items():
+        code = str(k).strip()
+        term = hs_names.search_keyword(v, code)
+        if term:
+            names[code] = term
     token = _SCAN_PRODUCT_NAMES.set(names)  # this scan only — reset below for the caller
     report_token = scan_reports.start()
     try:

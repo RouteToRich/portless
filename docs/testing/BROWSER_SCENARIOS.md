@@ -527,6 +527,104 @@ Feature: The Opportunity Radar ranks by profit and hands a ready prospect to the
     And the Origin Opportunity card shows the radar's profit breakdown and market
 ```
 
+
+```gherkin
+Feature: The prospect desk shows what each prospect is worth and the next move
+
+  Background:
+    Given I am signed in as Portless staff
+    And prospect "P-FIRM" has a buyer who stated 1,100 USD/MT and a supplier quote of 650 FOB
+    And prospect "P-WAIT" has 2 buyers contacted 6 days ago and no reply
+
+  @TC-WEB-041 @P1 @positive
+  Scenario: The desk ranks prospects and shows their worth
+    When I open Prospects
+    Then "P-FIRM" comes first with "our move", its best pair, margin per MT, chance and expected value, "firm prices"
+    And the cards show the pipeline value and "Ready to confirm" 1
+
+  @TC-WEB-042 @P1 @positive
+  Scenario: A stalled prospect is visible and filtered
+    When I click "Stalled"
+    Then only "P-WAIT" is listed with "waiting for buyers · 6d" and "stalled"
+    And its next move is "contact the next … buyer(s)"
+
+  @TC-WEB-043 @P1 @positive
+  Scenario: Walk-away prices tell me how far to push the supplier
+    Given prospect "P-THIN" has a buyer at 800 USD/MT and a supplier quote of 720 FOB
+    When I open Prospects
+    Then "P-THIN" shows "Walk-away: supplier ≤ … FOB" and "supplier must come down …/MT"
+    And its match board shows the same numbers in the "Walk-away" column
+
+  @TC-WEB-044 @P0 @negative
+  Scenario: Undelivered introductions point at the mailbox
+    Given the introductions of prospect "P-MAIL" failed to send
+    When I open Prospects
+    Then "P-MAIL" shows "e-mails not delivered" and its first move names GMAIL_SENDER_ADDRESS
+```
+
+
+```gherkin
+Feature: Buyers & Suppliers works as a trading book
+
+  Background:
+    Given I am signed in as Portless staff
+    And buyer "Gulf Foods" said yes in one prospect and was contacted in another
+
+  @TC-WEB-045 @P1 @positive
+  Scenario: Each company shows where PortLess stands with it
+    When I open Buyers & Suppliers
+    Then "Gulf Foods" shows "said yes", "2 prospects", when it replied and its score with the basis in the tooltip
+    And buyers are listed best first
+
+  @TC-WEB-046 @P0 @positive
+  Scenario: Do not contact holds in every prospect
+    When I click "Do not contact" on "Gulf Foods" and give the reason "asked by phone"
+    Then the row shows "do not contact — asked by phone (by me)"
+    And a new prospect that lists "Gulf Foods" never sends it an introduction
+
+  @TC-WEB-047 @P1 @positive
+  Scenario: A supplier's price is compared with the others
+    Given suppliers "A" quoted 2,000 and "B" quoted 2,400 FOB for the same product
+    When I open the Suppliers tab
+    Then "A" shows "9% below median" and "B" "9% above median"
+
+  @TC-WEB-048 @P1 @positive
+  Scenario: Filters and the clean-up
+    When I choose stage "never contacted" and "Contactable"
+    Then only companies never written to, not failed and not on the do-not-contact list are listed
+    When I click "Clean directory"
+    Then I see how many records were updated and names like "Jimmy & Sons" stay after a reload
+```
+
+
+```gherkin
+Feature: Buyers & Suppliers cards and the company profile
+
+  Background:
+    Given I am signed in as Portless staff
+    And buyer "Gulf Foods" (AE, verified) replied yes in prospect "D1"
+    And prospect "D2" for the same product and market is open
+
+  @TC-WEB-049 @P1 @positive
+  Scenario: Cards and the pipeline strip
+    When I open Buyers & Suppliers
+    Then companies show as cards with score ring, stage, check and the key fact
+    And the pipeline strip counts companies per stage; clicking "said yes" lists only those
+    And "Hot — replied or quoted" lists "Gulf Foods"
+
+  @TC-WEB-050 @P1 @positive
+  Scenario: The profile shows the next move and the history
+    When I open "Gulf Foods"
+    Then the side panel shows "Open D1" and "Add to prospect D2" as next moves
+    And the timeline lists the introduction, the reply and when the company was found
+
+  @TC-WEB-051 @P1 @positive
+  Scenario: Add a buyer to a prospect from its profile
+    When I click "Add" next to "Add to prospect D2"
+    Then I see "Gulf Foods added to D2" and D2's outreach funnel lists Gulf Foods
+    And a company on the do-not-contact list cannot be added
+```
+
 ## 5. Order of work
 
 1. Add `data-testid` attributes to the console (DEF-05) — every button and figure used above.

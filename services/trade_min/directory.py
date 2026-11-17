@@ -59,15 +59,26 @@ def clean_record(rec: CounterpartyRecord) -> CounterpartyRecord:
     stored record: a marketing clause or address dropped from the name, a usable e-mail
     only (phone digits glued to the front removed), and the country the company's own
     website / e-mail / phone points to rather than the market that was searched."""
-    from shared.connectors.apify import _clean_name, clean_email, company_country
-    name = _clean_name(rec.name) or rec.name
-    email = clean_email(rec.email)
+    from shared.connectors.apify import _clean_name, _entity_in_sentence, clean_email, company_country, split_domain_label
+    name = _entity_in_sentence(rec.name) or _clean_name(rec.name) or rec.name
     domain = _domain(rec.website)
+    label = domain.split(".")[0] if domain else ""
+    if label and " " not in name and name.lower() == label.replace("-", ""):
+        name = split_domain_label(label)  # "Jimmyandsons" → "Jimmy & Sons"
+    email = clean_email(rec.email)
     evidence = company_country({"domain": domain, "email": email or "", "phone": rec.phone})
     country = (evidence or rec.country or "").upper() or None
-    if (name, email, country) == (rec.name, rec.email, rec.country):
+    flags = list(rec.flags or [])
+    if rec.role == "buyer" and "role_suspect" not in flags and any(m and m.upper() != "IN" for m in rec.markets):
+        from types import SimpleNamespace
+        from .quality import looks_like_indian_exporter
+        probe = SimpleNamespace(company_id=domain, website=rec.website, phone=rec.phone, buyer_name=name,
+                                fit_reason=rec.fit_reason, buyer_country=country)
+        if looks_like_indian_exporter(probe, next(m for m in rec.markets if m and m.upper() != "IN")):
+            flags.append("role_suspect")
+    if (name, email, country, flags) == (rec.name, rec.email, rec.country, list(rec.flags or [])):
         return rec
-    return rec.model_copy(update={"name": name, "email": email, "country": country})
+    return rec.model_copy(update={"name": name, "email": email, "country": country, "flags": flags})
 
 
 def _merge(old: CounterpartyRecord | None, new: CounterpartyRecord) -> CounterpartyRecord:
@@ -89,6 +100,7 @@ def _merge_raw(old: CounterpartyRecord | None, new: CounterpartyRecord) -> Count
         hs_codes=_union(old.hs_codes, new.hs_codes),
         markets=_union(old.markets, new.markets),
         opportunity_ids=_union(old.opportunity_ids, new.opportunity_ids),
+        flags=_union(old.flags, new.flags),
         last_outcome=(old.last_outcome if new.last_outcome == WORLDWIDE_OUTCOME and old.last_outcome
                       else new.last_outcome or old.last_outcome),
         times_seen=old.times_seen + 1,
@@ -119,6 +131,13 @@ class InMemoryDirectory:
     async def set_validation(self, rec: CounterpartyRecord) -> None:
         if rec.id in self._store:
             self._store[rec.id] = self._store[rec.id].model_copy(update={"validation": rec.validation})
+
+    async def set_contact_preference(self, record_id: str, fields: dict[str, Any]) -> CounterpartyRecord | None:
+        rec = self._store.get(record_id)
+        if rec is None:
+            return None
+        self._store[record_id] = rec.model_copy(update=fields)
+        return self._store[record_id]
 
     async def list(self, role: str, *, hs_code: str | None = None, market: str | None = None,
                    q: str | None = None, country: str | None = None,
@@ -160,6 +179,13 @@ class MongoDirectory:
             return CounterpartyRecord.model_validate(doc)
         except Exception:  # noqa: BLE001 - a malformed row counts as unknown
             return None
+
+    async def set_contact_preference(self, record_id: str, fields: dict[str, Any]) -> CounterpartyRecord | None:
+        doc = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in fields.items()}
+        res = await self._col.update_one({"_id": record_id}, {"$set": doc})
+        if not getattr(res, "matched_count", 1):
+            return None
+        return await self.get(record_id)
 
     async def set_validation(self, rec: CounterpartyRecord) -> None:
         await self._col.update_one(
@@ -262,6 +288,7 @@ def _buyer_record(b: BuyerSignal, hs_code: str, market: str, outcome: str,
         hs_codes=[hs_code], markets=[market.upper()] if market else [],  # the corridor scanned
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=b.validation,
+        flags=list(b.flags or []),
     )
 
 
@@ -279,6 +306,7 @@ def _supplier_record(s: SellerCandidate, hs_code: str, market: str, outcome: str
         hs_codes=[hs_code], markets=[market.upper()] if market else [],
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=s.validation,
+        flags=list(s.flags or []),
     )
 
 
@@ -345,4 +373,6 @@ async def with_open_opportunities(rows: list[CounterpartyRecord]) -> list[Counte
 
 
 async def list_counterparties(role: str, **filters: Any) -> list[CounterpartyRecord]:
-    return await with_open_opportunities(await (await get_directory()).list(role, **filters))
+    # Cleaned on read, so a name / role fix shows at once; POST /trade-min/directory/clean stores it.
+    rows = [clean_record(r) for r in await (await get_directory()).list(role, **filters)]
+    return await with_open_opportunities(rows)

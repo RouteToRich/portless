@@ -142,7 +142,7 @@ async def test_every_document_renders_from_the_deal(deal, tmp_path, monkeypatch,
     assert doc.status == "RENDERED" and doc.content_hash
     assert "{{" not in html and "{%" not in html
     assert "12 Commerce Street" not in html, "the services' placeholder address is never printed"
-    assert not re.search(r"None", re.sub(r"<[^>]+>", " ", html)), "a missing value printed as None"
+    assert not re.search(r"\bNone\b", re.sub(r"<[^>]+>", " ", html)), "a missing value printed as None"
     assert "Rice" in html or "rice" in html
 
 

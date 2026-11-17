@@ -76,6 +76,58 @@ def display_name(code: str | None) -> str | None:
     return _short(text) if text else None
 
 
+# Words of an official description that belong in a search term ("dried onions").
+_QUALIFIERS = ("dried", "frozen", "fresh", "ground", "crushed", "roasted", "shelled", "milled", "powdered",
+               "refined", "crude", "chilled", "smoked", "salted")
+_SEARCH_MAX_WORDS = 5
+
+
+def _from_official(text: str) -> str:
+    """A web-search term from an official description: the product after the category
+    ("Vegetables; onions, whole, cut … dried" → "dried onions")."""
+    category, _, rest = text.partition(";")
+    main = rest if rest else text
+    noun = main.split(",", 1)[0].strip().strip(".").lower()
+    noun = " ".join(noun.split()[:3])
+    adjective = ("'" in noun or noun.split()[-1:] and noun.split()[-1].endswith(("able", "ible"))
+                 or noun in ("other", "n.e.c", "n.e.c.", "") or noun.startswith(("of ", "for ", "with ")))
+    if rest and adjective:
+        # "Automatic data processing machines; portable, …" → the category is the product
+        noun = " ".join(category.split(",", 1)[0].strip().lower().split()[:3])
+    lowered = text.lower()
+    quals = [q for q in _QUALIFIERS if f" {q}" in f" {lowered}" and q not in noun]
+    return " ".join([*quals[:1], noun]).strip()
+
+
+def looks_unsearchable(name: str | None) -> bool:
+    """A name a web search will not find companies for: empty, a bare number, an
+    official description (";" or "…") or a long phrase."""
+    n = (name or "").strip()
+    return (not n or n.replace(".", "").isdigit() or ";" in n or "…" in n
+            or len(n.split()) > _SEARCH_MAX_WORDS)
+
+
+def search_name(code: str | None) -> str | None:
+    """The product name to search the web with: the catalogue's / curated short name,
+    else a term built from the official description — never the description itself."""
+    hs = _digits(code)
+    if not hs:
+        return None
+    name = display_name(hs)
+    if name and not looks_unsearchable(name):
+        return name
+    text = official(hs)
+    return _from_official(text) if text else None
+
+
+def search_keyword(name: str | None, code: str | None) -> str | None:
+    """What a scan searches for: the operator's name when it is searchable, else the HS
+    code's search name."""
+    if name and not looks_unsearchable(name):
+        return name.strip()
+    return search_name(code)
+
+
 def search(query: str, limit: int = 20) -> list[dict[str, str | None]]:
     """HS codes for the console's picker: by code prefix ("1006") or by words ("basmati",
     "chilli powder") over the curated names and the official descriptions. Curated
@@ -101,5 +153,6 @@ def search(query: str, limit: int = 20) -> list[dict[str, str | None]]:
             curated = 0 if code in pl._DISPLAY else 1
             hits.append((curated * 2 + (0 if len(code) >= 6 else 1), code))
     hits.sort(key=lambda h: (h[0], h[1]))
-    return [{"code": c, "name": display_name(c), "description": official(c)} for _, c in hits[:limit]]
+    return [{"code": c, "name": display_name(c), "description": official(c), "search_name": search_name(c)}
+            for _, c in hits[:limit]]
 

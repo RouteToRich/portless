@@ -288,6 +288,20 @@ class CounterpartyRecord(BaseModel):
     last_seen_at: datetime
     validation: CounterpartyValidation | None = None
     """Latest scan-time check (kept across scans until a newer one replaces it)."""
+    flags: list[str] = Field(default_factory=list)
+    """Data-quality flags from the scans (quality.py): role_suspect, product_mismatch, name_from_domain."""
+    do_not_contact: bool = False
+    """Never written to again: the company replied "not interested" (the introduction
+    promises it) or staff set it. Survives every scan; outreach skips it in every prospect."""
+    dnc_reason: str | None = None
+    dnc_at: datetime | None = None
+    # ── computed on listing (relationships.py), not stored ────────────────
+    relationship: dict[str, Any] | None = None
+    """Where PortLess stands with the company across every prospect and deal: stage,
+    prospects, last contact / reply, quotes, target price, deals won."""
+    score: float | None = None
+    """0–100: who to work with first (check, reachability, engagement, track record, price)."""
+    score_basis: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

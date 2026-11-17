@@ -117,6 +117,20 @@ class PairScore(BaseModel):
     expected_value_usd: float
     firm: bool
     next_step: str
+    # ── negotiation targets (a trader's walk-away and target prices) ───────
+    max_supplier_fob_usd_per_mt: float | None = None
+    """Highest supplier FOB that still keeps the margin floor at this buyer price."""
+    target_supplier_fob_usd_per_mt: float | None = None
+    """Supplier FOB that gives the target margin (``MATCH_TARGET_MARGIN_PCT``)."""
+    min_buyer_price_usd_per_mt: float | None = None
+    """Lowest buyer price that keeps the margin floor at this supplier price."""
+    target_buyer_price_usd_per_mt: float | None = None
+    supplier_cut_needed_usd_per_mt: float | None = None
+    """How much the supplier must come down to reach the floor (0 when it already does)."""
+    incentive_usd_per_mt: float | None = None
+    freight_basis: str | None = None
+    quote_age_days: int | None = None
+    quote_expires_in_days: int | None = None
 
 
 class MatchBoard(BaseModel):
@@ -135,6 +149,12 @@ class MatchBoard(BaseModel):
     next_actions: list[str]
     learning: dict[str, Any] = Field(default_factory=dict)
     """Calibration state + offer acceptance stats from past outcomes."""
+    expired_offers: list[dict[str, Any]] = Field(default_factory=list)
+    """Quotes past their validity: not scored — ask the supplier to reconfirm."""
+    best_quote_usd_per_mt: float | None = None
+    """Lowest valid supplier FOB on the board — the leverage for the other suppliers."""
+    quote_spread_pct: float | None = None
+    target_margin_pct: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +190,38 @@ def _region_transit(market: str | None) -> int:
     return _TRANSIT_DAYS.get(lc._REGION_OF.get((market or "").upper(), ""), 25)
 
 
+def target_margin_pct() -> float:
+    try:
+        return float(os.getenv("MATCH_TARGET_MARGIN_PCT", "") or 12.0)
+    except ValueError:
+        return 12.0
+
+
+def negotiation_targets(buyer_price: float | None, supplier_price: float | None, *, freight: float,
+                        inspection: float, fee_ins_pct: float, incentive_pct: float, floor_pct: float,
+                        target_pct: float) -> dict[str, float | None]:
+    """Pure: walk-away and target prices for both sides.
+
+    margin = buyer − (supplier + freight + inspection) − buyer × (fee + insurance)% + supplier × incentive%.
+    """
+    keep = 1.0 - incentive_pct / 100.0
+    out: dict[str, float | None] = {"max_supplier": None, "target_supplier": None, "min_buyer": None, "target_buyer": None}
+    if buyer_price:
+        for key, pct in (("max_supplier", floor_pct), ("target_supplier", target_pct)):
+            v = (buyer_price * (1.0 - (fee_ins_pct + pct) / 100.0) - freight - inspection) / keep
+            out[key] = round(v, 2) if v > 0 else None
+    if supplier_price:
+        for key, pct in (("min_buyer", floor_pct), ("target_buyer", target_pct)):
+            denom = 1.0 - (fee_ins_pct + pct) / 100.0
+            if denom > 0:
+                out[key] = round((supplier_price * keep + freight + inspection) / denom, 2)
+    return out
+
+
 def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEstimate,
-               supplier_est: pricebook.PriceEstimate, learned: dict[str, Any] | None = None) -> PairScore:
+               supplier_est: pricebook.PriceEstimate, learned: dict[str, Any] | None = None,
+               freight_usd_per_mt: float | None = None, freight_basis: str | None = None,
+               incentive_pct: float = 0.0) -> PairScore:
     req = getattr(cand, "requirement", None)
     market = getattr(deal, "market", None)
     qty = (getattr(req, "quantity_mt", None) or getattr(cand, "quantity_mt", None)
@@ -242,10 +292,12 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
 
     landed = margin = margin_pct = p_margin = None
     margin_floor = getattr(deal, "margin_floor_pct", None)
+    incentive = round(sp.value * incentive_pct / 100.0, 2) if (sp.value and incentive_pct) else None
     if sp.value:
-        landed = lc.landed(sp.value, market, qty, incoterm=incoterm, margin_floor_pct=margin_floor)
+        landed = lc.landed(sp.value, market, qty, incoterm=incoterm, margin_floor_pct=margin_floor,
+                           freight_usd_per_mt=freight_usd_per_mt)
     if landed and bp.value:
-        margin = round(bp.value - landed.cost_usd_per_mt, 2)
+        margin = round(bp.value - landed.cost_usd_per_mt + (incentive or 0.0), 2)
         margin_pct = round(margin / bp.value * 100.0, 2) if bp.value else None
         k = landed.min_offer_usd_per_mt / max(1e-9, sp.value + landed.freight_usd_per_mt + landed.inspection_usd_per_mt)
         spread = math.sqrt((bp.sigma or 0.0) ** 2 + ((sp.sigma or 0.0) * k) ** 2) or 1e-9
@@ -276,6 +328,28 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
     if s_hist:
         reliability = round(reliability * s_hist["factor"], 4)
 
+    # ── quote age / validity ───────────────────────────────────────────
+    quote_age = expires_in = None
+    received = _aware(getattr(offer, "received_at", None))
+    if received:
+        age = datetime.now(timezone.utc) - received
+        quote_age = max(0, age.days)
+        validity = getattr(offer, "validity_days", None) or offer_validity_days()
+        expires_in = validity - quote_age
+        if sp.basis == "quoted" and expires_in <= 3:
+            missing.append(f"quote expires in {max(expires_in, 0)} day(s) — ask the supplier to reconfirm")
+
+    # ── negotiation targets ───────────────────────────────────────────
+    floor_pct = float(margin_floor if margin_floor is not None else lc.default_margin_floor_pct())
+    fee_ins = (landed.escrow_fee_pct + landed.insurance_pct) if landed else (lc.escrow_fee_pct() + lc.insurance_pct())
+    fr = landed.freight_usd_per_mt if landed else (freight_usd_per_mt if freight_usd_per_mt is not None else lc.freight_per_mt(market))
+    insp = landed.inspection_usd_per_mt if landed else lc.inspection_usd_per_shipment() / qty
+    tg = negotiation_targets(bp.value, sp.value, freight=fr, inspection=insp, fee_ins_pct=fee_ins,
+                             incentive_pct=incentive_pct, floor_pct=floor_pct, target_pct=max(target_margin_pct(), floor_pct))
+    cut = None
+    if sp.value and tg["max_supplier"] is not None:
+        cut = round(max(0.0, sp.value - tg["max_supplier"]), 2)
+
     feasible = not blockers and p_margin is not None
     raw = round((p_margin or 0.0) * spec * engagement * reliability * timing, 4) if feasible else 0.0
     table = learned.get("calibration") or {}
@@ -294,6 +368,10 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
         step = "Waiting for " + " and ".join(m for m in missing if "price" in m) or "Waiting for prices"
     elif firm and probability >= min_probability():
         step = "Confirm this match — it becomes the deal"
+    elif sp.basis == "quoted" and cut and cut > 0:
+        step = (f"Under the margin floor: push {getattr(offer, 'company_name', '') or 'the supplier'} to "
+                f"≤ {tg['max_supplier']:,.0f} FOB (−{cut:,.0f}/MT)"
+                + (f" or the buyer to ≥ {tg['min_buyer']:,.0f}" if tg["min_buyer"] else ""))
     elif firm:
         step = f"Firm prices but only {probability:.0%} likely — negotiate the gap or wait for a better quote"
     elif sp.basis == "quoted" and status in ("interested", "selected") and (io is None or io.response is None):
@@ -314,6 +392,10 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
         p_margin=p_margin, spec_fit=round(spec, 3), engagement=round(engagement, 3), reliability=reliability,
         timing_fit=timing, probability=probability, probability_raw=raw, calibrated=calibrated,
         buyer_history=b_hist, supplier_history=s_hist, expected_value_usd=ev, firm=firm, next_step=step,
+        max_supplier_fob_usd_per_mt=tg["max_supplier"], target_supplier_fob_usd_per_mt=tg["target_supplier"],
+        min_buyer_price_usd_per_mt=tg["min_buyer"], target_buyer_price_usd_per_mt=tg["target_buyer"],
+        supplier_cut_needed_usd_per_mt=cut, incentive_usd_per_mt=incentive, freight_basis=freight_basis,
+        quote_age_days=quote_age, quote_expires_in_days=expires_in,
     )
 
 
@@ -325,6 +407,36 @@ def _aware(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _expired(deal: Any) -> list[Any]:
+    """This prospect's own quotes that are past their validity (newest per supplier)."""
+    now = datetime.now(timezone.utc)
+    out: dict[str, Any] = {}
+    for o in getattr(deal, "supplier_offers", None) or []:
+        received = _aware(getattr(o, "received_at", None))
+        validity = getattr(o, "validity_days", None) or offer_validity_days()
+        if received and received + timedelta(days=validity) < now:
+            out[o.supplier_id] = o
+    return list(out.values())
+
+
+async def _costs(deal: Any) -> tuple[float | None, str | None, float]:
+    """(lane freight USD/MT, basis, incentive % of FOB) — the radar's sources, so the
+    board and the radar agree. Never raises: regional estimate / no incentive."""
+    freight = basis = None
+    incentive_pct = 0.0
+    try:
+        from shared import catalogue
+        from services.trade_min import freight_lanes, incentives  # type: ignore[import]
+        _mt, kind = catalogue.container_for(deal.hs_code)
+        freight, basis = await freight_lanes.freight_per_mt(getattr(deal, "market", None) or "", (kind or "dry").lower())
+        entry = await incentives.entry_for(deal.hs_code)
+        if entry is not None and entry.eligible_confirmed:
+            incentive_pct = float(entry.rodtep_pct or 0.0) + float(entry.drawback_pct or 0.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Matchmaking: lane freight / incentives unavailable for %s: %s", deal.deal_id, exc)
+    return freight, basis, incentive_pct
 
 
 async def offers_for(deal: Any) -> list[Any]:
@@ -366,7 +478,9 @@ async def build_board(deal: Any) -> MatchBoard:
     from shared.orchestration import outcomes
     learned = await outcomes.learning_context(deal.hs_code)
     cands = [c for c in (getattr(deal, "buyer_candidates", None) or []) if _status(c) not in _EXCLUDED]
-    pairs = [score_pair(deal, c, o, buyer_est=buyer_est, supplier_est=supplier_est, learned=learned)
+    freight, freight_basis, incentive_pct = await _costs(deal)
+    pairs = [score_pair(deal, c, o, buyer_est=buyer_est, supplier_est=supplier_est, learned=learned,
+                        freight_usd_per_mt=freight, freight_basis=freight_basis, incentive_pct=incentive_pct)
              for c in cands for o in offers]
     pairs.sort(key=lambda p: (p.feasible, p.firm and p.probability >= min_probability(), p.expected_value_usd,
                               p.probability), reverse=True)
@@ -381,6 +495,17 @@ async def build_board(deal: Any) -> MatchBoard:
     asked = {m for p in pairs[:5] for m in p.missing}
     if asked:
         actions.append("Most useful missing facts: " + ", ".join(sorted(asked)[:5]))
+    quotes = sorted(float(o.fob_price_usd_per_mt) for o in offers if getattr(o, "fob_price_usd_per_mt", None))
+    best_quote = quotes[0] if quotes else None
+    spread = round((quotes[-1] - quotes[0]) / quotes[0] * 100.0, 1) if len(quotes) > 1 and quotes[0] else None
+    if len(quotes) > 1:
+        actions.append(f"Leverage: best quote {best_quote:,.0f} FOB — ask the other {len(quotes) - 1} supplier(s) "
+                       "to match or beat it before choosing")
+    expired = _expired(deal)
+    if expired:
+        actions.append(f"{len(expired)} quote(s) expired — ask "
+                       + ", ".join(getattr(o, "company_name", "") or o.supplier_id for o in expired[:3])
+                       + " to reconfirm their price")
 
     return MatchBoard(
         deal_id=deal.deal_id, hs_code=deal.hs_code, market=market,
@@ -394,12 +519,16 @@ async def build_board(deal: Any) -> MatchBoard:
         offers=[o.model_dump(mode="json") for o in offers],
         pairs=pairs, min_probability=min_probability(),
         assumptions={
-            "freight_usd_per_mt": lc.freight_per_mt(market), "insurance_pct": lc.insurance_pct(),
+            "freight_usd_per_mt": freight if freight is not None else lc.freight_per_mt(market),
+            "freight_basis": freight_basis or "region_estimate", "incentive_pct_of_fob": incentive_pct,
+            "insurance_pct": lc.insurance_pct(),
             "inspection_usd_per_shipment": lc.inspection_usd_per_shipment(), "escrow_fee_pct": lc.escrow_fee_pct(),
             "margin_floor_pct": getattr(deal, "margin_floor_pct", None) or lc.default_margin_floor_pct(),
             "import_duty_pct": priors.get("tariff_pct"),
         },
         next_actions=actions,
+        expired_offers=[o.model_dump(mode="json") for o in expired],
+        best_quote_usd_per_mt=best_quote, quote_spread_pct=spread, target_margin_pct=target_margin_pct(),
         learning={"calibration_active": learned["calibration"]["active"],
                   "resolved_matches": learned["calibration"]["n_resolved"],
                   "calibration_error": learned["calibration"]["ece"],
