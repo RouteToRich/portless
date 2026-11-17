@@ -94,37 +94,74 @@ def _usd_inr() -> float:
         return 84.0
 
 
-def summarise(records: list[dict[str, Any]], commodity: str) -> dict[str, Any]:
-    """Pure: Agmarknet rows → median modal price and the FOB estimate."""
-    prices: list[float] = []
-    dates: list[str] = []
-    for r in records or []:
+def _num(r: dict[str, Any], *keys: str) -> float | None:
+    for k in keys:
         try:
-            v = float(str(r.get("modal_price") or r.get("Modal_Price") or "").replace(",", ""))
+            v = float(str(r.get(k) or "").replace(",", ""))
         except ValueError:
             continue
         if v > 0:
-            prices.append(v)
-            d = r.get("arrival_date") or r.get("Arrival_Date")
-            if d:
-                dates.append(str(d))
+            return v
+    return None
+
+
+def summarise(records: list[dict[str, Any]], commodity: str, *, usd_inr: float | None = None,
+              usd_inr_source: str = "fallback") -> dict[str, Any]:
+    """Pure: Agmarknet rows → median modal / min / max price and the FOB estimate."""
+    prices: list[float] = []
+    lows: list[float] = []
+    highs: list[float] = []
+    dates: list[str] = []
+    for r in records or []:
+        v = _num(r, "modal_price", "Modal_Price")
+        if v is None:
+            continue
+        prices.append(v)
+        if (lo := _num(r, "min_price", "Min_Price")) is not None:
+            lows.append(lo)
+        if (hi := _num(r, "max_price", "Max_Price")) is not None:
+            highs.append(hi)
+        d = r.get("arrival_date") or r.get("Arrival_Date")
+        if d:
+            dates.append(str(d))
     if not prices:
         return {}
     modal = statistics.median(prices)
-    rate = _usd_inr()
-    mandi_usd = modal * 10.0 / rate  # INR / quintal → INR / MT → USD / MT
+    rate = usd_inr or _usd_inr()
     mk = markup_pct()
+
+    def fob(inr_per_quintal: float) -> float:
+        return round(inr_per_quintal * 10.0 / rate * (1 + mk / 100.0), 2)  # INR/quintal → USD/MT + mark-up
+
+    mandi_usd = modal * 10.0 / rate
     return {
         "commodity": commodity,
         "modal_inr_per_quintal": round(modal, 2),
+        "min_inr_per_quintal": round(statistics.median(lows), 2) if lows else None,
+        "max_inr_per_quintal": round(statistics.median(highs), 2) if highs else None,
         "markets": len(prices),
         "as_of": max(dates) if dates else None,
         "usd_inr": rate,
+        "usd_inr_source": usd_inr_source if usd_inr else "fallback",
         "mandi_usd_per_mt": round(mandi_usd, 2),
         "fob_estimate_usd_per_mt": round(mandi_usd * (1 + mk / 100.0), 2),
+        "fob_low_usd_per_mt": fob(statistics.median(lows)) if lows else None,
+        "fob_high_usd_per_mt": fob(statistics.median(highs)) if highs else None,
         "markup_pct": mk,
         "source": "agmarknet",
     }
+
+
+async def live_usd_inr() -> tuple[float | None, str]:
+    """(rate, source): the live USD/INR rate the negotiation agent uses, else (None, "fallback")."""
+    try:
+        from agents.negotiation_agent.market_intel import fetch_usd_inr_rate
+        rate = await fetch_usd_inr_rate()
+        if rate:
+            return float(rate), "live"
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Mandi prices: live USD/INR unavailable: %s", exc)
+    return None, "fallback"
 
 
 class MandiPriceConnector(Connector):
@@ -157,7 +194,8 @@ class MandiPriceConnector(Connector):
             records = resp.json().get("records") or []
         except ValueError:
             return {}
-        return summarise(records, commodity)
+        rate, source = await live_usd_inr()
+        return summarise(records, commodity, usd_inr=rate, usd_inr_source=source)
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("Mandi prices are read-only.")

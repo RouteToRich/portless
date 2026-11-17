@@ -29,7 +29,7 @@ from uuid import uuid4
 from shared.bus import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 
-from . import directory, pair_match, profit, quality, ranking, scan_reports, validation
+from . import directory, freight_lanes, pair_match, profit, quality, ranking, scan_reports, start_check, validation
 from .cache import cache_get, cache_set, make_cache_key
 from .config import DEFAULT_CONFIG, TradeMinConfig, settings
 from .repository import get_repository
@@ -149,6 +149,8 @@ class _Phase1Result:
     india_share_pct: float | None = None
     competitors: list[dict] = field(default_factory=list)
     india_price_advantage_pct: float | None = None
+    data_period: str | None = None
+    market_data_flags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -444,6 +446,8 @@ def _corridor_facts(result: _Phase1Result, row: dict) -> None:
     result.india_world_fob_usd_per_mt = num("exporter_world_unit_value_usd_per_mt")
     result.import_value_usd = num("import_value_usd")
     result.import_growth_pct = _safe_float(row.get("growth_1y_pct"))
+    result.data_period = str(row.get("latest_period")) if row.get("latest_period") else None
+    result.market_data_flags = [str(f) for f in (row.get("flags") or []) if f]
     result.india_share_pct = _safe_float(row.get("exporter_share_pct"))
     comps: list[dict] = []
     for c in row.get("top_suppliers") or []:
@@ -1214,6 +1218,8 @@ async def _phase5_assemble_and_persist(
         india_share_pct=phase1.india_share_pct,
         competitors=phase1.competitors,
         india_price_advantage_pct=phase1.india_price_advantage_pct,
+        data_period=phase1.data_period,
+        market_data_flags=phase1.market_data_flags,
         freight_pct=freight_pct,
         gap_suspect=gap_suspect,
         gap_note=(f"Gross gap {phase1.gross_price_gap_pct:.0f}% is above {config.suspect_gap_pct:.0f}%: "
@@ -1221,7 +1227,14 @@ async def _phase5_assemble_and_persist(
                   "Check the price with a supplier quote before trusting it.") if gap_suspect else None,
     )
     pair_match.attach(opp)
+    await start_check.annotate(opp, refresh_news=True)
+    container_mt, container_type = profit._container(opp, config)
+    await freight_lanes.refresh(market, hs_code, container_type, container_mt)
     await profit.attach(opp, config)
+    from shared.connectors import apify as _apify
+    meter = _apify._COST_METER.get()
+    if meter is not None:
+        opp.scan_cost = dict(meter)
 
     try:
         repo = await get_repository()
@@ -1380,6 +1393,16 @@ async def _scan_one(
     config: TradeMinConfig,
 ) -> EnrichedOpportunity | None:
     try:
+        from shared.connectors import apify as _apify
+        _apify.start_cost_meter()
+        policy = await start_check.export_policy(hs_code, market)
+        if policy.get("severity") == "block":
+            # A prohibited product or an embargoed market is never an opportunity
+            # (no paid search either): the trade check would stop the deal anyway.
+            reason = (policy.get("destination_message") if policy.get("destination_severity") == "block"
+                      else policy.get("message")) or "export policy forbids it"
+            scan_reports.record(hs_code, market, "dropped", f"export policy: {reason}")
+            return None
         phase1 = await _phase1_historical_demand(hs_code, market, config)
         phase2 = await _phase2_live_signals(hs_code, market, phase1, config)
         if not phase1.source or not phase1.price_gap_measured:
@@ -1471,10 +1494,23 @@ async def list_opportunities(
     counterparties: str = "all",
 ) -> list[EnrichedOpportunity]:
     opps = await open_opportunities(limit=limit, min_rank=min_rank, urgency_tier=urgency_tier)
+    policies: dict[tuple[str, str], dict] = {}
+    for o in opps:
+        key = (o.hs_code, o.market.upper())
+        if key not in policies:
+            await start_check.annotate(o)
+            policies[key] = {"export_policy": o.export_policy, "market_check": o.market_check,
+                             "import_requirements": o.import_requirements}
+        else:
+            for f, v in policies[key].items():
+                setattr(o, f, v)
+    # A prohibited product / embargoed market is never listed (confirmations can change it).
+    opps = [o for o in opps if not start_check.blocked(o)]
     await _fill_profit(opps)
     deals = await _corridor_deals()
     for o in opps:
         o.corridor_deals = deals.get((o.hs_code, o.market.upper()), [])
+        o.readiness = start_check.checklist(o)
     opps.sort(key=profit.sort_key, reverse=True)
     return [_with_counterparties(o, counterparties) for o in opps]
 
@@ -1483,7 +1519,7 @@ async def _fill_profit(opps: list[EnrichedOpportunity]) -> None:
     """Opportunities without a computed profit (scanned before profit ranking, or
     still missing a price) are computed again, and saved when the result changed."""
     missing = [o for o in opps if o.profit is None or o.profit.expected_profit_usd is None
-               or o.profit.version < profit.PROFIT_VERSION]
+               or o.profit.version < profit.PROFIT_VERSION or _flags_changed(o)]
     if not missing:
         return
     try:
@@ -1498,6 +1534,16 @@ async def _fill_profit(opps: list[EnrichedOpportunity]) -> None:
                 await repo.save(o)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Profit backfill not saved for %s: %s", o.opportunity_id, exc)
+
+
+def _flags_changed(o: EnrichedOpportunity) -> bool:
+    """Export policy or news verdict differs from what the stored profit was computed with."""
+    sev = (o.export_policy or {}).get("severity")
+    verdict = (o.market_check or {}).get("verdict")
+    want = {profit.EXPORT_REVIEW} if sev == "review" else set()
+    want |= {profit.NEWS_AVOID} if verdict == "avoid" else {profit.NEWS_CAUTION} if verdict == "caution" else set()
+    have = set(o.flags or []) & {profit.EXPORT_REVIEW, profit.NEWS_AVOID, profit.NEWS_CAUTION}
+    return want != have
 
 
 _LIVE_DEAL_END = frozenset({"PAID", "CANCELLED", "REFUNDED", "NEGOTIATION_FAILED"})
@@ -1679,6 +1725,9 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
         tariff_data=opp.tariff_data,
         buyer_signals_count=len(opp.buyer_signals),
         seller_candidates_count=len(opp.seller_candidates),
+        profit=opp.profit.model_dump(mode="json") if opp.profit else None,
+        lot_mt=opp.profit.lot_mt if opp.profit else None,
+        flags=list(opp.flags or []),
     )
 
 

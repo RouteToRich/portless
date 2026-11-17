@@ -107,10 +107,12 @@ def _norm_incoterm(incoterm: str | None) -> str:
 
 
 def landed(fob: float, market: str | None, quantity_mt: float | None = None, *,
-           incoterm: str | None = "CIF", margin_floor_pct: float | None = None) -> LandedCost:
+           incoterm: str | None = "CIF", margin_floor_pct: float | None = None,
+           freight_usd_per_mt: float | None = None) -> LandedCost:
+    """``freight_usd_per_mt`` overrides the regional estimate (a lane quote)."""
     inc = _norm_incoterm(incoterm)
     qty = quantity_mt if quantity_mt and quantity_mt > 0 else 25.0
-    freight = 0.0 if inc == "FOB" else freight_per_mt(market)
+    freight = 0.0 if inc == "FOB" else (freight_usd_per_mt if freight_usd_per_mt is not None else freight_per_mt(market))
     inspection = inspection_usd_per_shipment() / qty
     ins = insurance_pct() if inc == "CIF" else 0.0
     fee = escrow_fee_pct()

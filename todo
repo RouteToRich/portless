@@ -59,7 +59,8 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **Telegram alerts** — create a bot with @BotFather → `HITL_TELEGRAM_BOT_TOKEN`; the operators' group chat id → `HITL_TELEGRAM_CHAT_ID`; `DIGEST_EMAIL_TO` (1.5).
 - [ ] **Tavily** — API key → `TAVILY_API_KEY` (market check, live USD/INR rate) (2.6, 5.4).
 - [ ] **UN Comtrade** — subscription key from comtradedeveloper.un.org → `COMTRADE_SUBSCRIPTION_KEY` (2.6).
-- [ ] **Free trade-data keys you want** — `MACMAP_API_KEY`, `CENSUS_API_KEY` (optional) (2.6).
+- [ ] **data.gov.in (Agmarknet mandi prices)** — free API key from data.gov.in (sign up → My Account → API key) → `DATA_GOV_IN_API_KEY`. Gives the radar a real Indian supplier price before any quote; without it the supplier price falls back to India's average export price, the weakest basis (16).
+- [ ] **Free trade-data keys you want** — `MACMAP_API_KEY`; `CENSUS_API_KEY` from api.census.gov/data/key_signup.html (US monthly import prices for the radar, 17.1) (2.6). UK HMRC and Eurostat Comext need no key.
 - [ ] **Signing secrets** — generate random strings (e.g. `python -c "import secrets; print(secrets.token_hex(32))"`) for `ESCROW_PROOF_LINK_SECRET` and `HITL_NOTIFY_WEBHOOK_SECRET`; set `PORTLESS_PUBLIC_BASE_URL` to the backend's public HTTPS address (1.1).
 - [ ] **Controls** — choose `FOUR_EYES_THRESHOLD_USD` (suggested 25000) and keep `AUTONOMY_MONEY_CEILING=L1` (1.1).
 
@@ -81,6 +82,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **Optional sources** — `VOLZA_API_KEY`, `INDIAMART_API_KEY` / `INDIAMART_MOBILE`, `ALIBABA_APP_KEY` / `_APP_SECRET`; `SGS_BOOKING_EMAIL` / `BUREAU_VERITAS_BOOKING_EMAIL` if those inspectors will be offered (1.2, 2.6).
 
 ### D. After the keys are in
+- [ ] **Radar data to enter** (16): HS export policy confirmation per catalogue code, RoDTEP / drawback rates once the CA confirms eligibility, container size / type and destination requirements per product line, freight quotes you receive (`PUT /trade-min/freight-lanes`).
 - [ ] Load the real product lines and corridors on the Catalogue page (`PUT /trade-min/catalogue`) (1.5).
 - [ ] Tell engineering which groups are set, so each provider's sandbox run (6.3) can start; readiness should show no `fail` before `ENV_PROFILE=production`.
 
@@ -646,6 +648,52 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 - [ ] **(Eng)** **Export policy per exact product**: the trade check reads the 8-digit code and form; onion is a product India has restricted before (export ban, minimum export price), so the current DGFT notification is checked before outreach and again before the PI (3.4, compliance seed).
 - [ ] **(QA)** Gherkin cases + automation: a requirement read from a reply lands on the directory record with its source; an unknown attribute is never invented; a variety / size / packing conflict blocks the pair; the outreach e-mail asks only the unanswered attributes; a staff entry survives the next scan; browser case for the product line, completeness and filters.
 
+### 16.1 Hand-off from the radar to the prospect — Opportunity Radar: profit and next step
+- [x] **(Eng)** **Ready-to-start checklist per opportunity** — done 2026-11-17 (`services/trade_min/start_check.py`, `EnrichedOpportunity.readiness`): reachable buyers (usable e-mail, not flagged / failed; at least `OUTREACH_PARALLEL`), reachable suppliers, export policy, price checked, margin at the floor, duty verified, market news, deal already running, destination requirements — ok / warn / fail. The radar row shows one dot per check ("ready" / "N to check" / "N blocking"), the expanded row the list; "Start prospect" names every failing check and asks to confirm.
+- [x] **(Eng)** **Carry the radar's numbers into the deal** — done 2026-11-17: the match seed passes `profit`, `lot_mt` and `flags`; the deal keeps them unchanged as `DealRecord.radar_estimate`, takes the radar's lot as its default `quantity_mt` and the radar's buyer price as its target when the scan had none (`buyer_price_source = radar:<basis>`, so the RFQ no longer falls back to "1.25 × cheapest FOB" when the radar had a price). Deal page: "Radar estimate → negotiated → realised" card.
+- [x] **(Eng)** **Estimate vs outcome per opportunity** — done 2026-11-17 (`services/trade_min/accuracy.py`, `GET /trade-min/profit/accuracy`): realised ÷ estimated margin per settled deal; with ≥ 3 settled deals of a product (else ≥ 5 overall) the radar multiplies its margin estimate by the median ratio (clamped 0.5–1.2) and shows "corrected: …". Learns as soon as deals settle — nothing to do until then.
+
+### 16.2 What can stop a deal, shown before it starts — Opportunity Radar: profit and next step
+- [x] **(Eng)** **Export policy on the radar** — done 2026-11-17: `compliance.check_hs()` + `check_destination()` at scan time (a prohibited product or embargoed market is dropped before any paid search, with the reason in the scan report) and on every list (never listed; "Export policy unconfirmed" flag, chance of closing unchanged, checklist amber). Staff confirm "free to export" from the expanded row (`PUT /deals/compliance/hs-policy/{hs}`, recorded with their e-mail).
+- [ ] **(Ops/Legal)** Confirm the export policy of every catalogue HS code once against ITC-HS Schedule 2 / DGFT notifications (the radar's "Confirm free to export", or restricted / prohibited through the API) — today every code shows "unconfirmed" (all live opportunities). 8-digit codes and minimum export prices stay in 15.3.
+- [x] **(Eng)** **Market news verdict on the radar** — done 2026-11-17: `market_check.run` at scan and rescore (cached `MARKET_CHECK_MAX_AGE_HOURS`), the list reads the cache only; avoid ×0.5 and caution ×0.85 on the chance of closing, "News: avoid / caution" flags, verdict + summary in the market section, checklist red / amber. Needs `TAVILY_API_KEY` for the best results (Google News RSS without it) and an LLM gateway for the verdict.
+- [x] **(Eng)** **Destination import requirements on the row** — done 2026-11-17: catalogue `ProductLine.import_requirements` (per ISO-2 market or `*`), shown in the market section and as an amber check.
+- [ ] **(Ops/Legal)** Fill `import_requirements` per catalogue product line (FDA registration / prior notice, halal / SFDA, EU MRL certificate, phytosanitary …) — the data half of 14.7.
+- [x] **(Eng)** **Data year and staleness** — done 2026-11-17: `data_period` and `market_data_flags` kept from the export-market row; "Comtrade <year> · old" when older than two years, flag "Old prices", tip in "What's missing". Opportunities scanned before today show it after their next scan.
+
+### 16.3 A truer profit number — Opportunity Radar: profit and next step
+- [x] **(Biz/Eng)** **Export incentives as income** — done 2026-11-17 (`services/trade_min/incentives.py`, Mongo `export_incentives`, `GET /trade-min/incentives`, `PUT /trade-min/incentives/{hs}` staff): RoDTEP % (+ cap) and drawback % (+ cap) per 8 / 6 / 4-digit code, counted as + USD/MT in the margin only when `eligible_confirmed`; profit panel line "Export incentives".
+- [ ] **(Ops/CA)** Enter the RoDTEP (DGFT Appendix 4R) and drawback (CBIC schedule) rates for each catalogue HS code and tick eligibility once the CA confirms it for PortLess as a merchant exporter (11.1) — until then incentives are "not counted".
+- [x] **(Eng)** **Freight per lane, not per region** — done 2026-11-17 (`services/trade_min/freight_lanes.py`, Mongo `freight_lane_rates`, `GET/PUT /trade-min/freight-lanes`): a forwarder quote per lane (asked at scan time only when `COGOPORT_API_KEY` / `FREIGHTOS_API_KEY` is real — never a placeholder, stub quotes ignored) or a quote staff entered, used for `LANE_QUOTE_MAX_AGE_DAYS` (14), else the regional estimate; basis shown on the freight line.
+- [x] **(Eng/Ops)** **Container fit per product** — done 2026-11-17 (engineering): catalogue `container_mt` and `container_type` (dry / reefer, reefer estimate × `REEFER_FREIGHT_FACTOR` 1.6) drive the margin per container, the default lot and the freight.
+- [ ] **(Ops)** Fill `container_mt` / `container_type` per catalogue product and packing (fresh onion = reefer; ground spices 15–18 MT per 20') — part of area 10 "packing standards".
+- [x] **(Eng)** **A range, not one number** — done 2026-11-17: expected profit low / high from the supplier price spread (supplier prices min–max, price book p25–p75, mandi min / max, ±15 % on India's export average), shown under the expected profit and in the panel.
+- [x] **(Eng)** **Live USD/INR in the mandi price** — done 2026-11-17: the mandi connector converts at the live rate (`market_intel.fetch_usd_inr_rate`) and prints the rate and its source; fallback rate when the live one is unavailable.
+- [x] **(Eng)** **Mandi trend and season** — done 2026-11-17 (`services/trade_min/mandi_history.py`, Mongo `mandi_price_history`): every mandi summary fetched is kept per commodity per day; after 7 days of history the panel says rising / falling / flat with "buy now" / "wait or ask for a fresh quote". Starts collecting once `DATA_GOV_IN_API_KEY` is set (owner track A).
+- [ ] **(Eng)** Mandi history backfill from Agmarknet's historical datasets on data.gov.in so the trend works from day one, plus a harvest-month calendar per commodity for the seasonal factor.
+- [x] **(Eng)** **Annual potential next to one lot** — done 2026-11-17 (market basis): "Profit per year" = margin × min(`reachable_share_pct` 1 % of the market's yearly import tonnes, one lot a month) × chance of closing; sort option "Profit per year".
+- [ ] **(Eng)** Annual potential per buyer from its own reorder frequency once import records exist (decision in 12: bill-of-lading data), and from Comtrade monthly data (export-market actor `frequency: "M"`, more actor cost).
+- [x] **(Eng)** **Scan cost against profit** — done 2026-11-17: an Apify cost meter (`apify.start_cost_meter`) per corridor scan and per rescore → `EnrichedOpportunity.scan_cost` (runs, USD from `usageTotalUsd`), shown in the market section.
+
+### 16.4 Console — Opportunity Radar: profit and next step
+- [x] **(Eng)** **"What's missing and where to get it"** — done 2026-11-17: `profit.missing` (no supplier price → `DATA_GOV_IN_API_KEY` / Rescore / RFQ; no buyer price; duty unverified → Access2Markets / MacMap; price check; freight estimate → quote keys or a staff quote; incentives not counted; export policy unconfirmed; old Comtrade year), listed under the profit panel.
+- [x] **(Eng)** **Urgency in the table** — done 2026-11-17: "time-sensitive · T3/T4" chip with RFQs / tenders / disruption in its tooltip, sort "Time-sensitive".
+- [x] **(Eng)** **Prospect page shows the opportunity it came from** — done 2026-11-17: the deal's Origin Opportunity card shows the radar's flags, profit breakdown and market section; Overview shows "Radar estimate → negotiated → realised".
+- [x] **(QA)** Gherkin cases + browser cases — done 2026-11-17: backend `tests/test_radar_handoff.py` (27) and `tests/test_opportunity_profit.py` (40); browser cases TC-WEB-033 … TC-WEB-040 in `docs/testing/BROWSER_SCENARIOS.md` (not automated: no browser runner yet, 6.2).
+
+
+### 17.1 National trade statistics next to Comtrade — Trade data beyond UN Comtrade
+- [ ] **(Eng)** **UK HMRC trade data connector** (free API, uktradeinfo.com OData; monthly imports by CN8 code and partner, value **and kg**): fills the UK lines where Comtrade has a value but no quantity, so no unit price and no gap (14 UK buyers dropped as "no measured price gap" on 2026-11-17). Direct connector, no Apify cost; Phase 1 source for market `GB`.
+- [ ] **(Eng)** **Eurostat Comext connector** (free API; monthly EU imports by CN8 code, partner and quantity in 100 kg): fresher than Comtrade's annual figures and 8-digit (grade-level) codes for DE, ES, NL, FR, IT … Direct connector; Phase 1 source for EU markets.
+- [ ] **(Eng)** **US Census** — already a connector: turn it on with the free `CENSUS_API_KEY` (owner track A) and give it the US monthly import price per HS10 as the buyer anchor when fresher than Comtrade.
+- [ ] **(Eng)** **India's own export statistics — new PortLess Apify actor** (`india-export-stats-ai`, built with `/actor-pipeline`): Ministry of Commerce / DGCI&S TradeStat (tradestat.commerce.gov.in — web form, no API) gives India's exports by 8-digit ITC-HS code × destination × month, value and quantity. Use it for: (1) what each market pays for INDIA's goods this year (the radar's `india_to_market` anchor, today Comtrade, often two years old); (2) a supplier-side check (India's FOB per destination); (3) whether India already ships the product to the market at all; (4) the trend per destination. Cache a month (published monthly).
+- [ ] **(Eng)** **Mirror data for markets that report late or not at all** (UAE, other Gulf states, many African markets): use partners' exports to the market (Comtrade mirror flows; the export-market actor already returns a `mirror` flag) and India's exports to it (actor above) when the market's own import figures are missing or older than two years. UAE data on 2026-11-17 is from 2023 and shows prices below India's average (negative gaps, 23 UAE buyers dropped).
+- [ ] **(Eng)** **Investigate UAE / Dubai customs open data** (Dubai Pulse / Federal Competitiveness and Statistics Centre) as a direct source for the UAE; an Apify actor only if there is no API.
+- [ ] **(Eng)** **One merge rule for every source**: per product × market take the freshest source with a quantity (HMRC / Comext / Census monthly → TradeStat → Comtrade annual → mirror), record which one on the opportunity (`price_benchmark_source`, `data_period`), and show the source and month on the radar. A source that disagrees by more than 30 % with another is flagged, not averaged.
+- [ ] **(Eng)** **8-digit codes end to end**: the national sources speak CN8 / HS10 / ITC-HS8; map them to the catalogue's product lines (15.1 "exact product code") so a price is per grade, not per 6-digit mix — fixes many "price check needed" gaps.
+- [ ] **(Eng)** Demand gate uses these sources too: a market with recent monthly imports from a national source is "live demand" even when Comtrade has nothing (89 buyers were dropped as "no live demand data" on 2026-11-17).
+- [ ] **(QA)** Tests per connector on recorded responses (`httpx.MockTransport`), the merge rule (freshest-with-quantity wins, disagreement flagged), and the actor's normaliser; readiness shows each source live / stub.
+
 ---
 
 ## P2 — improvements
@@ -776,6 +824,9 @@ Sorted by priority; each names the area it belongs to.
 - Buyer / supplier check at scan time (12): the top buyers and suppliers of every opportunity are screened (sanctions, e-mail, GST / IEC) before the radar shows them; the radar shows verified ones by default ("Verified only / All" toggle, hidden counts), the directory filters by result and can check one company now, a failed counterparty never seeds outreach or a supplier party, and a deal from an opportunity no longer records an unchecked supplier as verified.
 - Pre-deal rescore (12): the radar's Rescore / Start prospect fills the best pairs' gaps without contacting anyone (counterparty check, supplier address / GSTIN from its website, plant-to-port distance, an estimated supplier price labelled as an estimate), scores them again and shows before → after; a web-search buyer's product fit is no longer overstated as "same subheading".
 - Readiness check `counterparty_validation` (12): fails in production (warns elsewhere) when `TRADE_MIN_VALIDATION_ENABLED=false` or the screening actor has no `APIFY_TOKEN`, so the radar's "Verified only" view can no longer be silently empty.
+- Opportunity Radar ranked by expected profit (16): margin per MT / container / lot, chance of closing (pair score, verified buyers, outcome calibration, corridor history), each price with its basis (buyer quote → price book → India-to-market → market average; supplier price → price book → Agmarknet mandi → India export average); net gap = gross − duty − freight (VAT no longer subtracted); implausible gaps flagged; Indian exporters listed as buyers and suppliers of another product flagged; cleaner company names; chilli / turmeric / saffron keywords fixed; scan report with drop reasons; running-deal warning; outreach names India's price advantage when Comtrade shows it.
+- Unit test cases in Gherkin per module (`docs/testing/unit/`, `scripts/gen_unit_gherkin.py`).
+- Opportunity Radar hand-off and truer profit (16): ready-to-start checklist, radar estimate carried into the deal and compared with the realised margin, export policy / news / destination needs before a deal, data year, export incentives, freight per lane, container per product, profit range, live USD/INR and mandi trend, yearly potential, scan cost, "what's missing and where to get it", time-sensitive sort, origin opportunity on the deal page.
 - PI acceptance price check (5.1, DEF-12 / TC-RSK-024): a buyer e-mail that accepts the PI but names another price (unit or total, rupees converted) opens `CONFIRM_PI_ACCEPTANCE` at L0 with flag `pi_price_mismatch` and both prices in the summary; repeating the PI price or total, or naming none, stays a plain acceptance.
 
 ---
@@ -865,6 +916,30 @@ as the one start-up checklist.
 
 Fees, forms and deadlines change; confirm each step with the CA before filing. The product examples
 (spices, basmati) follow the HS codes used in testing; the real list comes from the catalogue.
+
+### 17 Trade data beyond UN Comtrade
+
+**Why.** Comtrade already covers every country, so more "Comtrade-like" actors are not the point. Its
+gaps are: annual figures one to two years old, 6-digit codes that mix grades, some countries reporting
+late (UAE: 2023) or without quantities (several UK lines), and India's export price only as a world
+average. National statistics fix exactly these: UK HMRC, Eurostat Comext and US Census have free APIs
+(plain connectors, no Apify cost); India's TradeStat has no API, so it is the one new Apify actor. On
+2026-11-17, 126 of 287 directory buyers were dropped for "no live demand data" or "no measured price
+gap" — the gaps these sources close.
+
+**Order of work.** US Census key (no code) → UK HMRC (fixes the UK quantities) → India TradeStat actor
+(fresh India-to-market prices for every market, and the UAE) → Eurostat Comext → mirror rule → the
+merge rule and 8-digit mapping (with 15.1).
+
+### 16 Opportunity Radar: profit and next step
+
+**Where it stands (2026-11-17, after area 16).** The radar ranks by expected profit with a range,
+each price with its basis, and knows before "Start prospect" whether the deal can proceed (reachable
+buyers / suppliers, export policy, news, destination needs, a running deal). Its numbers travel into
+the deal and are compared with the realised margin once deals settle. What is left is data, not code:
+the mandi key (owner track A), freight quote keys (2.6), RoDTEP / drawback rates and eligibility (CA),
+HS export policy confirmations, container and destination requirements per catalogue product (Ops),
+and per-buyer import frequency (12, decision).
 
 ### 15 Exact product requirement per buyer and supplier
 

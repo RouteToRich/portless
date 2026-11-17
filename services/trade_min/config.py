@@ -122,6 +122,8 @@ class TradeMinConfig:
     # A first order is rarely above this value: a high-value product (saffron at
     # $280k/MT) is sized by money, not by a container.
     max_lot_value_usd: float = 150_000.0
+    # Share of a market's yearly imports PortLess could plausibly win (yearly potential).
+    reachable_share_pct: float = 1.0
     # Chance of closing before any outcome history: floor + span × best pair score.
     p_close_floor: float = 0.05
     p_close_span: float = 0.40

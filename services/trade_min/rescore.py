@@ -193,6 +193,8 @@ async def rescore(opportunity_id: str, *, pairs: int = 3) -> EnrichedOpportunity
     if opp is None:
         return None
 
+    from shared.connectors import apify as _apify
+    meter = _apify.start_cost_meter()
     before = {_pair_key(p): p for p in pair_match.match_opportunity(opp)}
     chosen = _pick_pairs(list(before.values()), pairs)
     buyers = list({p.buyer_index: opp.buyer_signals[p.buyer_index] for p in chosen
@@ -235,8 +237,12 @@ async def rescore(opportunity_id: str, *, pairs: int = 3) -> EnrichedOpportunity
     opp.pair_matches = after_pairs
     opp.best_match_score = max((x.score for x in after_pairs), default=None)
     # Prices, checks and pair scores changed: the expected profit follows them.
-    from . import profit
+    from . import profit, start_check
+    await start_check.annotate(opp, refresh_news=True)
     await profit.attach(opp)
+    prior = opp.scan_cost or {"runs": 0, "usd": 0.0}
+    opp.scan_cost = {"runs": prior.get("runs", 0) + meter["runs"],
+                     "usd": round(float(prior.get("usd", 0.0)) + meter["usd"], 4)}
     try:
         await repo.save(opp)
     except Exception as exc:  # noqa: BLE001

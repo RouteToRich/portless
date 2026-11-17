@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from shared import catalogue as _catalogue
 from shared.catalogue import ProductLine
 
-from . import directory, scan_reports, service, validation
+from . import accuracy, directory, freight_lanes, incentives, scan_reports, service, validation
 from .config import DEFAULT_CONFIG
 from .schemas import CounterpartyRecord, EnrichedOpportunity, MatchEngineSeed, ScanReport, ScanRequest
 
@@ -102,6 +102,73 @@ class KnowledgeNote(BaseModel):
     subject_id: str = Field(description="company domain / candidate id, HS code, ISO-2 market or deal id")
     text: str = Field(min_length=3, max_length=8000)
     author: str | None = None
+
+
+class IncentiveUpdate(BaseModel):
+    rodtep_pct: float = Field(default=0.0, ge=0.0, le=20.0)
+    rodtep_cap_usd_per_mt: float | None = Field(default=None, ge=0.0)
+    drawback_pct: float = Field(default=0.0, ge=0.0, le=20.0)
+    drawback_cap_usd_per_mt: float | None = Field(default=None, ge=0.0)
+    eligible_confirmed: bool = False
+    source: str | None = None
+    note: str | None = None
+
+
+@router.get("/incentives", response_model=list[incentives.ExportIncentive])
+async def list_incentives() -> list[incentives.ExportIncentive]:
+    """RoDTEP / duty drawback rates per HS code (income in the radar's profit once confirmed)."""
+    return await incentives.list_entries()
+
+
+def _staff():
+    from shared.auth.dependencies import require_portless
+    return require_portless
+
+
+@router.put("/incentives/{hs_code}", response_model=incentives.ExportIncentive)
+async def put_incentive(hs_code: str, body: IncentiveUpdate, user=Depends(_staff())) -> incentives.ExportIncentive:
+    """Enter the rates from the DGFT RoDTEP schedule (Appendix 4R) / CBIC drawback schedule.
+    ``eligible_confirmed`` (after the CA's check) makes the radar count them as income."""
+    try:
+        entry = incentives.ExportIncentive(
+            hs_code=hs_code, **body.model_dump(),
+            confirmed_by=(getattr(user, "email", None) or getattr(user, "user_id", None)) if body.eligible_confirmed else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return await incentives.set_entry(entry)
+
+
+class LaneUpdate(BaseModel):
+    market: str = Field(min_length=2, max_length=2)
+    container_type: Literal["dry", "reefer"] = "dry"
+    usd_per_container: float = Field(gt=0)
+    container_mt: float = Field(default=20.0, gt=0)
+    note: str | None = None
+
+
+@router.get("/freight-lanes")
+async def list_freight_lanes() -> list[dict]:
+    """Sea freight rates per lane the radar uses (forwarder quotes and staff entries)."""
+    return [{**r.model_dump(mode="json"), "usd_per_mt": r.usd_per_mt} for r in await freight_lanes.list_rates()]
+
+
+@router.put("/freight-lanes")
+async def put_freight_lane(body: LaneUpdate, user=Depends(_staff())) -> dict:
+    """Record a freight quote received for a lane (India → market); used until it is older
+    than LANE_QUOTE_MAX_AGE_DAYS."""
+    rate = await freight_lanes.save(freight_lanes.LaneRate(
+        market=body.market, container_type=body.container_type, usd_per_container=body.usd_per_container,
+        container_mt=body.container_mt,
+        provider=f"staff:{getattr(user, 'email', None) or getattr(user, 'user_id', 'operator')}", note=body.note,
+    ))
+    return {**rate.model_dump(mode="json"), "usd_per_mt": rate.usd_per_mt}
+
+
+@router.get("/profit/accuracy")
+async def profit_accuracy() -> dict:
+    """The radar's estimates against what settled deals really earned, and the correction per product."""
+    return await accuracy.summary()
 
 
 @router.get("/scan/report", response_model=ScanReport | None)

@@ -106,6 +106,32 @@ def _count_run() -> None:
     _runs_by_day[key] = _runs_by_day.get(key, 0) + 1
 
 
+# ── Cost meter: what one scan / rescore of an opportunity spent ──────────
+# ``start_cost_meter()`` in the caller; every finished run inside that context
+# adds its count and ``usageTotalUsd``. A run shared by several corridors (the
+# in-flight coalescing in trade_min) is counted once, on the corridor that started it.
+import contextvars as _cv
+
+_COST_METER: _cv.ContextVar[dict[str, Any] | None] = _cv.ContextVar("apify_cost_meter", default=None)
+
+
+def start_cost_meter() -> dict[str, Any]:
+    meter: dict[str, Any] = {"runs": 0, "usd": 0.0}
+    _COST_METER.set(meter)
+    return meter
+
+
+def _meter_run(run: dict[str, Any] | None) -> None:
+    meter = _COST_METER.get()
+    if meter is None:
+        return
+    meter["runs"] += 1
+    try:
+        meter["usd"] = round(meter["usd"] + float((run or {}).get("usageTotalUsd") or 0.0), 4)
+    except (TypeError, ValueError):
+        pass
+
+
 def reset_run_budget_for_tests() -> None:
     global _warned_run_cap
     _runs_by_day.clear()
@@ -413,6 +439,7 @@ class ApifyActorConnector(Connector):
                 status = run.get("status")
 
             self.last_run = run
+            _meter_run(run)
             if status == "FAILED":
                 raise ApifyError(f"Apify run {run_id} of {self.actor_ref} FAILED: {run.get('statusMessage')}")
 

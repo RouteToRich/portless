@@ -38,6 +38,7 @@ Feature: shared/connectors/mandi — unit tests
       And seen = {}
       And def handler(request: httpx.Request) -> httpx.Response: seen['params'] = dict(request.url.params) return httpx.Response(200, json={'records': [{'modal_price': '…
       And real = httpx.AsyncClient
-      And … 1 more setup step(s)
+      And … 2 more setup step(s)
       When out = await mandi.MandiPriceConnector().quote({'hs_code': '091030'})
       Then seen['params']['filters[commodity]'] == 'Turmeric' and out['markets'] == 1
+      And (out['usd_inr'], out['usd_inr_source']) == (88.0, 'live')

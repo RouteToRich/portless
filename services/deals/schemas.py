@@ -229,6 +229,11 @@ class DealRecord(BaseModel):
     realized_margin_usd: float | None = None
     est_margin_pct: float | None = None
     realized_margin_pct: float | None = None
+    radar_estimate: dict[str, Any] | None = None
+    """The Opportunity Radar's numbers when the prospect was started (trade_min
+    profit block: buyer / supplier price and basis, lot, margin, chance of
+    closing, expected profit, flags). Kept unchanged, so estimate → negotiated →
+    realised can be compared (trade_min.accuracy)."""
 
     # ── Parties ───────────────────────────────────────────────────────────
     parties: list[Party] = Field(default_factory=list)

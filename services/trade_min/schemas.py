@@ -342,6 +342,11 @@ class MatchEngineSeed(BaseModel):
     # Counts for the caller to decide how many parallel match requests to fire
     buyer_signals_count: int = 0
     seller_candidates_count: int = 0
+    profit: dict[str, Any] | None = None
+    """The radar's profit block, carried into the deal as ``DealRecord.radar_estimate``."""
+    lot_mt: float | None = None
+    """The radar's lot — the deal's default quantity when no buyer named one."""
+    flags: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +385,29 @@ class OpportunityProfit(BaseModel):
     margin_floor_pct: float | None = None
     version: int = 0
     """profit.PROFIT_VERSION it was computed with; the list recomputes older ones."""
+    # ── range, income, freight, yearly potential (to-do 16.3) ─────────────
+    expected_profit_low_usd: float | None = None
+    expected_profit_high_usd: float | None = None
+    range_basis: str | None = None
+    incentive_usd_per_mt: float | None = None
+    """RoDTEP + duty drawback income per MT (export_incentives table), when confirmed."""
+    incentive_basis: str | None = None
+    freight_basis: str | None = None
+    """``lane_quote`` (a forwarder quote for this lane, with its date) or ``region_estimate``."""
+    container_type: str = "dry"
+    supplier_price_low_usd_per_mt: float | None = None
+    supplier_price_high_usd_per_mt: float | None = None
+    usd_inr: float | None = None
+    usd_inr_source: str | None = None
+    mandi_trend: dict[str, Any] | None = None
+    """From PortLess's own mandi price history: direction, change %, days of history."""
+    annual_potential_usd: float | None = None
+    annual_basis: str | None = None
+    correction_factor: float | None = None
+    """Realised ÷ estimated margin on past deals of this product (accuracy.py), applied to the margin."""
+    correction_basis: str | None = None
+    missing: list[dict[str, str]] = Field(default_factory=list)
+    """What the estimate still lacks and where to get it: ``{what, how, action}``."""
 
 
 class ScanCorridorResult(BaseModel):
@@ -450,6 +478,10 @@ class EnrichedOpportunity(BaseModel):
     """Main origins supplying the market: country, share %, unit value USD/MT."""
     india_price_advantage_pct: float | None = None
     """How much cheaper India sells than the market's leading other origin (+ = cheaper)."""
+    data_period: str | None = None
+    """The year (or month) of the Comtrade figures behind the prices — old data is not today's price."""
+    market_data_flags: list[str] = Field(default_factory=list)
+    """The export-market actor's own flags: stale_period, you_lead, fast_growing …"""
     freight_pct: float | None = None
     """Estimated sea freight as % of the buyer price, subtracted in the net gap."""
     gap_suspect: bool = False
@@ -502,6 +534,17 @@ class EnrichedOpportunity(BaseModel):
     """Opportunity-level warnings: price_check_needed, tariff_unverified, no_supplier_price …"""
     corridor_deals: list[dict[str, Any]] = Field(default_factory=list)
     """Deals already running for this product x market (filled when listed)."""
+    export_policy: dict[str, Any] | None = None
+    """India's export policy for the HS code and the destination check (compliance.py):
+    ``{status, severity, message, destination_severity, destination_message}``."""
+    market_check: dict[str, Any] | None = None
+    """News verdict for the product × market (market_check.py): ``{verdict, summary, checked_at}``."""
+    import_requirements: list[str] = Field(default_factory=list)
+    """What the destination needs before the goods arrive (catalogue product line)."""
+    scan_cost: dict[str, Any] | None = None
+    """Apify runs and USD this opportunity's scan / rescore cost: ``{runs, usd}``."""
+    readiness: list[dict[str, Any]] = Field(default_factory=list)
+    """The ready-to-start checklist (readiness.py): ``{key, label, status ok|warn|fail, detail}``."""
 
 
 # ---------------------------------------------------------------------------

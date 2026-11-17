@@ -418,6 +418,7 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
     quantity_mt: float | None = None
     buyer_candidates: list[BuyerCandidate] = []
     initial_status = DealStatus.DRAFT
+    radar_estimate: dict[str, Any] | None = None
 
     if payload.opportunity_id:
         await _rescore_opportunity(payload.opportunity_id)
@@ -428,6 +429,17 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
             buyer_candidates = _buyer_candidates_from_seed(seed)
             quantity_mt = next((c.quantity_mt for c in buyer_candidates if c.quantity_mt), None)
             initial_status = DealStatus.MATCHING  # always move to MATCHING once seeded
+            # The radar's numbers travel with the deal, unchanged: its lot is the
+            # default quantity and its buyer price the target when the scan had none.
+            radar = seed.get("profit") or None
+            if radar:
+                radar_estimate = {**radar, "flags": seed.get("flags") or [],
+                                  "opportunity_id": payload.opportunity_id, "taken_at": now.isoformat()}
+                if not quantity_mt and seed.get("lot_mt"):
+                    quantity_mt = float(seed["lot_mt"])
+                if not buyer_target_price and radar.get("buyer_price_usd_per_mt"):
+                    buyer_target_price = float(radar["buyer_price_usd_per_mt"])
+                    buyer_price_source = f"radar:{radar.get('buyer_price_basis') or 'estimate'}"
 
             if buyer_target_price:
                 top_sellers: list[dict[str, Any]] = seed.get("top_sellers", [])[:3]
@@ -478,6 +490,7 @@ async def create_deal(payload: CreateDealRequest, org_id: str) -> DealRecord:
         buyer_price_source=buyer_price_source,
         quantity_mt=quantity_mt,
         buyer_candidates=buyer_candidates,
+        radar_estimate=radar_estimate,
         margin_floor_pct=(
             payload.margin_floor_pct
             if payload.margin_floor_pct is not None

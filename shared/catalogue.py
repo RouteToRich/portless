@@ -46,6 +46,15 @@ class ProductLine(BaseModel):
     min_order_mt: float | None = None
     active: bool = True
     notes: str | None = None
+    container_mt: float | None = None
+    """Tonnes of this product (in its usual packing) in one 20' container; the radar's
+    margin per container and default lot use it (else 20 MT)."""
+    container_type: str | None = None
+    """``dry`` (default) or ``reefer`` (fresh produce) — reefer freight is dearer."""
+    import_requirements: dict[str, list[str]] = Field(default_factory=dict)
+    """What the destination needs before the goods arrive, per ISO-2 market or ``*`` for
+    every market: e.g. ``{"US": ["FDA food-facility registration", "FDA prior notice"],
+    "*": ["phytosanitary certificate"]}``. Shown on the radar row."""
 
 
 class Catalogue(BaseModel):
@@ -158,6 +167,22 @@ def seller_profile_for(hs_code: str) -> str | None:
 def default_quantity_for(hs_code: str) -> float | None:
     line = line_for(hs_code)
     return line.default_quantity_mt if line else None
+
+
+def container_for(hs_code: str) -> tuple[float | None, str | None]:
+    """(MT per 20' container, ``dry`` / ``reefer``) for the product, when the catalogue says."""
+    line = line_for(hs_code)
+    return (line.container_mt, line.container_type) if line else (None, None)
+
+
+def import_requirements_for(hs_code: str, market: str) -> list[str]:
+    """The destination's requirements for the product: market-specific first, then ``*``."""
+    line = line_for(hs_code)
+    if not line:
+        return []
+    reqs = line.import_requirements or {}
+    out = list(reqs.get((market or "").upper(), [])) + list(reqs.get("*", []))
+    return list(dict.fromkeys(out))
 
 
 def scan_defaults() -> tuple[list[str], list[str]] | None:

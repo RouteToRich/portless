@@ -457,6 +457,76 @@ Feature: Adding a local supplier in the console
     And a "CONFIRM_MATCH" gate appears in Approvals
 ```
 
+
+```gherkin
+Feature: The Opportunity Radar ranks by profit and hands a ready prospect to the deal
+
+  Background:
+    Given I am signed in as Portless staff
+    And the radar holds opportunities "090422 → DE" and "091030 → US"
+
+  @TC-WEB-033 @P1 @positive
+  Scenario: The radar is sorted by expected profit, and other sorts work
+    When I open the Opportunity Radar
+    Then the first row has the highest "Expected profit"
+    When I click the sort "Profit per year"
+    Then the rows are ordered by "Profit per year"
+    When I click the sort "Time-sensitive"
+    Then a row marked "time-sensitive" comes first
+
+  @TC-WEB-034 @P1 @positive
+  Scenario: The profit breakdown names the basis of every price
+    When I expand "090422 → DE"
+    Then the profit panel shows the buyer price with "from what the market pays for India's goods"
+    And the supplier price with its basis and range
+    And freight with "regional estimate" or "lane quote"
+    And "Export incentives" as "not counted" until a confirmed rate exists
+    And "What's missing and where to get it" lists "No supplier price" with "DATA_GOV_IN_API_KEY"
+
+  @TC-WEB-035 @P0 @negative
+  Scenario: A prospect with no reachable buyer asks before it starts
+    Given "091030 → US" has no buyer with a usable e-mail
+    When I click "Start prospect" on "091030 → US"
+    Then a confirmation lists "Reachable buyers" as not ready
+    When I cancel
+    Then no deal is created
+
+  @TC-WEB-036 @P1 @positive
+  Scenario: The ready-to-start checklist shows every check with its state
+    When I expand "090422 → DE"
+    Then "Ready to start?" lists reachable buyers, reachable suppliers, export policy, price checked,
+      margin at the floor, duty verified, market news and running deals, each green, amber or red
+    And the row shows one dot per check and "ready", "N to check" or "N blocking"
+
+  @TC-WEB-037 @P1 @positive
+  Scenario: Staff confirm an HS code's export policy from the radar
+    Given HS 091030 has never been confirmed against ITC-HS Schedule 2
+    When I expand "091030 → US" and click "Confirm free to export" and accept
+    Then the export policy check turns green after the list reloads
+    And the confirmation is recorded with my e-mail
+
+  @TC-WEB-038 @P0 @negative
+  Scenario: A prohibited product or embargoed market never appears
+    Given the catalogue lists market "IR" for HS 090422
+    When I run a scan for "090422" in "IR"
+    Then no opportunity "090422 → IR" appears
+    And "Last scan" says "export policy: destination IR is under a comprehensive embargo"
+
+  @TC-WEB-039 @P1 @positive
+  Scenario: Old prices, news and destination needs are visible
+    When I expand an opportunity whose Comtrade data is from 2023
+    Then the market section shows "Comtrade 2023 · old"
+    And the news check verdict when one ran
+    And "Destination needs" from the catalogue product line
+
+  @TC-WEB-040 @P1 @positive
+  Scenario: The deal keeps the radar's estimate
+    Given I started a prospect from "090422 → DE"
+    When I open the new deal's Overview
+    Then "Radar estimate → negotiated → realised" shows the radar's margin for the lot
+    And the Origin Opportunity card shows the radar's profit breakdown and market
+```
+
 ## 5. Order of work
 
 1. Add `data-testid` attributes to the console (DEF-05) — every button and figure used above.

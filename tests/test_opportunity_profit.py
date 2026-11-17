@@ -370,8 +370,10 @@ class TestMandi:
 
         real = httpx.AsyncClient
         monkeypatch.setattr(mandi.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+        monkeypatch.setattr(mandi, "live_usd_inr", AsyncMock(return_value=(88.0, "live")))
         out = await mandi.MandiPriceConnector().quote({"hs_code": "091030"})
         assert seen["params"]["filters[commodity]"] == "Turmeric" and out["markets"] == 1
+        assert (out["usd_inr"], out["usd_inr_source"]) == (88.0, "live")
 
 
 # ── Buyer introduction ───────────────────────────────────────────────────────
