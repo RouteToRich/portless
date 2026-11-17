@@ -45,7 +45,7 @@ make up    # docker compose up --build
 make down
 
 # Tests
-pytest -q                                 # full suite (4868 pass, 1 skip, ~6 min)
+pytest -q                                 # full suite (4869 pass, 1 skip, ~6 min)
 pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 95.46% line + branch (2026-11-09)
 pytest tests/test_health.py -q            # smoke: every service boots + /health 200
 pytest tests/test_state_machine.py        # deal state machine unit tests
@@ -344,7 +344,7 @@ Pipeline continuations (`shared/orchestration/continuations.py`) subscribe in th
 
 ### LLM gateway
 
-`shared/llm_gateway/` wraps every LLM call â€” PortLess holds **no model provider key** (no Groq / OpenAI / Anthropic / Gemini, and no provider SDK in requirements). `LLMClient.chat()` goes to the shared RouteToRich LLM Gateway through the API gateway's `/api/llm` route (`POST /v1/llm`) using the vendored SDK (`remote_sdk.py`, same file as makemerich-backend, built in `remote.py`); the gateway owns model routing, the fallback chain, retries, provider keys and cost metering; `category=` pins its routing category. PortLess's LLM calls run in background handlers with no user request, so instead of forwarding a caller token it signs in as its own auth-service service account (`LLM_GATEWAY_EMAIL` / `_PASSWORD` / `_ACCOUNT_ID` â†’ `POST /auth/login`, bearer cached, refreshed before the 1 h expiry and once on a 401; or a pre-minted `LLM_GATEWAY_TOKEN`). Caller tag `portless.<caller>`. A failed gateway call raises `LLMExhaustedException`; no URL / credential raises `LLMConfigurationError` (callers degrade: template negotiation drafts, resolver escalates). Calls are still tracked in `llm_requests` and the opt-in response cache. `tests/conftest.py` pins `MONGO_URI=""` and `LLM_GATEWAY_URL=""` so the suite never touches the live database or gateway from `.env`.
+`shared/llm_gateway/` wraps every LLM call â€” PortLess holds **no model provider key** (no Groq / OpenAI / Anthropic / Gemini, and no provider SDK in requirements). `LLMClient.chat()` goes to the shared RouteToRich LLM Gateway through the API gateway's `/api/llm` route (`POST /v1/llm`) using the vendored SDK (`remote_sdk.py`, same file as makemerich-backend, built in `remote.py`); the gateway owns model routing, the fallback chain, retries, provider keys and cost metering; `category=` pins its routing category. PortLess's LLM calls run in background handlers with no user request, so instead of forwarding a caller token it signs in as its own auth-service service account (`LLM_GATEWAY_EMAIL` / `_PASSWORD` / `_ACCOUNT_ID` â†’ `POST /auth/login`, bearer cached, refreshed before the 1 h expiry and once on a 401; or a pre-minted `LLM_GATEWAY_TOKEN`). Caller tag `portless.<caller>`. A failed gateway call raises `LLMExhaustedException`; no URL / credential raises `LLMConfigurationError` (callers degrade: template negotiation drafts, resolver escalates). Calls are still tracked in `llm_requests` and the opt-in response cache. `tests/conftest.py` pins `MONGO_URI=""` and `LLM_GATEWAY_URL=""` so the suite never touches the live database or gateway from `.env`, and points `LLM_TRACKING_FILE_PATH` at the temp folder so a test run never modifies the tracked `data/llm_gateway_tracking.txt`.
 
 ---
 

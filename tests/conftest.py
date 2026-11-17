@@ -28,6 +28,14 @@ os.environ["APIFY_TOKEN_AUTODISCOVER"] = "false"
 os.environ["MONGO_URI"] = ""
 os.environ["LLM_GATEWAY_URL"] = ""
 
+# The LLM tracker appends one JSONL line per call to data/llm_gateway_tracking.txt
+# (its fallback when Mongo is off — as it always is here), a file tracked in git:
+# every test run left it modified. Keep the suite's lines in the temp folder.
+import tempfile  # noqa: E402
+
+os.environ["LLM_TRACKING_FILE_PATH"] = str(
+    Path(tempfile.gettempdir()) / "portless-tests" / "llm_gateway_tracking.txt")
+
 # Trade compliance (shared/orchestration/compliance.py) is on by default and
 # holds most fixtures (an unconfirmed HS code is a REVIEW, a deal without an
 # inspector's seal never gets a freight gate). The pipeline tests exercise the

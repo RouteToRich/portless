@@ -19,7 +19,7 @@ accountant · (Biz) founder / business · (QA) quality.
 ## Where things stand today
 
 - [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
-- Backend tests: 4868 passed, 1 skipped (2026-11-18). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
+- Backend tests: 4869 passed, 1 skipped (2026-11-18). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
 - End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
 - Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
 - UI repo: type-check and build pass; **no tests of any kind, no CI**. Browser cases written: TC-WEB-001 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`), none automated.
@@ -429,7 +429,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** Nightly: catalogue run + LLM journeys on the automation database, results posted to Telegram.
 - [ ] **(Eng)** The LLM-played counterparties are not deterministic: keep the retry, and record transcripts so a failing journey can be replayed.
 - [ ] **(Eng)** CI runs `python scripts/gen_unit_gherkin.py --check` so a test without a Gherkin scenario (or a stale feature file) fails the build.
-- [ ] **(Eng)** The test run writes to the tracked file `data/llm_gateway_tracking.txt` (it is modified after every run): write it to a temp / ignored path in tests, or stop tracking it.
+- [x] **(Eng)** The test run writes to the tracked file `data/llm_gateway_tracking.txt` (it is modified after every run) — done 2026-11-18: `tests/conftest.py` sets `LLM_TRACKING_FILE_PATH` to `<temp>/portless-tests/llm_gateway_tracking.txt`; `tests/llm_gateway/test_config.py::test_the_suite_never_writes_the_tracked_log` guards it (a full run leaves the repository file byte-for-byte unchanged).
 
 ### 6.9 Unit tests — Quality assurance gaps
 - [ ] **(Eng)** Property-based tests (Hypothesis) for the money arithmetic: tranche split, fees, rounding to cents, payout cap and retention, ledger reconciliation, journal trial balance — for any amount, quantity and fee, the invariants hold.

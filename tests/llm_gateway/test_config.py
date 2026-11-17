@@ -49,6 +49,17 @@ def test_tracking_file_path_default():
     assert "llm_gateway_tracking" in llm_gateway_settings.tracking_file_path
 
 
+def test_the_suite_never_writes_the_tracked_log():
+    # tests/conftest.py points the tracker at the temp folder: the repository's
+    # data/llm_gateway_tracking.txt (tracked in git) must stay untouched by a test run.
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    path = Path(llm_gateway_settings.tracking_file_path).resolve()
+    assert repo not in path.parents
+    assert LLMGatewaySettings().tracking_file_path == llm_gateway_settings.tracking_file_path
+    assert "data/llm_gateway_tracking.txt" in LLMGatewaySettings.model_fields["tracking_file_path"].default
+
+
 def test_llm_temperature_constant_matches_settings():
     assert LLM_TEMPERATURE == llm_gateway_settings.llm_temperature
 

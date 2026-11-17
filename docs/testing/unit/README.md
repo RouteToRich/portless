@@ -53,7 +53,7 @@ Business-level scenarios (what the platform does, end to end) are in
 | `shared/hs_names` | [shared__hs_names.feature](shared__hs_names.feature) | `test_buyer_seller_search.py`, `test_hs_names.py` | 7 | 26 |
 | `shared/integration_mode` | [shared__integration_mode.feature](shared__integration_mode.feature) | `test_qc_inspection.py` | 1 | 1 |
 | `shared/knowledge` | [shared__knowledge.feature](shared__knowledge.feature) | `test_final_gaps.py`, `test_learning.py`, `test_routes_and_clients.py` | 19 | 22 |
-| `shared/llm_gateway` | [shared__llm_gateway.feature](shared__llm_gateway.feature) | `test_auth.py`, `test_client.py`, `test_config.py`, `test_remote.py`, `test_tracker.py`, `test_connectors_and_imap.py`, `test_final_gaps.py`, `test_learning.py`, `test_llm_response_cache.py`, `test_trade_min_pipeline.py` | 119 | 122 |
+| `shared/llm_gateway` | [shared__llm_gateway.feature](shared__llm_gateway.feature) | `test_auth.py`, `test_client.py`, `test_config.py`, `test_remote.py`, `test_tracker.py`, `test_connectors_and_imap.py`, `test_final_gaps.py`, `test_learning.py`, `test_llm_response_cache.py`, `test_trade_min_pipeline.py` | 120 | 123 |
 | `shared/orchestration/auto_flow` | [shared__orchestration__auto_flow.feature](shared__orchestration__auto_flow.feature) | `test_auto_flow.py`, `test_auto_flow_and_agent.py` | 57 | 71 |
 | `shared/orchestration/autonomy_policy` | [shared__orchestration__autonomy_policy.feature](shared__orchestration__autonomy_policy.feature) | `test_autonomy_policy.py`, `test_final_gaps.py`, `test_gate_policy_v2.py`, `test_maersk_freight.py`, `test_money_continuations.py`, `test_routes_and_clients.py` | 40 | 41 |
 | `shared/orchestration/compliance` | [shared__orchestration__compliance.feature](shared__orchestration__compliance.feature) | `test_compliance.py`, `test_compliance_edges.py`, `test_compliance_money_block.py`, `test_continuations_safety.py`, `test_deals_http_and_callbacks.py` | 164 | 247 |
@@ -87,4 +87,4 @@ Business-level scenarios (what the platform does, end to end) are in
 | `shared/product_label` | [shared__product_label.feature](shared__product_label.feature) | `test_hs_names.py` | 1 | 9 |
 | `shared/readiness` | [shared__readiness.feature](shared__readiness.feature) | `test_readiness.py`, `test_routes_and_clients.py`, `test_startup_and_lifespans.py` | 16 | 16 |
 | `shared/telegram` | [shared__telegram.feature](shared__telegram.feature) | `test_batch_c.py`, `test_trade_min_pipeline.py` | 4 | 4 |
-| **Total** | | | **2990** | **3775** |
+| **Total** | | | **2991** | **3776** |
