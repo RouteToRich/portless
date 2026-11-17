@@ -19,10 +19,11 @@ accountant · (Biz) founder / business · (QA) quality.
 ## Where things stand today
 
 - [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
-- Backend tests: 4574 passed, 1 skipped. Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure).
+- Backend tests: 4845 passed, 1 skipped (2026-11-17). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
 - End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
 - Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
-- UI repo: type-check passes; **no tests of any kind, no CI**.
+- UI repo: type-check and build pass; **no tests of any kind, no CI**. Browser cases written: TC-WEB-001 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`), none automated.
+- **Live data, 2026-11-17: no buyer introduction has ever been delivered** — every outreach send failed with "Connection lost" (19.1, P0).
 - Neither repo has CI. Nothing runs the test suites automatically on a push to `main`.
 
 ---
@@ -371,6 +372,10 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Ops)** SGS / BV results arrive by staff relay or signed webhook — runbook for the relay.
 - [ ] **(Eng)** e-BRC / realisation tracking per Shipping Bill (3.2) — not in the system.
 - [ ] **(Eng)** Basmati contract registration step (3.1) — not in the system.
+- [ ] **(Ops)** **Two prospects for the same product × market**: 090422 → DE runs twice (DEAL-CD85C6793659 and DEAL-DD453AE3383A, 2026-11-17) and would write to the same buyers; merge or close one (the radar now warns before a second start).
+- [ ] **(Eng)** **Verify the mandi connector on live data** once `DATA_GOV_IN_API_KEY` is set: resource id, commodity names, `modal_price` / `min_price` / `max_price` field names and the INR-per-quintal unit (`shared/connectors/mandi.py` follows the published dataset; never run against the live API yet).
+- [ ] **(Eng)** **Verify the freight lane-quote request** with Cogoport / Freightos before relying on it: `freight_lanes.refresh` sends `origin_port`, `destination_country`, `hs_code`, `container_type` (20GP / 20RF) and reads `rate_usd` / `rates[]` — field names assumed from the existing connector, not from the providers' docs.
+- [ ] **(Eng) P2** Prospects started before 2026-11-17 have no `radar_estimate` snapshot (the desk recomputes it from the opportunity each time); backfill the snapshot once so estimate vs outcome (16.1) covers them.
 
 ### 5.3 Process design to confirm with the trade desk — Workflow gaps found end to end
 - [ ] **(Ops)** Who approves which gate, response-time targets per gate, and the backup approver when the first is away (L1 timeouts default: negotiation e-mails 4 h → approve, money 24 h → reject).
@@ -423,6 +428,8 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 6.8 Test infrastructure — Quality assurance gaps
 - [ ] **(Eng)** Nightly: catalogue run + LLM journeys on the automation database, results posted to Telegram.
 - [ ] **(Eng)** The LLM-played counterparties are not deterministic: keep the retry, and record transcripts so a failing journey can be replayed.
+- [ ] **(Eng)** CI runs `python scripts/gen_unit_gherkin.py --check` so a test without a Gherkin scenario (or a stale feature file) fails the build.
+- [ ] **(Eng)** The test run writes to the tracked file `data/llm_gateway_tracking.txt` (it is modified after every run): write it to a temp / ignored path in tests, or stop tracking it.
 
 ### 6.9 Unit tests — Quality assurance gaps
 - [ ] **(Eng)** Property-based tests (Hypothesis) for the money arithmetic: tranche split, fees, rounding to cents, payout cap and retention, ledger reconciliation, journal trial balance — for any amount, quantity and fee, the invariants hold.
@@ -455,6 +462,8 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** Pre-commit hooks (ruff, formatting, secret scan) so problems are caught before a push.
 - [ ] **(QA)** Test data management: an anonymised, production-like data set for staging; `tests/factories.py` extended for every new record type; no test may depend on the order of others.
 - [ ] **(QA/Ops)** User acceptance testing with the trade desk before go-live and before each release that changes a gate, an e-mail or a document; exploratory test session on each new feature.
+- [ ] **(Eng)** Control-character check in CI: a backspace character inside a regex made a committed assertion in `tests/test_trade_documents.py` impossible to fail (found and fixed 2026-11-17); fail the build on any control character in source files.
+- [ ] **(Eng)** Clear the pytest warnings (59 on 2026-11-17) or turn the useful ones into errors.
 
 ### 7 Platform, infrastructure and operations
 - [ ] **(Eng)** Secrets in a secrets manager, not a `.env` file; rotation plan for every provider key.
@@ -464,6 +473,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** Disaster recovery: region outage plan, RPO / RTO targets.
 - [ ] **(Eng)** Cost dashboards: LLM, Apify (daily run budget exists), Tavily, Atlas, hosting.
 - [ ] **(Eng)** The standalone API gateway (`services/api_gateway`) still has TODOs for signature verification, idempotency keys and request enrichment — finish them or do not deploy it.
+- [ ] **(Eng) P2** **Computed views scale with the number of deals**: the directory relationships (`relationships.annotate`) read every deal on each listing, the prospect desk builds a match board per prospect on every refresh (60 s), the radar recomputes missing profits on listing. Fine for tens of deals; cache or precompute (on deal / offer change) before hundreds.
 
 ### 8 Security and access
 - [ ] **(Eng)** Token revocation delay is the introspection cache (60 s, `AUTH_INTROSPECTION_CACHE_SECONDS`) — confirm acceptable, shorten for money approvers.
@@ -477,12 +487,16 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** Readiness page: show `GET /health/readiness` so operators see what is stubbed.
 - [ ] **(Eng)** Money screens: clear four-eyes state (who signed, who is still needed), tranche order, payout cap and retention.
 - [ ] **(Eng)** Error and empty states for every page; SSE reconnect banner.
+- [ ] **(Eng)** **Money at a glance**: buy price, sell price and net profit columns on the Deal Board; the deal's profit breakdown (Overview) also on the Payments tab next to the Money Ledger, so the estimate and the money that moved are side by side; a per-cost table (freight, inspection, insurance, escrow fee, CHA, documents …) across deals on Money & Margin (today totals only).
+- [ ] **(Eng)** **Automation mode shows an empty Buyers & Suppliers**: the view server runs on `portless_automation` without an Apify token by design, so a search there finds nothing and the page looks broken. Copy the live directory into `portless_automation` as test data (a button on the Automation page), and show "Search is off in Automation mode — start a run or copy the live directory" instead of an empty list.
+- [ ] **(Ops/Eng) P2** **Operator guide**: one page per screen (Radar, Prospects desk, Buyers & Suppliers, Deal page) — what each number means, where it comes from, what to do next; linked from each page's header.
 
 ### 10 Data quality
 - [ ] **(Ops)** Real product catalogue and corridors (1.5).
 - [ ] **(Ops)** Directory hygiene: duplicate companies, wrong countries, bounced e-mails (`email-list-qualifier-ai` result per address).
 - [ ] **(Ops)** Price book cold start: seed observed prices per HS code and market so the match board's estimates are not empty for the first deals.
 - [ ] **(Ops)** Product tree ids, packing standards, AQL and quality specs per product line (QIMA booking needs them).
+- [ ] **(Eng) P2** Run-together domains with a two-letter word still split badly ("fishandco" → "Fish Andco"); allow "co" / "&co" as an ending in `split_domain_label`.
 
 ### 11.1 Capture money already owed to the exporter — New features to raise profit per deal (product)
 - [ ] **(Biz/Eng)** **Export incentives as income**: RoDTEP credits and duty drawback where the product qualifies — put them on the cost sheet as income per deal, track the claim and the credit received. Confirm eligibility for a merchant exporter per HS code with the CA.
@@ -902,6 +916,7 @@ Sorted by priority; each names the area it belongs to.
 - [ ] **P1** One Shipping Bill for goods from several suppliers / ports, or one per port of loading — confirm with the CHA (13.4).
 - [ ] **P1** Composition gate always L0, or auto-approve when the margin is above a set level and every party is verified (13.3). **Recommendation:** always L0 until 20 compositions are resolved (`outcomes.py` calibration).
 - [ ] **P2** Buyers & Suppliers page default: all companies (today) or verified only like the radar (12).
+- [ ] **P1** Trade-desk defaults introduced 2026-11-17 — confirm or change: target margin `MATCH_TARGET_MARGIN_PCT` 12 % (walk-away = the 8 % floor), prospect stalled after `PROSPECT_STALL_DAYS` 5 and parked after `PROSPECT_DROP_DAYS` 21, first-order cap `max_lot_value_usd` 150 000, reachable market share for yearly potential 1 %, mandi-to-FOB mark-up `MANDI_TO_FOB_MARKUP_PCT` 15 %, suspect price gap above 80 % (19, 16).
 
 ---
 - [ ] **P0** Legal form of the company (private limited, LLP or proprietorship) and the state of the registered office — every registration depends on it (14.1). **Recommendation:** private limited.
