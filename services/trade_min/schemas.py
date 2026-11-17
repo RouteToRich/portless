@@ -522,6 +522,8 @@ class EnrichedOpportunity(BaseModel):
     # ── Phase 5 — composite scoring ───────────────────────────────────────
     arbitrage_rank: float
     confidence_score: float = Field(ge=0.0, le=100.0)
+    confidence_basis: list[str] = Field(default_factory=list)
+    """One line per part of the confidence score (sources, live demand, tariff, suppliers, verified counterparties)."""
     expires_at: datetime | None = None
 
     # ── Buyer × seller pair matching (pair_match.py) ──────────────────────

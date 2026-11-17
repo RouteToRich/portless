@@ -237,3 +237,48 @@ def test_every_offered_escrow_provider_needs_keys_and_the_sandbox_never_runs_in_
     bare_env.setenv("ESCROW_SANDBOX_PROVIDERS", "tazapay")
     bare_env.setenv("ENV_PROFILE", "production")
     assert checks()["escrow_sandbox"]["status"] == "fail"
+
+
+def test_four_eyes_threshold_warns_in_dev_fails_in_production_and_when_not_a_number(bare_env):
+    bare_env.delenv("FOUR_EYES_THRESHOLD_USD", raising=False)
+    status = lambda: {c["id"]: c for c in readiness.evaluate()["checks"]}["four_eyes"]  # noqa: E731
+    assert status()["status"] == "warn" and "unset" in status()["detail"]
+    bare_env.setenv("ENV_PROFILE", "production")
+    assert status()["status"] == "fail"
+    bare_env.setenv("FOUR_EYES_THRESHOLD_USD", "25,000")
+    assert status()["status"] == "ok" and "25,000 USD" in status()["detail"]
+    bare_env.setenv("ENV_PROFILE", "dev")
+    for bad in ("twenty", "0", "-5"):
+        bare_env.setenv("FOUR_EYES_THRESHOLD_USD", bad)
+        assert status()["status"] == "fail", bad
+
+
+@pytest.mark.parametrize(("url", "prod", "expected"), [
+    ("", False, "warn"), ("", True, "warn"),
+    ("https://api.portless.io", True, "ok"), ("http://localhost:8081", False, "ok"),
+    ("http://api.portless.io", True, "fail"), ("https://localhost", True, "fail"),
+    ("api.portless.io", False, "fail"), ("ftp://x.io", False, "fail"),
+])
+def test_public_base_url_must_be_a_real_address(bare_env, url, prod, expected):
+    if url:
+        bare_env.setenv("PORTLESS_PUBLIC_BASE_URL", url)
+    if prod:
+        bare_env.setenv("ENV_PROFILE", "production")
+    checks = {c["id"]: c["status"] for c in readiness.evaluate()["checks"]}
+    assert checks["public_base_url"] == expected
+
+
+def test_numeric_settings_that_are_not_numbers_fail(bare_env):
+    checks = lambda: {c["id"]: c for c in readiness.evaluate()["checks"]}["config_numbers"]  # noqa: E731
+    bare_env.setenv("DEAL_STALL_SLA_HOURS", "168")
+    bare_env.setenv("COMPLIANCE_PRICE_DEVIATION_PCT", "40.5")
+    bare_env.setenv("TRADE_COST_CHA_USD_PER_SHIPMENT", "1_500")
+    bare_env.setenv("OUTREACH_FOLLOWUP_DAYS", "your_value_here")  # placeholder: reported by its own checks
+    assert checks()["status"] == "ok"
+    bare_env.setenv("DEAL_PI_REMINDER_AFTER_HOURS", "two days")
+    bare_env.setenv("QC_MIN_PACKED_PCT", "80%")
+    c = checks()
+    assert c["status"] == "fail"
+    assert "DEAL_PI_REMINDER_AFTER_HOURS='two days'" in c["detail"] and "QC_MIN_PACKED_PCT='80%'" in c["detail"]
+    bare_env.setenv("SOMETHING_ELSE_HOURS", "lots")  # not a PortLess prefix: not ours to judge
+    assert "SOMETHING_ELSE_HOURS" not in checks()["detail"]

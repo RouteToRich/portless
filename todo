@@ -19,20 +19,20 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-18)
 
-**505 open · 38 done** (7 % done).
+**501 open · 43 done** (8 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
 | Where things stand | 1 | 0 |
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
-| P0 — before the first real trade | 98 | 0 |
-| P1 — before more than a few deals a month | 310 | 38 |
+| P0 — before the first real trade | 97 | 1 |
+| P1 — before more than a few deals a month | 307 | 42 |
 | P2 — improvements | 35 | 0 |
 | Decisions needed | 21 | 0 |
-| **Total** | **505** | **38** |
+| **Total** | **501** | **43** |
 
-Open items by owner: Eng 241 · Ops 27 · Legal 29 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 237 · Ops 27 · Legal 29 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
 
@@ -41,7 +41,7 @@ Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when thi
 ## Where things stand today
 
 - [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
-- Backend tests: 4886 passed, 1 skipped (2026-11-18). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
+- Backend tests: 4917 passed, 1 skipped (2026-11-18). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
 - End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
 - Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
 - UI repo: type-check and build pass; **no tests of any kind, no CI**. Browser cases written: TC-WEB-001 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`), none automated.
@@ -240,7 +240,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 6.11 Sanity and smoke checks — Quality assurance gaps
 - [ ] **(Eng)** Post-deploy smoke test that blocks the rollout: `/health` of every service, `GET /health/readiness` all ok, database reachable, one read per service, SSE stream connects, an unsigned webhook is refused, the console loads and signs in.
 - [ ] **(Eng/Ops)** Daily production sanity check (synthetic, alerting on failure): readiness, background watchers alive (heartbeat per watcher), event-bus consumer lag, mailbox send + receive, provider credentials still valid (QIMA token, Maersk OAuth, Tazapay key, Payoneer), Drive writable, LLM gateway answers.
-- [ ] **(Eng)** Configuration sanity at boot: every required setting present, typed and not a `your_..._here` placeholder for the active profile (readiness covers most — add the missing ones, e.g. `FOUR_EYES_THRESHOLD_USD`, `PORTLESS_PUBLIC_BASE_URL`).
+- [x] **(Eng)** Configuration sanity at boot: every required setting present, typed and not a `your_..._here` placeholder for the active profile (readiness covers most — add the missing ones, e.g. `FOUR_EYES_THRESHOLD_USD`, `PORTLESS_PUBLIC_BASE_URL`). — done 2026-11-18: readiness adds `four_eyes` (FOUR_EYES_THRESHOLD_USD set and a positive number; warn outside production, fail in production or when not a number), `public_base_url` (an absolute http(s) URL; production needs https off localhost) and `config_numbers` (every PortLess `*_HOURS` / `_DAYS` / `_PCT` / `_USD` / `_SECONDS` … setting that is set must parse as a number — the code otherwise falls back to its default silently).
 
 ### 6.12 Regression suite — Quality assurance gaps
 - [ ] **(QA/Eng)** Define the regression suite and when it runs — every pull request: backend unit + integration, UI lint + build + unit, catalogue `@P0 and not @known-defect`; every merge to `main`: + LLM journeys UC-01 and UC-15; nightly: whole catalogue, all 15 LLM journeys, browser `@ui`, provider sandboxes; before a release: everything plus the full browser matrix and a load run.
@@ -379,7 +379,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** FX: record the rate at each receipt and payout and post FX gain / loss to the journal (today amounts are USD only).
 - [ ] **(Eng)** Fees: reconcile the escrow provider fee, payout fee and bank charges per deal against the fee % assumed in the cost sheet; alert when actual > assumed.
 - [ ] **(Biz)** Kill Switch drill: pause, confirm every money path refuses, resume — monthly.
-- [ ] **(Eng)** Alert when realised margin on a closed deal is below the margin floor (cost sheet estimate vs actual costs).
+- [x] **(Eng)** Alert when realised margin on a closed deal is below the margin floor (cost sheet estimate vs actual costs). — done 2026-11-18: when every tranche is released and the supplier is paid in full, a realised margin below the deal's margin floor (else `DEALMAKER_PO_MARGIN_FLOOR_PCT`) raises `deal.exception` `PAID:margin_below_floor` (category MARGIN_BREACH) once, with the estimate, net received, supplier paid and PortLess's costs; mid-deal figures are never judged.
 - [ ] **(Eng)** Supplier retention (10 % held until buyer acceptance): confirm the supplier contract states it, and the payout e-mail explains it.
 
 ### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
@@ -457,7 +457,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** Property-based tests (Hypothesis) for the money arithmetic: tranche split, fees, rounding to cents, payout cap and retention, ledger reconciliation, journal trial balance — for any amount, quantity and fee, the invariants hold.
 - [ ] **(Eng)** Property-based tests for the text readers that decide money: price extraction from e-mails (units, currencies, separators), goods-ready date parsing, facility address parsing, acceptance detection.
 - [ ] **(Eng)** UI unit and component tests (Vitest + React Testing Library) in portless-ui: money formatting, INR / USD display, status chips, gate approve / reject buttons, four-eyes state, error states. Today the UI has none.
-- [ ] **(Eng)** pytest markers so suites can be run on their own: `unit`, `integration`, `smoke`, `regression`, `slow`, `money` (no markers exist today; every test runs as one suite).
+- [x] **(Eng)** pytest markers so suites can be run on their own: `unit`, `integration`, `smoke`, `regression`, `slow`, `money` (no markers exist today; every test runs as one suite). — done 2026-11-18: `tests/markers.py` applies them by file (registered in `tests/conftest.py`): `-m smoke` (101 tests, ~7 s), `-m money` (~690), `-m "unit and not slow"`, `-m integration`, `-m slow`, `-m regression` (all).
 
 ### 6.10 Integration tests — Quality assurance gaps
 - [ ] **(Eng)** Real NATS JetStream in CI: durable consumers survive a restart, redelivery with backoff after a handler failure, dead-letter `deal.exception` after `NATS_MAX_DELIVER`, poison messages terminated.
@@ -485,6 +485,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(QA)** Test data management: an anonymised, production-like data set for staging; `tests/factories.py` extended for every new record type; no test may depend on the order of others.
 - [ ] **(QA/Ops)** User acceptance testing with the trade desk before go-live and before each release that changes a gate, an e-mail or a document; exploratory test session on each new feature.
 - [x] **(Eng)** Control-character check: a backspace character inside a regex made a committed assertion in `tests/test_trade_documents.py` impossible to fail (found and fixed 2026-11-17) — done 2026-11-18 as `tests/test_source_hygiene.py`, run with every `pytest` (services, shared, agents, tests, scripts, app.py, CLAUDE.md, todo: only tab / newline / CR allowed); it becomes the CI check once CI exists (6.8).
+- [ ] **(Eng)** The eight scan tests in `tests/test_trade_min.py` take 13-29 s each (about 170 s of the 230 s suite, found 2026-11-18 with `--durations`): find what they wait for (a timeout or retry that is not mocked) and mock it; then drop `test_trade_min.py` from `SLOW_FILES` in `tests/markers.py`.
 - [ ] **(Eng)** Clear the pytest warnings (59 on 2026-11-17) or turn the useful ones into errors.
 
 ### 7 Platform, infrastructure and operations
@@ -518,7 +519,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Ops)** Directory hygiene: duplicate companies, wrong countries, bounced e-mails (`email-list-qualifier-ai` result per address).
 - [ ] **(Ops)** Price book cold start: seed observed prices per HS code and market so the match board's estimates are not empty for the first deals.
 - [ ] **(Ops)** Product tree ids, packing standards, AQL and quality specs per product line (QIMA booking needs them).
-- [ ] **(Eng) P2** Run-together domains with a two-letter word still split badly ("fishandco" → "Fish Andco"); allow "co" / "&co" as an ending in `split_domain_label`.
+- [x] **(Eng) P2** Run-together domains with a two-letter word still split badly ("fishandco" → "Fish Andco"); allow "co" / "&co" as an ending in `split_domain_label`. — done 2026-11-18: "fishandco" → "Fish & Co" ("co" is a word only at the end, after "and").
 
 ### 11.1 Capture money already owed to the exporter — New features to raise profit per deal (product)
 - [ ] **(Biz/Eng)** **Export incentives as income**: RoDTEP credits and duty drawback where the product qualifies — put them on the cost sheet as income per deal, track the claim and the credit received. Confirm eligibility for a merchant exporter per HS code with the CA.
@@ -546,7 +547,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** Outreach and RFQ only to verified counterparties (switch, e.g. `OUTREACH_VERIFIED_ONLY` / `RFQ_VERIFIED_ONLY`): today a failed buyer / supplier is never contacted, but an unverified one still is. Decide first (decisions).
 - [ ] **(Eng)** Sanctions "review" queue: counterparties whose screening returned `review` (possible match or a list unavailable) listed for staff, cleared or failed with a reason, audited like the compliance hold clearances; today they simply stay "unverified".
 - [ ] **(Eng)** Re-check schedule: sanctions lists change — re-screen verified buyers / suppliers that are linked to open prospects or deals when their result passes `TRADE_MIN_VALIDATION_MAX_AGE_DAYS`, not only when a new scan finds them again.
-- [ ] **(Eng)** Confidence score counts the check: today `confidence_score` ignores validation (a corridor with 0 verified counterparties can score the same as one with 5). Add points for verified buyers / suppliers and show it in the radar's Confidence tooltip.
+- [x] **(Eng)** Confidence score counts the check: today `confidence_score` ignores validation (a corridor with 0 verified counterparties can score the same as one with 5). Add points for verified buyers / suppliers and show it in the radar's Confidence tooltip. — done 2026-11-18: up to `confidence_verified_max` (10) points — half for at least one verified buyer, half for at least one verified supplier (capped at 100); `confidence_basis` lists every part of the score and the radar shows it as the Confidence tooltip.
 - [ ] **(Eng)** Pair matching in the "All" view: mark or down-rank a pair with an unverified side; the Best Match column in "All" can currently name an unverified pair.
 - [ ] **(Eng)** Foreign buyer company existence beyond the website: LEI (GLEIF, already returned by the screening actor), EU VIES for EU buyers (returned), and a company-register / domain-age check for other countries; show them on the badge.
 - [ ] **(Eng)** Console: show the supplier's `MatchResult.verification` + reasons on the prospect / deal page, and `BuyerCandidate.validation_status` in the outreach funnel list (backend fields exist, the deal pages do not show them yet).

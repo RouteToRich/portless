@@ -54,6 +54,51 @@ def _flag(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
+_NUMERIC_SUFFIXES = ("_HOURS", "_DAYS", "_PCT", "_USD", "_SECONDS", "_MINUTES", "_MS", "_MAX", "_TOP_N",
+                     "_RATIO", "_FACTOR", "_USD_PER_MT", "_KM", "_PER_DAY", "_INTERVAL_SECONDS")
+_NUMERIC_PREFIXES = ("AUTONOMY_", "DEAL_", "QC_", "ESCROW_", "OUTREACH_", "COMPLIANCE_", "TRADE_", "LANDED_",
+                     "MATCH_", "PROSPECT_", "INSPECTION_", "TRACKING_", "FREIGHT_", "FOUR_EYES_", "DEALMAKER_",
+                     "SUPPLIER_", "MANDI_", "LANE_", "REEFER_", "APIFY_", "KILL_SWITCH_", "DIGEST_", "MARKET_",
+                     "NEGOTIATION_", "RFQ_", "STRIPE_", "AUTOMATION_", "KNOWLEDGE_", "NATS_", "AUTH_")
+
+
+def _number(raw: str) -> float | None:
+    try:
+        return float(raw.replace(",", "").replace("_", "")) if raw.strip() else None
+    except ValueError:
+        return None
+
+
+def _non_numeric_settings() -> list[tuple[str, str]]:
+    """PortLess settings whose name says number but whose value is not one."""
+    bad = []
+    for name, value in sorted(os.environ.items()):
+        upper = name.upper()
+        if not upper.startswith(_NUMERIC_PREFIXES) or not upper.endswith(_NUMERIC_SUFFIXES):
+            continue
+        if value.strip() and _number(value) is None:
+            from shared.integration_mode import is_placeholder
+            if not is_placeholder(value):
+                bad.append((name, value))
+    return bad
+
+
+def _public_url_ok(url: str, prod: bool) -> tuple[bool, str]:
+    """(ok, problem) for PORTLESS_PUBLIC_BASE_URL: unset is reported (warn), a value
+    must be an absolute http(s) URL with a host; production needs https off localhost."""
+    from urllib.parse import urlparse
+    if not url:
+        return False, ("PORTLESS_PUBLIC_BASE_URL unset — no signed proof-sheet links for the escrow provider "
+                       "and no webhook URL to give Maersk / Escrow.com")
+    parts = urlparse(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return False, f"PORTLESS_PUBLIC_BASE_URL={url!r} is not an absolute URL (https://host)"
+    local = (parts.hostname or "") in ("localhost", "127.0.0.1", "0.0.0.0")
+    if prod and (parts.scheme != "https" or local):
+        return False, f"PORTLESS_PUBLIC_BASE_URL={url!r} — production needs a public https address"
+    return True, ""
+
+
 def _check(id_: str, category: str, label: str, ok: bool, *, warn_only: bool = False,
            ok_detail: str = "", fail_detail: str = "") -> dict[str, Any]:
     status = "ok" if ok else ("warn" if warn_only else "fail")
@@ -142,6 +187,32 @@ def evaluate() -> dict[str, Any]:
                    if threshold is None else
                    f"tranche releases / payouts up to {threshold:,.0f} USD auto-approve; four-eyes above {four_eyes} USD"),
         fail_detail=f"money gates up to {threshold or 0:,.0f} USD auto-approve while FOUR_EYES_THRESHOLD_USD is unset — set it so larger amounts need two approvers",
+    ))
+
+    four_eyes_value = _number(four_eyes)
+    checks.append(_check(
+        "four_eyes", "money", "Four-eyes threshold for money gates",
+        four_eyes_value is not None and four_eyes_value > 0,
+        warn_only=not prod and (not four_eyes),
+        ok_detail=f"tranche releases / payouts / acceptance of {four_eyes_value or 0:,.0f} USD or more need two operators",
+        fail_detail=(f"FOUR_EYES_THRESHOLD_USD={four_eyes!r} is not a positive number — four-eyes is off"
+                     if four_eyes else
+                     "FOUR_EYES_THRESHOLD_USD unset — one operator can approve any amount"),
+    ))
+    base_url = os.getenv("PORTLESS_PUBLIC_BASE_URL", "").strip()
+    base_ok, base_problem = _public_url_ok(base_url, prod)
+    checks.append(_check(
+        "public_base_url", "operations", "Public address of the backend", base_ok,
+        warn_only=not base_url,
+        ok_detail=f"PORTLESS_PUBLIC_BASE_URL={base_url} — signed proof links and provider webhooks point here",
+        fail_detail=base_problem,
+    ))
+    bad_numbers = _non_numeric_settings()
+    checks.append(_check(
+        "config_numbers", "operations", "Numeric settings are numbers", not bad_numbers,
+        ok_detail="every *_HOURS / _DAYS / _PCT / _USD / _SECONDS … setting that is set parses as a number",
+        fail_detail=("not a number (the code falls back to its default without saying so): "
+                     + ", ".join(f"{k}={v!r}" for k, v in bad_numbers)),
     ))
 
     # ── Counterparty identification (PortLess Apify actors) ────────────────

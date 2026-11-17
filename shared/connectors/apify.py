@@ -1108,7 +1108,7 @@ def _segment(chunk: str) -> list[str]:
             piece = chunk[j:i]
             if piece == "and" and (j == 0 or i == n):
                 continue  # "andhra…" is not "and hra"; "and" joins two words
-            unknown = 0 if piece in vocab else len(piece)
+            unknown = 0 if piece in vocab or (piece == "co" and i == n and prev[2][-1:] == ["and"]) else len(piece)
             if unknown and prev[2] and prev[2][-1] not in vocab:
                 continue  # leftovers are one piece, never two side by side
             if unknown and len(piece) < 3 and not (j == 0 and i == n):
@@ -1127,7 +1127,9 @@ def split_domain_label(label: str) -> str:
             words.extend(_segment(chunk))
     out: list[str] = []
     for i, w in enumerate(words):
-        if w == "and" and 0 < i < len(words) - 1:
+        if w == "co" and i == len(words) - 1 and i > 0 and words[i - 1] == "and":
+            out.append("Co")  # "fishandco" -> "Fish & Co"
+        elif w == "and" and 0 < i < len(words) - 1:
             out.append("&")
         elif w in _DOMAIN_LEGAL:
             out.append(w.upper() if w != "gmbh" else "GmbH")

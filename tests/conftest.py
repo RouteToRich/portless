@@ -106,3 +106,20 @@ except Exception:  # noqa: BLE001 — no .env, no python-dotenv: nothing to neut
 # The pre-trade market check searches the web; the suite never goes online.
 # tests/test_trade_costs.py exercises it with a mocked search.
 os.environ["MARKET_CHECK_ENABLED"] = "false"
+
+
+# Suite markers (unit / integration / smoke / regression / slow / money), applied by
+# file — see tests/markers.py; registered here so `pytest --strict-markers` passes.
+def pytest_configure(config):
+    from tests.markers import MARKERS
+    for name, help_text in MARKERS.items():
+        config.addinivalue_line("markers", f"{name}: {help_text}")
+
+
+def pytest_collection_modifyitems(config, items):
+    import pytest
+
+    from tests.markers import markers_for
+    for item in items:
+        for name in markers_for(item.path):
+            item.add_marker(getattr(pytest.mark, name))

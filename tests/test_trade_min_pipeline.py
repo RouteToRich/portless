@@ -367,6 +367,41 @@ class TestScoring:
         p2 = {"active_rfq_count": 1, "active_tender_count": 1}
         assert self._confidence(p1={"active_connectors": 4}, p2=p2, tariff=_tariff(5.0), sellers=3) <= 100.0
 
+    @staticmethod
+    def _checked(item, status):
+        from services.trade_min.schemas import CounterpartyValidation
+        item.validation = make(CounterpartyValidation, status=status)
+        return item
+
+    def test_verified_counterparties_add_points_with_a_basis(self):
+        sellers = [self._checked(_seller(0), "verified"), self._checked(_seller(1), "unverified")]
+        buyer = SimpleNamespace(validation=SimpleNamespace(status="verified"))
+        half = CONFIG.confidence_verified_max / 2
+        base = svc._compute_confidence(_phase1(), svc._Phase2Result(), _tariff(0.0), sellers, 40.0, CONFIG)
+        assert base == 40.0 + 5.0 + half  # supplier side only
+        basis: list[str] = []
+        both = svc._compute_confidence(_phase1(), svc._Phase2Result(), _tariff(0.0), sellers, 40.0, CONFIG,
+                                       buyers=[buyer], basis=basis)
+        assert both == base + half
+        assert "verified buyers 1, verified suppliers 1: 10" in basis
+        assert any(line.startswith("market data sources") for line in basis)
+        assert "tariff not confirmed by a source: 0" in basis
+
+    def test_unverified_and_failed_counterparties_add_nothing(self):
+        sellers = [self._checked(_seller(0), "failed"), self._checked(_seller(1), "unverified")]
+        buyers = [SimpleNamespace(validation=None), SimpleNamespace(validation=SimpleNamespace(status="failed"))]
+        assert svc._compute_confidence(_phase1(), svc._Phase2Result(), _tariff(0.0), sellers, 40.0, CONFIG,
+                                       buyers=buyers) == 45.0
+
+    def test_cap_is_noted_in_the_basis(self):
+        sellers = [self._checked(_seller(i), "verified") for i in range(3)]
+        basis: list[str] = []
+        score = svc._compute_confidence(
+            _phase1(active_connectors=4), svc._Phase2Result(active_rfq_count=1, active_tender_count=1),
+            _tariff(5.0), sellers, 40.0, CONFIG, buyers=[SimpleNamespace(validation=SimpleNamespace(status="verified"))],
+            basis=basis)
+        assert score == 100.0 and basis[-1] == "capped at 100"
+
 
 class TestPhase5:
     async def _assemble(self, phase1=None, phase2=None, tariff=None, sellers=None):
@@ -378,6 +413,7 @@ class TestPhase5:
         publisher = MagicMock(publish=AsyncMock())
         monkeypatch.setattr(svc, "get_publisher", lambda: publisher)
         opp = await self._assemble()
+        assert opp.confidence_basis and opp.confidence_basis[0].startswith("market data sources")
         assert opp.status == "ACTIVE" and opp.net_price_gap_pct == 35.0
         assert (await svc.get_opportunity(opp.opportunity_id)).opportunity_id == opp.opportunity_id
         assert publisher.publish.await_args.args[0].topic.value == svc.EventTopic.OPPORTUNITY_DETECTED.value

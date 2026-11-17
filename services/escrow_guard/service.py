@@ -1860,10 +1860,67 @@ async def _patch_deal_realized_margin(deal_id: str) -> None:
 
         await update_financials(deal_id, UpdateFinancialsRequest(realized_margin_usd=realized, realized_margin_pct=pct))
         logger.info("EscrowGuard: realized_margin_usd=%.2f patched onto deal %s", realized, deal_id)
+        await _check_closed_margin(deal_id, hold, payouts, realized, pct, costs)
     except Exception as exc:
         logger.warning(
             "EscrowGuard: could not patch realized margin for deal %s: %s", deal_id, exc
         )
+
+
+_margin_alerted: set[str] = set()
+"""Deals whose below-floor realised margin was already reported by this process."""
+
+
+async def _check_closed_margin(deal_id: str, hold: EscrowHoldRecord, payouts: list[PayoutRecord],
+                               realized: float, pct: float | None, costs: dict[str, float]) -> bool:
+    """A closed deal (every tranche released and the supplier paid in full) whose
+    realised margin is below the deal's margin floor raises ``deal.exception``
+    (category MARGIN_BREACH) once, with the estimate beside it so the operator
+    sees where the money went. Mid-deal figures are never judged: before the
+    last tranche the received cash is still incomplete. Returns True when raised."""
+    if deal_id in _margin_alerted or pct is None:
+        return False
+    if not hold.tranches or not all(t.status == "RELEASED" for t in hold.tranches):
+        return False
+    owed = next((p.total_owed for p in payouts if p.total_owed is not None), None)
+    if owed is None:
+        owed = await _supplier_owed(deal_id)
+    completed, _pending = _payout_totals(payouts)
+    if owed is None or completed < owed - _FUNDING_TOLERANCE:
+        return False
+    floor, est_pct, est_usd = None, None, None
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        deal = await get_deal(deal_id)
+        floor = getattr(deal, "margin_floor_pct", None)
+        est_pct, est_usd = getattr(deal, "est_margin_pct", None), getattr(deal, "est_margin_usd", None)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("EscrowGuard: deal lookup for the margin check failed for %s: %s", deal_id, exc)
+    if floor is None:
+        from shared.orchestration import landed_cost
+        floor = landed_cost.default_margin_floor_pct()
+    if pct >= float(floor):
+        return False
+    _margin_alerted.add(deal_id)
+    await _emit(EventTopic.DEAL_EXCEPTION, deal_id, {
+        "source": "escrow_guard",
+        "stage": "PAID:margin_below_floor",
+        "category": "MARGIN_BREACH",
+        "error": (f"realised margin {pct:.2f}% (USD {realized:,.2f}) on the closed deal is below the "
+                  f"margin floor {float(floor):.2f}%"
+                  + (f"; estimated {est_pct:.2f}%" if est_pct is not None else "")),
+        "action_required": "review_costs_and_pricing",
+        "realized_margin_usd": realized,
+        "realized_margin_pct": pct,
+        "margin_floor_pct": float(floor),
+        "est_margin_pct": est_pct,
+        "est_margin_usd": est_usd,
+        "net_received": _net_received(hold),
+        "supplier_paid": completed,
+        "portless_costs": costs,
+    })
+    logger.warning("EscrowGuard: deal %s closed at %.2f%% margin, below the %.2f%% floor", deal_id, pct, float(floor))
+    return True
 
 
 # Cost lines that become real when a provider order exists for the deal.

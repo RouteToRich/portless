@@ -1118,9 +1118,15 @@ def _compute_confidence(
     sellers: list[SellerCandidate],
     net_price_gap: float,
     config: TradeMinConfig,
+    buyers: list[BuyerSignal] | None = None,
+    basis: list[str] | None = None,
 ) -> float:
+    """Data confidence 0-100. ``basis`` (when given) receives one line per part
+    that scored, for the radar's Confidence tooltip."""
+    lines: list[str] = []
     p1_map = {4: 50.0, 3: 40.0, 2: 25.0, 1: 10.0, 0: 0.0}
     score = p1_map.get(phase1.active_connectors, 0.0)
+    lines.append(f"market data sources {phase1.active_connectors}/4: {score:.0f}")
 
     live = 0.0
     if phase2.active_rfq_count > 0:
@@ -1129,22 +1135,48 @@ def _compute_confidence(
         live += 10.0
     if phase2.disruption_detected:
         live = min(live + 5.0, 25.0)
-    score += min(live, float(config.confidence_live_max))
+    live = min(live, float(config.confidence_live_max))
+    score += live
+    if live:
+        lines.append(f"live demand (RFQs / tenders / disruption): {live:.0f}")
 
     if tariff.applied_duty_pct > 0 or tariff.ntb_flags:
         # MacMap actually returned data (not the zero placeholder)
+        pts = 0.0
         if net_price_gap >= config.tariff_marginal_floor:
-            score += float(config.confidence_tariff_max)
+            pts = float(config.confidence_tariff_max)
         elif net_price_gap >= config.tariff_hard_discard_floor:
-            score += 5.0
+            pts = 5.0
+        score += pts
+        lines.append(f"tariff confirmed: {pts:.0f}")
+    else:
+        lines.append("tariff not confirmed by a source: 0")
     # else: MacMap was unavailable — 0 tariff pts (unverified)
 
     if len(sellers) >= 3:
         score += float(config.confidence_sellers_max)
+        lines.append(f"{len(sellers)} suppliers found: {config.confidence_sellers_max}")
     elif len(sellers) >= 1:
         score += 5.0
+        lines.append(f"{len(sellers)} supplier(s) found: 5")
 
-    return round(min(score, 100.0), 1)
+    # Counterparties checked at scan time (validation.py): a corridor whose buyers
+    # and suppliers passed the sanctions / e-mail / registry check is worth more
+    # than one with the same numbers and nobody verified.
+    from . import validation
+    v_buyers = sum(1 for b in (buyers or []) if validation.status_of(b) == "verified")
+    v_sellers = sum(1 for s in sellers if validation.status_of(s) == "verified")
+    half = float(config.confidence_verified_max) / 2.0
+    verified_pts = (half if v_buyers else 0.0) + (half if v_sellers else 0.0)
+    score += verified_pts
+    lines.append(f"verified buyers {v_buyers}, verified suppliers {v_sellers}: {verified_pts:.0f}")
+
+    total = round(min(score, 100.0), 1)
+    if basis is not None:
+        basis.extend(lines)
+        if score > 100.0:
+            basis.append("capped at 100")
+    return total
 
 
 def _determine_urgency(phase1: _Phase1Result, phase2: _Phase2Result) -> int:
@@ -1198,8 +1230,10 @@ async def _phase5_assemble_and_persist(
         return None
 
     urgency = _determine_urgency(phase1, phase2)
+    confidence_basis: list[str] = []
     confidence = _compute_confidence(
-        phase1, phase2, tariff, sellers, net_price_gap, config
+        phase1, phase2, tariff, sellers, net_price_gap, config,
+        buyers=phase1.buyer_signals + phase2.buyer_signals, basis=confidence_basis,
     )
     ttl_hours = config.urgency_ttl_hours[urgency]
     expires_at = now + timedelta(hours=ttl_hours)
@@ -1226,6 +1260,7 @@ async def _phase5_assemble_and_persist(
         seller_candidates=sellers,
         arbitrage_rank=arb_rank,
         confidence_score=confidence,
+        confidence_basis=confidence_basis,
         expires_at=expires_at,
         market_avg_usd_per_mt=phase1.market_avg_usd_per_mt,
         india_to_market_usd_per_mt=phase1.india_to_market_usd_per_mt,

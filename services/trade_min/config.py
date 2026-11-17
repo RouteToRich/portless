@@ -149,6 +149,7 @@ class TradeMinConfig:
     confidence_live_max: int = 25       # rfq + tender + disruption
     confidence_tariff_max: int = 15     # MacMap confirmed viable = 15 pts
     confidence_sellers_max: int = 10    # ≥3 candidates = 10 pts
+    confidence_verified_max: int = 10   # half for ≥1 verified buyer, half for ≥1 verified supplier (capped at 100)
 
     # ── Reorder window ────────────────────────────────────────────────────
     reorder_probability_threshold: float = 0.70  # sigmoid ≥ 0.70 → tier 2

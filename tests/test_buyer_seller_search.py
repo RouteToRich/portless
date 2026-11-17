@@ -106,6 +106,8 @@ class TestNames:
     @pytest.mark.parametrize(("label", "expected"), [
         ("magnafoodservice", "Magna Food Service"), ("chhcwholesales", "Chhc Wholesales"),
         ("ricemasterglobal", "Rice Master Global"),
+        ("fishandco", "Fish & Co"), ("spice-and-co", "Spice & Co"), ("cocoaexports", "Cocoa Exports"),
+        ("ricecorp", "Rice Corp"), ("jimmyandsons", "Jimmy & Sons"),
     ])
     def test_more_run_together_domains(self, label, expected):
         assert ap.split_domain_label(label) == expected
