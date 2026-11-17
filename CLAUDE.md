@@ -45,7 +45,7 @@ make up    # docker compose up --build
 make down
 
 # Tests
-pytest -q                                 # full suite (4869 pass, 1 skip, ~6 min)
+pytest -q                                 # full suite (4879 pass, 1 skip, ~6 min)
 pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 95.46% line + branch (2026-11-09)
 pytest tests/test_health.py -q            # smoke: every service boots + /health 200
 pytest tests/test_state_machine.py        # deal state machine unit tests
@@ -64,6 +64,8 @@ pytest tests/test_enrichment.py           # counterparty contact + sanctions enr
 pytest tests/test_counterparty_validation.py # scan-time buyer / supplier check: verdict, top N, reuse, registries, radar verified view, failed never seeds a deal
 pytest tests/test_opportunity_profit.py  # radar ranked by expected profit: buyer / supplier price basis, landed cost, lot cap, chance of closing + outcome learning, suspect gap, duty + freight (no VAT), quality flags, scan report, mandi prices, India-cheaper outreach line
 pytest tests/test_buyer_seller_search.py # search name never the official HS text (hs_names.search_name / search_keyword), junk pages dropped, exporter / other-country buyers flagged, IndiaMART / TradeIndia skipped without keys, name clean-up
+pytest tests/test_source_hygiene.py      # no control characters in source files (a heredoc \b once became a backspace and silently disabled an assertion)
+pytest tests/test_todo_metrics.py        # the counts at the top of todo match the list (recount: python -X utf8 scripts/todo_metrics.py)
 pytest tests/test_directory_paging.py    # directory paging (total beyond 200, filters before the page) and every sort key / order
 pytest tests/test_counterparty_profile.py # company profile (engagements, timeline, open prospects, next actions), add to prospect (buyer → funnel, supplier → match board, refusals), directory summary
 pytest tests/test_counterparty_book.py   # directory as a trading book: relationship stage / activity / prices / score per company, do-not-contact (reply + staff, honoured by outreach everywhere), exporter buyers skipped, clean-up on read + POST /trade-min/directory/clean

@@ -13,6 +13,7 @@ Business-level scenarios (what the platform does, end to end) are in
 | Module | Feature file | Test files | Scenarios | Cases |
 |---|---|---|---:|---:|
 | `agents/negotiation_agent` | [agents__negotiation_agent.feature](agents__negotiation_agent.feature) | `test_automation.py`, `test_deals_http_and_callbacks.py`, `test_email_processor_post_agreement.py`, `test_email_quality_fixes.py`, `test_final_gaps.py`, `test_market_intel.py`, `test_money_continuations.py`, `test_negotiation_agent.py`, `test_negotiation_drafting.py`, `test_negotiation_followup.py`, `test_negotiation_gateway_retry.py`, `test_negotiation_routing.py`, `test_negotiation_service_paths.py`, `test_negotiation_stale_watcher.py`, `test_notifications.py`, `test_packing.py`, `test_pipeline_guards.py`, `test_platform_controls.py`, `test_qc_inspection.py`, `test_qc_providers.py`, `test_repositories_contract.py`, `test_routes_and_clients.py`, `test_services_failure_paths.py`, `test_small_modules.py`, `test_status_notices.py`, `test_supplier_address_currency.py`, `test_supplier_commitment.py`, `test_trade_costs.py`, `test_trade_data_and_infra.py`, `test_trade_documents.py` | 311 | 340 |
+| `misc` | [misc.feature](misc.feature) | `test_source_hygiene.py`, `test_todo_metrics.py` | 6 | 10 |
 | `services/api_gateway` | [services__api_gateway.feature](services__api_gateway.feature) | `test_small_modules.py` | 4 | 9 |
 | `services/auth` | [services__auth.feature](services__auth.feature) | `test_auth_middleware.py`, `test_repositories_contract.py` | 43 | 43 |
 | `services/automation` | [services__automation.feature](services__automation.feature) | `test_automation.py`, `test_automation_deployed.py`, `test_escrow_providers.py`, `test_maersk_freight.py`, `test_qc_inspection.py` | 45 | 57 |
@@ -87,4 +88,4 @@ Business-level scenarios (what the platform does, end to end) are in
 | `shared/product_label` | [shared__product_label.feature](shared__product_label.feature) | `test_hs_names.py` | 1 | 9 |
 | `shared/readiness` | [shared__readiness.feature](shared__readiness.feature) | `test_readiness.py`, `test_routes_and_clients.py`, `test_startup_and_lifespans.py` | 16 | 16 |
 | `shared/telegram` | [shared__telegram.feature](shared__telegram.feature) | `test_batch_c.py`, `test_trade_min_pipeline.py` | 4 | 4 |
-| **Total** | | | **2991** | **3776** |
+| **Total** | | | **2997** | **3786** |
