@@ -219,3 +219,96 @@ async def test_switched_off_books_without_a_street_address(held, monkeypatch):
     await sc.await_po_ack("D1", 20.0)
     await sc.acknowledge_po("D1", by="ops")
     held.qc.assert_awaited_once_with("D1")
+
+
+# ---------------------------------------------------------------------------
+# Deal watcher: facility address reminder + stall exception
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def waiting(held, monkeypatch):
+    """PO acknowledged, inspection waiting for the address; watcher pieces mocked."""
+    from datetime import datetime, timezone
+
+    from shared.orchestration import deal_watcher
+    deal_watcher.reset_for_tests()
+    held.deal.updated_at = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    held.emit = AsyncMock(return_value=True)
+    monkeypatch.setattr(deal_watcher, "_emit_exception", held.emit)
+    held.po_reminder = AsyncMock(return_value="EMAIL-PO")
+    monkeypatch.setattr(notifications, "notify_po_reminder", held.po_reminder)
+    monkeypatch.setenv("DEAL_FACILITY_ADDRESS_REMINDER_AFTER_HOURS", "48")
+    monkeypatch.setenv("DEAL_REMINDER_MAX", "2")
+    held.watcher = deal_watcher
+    return held
+
+
+async def _asked_hours_ago(state, hours):
+    from datetime import datetime, timedelta, timezone
+    await sc.await_po_ack("D1", 20.0)
+    await sc.acknowledge_po("D1", by="ops")
+    rec = await sc.get("D1")
+    assert rec.facility_address_status == "awaiting"
+    now = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
+    rec.facility_address_asked_at = now - timedelta(hours=hours)
+    await sc._save(rec)
+    state.notify.reset_mock()
+    counts = {"scanned": 0, "reminders": 0, "exceptions": 0}
+    await state.watcher._sweep_po_issued(state.deal, now, counts)
+    return counts
+
+
+async def test_watcher_waits_before_the_first_address_reminder(waiting):
+    counts = await _asked_hours_ago(waiting, 10)
+    waiting.notify.assert_not_awaited()
+    waiting.po_reminder.assert_not_awaited()  # never "please confirm the PO" once it is acknowledged
+    waiting.emit.assert_not_awaited()
+    assert counts["reminders"] == 0
+
+
+@pytest.mark.parametrize("hours,number", [(50, 1), (100, 2)])
+async def test_watcher_reminds_the_supplier_about_the_address(waiting, hours, number):
+    counts = await _asked_hours_ago(waiting, hours)
+    args = waiting.notify.await_args
+    assert args.args[2] == "facility_address_reminder" and args.kwargs["suffix"] == f"r{number}"
+    assert args.args[3]["known"] == "Thanjavur, Tamil Nadu"
+    assert counts["reminders"] == 1
+    waiting.po_reminder.assert_not_awaited()
+    waiting.emit.assert_not_awaited()
+
+
+async def test_watcher_raises_once_the_reminders_are_used_up(waiting):
+    counts = await _asked_hours_ago(waiting, 150)
+    waiting.notify.assert_not_awaited()
+    kind = waiting.emit.await_args.args[1]
+    extra = waiting.emit.await_args.args[3]
+    assert kind == "PO_ISSUED:facility_address_missing" and extra["known_address"] == "Thanjavur, Tamil Nadu"
+    assert counts["exceptions"] == 1
+
+
+async def test_watcher_books_when_the_address_arrived_without_a_booking(waiting):
+    await sc.await_po_ack("D1", 20.0)
+    await sc.acknowledge_po("D1", by="ops")
+    waiting.party.address = "Plot 14, SIPCOT Industrial Estate, Thanjavur 613005"  # set, but no booking ran
+    from datetime import datetime, timezone
+    counts = {"scanned": 0, "reminders": 0, "exceptions": 0}
+    await waiting.watcher._sweep_po_issued(waiting.deal, datetime(2026, 11, 20, tzinfo=timezone.utc), counts)
+    waiting.qc.assert_awaited_once_with("D1")
+    assert counts.get("qc_booked") == 1 and counts["reminders"] == 0
+
+
+async def test_without_an_address_wait_the_po_reminder_still_runs(waiting):
+    from datetime import datetime, timezone
+    await sc.await_po_ack("D1", 20.0)  # PO not acknowledged yet: no address request
+    counts = {"scanned": 0, "reminders": 0, "exceptions": 0}
+    await waiting.watcher._sweep_po_issued(waiting.deal, datetime(2026, 11, 4, 1, tzinfo=timezone.utc), counts)
+    waiting.po_reminder.assert_awaited_once()
+    assert counts["reminders"] == 1
+
+
+def test_facility_address_reminder_wording():
+    subject, body = notifications._tpl_facility_address_reminder(
+        {"deal_id": "D1", "supplier_name": "Mill One", "known": "Thanjavur, Tamil Nadu"})
+    assert "Reminder" in subject and "D1" in subject
+    assert "Thanjavur, Tamil Nadu" in body and "PIN code" in body and "Purchase Order" not in body

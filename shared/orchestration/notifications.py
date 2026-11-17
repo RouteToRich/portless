@@ -370,6 +370,22 @@ def _tpl_facility_address_request(ctx: dict[str, Any]) -> tuple[str, str]:
     return subject, body
 
 
+def _tpl_facility_address_reminder(ctx: dict[str, Any]) -> tuple[str, str]:
+    subject = f"Reminder: facility address needed for the inspection — deal {ctx['deal_id']}"
+    known = ctx.get("known")
+    body = (
+        f"{_dear(ctx.get('supplier_name'))},\n\n"
+        f"We are still waiting for the address of your facility for deal {ctx['deal_id']}. The independent "
+        "inspection cannot be booked without it, and the inspection comes before the goods can ship and before "
+        "the next payment to you is released.\n\n"
+        + (f"We have only \"{known}\", which is not enough for the inspection agency.\n\n" if known else "")
+        + "Please reply with the full address where the goods are produced, packed and loaded — street, town "
+        "and PIN code. We book the inspection as soon as we have it."
+        + _signature()
+    )
+    return subject, body
+
+
 def _tpl_supplier_order_request(ctx: dict[str, Any]) -> tuple[str, str]:
     """Firm order request before the buyer gets a Proforma Invoice — the supplier
     commits first (shared/orchestration/supplier_commitment.py)."""
@@ -792,6 +808,7 @@ _TEMPLATES = {
     "po_issued": _tpl_po_issued,
     "qc_readiness_request": _tpl_qc_readiness_request,
     "facility_address_request": _tpl_facility_address_request,
+    "facility_address_reminder": _tpl_facility_address_reminder,
     "qc_booked": _tpl_qc_booked,
     "freight_booked": _tpl_freight_booked,
     "cargo_cleared": _tpl_cargo_cleared,
@@ -1216,6 +1233,14 @@ async def notify_po_reminder(deal: Any, reminder_no: int) -> str | None:
     )
 
 
+async def notify_facility_address_reminder(deal: Any, reminder_no: int, known: str | None = None) -> str | None:
+    return await notify_party(
+        deal.deal_id, "supplier", "facility_address_reminder",
+        {"supplier_name": _party_name(deal, "supplier"), "known": known},
+        suffix=f"r{reminder_no}", deal=deal,
+    )
+
+
 async def notify_qc_readiness_reminder(deal: Any, reminder_no: int) -> str | None:
     return await notify_party(
         deal.deal_id, "supplier", "qc_readiness_reminder",
@@ -1331,6 +1356,7 @@ NOTICE_LABELS: dict[str, tuple[str, str]] = {
     "po_reminder": ("PO confirmation reminder", "PO_ISSUED"),
     "qc_readiness_request": ("Goods-ready date requested", "PO_ISSUED"),
     "facility_address_request": ("Facility address requested", "PO_ISSUED"),
+    "facility_address_reminder": ("Facility address reminder", "PO_ISSUED"),
     "qc_booked": ("Inspection booked", "SUPPLIER_DISPATCH_READY"),
     "qc_readiness_reminder": ("Inspection readiness reminder", "SUPPLIER_DISPATCH_READY"),
     "qc_passed": ("Inspection passed", "QC_PASSED"),

@@ -19,7 +19,7 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-18)
 
-**506 open · 37 done** (7 % done).
+**505 open · 38 done** (7 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
@@ -27,12 +27,12 @@ accountant · (Biz) founder / business · (QA) quality.
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
 | P0 — before the first real trade | 98 | 0 |
-| P1 — before more than a few deals a month | 311 | 37 |
+| P1 — before more than a few deals a month | 310 | 38 |
 | P2 — improvements | 35 | 0 |
 | Decisions needed | 21 | 0 |
-| **Total** | **506** | **37** |
+| **Total** | **505** | **38** |
 
-Open items by owner: Eng 242 · Ops 27 · Legal 29 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 241 · Ops 27 · Legal 29 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
 
@@ -41,7 +41,7 @@ Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when thi
 ## Where things stand today
 
 - [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
-- Backend tests: 4879 passed, 1 skipped (2026-11-18). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
+- Backend tests: 4886 passed, 1 skipped (2026-11-18). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
 - End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
 - Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
 - UI repo: type-check and build pass; **no tests of any kind, no CI**. Browser cases written: TC-WEB-001 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`), none automated.
@@ -383,7 +383,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** Supplier retention (10 % held until buyer acceptance): confirm the supplier contract states it, and the payout e-mail explains it.
 
 ### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
-- [ ] **(Eng)** Facility address: the watcher reminds the supplier about the goods-ready date, but there is no reminder for a missing facility address (`facility_address_request` is sent once). Add a reminder and a stall exception.
+- [x] **(Eng)** Facility address: the watcher reminds the supplier about the goods-ready date, but there is no reminder for a missing facility address (`facility_address_request` is sent once). Add a reminder and a stall exception. — done 2026-11-18: while the inspection waits for the address the deal watcher sends `facility_address_reminder` every `DEAL_FACILITY_ADDRESS_REMINDER_AFTER_HOURS` (48) from the request (max `DEAL_REMINDER_MAX`), then raises `PO_ISSUED:facility_address_missing`; the "please confirm the PO" reminder is no longer sent for a PO already acknowledged; an address that arrived without a booking is booked by the sweep.
 - [ ] **(Eng/QA)** Standby supplier switch (UC-13 / UC-14): a standby supplier from a scan has only a town, so its inspection now waits for an address — re-run both journeys and confirm the request goes to the new supplier.
 - [ ] **(Eng)** Cross-prospect offers: the match board pairs a buyer with supplier offers from other deals of the same HS code, including old ones. Confirm `MATCH_OFFER_VALIDITY_DAYS` expiry is enough, and never propose an offer from a CANCELLED / failed deal without a fresh price.
 - [ ] **(Eng)** Negotiation drafts still sometimes say things like "As soon as we have the inspector selected, we will send the proforma invoice" — review a sample of real drafts each week (stage wording, missing-information order).

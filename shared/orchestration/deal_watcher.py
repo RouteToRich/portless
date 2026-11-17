@@ -16,7 +16,10 @@ happens. This sweep handles the opposite case — *nothing* happens:
                     (stage ``ESCROW_PENDING:unfunded``)
   PO_ISSUED       the supplier never acknowledged the Purchase Order / QC was
                   never booked → supplier reminder every
-                  ``DEAL_PO_ACK_REMINDER_AFTER_HOURS`` (max ``DEAL_REMINDER_MAX``)
+                  ``DEAL_PO_ACK_REMINDER_AFTER_HOURS`` (max ``DEAL_REMINDER_MAX``);
+                  while the inspection waits for the supplier's facility address:
+                  address reminder every ``DEAL_FACILITY_ADDRESS_REMINDER_AFTER_HOURS``
+                  from the request, then ``PO_ISSUED:facility_address_missing``
   SUPPLIER_DISPATCH_READY  API inspection provider (QIMA) polled every
                   ``QC_POLL_MINUTES`` — a report found moves the deal; once the
                   inspection date + ``QC_REPORT_GRACE_HOURS`` passes without one →
@@ -198,6 +201,58 @@ async def _sweep_supplier_wait(
             counts["exceptions"] += 1
 
 
+async def _sweep_po_issued(deal: Any, now: datetime, counts: dict[str, int]) -> None:
+    """PO issued: while the inspection waits for the supplier's facility address,
+    remind the supplier about the address (not about the PO it already
+    acknowledged), then raise; otherwise the PO-acknowledgement reminders."""
+    from shared.orchestration import notifications
+    if await _sweep_facility_address(deal, now, counts):
+        return
+    await _sweep_supplier_wait(
+        deal, "PO_ISSUED", now, counts, every_var="DEAL_PO_ACK_REMINDER_AFTER_HOURS",
+        every_default=48.0, kind="po_unacknowledged", notify=notifications.notify_po_reminder,
+    )
+
+
+async def _sweep_facility_address(deal: Any, now: datetime, counts: dict[str, int]) -> bool:
+    """True when the deal waits for the facility address (this sweep owns it).
+    Reminder every ``DEAL_FACILITY_ADDRESS_REMINDER_AFTER_HOURS`` counted from the
+    request (max ``DEAL_REMINDER_MAX``), then ``PO_ISSUED:facility_address_missing``.
+    An address that arrived without booking the inspection books it now."""
+    from shared.orchestration import notifications, supplier_address, supplier_commitment
+    try:
+        rec = await supplier_commitment.get(deal.deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("DealWatcher: commitment read for %s failed: %s", deal.deal_id, exc)
+        return False
+    if rec is None or rec.facility_address_status != "awaiting" or not supplier_address.required():
+        return False
+    known, complete = await supplier_address.current(deal.deal_id)
+    if complete:
+        try:
+            if await supplier_commitment.address_known(deal.deal_id) is not None:
+                counts["qc_booked"] = counts.get("qc_booked", 0) + 1
+        except Exception as exc:  # noqa: BLE001
+            logger.error("DealWatcher: booking after the facility address failed for %s: %s", deal.deal_id, exc)
+        return True
+    since = _aware(rec.facility_address_asked_at) or _aware(deal.updated_at) or now
+    every = _hours("DEAL_FACILITY_ADDRESS_REMINDER_AFTER_HOURS", 48.0)
+    due = int((now - since).total_seconds() // (every * 3600)) if every > 0 else 0
+    if 1 <= due <= _reminder_max():
+        if await notifications.notify_facility_address_reminder(deal, due, known):
+            counts["reminders"] += 1
+    elif due > _reminder_max():
+        if await _emit_exception(
+            deal.deal_id, "PO_ISSUED:facility_address_missing",
+            f"supplier has not sent its facility address {(now - since).days} day(s) after the request and "
+            f"{_reminder_max()} reminder(s); the inspection cannot be booked",
+            {"status": "PO_ISSUED", "since": since.isoformat(), "known_address": known,
+             "action": "get the address by phone and set it with PATCH /deals/{id}/parties/supplier"},
+        ):
+            counts["exceptions"] += 1
+    return True
+
+
 async def _sweep_dispatch_ready(deal: Any, now: datetime, counts: dict[str, int]) -> None:
     """Inspection booked: poll an API provider (QIMA) for the order status and
     report (every ``QC_POLL_MINUTES``); remind the supplier only once the
@@ -342,11 +397,7 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
             elif status == "ESCROW_PENDING":
                 await _sweep_escrow_pending(deal, now, counts)
             elif status == "PO_ISSUED":
-                from shared.orchestration import notifications
-                await _sweep_supplier_wait(
-                    deal, status, now, counts, every_var="DEAL_PO_ACK_REMINDER_AFTER_HOURS",
-                    every_default=48.0, kind="po_unacknowledged", notify=notifications.notify_po_reminder,
-                )
+                await _sweep_po_issued(deal, now, counts)
             elif status == "SUPPLIER_DISPATCH_READY":
                 await _sweep_dispatch_ready(deal, now, counts)
             elif status == "IN_TRANSIT":
