@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field
 from shared import catalogue as _catalogue
 from shared.catalogue import ProductLine
 
-from . import directory, service, validation
+from . import directory, scan_reports, service, validation
 from .config import DEFAULT_CONFIG
-from .schemas import CounterpartyRecord, EnrichedOpportunity, MatchEngineSeed, ScanRequest
+from .schemas import CounterpartyRecord, EnrichedOpportunity, MatchEngineSeed, ScanReport, ScanRequest
 
 router = APIRouter(prefix="/trade-min", tags=["trade-min"])
 
@@ -102,6 +102,13 @@ class KnowledgeNote(BaseModel):
     subject_id: str = Field(description="company domain / candidate id, HS code, ISO-2 market or deal id")
     text: str = Field(min_length=3, max_length=8000)
     author: str | None = None
+
+
+@router.get("/scan/report", response_model=ScanReport | None)
+async def last_scan_report() -> ScanReport | None:
+    """The last scan, corridor by corridor: opportunity found, or why it was dropped
+    (no live demand data, no measured gap, net gap below the floor, score too low)."""
+    return await scan_reports.latest()
 
 
 @router.post("/knowledge/notes", response_model=dict)

@@ -103,8 +103,30 @@ class TradeMinConfig:
     # Demand index at which a market is considered a "demand surge" (0–100).
     demand_surge_threshold: float = 40.0
 
-    # Maximum price-gap % used as the 100-score saturation point.
+    # Maximum price-gap % used as the 100-score saturation point (net gap, after
+    # duty and freight).
     price_gap_saturation_pct: float = 40.0
+
+    # A gross gap above this is not believed: it almost always means the two
+    # prices are different grades or origins, not a real arbitrage. The gap
+    # then scores ``suspect_gap_score`` instead of the maximum, and the
+    # opportunity is flagged ``price_check_needed``.
+    suspect_gap_pct: float = 80.0
+    suspect_gap_score: float = 50.0
+
+    # ── Expected profit (profit.py) ───────────────────────────────────────
+    # Tonnes in one 20' container of bagged dry agri goods; the default lot when
+    # neither the catalogue nor the buyer gives a quantity.
+    container_mt: float = 20.0
+    default_lot_mt: float = 20.0
+    # A first order is rarely above this value: a high-value product (saffron at
+    # $280k/MT) is sized by money, not by a container.
+    max_lot_value_usd: float = 150_000.0
+    # Chance of closing before any outcome history: floor + span × best pair score.
+    p_close_floor: float = 0.05
+    p_close_span: float = 0.40
+    # Corridor outcome history needed before it moves the chance of closing.
+    corridor_learning_min: int = 3
 
     # ── Phase 1 guardrails ────────────────────────────────────────────────
     # Abort the pipeline for this hs_code×market pair when fewer than this
@@ -149,6 +171,8 @@ class TradeMinConfig:
             # PortLess-owned Apify actors — every run costs money, so cache the
             # slow-moving ones; the Alibaba RFQ board is refreshed twice a day.
             "apify_export_markets": 7 * _DAY,
+            # Agmarknet mandi prices move daily; one call per product a day.
+            "mandi_prices":         1 * _DAY,
             "apify_us_importers":   3 * _DAY,
             "apify_india_suppliers": 7 * _DAY,
             # Buyer + supplier web search (company-contact-finder-ai): companies

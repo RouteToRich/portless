@@ -1119,9 +1119,22 @@ def _safe_float(value: Any) -> float | None:
 # Maps 4-digit HS prefix → product keyword for IndiaMART / TradeIndia search.
 # Extend this table as new HS codes are added to the default scan list.
 _HS_TO_KEYWORD: dict[str, str] = {
-    "0904": "ground pepper spices",
+    # HS 2022: 0904.11 / 0904.12 are pepper (Piper); 0904.21 / 0904.22 are dried
+    # capsicum / pimenta — chilli, not pepper. "ground pepper spices" on 090422 found
+    # pepper and cumin mills instead of chilli suppliers.
+    "0904": "pepper spices",
+    "090411": "black pepper",
+    "090412": "ground black pepper",
+    "090421": "dried red chilli",
+    "090422": "chilli powder",
     "0902": "tea leaves",
-    "0910": "mixed spices cardamom",
+    # 0910 is ginger / saffron / turmeric / thyme / other spices; cardamom is 0908.
+    "0910": "spices",
+    "091011": "dried ginger",
+    "091012": "ground ginger",
+    "091020": "saffron",
+    "091030": "turmeric",
+    "0908": "cardamom",
     "1001": "wheat grain",
     "2905": "glycerol alcohol",
     # 6-digit entries win over the 4-digit heading (looked up first): 2905 is every
@@ -1144,6 +1157,8 @@ _HS_TO_KEYWORD: dict[str, str] = {
     "0801": "cashew nuts",
     "1701": "sugar",
     "0703": "onions",
+    "071220": "dehydrated onion",
+    "100610": "paddy rice",
 }
 
 

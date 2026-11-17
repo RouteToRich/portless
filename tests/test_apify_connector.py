@@ -193,7 +193,7 @@ class TestNormalisers:
         ])
         out = await conn.quote({"keyword": "basmati rice", "countries": ["AE"], "role": "buyer", "max_results": 4})
         names = [c["company_name"] for c in out["companies"]]
-        assert names == ["Alturabfood", "Jashn Foods", "Rice Master Global Ltd"]
+        assert names == ["Alturab Food", "Jashn Foods", "Rice Master Global Ltd"]
         first = out["companies"][0]
         assert first["email"] == "purchase@alturabfood.com" and first["phone"] == "+971 4 000"
         assert first["role"] == "buyer" and first["query"] == "basmati rice importers, AE"
@@ -209,7 +209,7 @@ class TestNormalisers:
          "Arham Foodstuff Trading L.L.C"),
         ({"name": "Welcome To Indiafeast Millers Private Limited"}, "Indiafeast Millers Private Limited"),
         ({"legal_name": "Rice Master Global Ltd"}, "Rice Master Global Ltd"),
-        ({"name": "Best Wholesale Rice Markets in Dubai", "domain": "alturabfood.com"}, "Alturabfood"),
+        ({"name": "Best Wholesale Rice Markets in Dubai", "domain": "alturabfood.com"}, "Alturab Food"),
         ({"name": "Agro Factory", "domain": "agro-factory.com"}, "Agro Factory"),
     ])
     def test_company_name_cleanup(self, row, expected):

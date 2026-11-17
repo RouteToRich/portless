@@ -135,7 +135,7 @@ class TestCompanyNames:
         ({"legal_name": "Hindustan Unilever Limited", "domain": "hul.co.in"}, "Hindustan Unilever Limited"),
         ({"name": "https://www.brewmart.co.uk/glycerol-maturing-agent", "domain": "brewmart.co.uk"}, "Brewmart"),
         ({"name": "Alcohol and Beer Exporters, Distillers, Brewers, Bottlers", "domain": "khemanigroup.com"},
-         "Khemanigroup"),
+         "Khemani Group"),
     ])
     def test_company_name(self, row, expected):
         from shared.connectors.apify import _company_name

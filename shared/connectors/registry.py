@@ -18,6 +18,7 @@ from .apify import (
 )
 from .base import Connector
 from .demand_signals import AlibabaRfqConnector, EuTedConnector, GdeltDisruptionConnector
+from .mandi import MandiPriceConnector
 from .escrow import EscrowComConnector, TazapayEscrowConnector
 from .payments import PayoneerConnector, StripeTreasuryConnector
 from .regulatory import (
@@ -58,6 +59,10 @@ CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
     # growth across 200+ countries.  Detects surging import demands such as
     # "Turmeric imports in Poland grew 40 % YoY".  FREE (500 calls/day).
     ComtradeConnector.name: ComtradeConnector,
+
+    # Agmarknet daily mandi prices (data.gov.in): the Indian supplier-side price
+    # before any quote — FOB estimate = mandi median x (1 + MANDI_TO_FOB_MARKUP_PCT).
+    MandiPriceConnector.name: MandiPriceConnector,
 
     # World Bank WITS (TRAINS): applied import tariffs at HS-6 — the FREE,
     # no-key replacement for ITC MacMap. Powers the Phase 3 tariff gate.

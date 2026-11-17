@@ -29,7 +29,7 @@ from uuid import uuid4
 from shared.bus import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 
-from . import directory, pair_match, ranking, validation
+from . import directory, pair_match, profit, quality, ranking, scan_reports, validation
 from .cache import cache_get, cache_set, make_cache_key
 from .config import DEFAULT_CONFIG, TradeMinConfig, settings
 from .repository import get_repository
@@ -141,6 +141,14 @@ class _Phase1Result:
     price_benchmark_usd_per_mt: float | None = None
     """Market unit value per MT (export-market actor) — the real buyer price anchor."""
     price_benchmark_source: str | None = None
+    market_avg_usd_per_mt: float | None = None
+    india_to_market_usd_per_mt: float | None = None
+    india_world_fob_usd_per_mt: float | None = None
+    import_value_usd: float | None = None
+    import_growth_pct: float | None = None
+    india_share_pct: float | None = None
+    competitors: list[dict] = field(default_factory=list)
+    india_price_advantage_pct: float | None = None
 
 
 @dataclass
@@ -398,20 +406,24 @@ async def _phase1_historical_demand(
         scores.append((cname, score * norm_weights[cname]))
         result.demand_signals.extend(signals)
         result.buyer_signals.extend(buyers)
+        # CIF vs FOB of the same import records is the freight + insurance
+        # mark-up, not a margin: shown as a gap only when nothing better exists,
+        # and never counted as measured (no opportunity is built on it alone).
         if gap and result.gross_price_gap_pct == 0.0:
             result.gross_price_gap_pct = gap
-            result.price_gap_measured = True
 
     if "apify_export_markets" in connector_data:
-        score, signals, benchmark, gap = _extract_export_market(
-            connector_data["apify_export_markets"], hs_code, market, now
-        )
+        row = connector_data["apify_export_markets"]
+        score, signals, benchmark, gap = _extract_export_market(row, hs_code, market, now)
         scores.append(("apify_export_markets", score * norm_weights["apify_export_markets"]))
         result.demand_signals.extend(signals)
         result.price_benchmark_usd_per_mt = benchmark
-        result.price_benchmark_source = "apify_export_markets" if benchmark else None
-        # The actor's gap (market unit value vs India's own export unit value) is
-        # the one measured on the real corridor — prefer it over the CIF/FOB ratio.
+        result.price_benchmark_source = (
+            ("apify_export_markets:india" if row.get("exporter_unit_value_usd_per_mt") else "apify_export_markets")
+            if benchmark else None)
+        _corridor_facts(result, row)
+        # The actor's gap (what the market pays for India's goods vs India's own
+        # export price) is the one measured on the real corridor.
         if gap:
             result.gross_price_gap_pct = gap
             result.price_gap_measured = True
@@ -419,6 +431,39 @@ async def _phase1_historical_demand(
     result.demand_index = round(sum(s for _, s in scores), 2)
     result.source = scores[0][0] if scores else ""
     return result
+
+
+def _corridor_facts(result: _Phase1Result, row: dict) -> None:
+    """Trend, India's share and the competing origins from the export-market row."""
+    def num(key: str) -> float | None:
+        v = _safe_float(row.get(key))
+        return v if v is not None and v > 0 else None
+
+    result.market_avg_usd_per_mt = num("unit_value_usd_per_mt")
+    result.india_to_market_usd_per_mt = num("exporter_unit_value_usd_per_mt")
+    result.india_world_fob_usd_per_mt = num("exporter_world_unit_value_usd_per_mt")
+    result.import_value_usd = num("import_value_usd")
+    result.import_growth_pct = _safe_float(row.get("growth_1y_pct"))
+    result.india_share_pct = _safe_float(row.get("exporter_share_pct"))
+    comps: list[dict] = []
+    for c in row.get("top_suppliers") or []:
+        if not isinstance(c, dict):
+            continue
+        country = str(c.get("country") or c.get("countryCode") or "").strip()
+        if not country or country.lower() == "india" or str(c.get("countryCode") or "").upper() in ("IND", "IN"):
+            continue
+        per_kg = _safe_float(c.get("unitValueUsdPerKg"))
+        comps.append({
+            "country": country,
+            "share_pct": _safe_float(c.get("sharePct")),
+            "unit_value_usd_per_mt": round(per_kg * 1000.0, 2) if per_kg else None,
+        })
+    result.competitors = comps[:5]
+    india = result.india_to_market_usd_per_mt
+    lead = next((c for c in comps if c.get("unit_value_usd_per_mt")), None)
+    if india and lead:
+        result.india_price_advantage_pct = round(
+            (lead["unit_value_usd_per_mt"] - india) / lead["unit_value_usd_per_mt"] * 100.0, 1)
 
 
 def _pick_market_row(markets_r: dict | None, market: str) -> dict | None:
@@ -447,8 +492,11 @@ def _extract_export_market(
         value = float(row.get("import_value_usd") or 0.0)
         score = min(100.0, max(0.0, 25.0 * math.log10(max(value, 1.0) / 1e5)))
     score = float(score)
-    benchmark = row.get("unit_value_usd_per_mt")
-    india = row.get("exporter_world_unit_value_usd_per_mt") or row.get("exporter_unit_value_usd_per_mt")
+    # Like for like: what this market pays for INDIA's goods (bilateral unit
+    # value — same origin, a closer grade mix) against India's own average
+    # export price. The all-origin market average is the fallback anchor only.
+    benchmark = row.get("exporter_unit_value_usd_per_mt") or row.get("unit_value_usd_per_mt")
+    india = row.get("exporter_world_unit_value_usd_per_mt")
     gap = 0.0
     if benchmark and india and float(india) > 0:
         gap = round((float(benchmark) - float(india)) / float(india) * 100.0, 2)
@@ -485,12 +533,20 @@ def _extract_comtrade(
     Shared by both the UN Comtrade and US Census connectors (Census returns the
     same record shape); ``source`` labels the originating connector.
     """
+    import math
+
     records = data.get("records", [])
     total = data.get("total_records", len(records))
-    score = min(total / 5.0, 100.0)
 
     fob_vals = [r["fob_value_usd"] for r in records if r.get("fob_value_usd")]
     cif_vals = [r["cif_value_usd"] for r in records if r.get("cif_value_usd")]
+    # Demand from the money imported (same log scale as the export-market actor:
+    # $100k → 0 … $1B → 100); the record count only when no value is reported.
+    value = sum(cif_vals) or sum(fob_vals)
+    if value > 0:
+        score = min(100.0, max(0.0, 25.0 * math.log10(max(value, 1.0) / 1e5)))
+    else:
+        score = min(total / 5.0, 100.0)
     price_gap = 0.0
     if fob_vals and cif_vals:
         avg_fob = sum(fob_vals) / len(fob_vals)
@@ -715,6 +771,7 @@ async def _phase2_live_signals(
                 address=c.get("address"),
                 fit_score=c.get("fit_score"),
                 fit_reason=(c.get("summary") or c.get("page_title") or None),
+                name_source=c.get("name_source"),
                 pitch_angle=c.get("first_line") or None,
                 hs_codes=[hs_code],
                 email_status=c.get("email_status"),
@@ -815,7 +872,7 @@ async def _phase3_tariff_gate(
                 gst_vat_pct=vat,
                 ntb_flags=a2m.get("ntb_flags", []),
                 rules_of_origin=a2m.get("rules_of_origin"),
-                total_landed_cost_add_pct=round(float(a2m_applied) + vat, 2),
+                total_landed_cost_add_pct=round(float(a2m_applied), 2),
                 fetched_at=now,
             )
 
@@ -834,7 +891,8 @@ async def _phase3_tariff_gate(
             destination_country=market,
             applied_duty_pct=0.0,
             gst_vat_pct=vat,
-            total_landed_cost_add_pct=vat,
+            total_landed_cost_add_pct=0.0,
+            verified=False,
             fetched_at=now,
         )
 
@@ -843,7 +901,7 @@ async def _phase3_tariff_gate(
         destination_country=market,
         applied_duty_pct=round(float(applied), 2),
         gst_vat_pct=vat,
-        total_landed_cost_add_pct=round(float(applied) + vat, 2),
+        total_landed_cost_add_pct=round(float(applied), 2),
         fetched_at=now,
     )
 
@@ -903,7 +961,7 @@ def _parse_macmap(
         gst_vat_pct=vat,
         ntb_flags=ntb_flags,
         rules_of_origin=roo,
-        total_landed_cost_add_pct=round(applied_duty + vat, 2),
+        total_landed_cost_add_pct=round(applied_duty, 2),
         fetched_at=now,
     )
 
@@ -956,6 +1014,9 @@ async def _phase4_seller_discovery(
                 "fit_score": c.get("fit_score"),
                 "country": "IN",
                 "email_status": c.get("email_status"),
+                "address": c.get("address"),
+                "fit_reason": c.get("summary") or c.get("page_title"),
+                "name_source": c.get("name_source"),
             }, "apify_company_search")
 
     if im_r is not None:
@@ -1019,6 +1080,9 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         country=(s.get("country") or None) if "country" in s else "IN",
         price_unit="USD/MT",
         email_status=s.get("email_status") or None,
+        address=s.get("address") or None,
+        fit_reason=s.get("fit_reason") or None,
+        name_source=s.get("name_source") or None,
     )
 
 
@@ -1072,6 +1136,18 @@ def _determine_urgency(phase1: _Phase1Result, phase2: _Phase2Result) -> int:
     return 1
 
 
+def _net_gap(phase1: _Phase1Result, tariff: TariffData, market: str) -> tuple[float, float | None]:
+    """Gross gap minus import duty minus estimated sea freight (% of the buyer
+    price). VAT is not subtracted: a business importer reclaims it."""
+    freight_pct: float | None = None
+    anchor = phase1.price_benchmark_usd_per_mt
+    if anchor and anchor > 0:
+        from shared.orchestration import landed_cost as lc
+        freight_pct = round(lc.freight_per_mt(market) / anchor * 100.0, 2)
+    net = phase1.gross_price_gap_pct - tariff.total_landed_cost_add_pct - (freight_pct or 0.0)
+    return round(net, 2), freight_pct
+
+
 async def _phase5_assemble_and_persist(
     hs_code: str,
     market: str,
@@ -1083,9 +1159,8 @@ async def _phase5_assemble_and_persist(
 ) -> EnrichedOpportunity | None:
     now = datetime.now(timezone.utc)
 
-    net_price_gap = round(
-        phase1.gross_price_gap_pct - tariff.total_landed_cost_add_pct, 2
-    )
+    net_price_gap, freight_pct = _net_gap(phase1, tariff, market)
+    gap_suspect = ranking.is_suspect_gap(phase1.gross_price_gap_pct, config)
 
     if net_price_gap < config.tariff_hard_discard_floor:
         logger.info(
@@ -1097,7 +1172,7 @@ async def _phase5_assemble_and_persist(
     tariff_viable = net_price_gap >= config.tariff_marginal_floor
     status: str = "ACTIVE" if tariff_viable else "MARGINAL"
 
-    arb_rank = ranking.arbitrage_rank(phase1.demand_index, net_price_gap, config)
+    arb_rank = ranking.arbitrage_rank(phase1.demand_index, net_price_gap, config, gap_suspect=gap_suspect)
     if arb_rank < config.min_arbitrage_rank and status == "ACTIVE":
         return None
 
@@ -1131,8 +1206,22 @@ async def _phase5_assemble_and_persist(
         arbitrage_rank=arb_rank,
         confidence_score=confidence,
         expires_at=expires_at,
+        market_avg_usd_per_mt=phase1.market_avg_usd_per_mt,
+        india_to_market_usd_per_mt=phase1.india_to_market_usd_per_mt,
+        india_world_fob_usd_per_mt=phase1.india_world_fob_usd_per_mt,
+        import_value_usd=phase1.import_value_usd,
+        import_growth_pct=phase1.import_growth_pct,
+        india_share_pct=phase1.india_share_pct,
+        competitors=phase1.competitors,
+        india_price_advantage_pct=phase1.india_price_advantage_pct,
+        freight_pct=freight_pct,
+        gap_suspect=gap_suspect,
+        gap_note=(f"Gross gap {phase1.gross_price_gap_pct:.0f}% is above {config.suspect_gap_pct:.0f}%: "
+                  "most likely a different grade or origin mix, not a real arbitrage. "
+                  "Check the price with a supplier quote before trusting it.") if gap_suspect else None,
     )
     pair_match.attach(opp)
+    await profit.attach(opp, config)
 
     try:
         repo = await get_repository()
@@ -1172,9 +1261,11 @@ async def scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]:
     """Run the 5-phase pipeline for every HS-code × market combination."""
     names = {str(k).strip(): v for k, v in (payload.product_names or {}).items() if v and v.strip()}
     token = _SCAN_PRODUCT_NAMES.set(names)  # this scan only — reset below for the caller
+    report_token = scan_reports.start()
     try:
         return await _scan_opportunities(payload)
     finally:
+        await scan_reports.finish(report_token)
         _SCAN_PRODUCT_NAMES.reset(token)
 
 
@@ -1198,7 +1289,8 @@ async def _scan_opportunities(payload: ScanRequest) -> list[EnrichedOpportunity]
             # from this scan's response.
             results.append(r)
 
-    results.sort(key=lambda o: (o.urgency_tier, o.arbitrage_rank), reverse=True)
+    # Expected profit first (profit.py), the market score breaks ties.
+    results.sort(key=profit.sort_key, reverse=True)
     return results[: config.max_per_scan]
 
 
@@ -1234,6 +1326,7 @@ async def _worldwide_counterparties(hs_code: str) -> None:
             address=c.get("address"),
             fit_score=c.get("fit_score"),
             fit_reason=(c.get("summary") or c.get("page_title") or None),
+            name_source=c.get("name_source"),
             email_status=c.get("email_status"),
         )
         for c in (buyers_r or {}).get("companies", [])
@@ -1293,29 +1386,33 @@ async def _scan_one(
             # No live demand data, or no measured price gap: no opportunity (never
             # simulated numbers) — the buyers / suppliers found are still kept.
             sellers = await _phase4_seller_discovery(hs_code, config)
+            outcome = ("no opportunity: no live demand data for this product and market"
+                       if not phase1.source else
+                       "no opportunity: no measured price gap for this product and market")
             await directory.record_scan(
-                hs_code, market, phase1.buyer_signals + phase2.buyer_signals, sellers,
-                outcome=("no opportunity: no live demand data for this product and market"
-                         if not phase1.source else
-                         "no opportunity: no measured price gap for this product and market"),
+                hs_code, market, phase1.buyer_signals + phase2.buyer_signals, sellers, outcome=outcome,
             )
+            scan_reports.record(hs_code, market, "dropped", outcome.removeprefix("no opportunity: "))
             return None
         tariff = await _phase3_tariff_gate(
             hs_code, market, phase1.gross_price_gap_pct, config
         )
-        net_gap = phase1.gross_price_gap_pct - tariff.total_landed_cost_add_pct
+        net_gap, _freight_pct = _net_gap(phase1, tariff, market)
         # Suppliers are searched even when the tariff gate will drop the corridor:
         # the buyer / supplier directory keeps every counterparty found (the
         # supplier search is per product and cached for a week, so this is cheap).
         sellers = await _phase4_seller_discovery(hs_code, config)
         buyers = phase1.buyer_signals + phase2.buyer_signals
         if net_gap < config.tariff_hard_discard_floor:
-            await directory.record_scan(
-                hs_code, market, buyers, sellers,
-                outcome=f"no opportunity: net price gap {net_gap:.1f}% after duty is below "
-                        f"the {config.tariff_hard_discard_floor:.0f}% floor",
-            )
+            outcome = (f"no opportunity: net price gap {net_gap:.1f}% after duty and freight is below "
+                       f"the {config.tariff_hard_discard_floor:.0f}% floor")
+            await directory.record_scan(hs_code, market, buyers, sellers, outcome=outcome)
+            scan_reports.record(hs_code, market, "dropped", outcome.removeprefix("no opportunity: "))
             return None
+        # Data quality: a "buyer" that is really an Indian exporter, a supplier
+        # whose site is about another product, the supplier's town from its address.
+        quality.check_buyers(buyers, market)
+        quality.check_sellers(sellers, _keyword_for(hs_code), _products_for(hs_code))
         # Check the top buyers / suppliers before the opportunity is shown on the
         # radar (sanctions, e-mail, Indian registries) — written onto the same
         # objects, so the opportunity and the directory both carry the result.
@@ -1329,9 +1426,21 @@ async def _scan_one(
                     "no opportunity: arbitrage rank below the minimum",
             opportunity_id=opp.opportunity_id if opp else None,
         )
+        if opp:
+            ep = opp.profit.expected_profit_usd if opp.profit else None
+            scan_reports.record(
+                hs_code, market, "opportunity",
+                (f"expected profit ${ep:,.0f}" if ep is not None else "no price on one side yet")
+                + (f"; {', '.join(opp.flags)}" if opp.flags else ""),
+                opp.opportunity_id,
+            )
+        else:
+            scan_reports.record(hs_code, market, "dropped",
+                                f"market score below the minimum {config.min_arbitrage_rank:.0f}")
         return opp
     except Exception as exc:
         logger.exception("Unhandled error in _scan_one(%s×%s): %s", hs_code, market, exc)
+        scan_reports.record(hs_code, market, "error", f"scan failed: {exc}")
         return None
 
 
@@ -1361,8 +1470,61 @@ async def list_opportunities(
     urgency_tier: int | None = None,
     counterparties: str = "all",
 ) -> list[EnrichedOpportunity]:
-    return [_with_counterparties(o, counterparties)
-            for o in await open_opportunities(limit=limit, min_rank=min_rank, urgency_tier=urgency_tier)]
+    opps = await open_opportunities(limit=limit, min_rank=min_rank, urgency_tier=urgency_tier)
+    await _fill_profit(opps)
+    deals = await _corridor_deals()
+    for o in opps:
+        o.corridor_deals = deals.get((o.hs_code, o.market.upper()), [])
+    opps.sort(key=profit.sort_key, reverse=True)
+    return [_with_counterparties(o, counterparties) for o in opps]
+
+
+async def _fill_profit(opps: list[EnrichedOpportunity]) -> None:
+    """Opportunities without a computed profit (scanned before profit ranking, or
+    still missing a price) are computed again, and saved when the result changed."""
+    missing = [o for o in opps if o.profit is None or o.profit.expected_profit_usd is None
+               or o.profit.version < profit.PROFIT_VERSION]
+    if not missing:
+        return
+    try:
+        repo = await get_repository()
+    except Exception:  # noqa: BLE001
+        repo = None
+    for o in missing:
+        before = o.profit.model_dump() if o.profit else None
+        await profit.attach(o)
+        if repo is not None and o.profit is not None and o.profit.model_dump() != before:
+            try:
+                await repo.save(o)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Profit backfill not saved for %s: %s", o.opportunity_id, exc)
+
+
+_LIVE_DEAL_END = frozenset({"PAID", "CANCELLED", "REFUNDED", "NEGOTIATION_FAILED"})
+
+
+async def _corridor_deals() -> dict[tuple[str, str], list[dict]]:
+    """Deals still running, per (hs_code, market): the radar warns before a second prospect."""
+    out: dict[tuple[str, str], list[dict]] = {}
+    try:
+        from services.deals.repository import get_repository as deals_repo  # type: ignore[import]
+        repo = deals_repo()
+        if hasattr(repo, "__await__"):
+            repo = await repo  # type: ignore[misc]
+        deals = await repo.list_active(limit=500)
+    except Exception as exc:  # noqa: BLE001 - the radar loads without the deal lookup
+        logger.debug("Corridor deals unavailable: %s", exc)
+        return out
+    for d in deals:
+        status = str(getattr(getattr(d, "status", None), "value", getattr(d, "status", "")))
+        if status in _LIVE_DEAL_END:
+            continue
+        key = (str(getattr(d, "hs_code", "") or ""), str(getattr(d, "market", "") or "").upper())
+        out.setdefault(key, []).append({
+            "deal_id": d.deal_id, "status": status,
+            "opportunity_id": getattr(d, "opportunity_id", None),
+        })
+    return out
 
 
 async def open_opportunities(
@@ -1441,10 +1603,13 @@ def _build_match_seed(opp: EnrichedOpportunity) -> MatchEngineSeed:
 
     # A counterparty the scan-time check failed (sanctions block, GST / IEC
     # inactive) never seeds a deal; verified ones come first (stable otherwise).
+    # A "buyer" flagged as an Indian exporter (quality.py) never seeds the outreach
+    # either; a supplier whose site names another product goes behind the others.
     _order = {"verified": 0, "unverified": 1}
     sellers = sorted((s for s in opp.seller_candidates if validation.status_of(s) != "failed"),
-                     key=lambda s: _order[validation.status_of(s)])
-    buyers = [b for b in opp.buyer_signals if validation.status_of(b) != "failed"]
+                     key=lambda s: (quality.PRODUCT_MISMATCH in s.flags, _order[validation.status_of(s)]))
+    buyers = [b for b in opp.buyer_signals
+              if validation.status_of(b) != "failed" and quality.ROLE_SUSPECT not in b.flags]
 
     top_sellers = [
         {
@@ -1590,6 +1755,11 @@ def describe_sources() -> dict[str, Any]:
          "mode": "open", "detail": "Applied import duty at HS-6 (Phase 3 tariff gate)."},
         _actor("apify_india_suppliers", "sellers", "Indian suppliers (actor)",
                "Indian manufacturers with price, MOQ, GSTIN and a reachable contact (Phase 4)."),
+        {"name": "mandi_prices", "label": "Mandi prices (Agmarknet)", "role": "sellers", "provider": "data_gov_in",
+         "mode": _mode(bool(os.getenv("DATA_GOV_IN_API_KEY", "").strip()
+                            and not os.getenv("DATA_GOV_IN_API_KEY", "").startswith("your_"))),
+         "detail": "Indian wholesale prices: the supplier-side price estimate before any quote "
+                   "(needs DATA_GOV_IN_API_KEY from data.gov.in)."},
         {"name": "indiamart", "label": "IndiaMART", "role": "sellers", "provider": "indiamart_api",
          "mode": _mode(bool(os.getenv("INDIAMART_API_KEY") and os.getenv("INDIAMART_MOBILE"))),
          "detail": "Seller catalogue search + RFQ dispatch (Phase 4)."},

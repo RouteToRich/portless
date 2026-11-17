@@ -21,18 +21,29 @@ def price_gap_score(
     return min(price_gap_pct / config.price_gap_saturation_pct * 100.0, 100.0)
 
 
+def is_suspect_gap(gross_price_gap_pct: float, config: TradeMinConfig = DEFAULT_CONFIG) -> bool:
+    """A gross gap too large to be a real arbitrage (grade / origin mix)."""
+    return gross_price_gap_pct > config.suspect_gap_pct
+
+
 def arbitrage_rank(
     demand_index: float,
     net_price_gap_pct: float,
     config: TradeMinConfig = DEFAULT_CONFIG,
+    *,
+    gap_suspect: bool = False,
 ) -> float:
-    """Composite arbitrage rank (0–100): geometric mean of demand index and
+    """Composite market score (0–100): geometric mean of demand index and
     normalised net-price-gap score.
 
-    Uses ``net_price_gap_pct`` (gross gap minus tariff/landed-cost add-on) so
-    the score already reflects real take-home margin after duties.
+    Uses ``net_price_gap_pct`` (gross gap minus duty and freight). A suspect gap
+    (``is_suspect_gap``) scores ``suspect_gap_score`` instead of the maximum: an
+    implausibly large gap is a warning, not the best opportunity. The radar ranks
+    by expected profit (profit.py); this score is the market-level tie-breaker.
     """
     pg_score = price_gap_score(net_price_gap_pct, config)
+    if gap_suspect and pg_score > 0:
+        pg_score = min(pg_score, config.suspect_gap_score)
     if demand_index <= 0 or pg_score <= 0:
         return 0.0
     return round((demand_index * pg_score) ** 0.5, 2)

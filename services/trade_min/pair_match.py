@@ -414,6 +414,13 @@ def score_pair(
             blockers.append(f"{who} failed the counterparty check")
     if f["product_fit"] == 0.0:
         blockers.append("Different product chapter")
+    # Data-quality flags (quality.py).
+    if "role_suspect" in getattr(b, "flags", []):
+        blockers.append("Buyer looks like an Indian exporter, not an importer in the market")
+    if "product_mismatch" in getattr(s, "flags", []) and (f["product_fit"] or 0) > 30.0:
+        f["product_fit"] = 30.0
+        reasons["product_fit"] = "Supplier's own site names another product, not this one"
+        improve.append("Confirm the supplier actually makes this product (its site names another)")
 
     demand = _to_mt(b.annual_volume_mt, "MT") or _to_mt(b.quantity, b.quantity_unit)
     buyer_price, basis = _buyer_price(b, opp.price_benchmark_usd_per_mt)

@@ -1022,11 +1022,97 @@ def _names_the_site(name: str, label: str) -> bool:
     return len(initials) >= 2 and squashed.startswith(initials)
 
 
+# A company inside a marketing sentence: "As Cumin Exporters in India, our motto at
+# VORA SPICE MILLS LLP" → "VORA SPICE MILLS LLP" (the last run of capitalised words
+# ending in a legal form).
+_ENTITY_IN_SENTENCE = re.compile(
+    r"((?:[A-Z][\w&.'-]*\s+){1,6}(?:L\.?L\.?P|LLC|L\.L\.C|Ltd\.?|Limited|Pvt\.?\s+Ltd\.?|"
+    r"Private\s+Limited|GmbH|Inc\.?|Corp\.?|FZE|FZCO))(?!\w)")
+
+# Words a run-together domain label is split on: "jimmyandsons" → "Jimmy & Sons".
+_DOMAIN_WORDS = (
+    "international", "enterprises", "industries", "exporters", "overseas", "products", "trading",
+    "traders", "exports", "export", "imports", "impex", "global", "spices", "spice", "foods",
+    "food", "agro", "agri", "farms", "group", "sons", "and", "india", "masala", "mills",
+    "pepper", "chilli", "herbs", "organic", "naturals", "natural", "world", "foodstuff", "company",
+)
+_SENTENCE_LEAD = frozenset({"at", "by", "our", "the", "from", "with", "as", "in", "of"})
+
+
+def _entity_in_sentence(text: str) -> str:
+    """The legal entity named inside a long sentence, else ""."""
+    if len((text or "").split()) < 6:
+        return ""
+    found = _ENTITY_IN_SENTENCE.findall(text)
+    if not found:
+        return ""
+    name = found[-1].strip(" ,.-")
+    name = re.split(r"(?<=\w)\.\s+(?=[A-Z])", name)[-1]  # "UAE. Hazchem Chemicals LLC" → after the sentence end
+    words = name.split()
+    while words and words[0].lower() in _SENTENCE_LEAD:
+        words.pop(0)
+    return " ".join(words) if len(words) >= 2 else ""
+
+
+_DOMAIN_LEGAL = frozenset({"llp", "pvt", "ltd", "llc", "gmbh", "inc", "fze"})
+
+
+def _segment(chunk: str) -> list[str]:
+    """Split one lower-case run into known words + leftovers, fewest leftover letters
+    first, then fewest pieces ("naturalspicesllp" → natural · spices · llp)."""
+    vocab = set(_DOMAIN_WORDS) | _DOMAIN_LEGAL
+    n = len(chunk)
+    best: list[tuple[int, int, list[str]] | None] = [None] * (n + 1)
+    best[0] = (0, 0, [])
+    for i in range(1, n + 1):
+        for j in range(i):
+            prev = best[j]
+            if prev is None:
+                continue
+            piece = chunk[j:i]
+            if piece == "and" and (j == 0 or i == n):
+                continue  # "andhra…" is not "and hra"; "and" joins two words
+            unknown = 0 if piece in vocab else len(piece)
+            if unknown and prev[2] and prev[2][-1] not in vocab:
+                continue  # leftovers are one piece, never two side by side
+            if unknown and len(piece) < 3 and not (j == 0 and i == n):
+                continue  # "pepperia" stays whole, never "pepper · ia"
+            cand = (prev[0] + unknown, prev[1] + 1, [*prev[2], piece])
+            if best[i] is None or cand[:2] < best[i][:2]:  # type: ignore[index]
+                best[i] = cand
+    return best[n][2] if best[n] else [chunk]  # type: ignore[index]
+
+
+def split_domain_label(label: str) -> str:
+    """A run-together domain label → title-cased words where known words split it."""
+    words: list[str] = []
+    for chunk in (label or "").lower().replace("_", "-").split("-"):
+        if chunk:
+            words.extend(_segment(chunk))
+    out: list[str] = []
+    for i, w in enumerate(words):
+        if w == "and" and 0 < i < len(words) - 1:
+            out.append("&")
+        elif w in _DOMAIN_LEGAL:
+            out.append(w.upper() if w != "gmbh" else "GmbH")
+        else:
+            out.append(w.title())
+    return " ".join(out)
+
+
+def company_name_source(row: dict[str, Any]) -> str:
+    """``domain`` when ``_company_name`` could only read the name from the website
+    address, else ``site`` (legal name or page title)."""
+    label = _domain_label(row)
+    return "domain" if label and _company_name(row) == split_domain_label(label) else "site"
+
+
 def _company_name(row: dict[str, Any]) -> str:
     """The company's name: its stated legal name, else a page title that names the
     site, else the website's domain ("biova.de" → "Biova")."""
     label = _domain_label(row)
-    legal = _clean_name(row.get("legal_name") or "")
+    cleaned = _clean_name(row.get("legal_name") or "")
+    legal = _entity_in_sentence(cleaned) or cleaned
     legal = re.sub(r"^(?:ltd|limited|llc|inc)\.?,\s*", "", legal, flags=re.IGNORECASE)
     # "There are many chemical manufacturers in the UAE. Hazchem Chemicals LLC" → the last sentence
     sentences = re.split(r"(?<=\w)\.\s+(?=[A-Z])", legal)
@@ -1035,12 +1121,15 @@ def _company_name(row: dict[str, Any]) -> str:
     if legal and not _PRODUCT_TITLE.search(legal) and len(legal) <= 80 and _names_the_site(legal, label):
         return legal
     title = (row.get("name") or "").strip()
+    entity = _entity_in_sentence(_clean_name(title))
+    if entity and _names_the_site(entity, label):
+        return entity
     head = "" if re.match(r"^https?://", title) else \
         _clean_name(re.split(r"\s+[|:–—-]\s+|:\s+|\s+\|\s*", title, maxsplit=1)[0])
     if _usable(head) and _names_the_site(head, label):
         return head
     if label:
-        return label.replace("-", " ").title()
+        return split_domain_label(label)
     return head or title
 
 
@@ -1126,9 +1215,11 @@ def refine_companies(companies: list[dict[str, Any]]) -> list[dict[str, Any]]:
         row.setdefault("searched_country", row.get("country"))
         row["country"] = company_country(row, row.get("searched_country"))
         if "page_title" in row:  # quote() kept the page title in page_title; name is ours
-            row["company_name"] = _company_name({**row, "name": row.get("page_title")})
+            named = {**row, "name": row.get("page_title")}
         else:
-            row["company_name"] = _company_name(row)
+            named = row
+        row["company_name"] = _company_name(named)
+        row["name_source"] = company_name_source(named)
         out.append(row)
     return out
 
@@ -1219,6 +1310,7 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
             found_by = str(r.get("foundBy") or "")
             c.update({
                 "company_name": _company_name(c),
+                "name_source": company_name_source(c),
                 "page_title": c.get("name"),
                 "role": role,
                 "query": found_by.removeprefix("search:").strip() or None,

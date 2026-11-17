@@ -234,6 +234,9 @@ async def rescore(opportunity_id: str, *, pairs: int = 3) -> EnrichedOpportunity
     }
     opp.pair_matches = after_pairs
     opp.best_match_score = max((x.score for x in after_pairs), default=None)
+    # Prices, checks and pair scores changed: the expected profit follows them.
+    from . import profit
+    await profit.attach(opp)
     try:
         await repo.save(opp)
     except Exception as exc:  # noqa: BLE001

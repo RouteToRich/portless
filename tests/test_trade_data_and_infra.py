@@ -116,7 +116,7 @@ class TestIndiamart:
         result = await ti.IndiamartConnector().quote({"hs_code": "090422", "page_size": 500, "state": "TN"})
         seller = result["sellers"][0]
         assert (result["total"], seller["company_id"], seller["min_price"], seller["max_price"]) == (7, "1", 2.5, None)
-        assert http.params()["keyword"] == "ground pepper spices" and http.params()["page_size"] == "50" and http.params()["state"] == "TN"
+        assert http.params()["keyword"] == "chilli powder" and http.params()["page_size"] == "50" and http.params()["state"] == "TN"
 
     async def test_flat_list_and_keyword_override(self, keys, http):
         http.body = {"productList": [{"company_id": "2", "company_name": "D", "product_name": "Q", "listing_url": "u"}]}

@@ -166,6 +166,11 @@ class BuyerSignal(BaseModel):
     """What the source said about ``email`` (``ok`` / ``risky`` / ``invalid`` / ``unverified``)."""
     validation: CounterpartyValidation | None = None
     """Scan-time check; None = not checked (outside the top N or validation off)."""
+    name_source: str | None = None
+    """``domain`` when the name could only be read from the website address."""
+    flags: list[str] = Field(default_factory=list)
+    """Data-quality warnings (quality.py), e.g. ``role_suspect`` (looks like an
+    Indian exporter, not an importer in the market)."""
 
 
 class TariffData(BaseModel):
@@ -182,8 +187,11 @@ class TariffData(BaseModel):
     """Non-tariff barrier codes from MacMap NTM result."""
     rules_of_origin: str | None = None
     total_landed_cost_add_pct: float
-    """applied_duty_pct + gst_vat_pct — the net tariff overhead to subtract
-    from gross price gap when computing net_price_gap_pct."""
+    """The import duty subtracted from the gross price gap (applied_duty_pct).
+    VAT / GST is shown in ``gst_vat_pct`` but NOT subtracted: a business importer
+    reclaims it, so it is not a cost of the trade."""
+    verified: bool = True
+    """False when no tariff source answered and the duty is an unconfirmed 0 %."""
     source: DataSource = "macmap"
     fetched_at: datetime
 
@@ -229,6 +237,12 @@ class SellerCandidate(BaseModel):
     fob_estimate_basis: str | None = None
     address: str | None = None
     """Facility / office address when the contact finder found one (pre-deal rescore)."""
+    fit_reason: str | None = None
+    """What the supplier's own site says it does (search summary / page title)."""
+    name_source: str | None = None
+    """``domain`` when the name could only be read from the website address."""
+    flags: list[str] = Field(default_factory=list)
+    """Data-quality warnings (quality.py), e.g. ``product_mismatch``."""
 
 
 CounterpartyRole = Literal["buyer", "supplier"]
@@ -334,6 +348,60 @@ class MatchEngineSeed(BaseModel):
 # Main output — EnrichedOpportunity
 # ---------------------------------------------------------------------------
 
+class OpportunityProfit(BaseModel):
+    """What PortLess can expect to earn on the corridor (profit.py).
+
+    margin/MT = buyer price - landed cost (supplier FOB + freight + inspection +
+    insurance + escrow fee); expected profit = margin/MT x lot x chance of closing.
+    Every input names its basis so an estimate is never mistaken for a quote."""
+
+    buyer_price_usd_per_mt: float | None = None
+    buyer_price_basis: str | None = None
+    """buyer_quote | price_book | india_to_market | market_average"""
+    supplier_price_usd_per_mt: float | None = None
+    supplier_price_basis: str | None = None
+    """supplier_quote | price_book | mandi | india_export_average"""
+    supplier_price_note: str | None = None
+    landed_cost_usd_per_mt: float | None = None
+    freight_usd_per_mt: float | None = None
+    margin_usd_per_mt: float | None = None
+    margin_pct: float | None = None
+    container_mt: float = 20.0
+    margin_per_container_usd: float | None = None
+    lot_mt: float = 20.0
+    lot_basis: str = "one container"
+    p_close: float | None = None
+    """Chance the corridor turns into a signed deal (0-1)."""
+    p_close_basis: list[str] = Field(default_factory=list)
+    expected_profit_usd: float | None = None
+    estimated: bool = True
+    """True while either price is an estimate (no quote on both sides)."""
+    meets_floor: bool | None = None
+    margin_floor_pct: float | None = None
+    version: int = 0
+    """profit.PROFIT_VERSION it was computed with; the list recomputes older ones."""
+
+
+class ScanCorridorResult(BaseModel):
+    hs_code: str
+    market: str
+    result: Literal["opportunity", "dropped", "error"]
+    reason: str
+    opportunity_id: str | None = None
+
+
+class ScanReport(BaseModel):
+    """What one scan did per product x market — including why corridors were dropped."""
+
+    scan_id: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    corridors: list[ScanCorridorResult] = Field(default_factory=list)
+    opportunities: int = 0
+    dropped: int = 0
+    errors: int = 0
+
+
 class EnrichedOpportunity(BaseModel):
     """Full opportunity enriched across all 5 pipeline phases.
 
@@ -369,6 +437,25 @@ class EnrichedOpportunity(BaseModel):
     via the export-market actor) — the real buyer price anchor, replacing the
     1.25× FOB heuristic when no named buyer carries a price."""
     price_benchmark_source: str | None = None
+    market_avg_usd_per_mt: float | None = None
+    """What the market pays per MT from ALL origins (Comtrade unit value)."""
+    india_to_market_usd_per_mt: float | None = None
+    """What the market pays for India's goods per MT — the like-for-like buyer anchor."""
+    india_world_fob_usd_per_mt: float | None = None
+    """India's average export price to the whole world (FOB, every grade)."""
+    import_value_usd: float | None = None
+    import_growth_pct: float | None = None
+    india_share_pct: float | None = None
+    competitors: list[dict[str, Any]] = Field(default_factory=list)
+    """Main origins supplying the market: country, share %, unit value USD/MT."""
+    india_price_advantage_pct: float | None = None
+    """How much cheaper India sells than the market's leading other origin (+ = cheaper)."""
+    freight_pct: float | None = None
+    """Estimated sea freight as % of the buyer price, subtracted in the net gap."""
+    gap_suspect: bool = False
+    """Gross gap above the plausible limit: most likely a different grade / origin
+    mix, not a real arbitrage — check the price before trusting it."""
+    gap_note: str | None = None
 
     # ── Phase 2 — live demand signals ─────────────────────────────────────
     buyer_signals: list[BuyerSignal] = Field(default_factory=list)
@@ -379,8 +466,8 @@ class EnrichedOpportunity(BaseModel):
     # ── Phase 3 — tariff gate ─────────────────────────────────────────────
     tariff_data: TariffData | None = None
     net_price_gap_pct: float
-    """Gross price gap minus total_landed_cost_add_pct.  This is the real
-    margin the exporter can extract — the metric the Match Engine ranks on."""
+    """Gross price gap minus import duty minus estimated freight (VAT is not a
+    cost to a business importer and is not subtracted)."""
     tariff_viable: bool = True
 
     # ── Phase 4 — seller discovery ────────────────────────────────────────
@@ -408,6 +495,13 @@ class EnrichedOpportunity(BaseModel):
     rescored_at: datetime | None = None
     rescore: dict[str, Any] | None = None
     """The latest rescore: pairs before → after, what was filled, what still needs the deal."""
+
+    # ── Expected profit (profit.py) ───────────────────────────────────────
+    profit: OpportunityProfit | None = None
+    flags: list[str] = Field(default_factory=list)
+    """Opportunity-level warnings: price_check_needed, tariff_unverified, no_supplier_price …"""
+    corridor_deals: list[dict[str, Any]] = Field(default_factory=list)
+    """Deals already running for this product x market (filled when listed)."""
 
 
 # ---------------------------------------------------------------------------

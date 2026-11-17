@@ -114,11 +114,35 @@ class TestPhase1:
         result = await svc._phase1_historical_demand("290543", "AE", CONFIG)
         assert result.source == "" and result.demand_index == 0
 
-    async def test_comtrade_measures_the_gap(self, quotes):
+    async def test_comtrade_cif_fob_gap_is_not_measured(self, quotes):
+        # CIF vs FOB of the same import records is freight + insurance, not a margin:
+        # shown, never counted as measured (no opportunity is built on it alone).
         quotes["comtrade"] = COMTRADE
         result = await svc._phase1_historical_demand("290543", "AE", CONFIG)
-        assert result.source == "comtrade" and result.price_gap_measured and result.gross_price_gap_pct == 50.0
-        assert result.demand_index == 50.0
+        assert result.source == "comtrade" and not result.price_gap_measured and result.gross_price_gap_pct == 50.0
+        assert result.demand_index == 0.0  # $150 imported: no demand on the value scale
+
+    async def test_comtrade_demand_is_on_the_imported_value(self, quotes):
+        quotes["comtrade"] = {"records": [{"fob_value_usd": 9e6, "cif_value_usd": 1e7}], "total_records": 3}
+        result = await svc._phase1_historical_demand("290543", "AE", CONFIG)
+        assert result.demand_index == 50.0  # $10M → 25 × log10(100)
+
+    async def test_export_market_uses_india_to_market_price_and_competitors(self, quotes):
+        quotes["apify_export_markets"] = {"markets": [{
+            "market": "AE", "import_value_usd": 1e7, "unit_value_usd_per_mt": 340.0,
+            "exporter_unit_value_usd_per_mt": 1070.0, "exporter_world_unit_value_usd_per_mt": 360.0,
+            "growth_1y_pct": 12.5, "exporter_share_pct": 48.0, "score": 25,
+            "top_suppliers": [{"country": "India", "countryCode": "IND", "unitValueUsdPerKg": 1.07},
+                              {"country": "Pakistan", "countryCode": "PAK", "sharePct": 26.7, "unitValueUsdPerKg": 1.2}],
+        }]}
+        result = await svc._phase1_historical_demand("100630", "AE", CONFIG)
+        assert result.price_benchmark_usd_per_mt == 1070.0  # what the market pays for INDIA's goods
+        assert result.price_benchmark_source == "apify_export_markets:india"
+        assert result.gross_price_gap_pct == round((1070 - 360) / 360 * 100, 2)
+        assert (result.market_avg_usd_per_mt, result.india_world_fob_usd_per_mt) == (340.0, 360.0)
+        assert (result.import_growth_pct, result.india_share_pct) == (12.5, 48.0)
+        assert result.competitors == [{"country": "Pakistan", "share_pct": 26.7, "unit_value_usd_per_mt": 1200.0}]
+        assert result.india_price_advantage_pct == round((1200 - 1070) / 1200 * 100, 1)
 
     async def test_census_is_labelled(self, quotes):
         quotes["census"] = COMTRADE
@@ -253,7 +277,8 @@ class TestPhase3:
                               "ntmResult": [{"ntmCode": "A1", "ntmDesc": "Label"}, {"category": "B"}, {"description": "no code"}],
                               "rooResult": {"generalRule": "WO"}})
         assert (tariff.applied_duty_pct, tariff.ntb_flags, tariff.rules_of_origin) == (7.5, ["A1: Label", "B"], "WO")
-        assert tariff.total_landed_cost_add_pct == 28.5
+        assert tariff.total_landed_cost_add_pct == 7.5  # duty only: VAT is reclaimed by the importer
+        assert tariff.gst_vat_pct == 21.0 and tariff.verified
 
     def test_macmap_applied_block(self):
         assert self._parse({"tariff": {"applied": {"rate": "3%"}}, "roo": [{"rule": "R"}]}).applied_duty_pct == 3.0

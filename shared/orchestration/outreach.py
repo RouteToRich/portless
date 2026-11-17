@@ -153,7 +153,31 @@ def _greeting(cand: Any) -> str:
     return f"Dear {name} team," if name else "Dear Sir or Madam,"
 
 
-def draft(deal: Any, cand: Any, *, followup: bool = False) -> tuple[str, str]:
+async def market_fact(deal: Any) -> str | None:
+    """One data-backed line for the introduction when India sells the product into the
+    buyer's market cheaper than the leading other origin (UN Comtrade unit values on
+    the deal's opportunity). None when the data is missing or India is not cheaper:
+    a competitor claim is only ever made from the measured numbers."""
+    opp_id = getattr(deal, "opportunity_id", None)
+    if not opp_id:
+        return None
+    try:
+        from services.trade_min.repository import get_repository as trade_repo  # type: ignore[import]
+        opp = await (await trade_repo()).get(opp_id)
+    except Exception:  # noqa: BLE001 - the e-mail goes out without the line
+        return None
+    if opp is None:
+        return None
+    adv = getattr(opp, "india_price_advantage_pct", None)
+    lead = next((c for c in (getattr(opp, "competitors", None) or []) if c.get("unit_value_usd_per_mt")), None)
+    if adv is None or adv < 3.0 or not lead:
+        return None
+    return (f"Official UN Comtrade import data shows Indian {_product_label(deal)} reaching your market at about "
+            f"{adv:.0f}% below {lead['country']}, its largest other source, so buying direct from India can "
+            "lower your landed cost.")
+
+
+def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | None = None) -> tuple[str, str]:
     """The buyer's first e-mail from PortLess — written to earn a reply.
 
     Structure: why we are writing to *them* (actor pitch angle, or the product
@@ -190,6 +214,8 @@ def draft(deal: Any, cand: Any, *, followup: bool = False) -> tuple[str, str]:
         f"I am reaching out because your company imports {product}, and we would like to offer you a "
         "reliable, low-risk way to buy it directly from verified manufacturers in India."
     )
+    if market_line:
+        opener = f"{opener}\n\n{market_line}"
     body = (
         f"{_greeting(cand)}\n\n"
         f"{opener}\n\n"
@@ -222,7 +248,8 @@ async def _gate(deal: Any, cand: Any, *, followup: bool) -> str | None:
     from services.hitl_approval.service import create_approval  # type: ignore[import]
     from shared.orchestration.autonomy_policy import resolve_gate
 
-    subject, body = draft(deal, cand, followup=followup)
+    subject, body = draft(deal, cand, followup=followup,
+                          market_line=None if followup else await market_fact(deal))
     spec = resolve_gate(ACTION, deal)
     kind = "followup" if followup else "intro"
     approval = await create_approval(CreateApprovalRequest(
