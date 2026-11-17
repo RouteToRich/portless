@@ -173,6 +173,48 @@ class TestKillSwitch:
         monkeypatch.setattr(kill_switch, "_collection", lambda: broken)
         assert await kill_switch.is_paused() is True
 
+    async def test_unreadable_is_reported_as_such_not_as_a_pause(self, monkeypatch):
+        broken = SimpleNamespace(find_one=AsyncMock(side_effect=RuntimeError("down")))
+        monkeypatch.setattr(kill_switch, "_collection", lambda: broken)
+        state = await kill_switch.status()
+        assert state["paused"] is True and state["unreadable"] is True
+        assert state["reason"] == kill_switch.UNREADABLE_REASON and state["by"] is None
+
+    async def test_resume_while_unreadable_explains_and_changes_nothing(self, monkeypatch):
+        broken = SimpleNamespace(find_one=AsyncMock(side_effect=RuntimeError("down")), update_one=AsyncMock())
+        monkeypatch.setattr(kill_switch, "_collection", lambda: broken)
+        with pytest.raises(kill_switch.KillSwitchStoreError, match="cannot be read"):
+            await kill_switch.resume("ops@x.invalid", "back to work")
+        broken.update_one.assert_not_called()
+        assert await kill_switch.is_paused() is True
+
+    async def test_resume_after_the_store_answers_again_just_runs(self, monkeypatch):
+        store = SimpleNamespace(find_one=AsyncMock(side_effect=RuntimeError("down")), update_one=AsyncMock())
+        monkeypatch.setattr(kill_switch, "_collection", lambda: store)
+        assert (await kill_switch.status())["unreadable"] is True
+        store.find_one = AsyncMock(return_value=None)  # database back, nobody ever paused
+        state = await kill_switch.resume("ops@x.invalid", "database back")
+        assert state["paused"] is False and state["unreadable"] is False
+        store.update_one.assert_not_called()  # nothing to save: there was no pause
+
+    async def test_a_real_pause_is_still_resumable_and_not_unreadable(self):
+        await self._pause()
+        assert (await kill_switch.status())["unreadable"] is False
+        assert (await kill_switch.resume("ops@x.invalid", "cleared"))["paused"] is False
+
+    async def test_status_route_can_force_a_fresh_read(self, monkeypatch):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from services.hitl_approval.router import router
+        store = SimpleNamespace(find_one=AsyncMock(side_effect=RuntimeError("down")))
+        monkeypatch.setattr(kill_switch, "_collection", lambda: store)
+        app = FastAPI()
+        app.include_router(router)
+        c = TestClient(app)
+        assert c.get("/hitl-approval/kill-switch").json()["unreadable"] is True
+        store.find_one = AsyncMock(return_value=None)
+        assert c.get("/hitl-approval/kill-switch", params={"refresh": True}).json()["paused"] is False
+
     async def test_a_pause_that_cannot_be_saved_does_not_happen(self, monkeypatch):
         store = SimpleNamespace(find_one=AsyncMock(return_value=None),
                                 update_one=AsyncMock(side_effect=RuntimeError("down")))

@@ -9,11 +9,15 @@ reply is recorded, and whatever it would start becomes a gate that waits.
 Staff only, reason required, every pause and resume audited. The state lives in
 Mongo (``platform_controls``) so every process obeys it; it is re-read every
 couple of seconds. A store that has never been readable counts as paused:
-money must not move on an unknown answer.
+money must not move on an unknown answer. That state is reported as
+``unreadable`` (not as a pause somebody made): a resume cannot fix a database
+that cannot be reached, so the console offers "check again" instead, and a
+resume re-reads the store first — when nobody ever paused, it simply runs.
 """
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -44,7 +48,19 @@ class KillSwitchStoreError(Exception):
 
 
 def _running() -> dict[str, Any]:
-    return {"paused": False, "reason": None, "by": None, "at": None}
+    return {"paused": False, "reason": None, "by": None, "at": None, "unreadable": False}
+
+
+UNREADABLE_REASON = "pause state unreadable — the database could not be reached"
+
+
+def _timeout_ms() -> int:
+    """Time the store gets to answer: a serverless cold start or a replica-set election
+    takes longer than the old 3 s, and every timeout showed the platform as paused."""
+    try:
+        return max(1000, int(os.getenv("KILL_SWITCH_DB_TIMEOUT_MS", "") or 8000))
+    except ValueError:
+        return 8000
 
 
 _state: dict[str, Any] = _running()
@@ -61,27 +77,32 @@ def _collection():
         return None
     if _client is None:
         import motor.motor_asyncio as motor  # type: ignore[import]
-        _client = motor.AsyncIOMotorClient(settings.mongo_uri, serverSelectionTimeoutMS=3000)
+        _client = motor.AsyncIOMotorClient(settings.mongo_uri, serverSelectionTimeoutMS=_timeout_ms())
     return _client[settings.mongo_db_name][_COLLECTION]
 
 
-async def _refresh() -> None:
+async def _refresh(*, force: bool = False) -> bool:
+    """Re-read the stored state; True when the store answered (or there is none)."""
     global _state, _history, _refreshed_at, _ever_read
     try:
         col = _collection()
-        if col is None or time.monotonic() - _refreshed_at < _REFRESH_SECONDS:
-            return
+        if col is None:
+            return True
+        if not force and time.monotonic() - _refreshed_at < _REFRESH_SECONDS:
+            return True
         doc = await col.find_one({"_id": _DOC_ID})
     except Exception as exc:  # noqa: BLE001
         logger.error("KillSwitch: state unreadable: %s", exc)
         if not _ever_read:
-            _state = {**_running(), "paused": True, "reason": "pause state unreadable"}
-        return
+            _state = {**_running(), "paused": True, "reason": UNREADABLE_REASON, "unreadable": True}
+        return False
     doc = doc or {}
     _state = {key: doc.get(key, default) for key, default in _running().items()}
+    _state["unreadable"] = False
     _history = list(doc.get("history") or [])
     _refreshed_at = time.monotonic()
     _ever_read = True
+    return True
 
 
 async def status() -> dict[str, Any]:
@@ -103,23 +124,30 @@ async def assert_running(what: str) -> None:
 
 async def _set(paused: bool, by: str, reason: str) -> dict[str, Any]:
     global _state, _history, _refreshed_at
-    await _refresh()
+    readable = await _refresh(force=True)
+    if not readable and not paused:
+        # Resuming cannot help: the "pause" is the database not answering, and a resume
+        # could not be saved either. Nothing changes until the store is reachable again.
+        raise KillSwitchStoreError(
+            "the pause state cannot be read — the database is not reachable, so nothing was changed. "
+            "The platform stays stopped for safety; try again when the database answers.")
     if bool(_state["paused"]) == paused:
         return await status()
     new_state = {"paused": paused, "reason": reason, "by": by,
                  "at": datetime.now(timezone.utc).isoformat()}
+    stored = {k: v for k, v in new_state.items()}
     entry = {"action": "pause" if paused else "resume", "by": by, "reason": reason, "at": new_state["at"]}
     try:
         col = _collection()
         if col is not None:
             await col.update_one(
                 {"_id": _DOC_ID},
-                {"$set": new_state, "$push": {"history": {"$each": [entry], "$slice": -_HISTORY_MAX}}},
+                {"$set": stored, "$push": {"history": {"$each": [entry], "$slice": -_HISTORY_MAX}}},
                 upsert=True,
             )
     except Exception as exc:  # noqa: BLE001
         raise KillSwitchStoreError(f"could not save the {entry['action']}: {exc}") from exc
-    _state = new_state
+    _state = {**new_state, "unreadable": False}
     _history = (_history + [entry])[-_HISTORY_MAX:]
     _refreshed_at = time.monotonic()
     logger.critical("KillSwitch: platform %s by %s — %s", "PAUSED" if paused else "RESUMED", by, reason)

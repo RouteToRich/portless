@@ -236,9 +236,13 @@ class KillSwitchRequest(BaseModel):
 
 
 @router.get("/kill-switch")
-async def api_kill_switch_status() -> dict[str, Any]:
-    """Is the platform paused, since when, by whom — plus the recent history."""
+async def api_kill_switch_status(refresh: bool = False) -> dict[str, Any]:
+    """Is the platform paused, since when, by whom — plus the recent history.
+    ``unreadable`` = stopped only because the stored state cannot be read;
+    ``refresh=true`` re-reads it now (the console's "Check again")."""
     from shared.orchestration import kill_switch
+    if refresh:
+        await kill_switch._refresh(force=True)  # noqa: SLF001
     return await kill_switch.status()
 
 
