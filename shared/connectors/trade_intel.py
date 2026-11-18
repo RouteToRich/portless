@@ -10,6 +10,8 @@ from typing import Any
 
 import httpx
 
+from shared.http_tls import ssl_context
+
 from .base import Connector
 
 
@@ -108,7 +110,7 @@ class ComtradeConnector(Connector):
         if reporter_code and reporter_code != self._WORLD_M49:
             params["reporterCode"] = reporter_code
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/data/v1/get/C/{freq}/HS",
                 params=params,
@@ -194,7 +196,7 @@ class ComtradeConnector(Connector):
             "maxrecords":       500,
             "subscription-key": self._key,
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/data/v1/get/C/A/HS",
                 params=params,
@@ -326,7 +328,7 @@ class VolzaConnector(Connector):
         else:
             payload["origin_country"] = "IN"
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.post(
                 f"{self._BASE}/api/v1/global-shipments",
                 headers=self._headers,
@@ -417,7 +419,7 @@ class VolzaConnector(Connector):
             "sort_order": "DESC",
             "page_size": 25,
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/api/v1/buyer-insights",
                 headers=self._headers,
@@ -518,7 +520,7 @@ class IndiamartConnector(Connector):
         if "state" in request:
             params["state"] = request["state"]
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/product/catalog/search",
                 headers=self._headers,
@@ -576,7 +578,7 @@ class IndiamartConnector(Connector):
             "buyer_name":  request.get("buyer_name", "PortLess Trade Agent"),
             "buyer_email": request.get("buyer_email", ""),
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.post(
                 f"{self._BASE}/rfq/send",
                 headers=self._headers,
@@ -595,7 +597,7 @@ class IndiamartConnector(Connector):
             "api_key":    self._key,
             "company_id": ext_ref,
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/company/profile",
                 headers=self._headers,
@@ -685,7 +687,7 @@ class TradeIndiaConnector(Connector):
         if "state" in request:
             params["state"] = request["state"]
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/products/search",
                 headers=self._headers,
@@ -737,7 +739,7 @@ class TradeIndiaConnector(Connector):
             "buyer_name":  request.get("buyer_name", "PortLess Trade Agent"),
             "buyer_email": request.get("buyer_email", ""),
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.post(
                 f"{self._BASE}/rfq/submit",
                 headers=self._headers,
@@ -751,7 +753,7 @@ class TradeIndiaConnector(Connector):
 
         ext_ref: TradeIndia company ID (numeric, as a string) from ``quote()``.
         """
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/companies/{ext_ref}",
                 headers=self._headers,
@@ -876,7 +878,7 @@ class WitsTariffConnector(Connector):
         key = f".{reporter}.000.{hs6}.reported"
         params = {"startPeriod": end_year - 6, "endPeriod": end_year, "format": "JSON"}
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/{key}/",
                 params=params,
@@ -956,7 +958,7 @@ class CensusTradeConnector(Connector):
             "time": time_str,
             "key": self._key,
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(self._BASE, params=params)
         try:
             rows = resp.json()
@@ -1066,7 +1068,7 @@ class Access2MarketsConnector(Connector):
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
                 resp = await client.get(url, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
@@ -1202,7 +1204,7 @@ class MacmapConnector(Connector):
             "lang": "EN",
         }
         headers = {"Ocp-Apim-Subscription-Key": self._key}
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/tariffs/applied",
                 headers=headers,
@@ -1253,7 +1255,7 @@ class TrademoConnector(Connector):
             "buyer_country": request.get("buyer_country", ""),
             "limit": request.get("limit", 50),
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.post(
                 f"{self._BASE}/buyers/search",
                 headers=headers,
@@ -1271,7 +1273,7 @@ class TrademoConnector(Connector):
         ext_ref: Trademo entity identifier returned inside a ``quote()`` response.
         """
         headers = {"X-API-Key": self._key, "Accept": "application/json"}
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/companies/{ext_ref}/risk-profile",
                 headers=headers,
@@ -1318,7 +1320,7 @@ class ImportGeniusConnector(Connector):
         }
         if "date_from" in request:
             params["date_from"] = request["date_from"]
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/manifests/importers",
                 headers=headers,
@@ -1336,7 +1338,7 @@ class ImportGeniusConnector(Connector):
         ext_ref: entity ID returned inside a ``quote()`` response.
         """
         headers = {"Authorization": f"Bearer {self._key}", "Accept": "application/json"}
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/companies/{ext_ref}/shipments",
                 headers=headers,

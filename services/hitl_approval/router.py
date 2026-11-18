@@ -136,7 +136,7 @@ async def api_put_autonomy_policy(req: AutonomyPolicyUpdate) -> dict[str, Any]:
             ),
         )
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     return _policy_view()
 
 
@@ -157,7 +157,7 @@ async def api_create_approval(req: CreateApprovalRequest) -> ApprovalResponse:
     try:
         return await create_approval(req)
     except InvalidAction as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
 
 
 @router.get("/approvals", response_model=list[ApprovalResponse])

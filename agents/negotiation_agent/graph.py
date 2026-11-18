@@ -505,7 +505,12 @@ async def _detect_explicit_acceptance(
     if not accepted:
         return False, detail, qc_mention
 
-    # Deterministic cross-checks — an "acceptance" naming any other price is a counter.
+    # Deterministic cross-checks — instructions aimed at the model are never an acceptance
+    # (whatever the classifier made of them), and an "acceptance" naming any other price is a counter.
+    from shared.prompt_injection import findings as _injection
+    hits = _injection(inbound)
+    if hits:
+        return False, f"{detail} — vetoed: the message gives instructions to the model ({hits[0]!r})", qc_mention
     mentioned = result["mentioned_price_usd"]
     tolerance = max(abs(reference_price) * 0.01, 0.01)
     if mentioned is not None and abs(mentioned - reference_price) > tolerance:

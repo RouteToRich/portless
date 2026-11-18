@@ -4,7 +4,7 @@
     pytest -m money                  # escrow, payouts, tranches, ledger / journal, margins, money gates
     pytest -m "unit and not slow"    # the quick inner loop
     pytest -m integration            # HTTP routes, repositories on mongomock, lifespans, simulators, automation
-    pytest -m slow                   # tests that take seconds each (the trade-min scan tests)
+    pytest -m slow                   # tests that take seconds each (none today; list a file in SLOW_FILES)
     pytest -m regression             # everything (the full suite)
 
 Every test is ``regression`` and either ``unit`` or ``integration``; ``smoke``, ``money`` and
@@ -41,7 +41,7 @@ INTEGRATION = {
     "test_automation_continuations.py", "test_automation_deployed.py", "test_trade_min.py",
     "test_connectors_and_imap.py", "test_trade_data_and_infra.py",
 }
-SLOW_FILES = {"test_trade_min.py"}
+SLOW_FILES: set[str] = set()  # test_trade_min.py left 2026-11-18 (166 s -> 4 s: shared TLS context, no network)
 
 
 def markers_for(path: str | PurePath) -> list[str]:

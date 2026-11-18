@@ -223,7 +223,11 @@ def test_google_news_feed_is_parsed(monkeypatch):
         async def get(self, *a, **k): return Resp()
 
     monkeypatch.setattr("httpx.AsyncClient", Client)
-    rows = asyncio.new_event_loop().run_until_complete(market_check._google_news("rice"))
+    loop = asyncio.new_event_loop()
+    try:
+        rows = loop.run_until_complete(market_check._google_news("rice"))
+    finally:
+        loop.close()
     assert rows[0].title == "Rice export prices rise" and rows[0].published == "2026-11-09" and rows[0].source == "Agri Daily"
 
 

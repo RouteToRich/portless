@@ -19,7 +19,7 @@ def test_every_listed_file_exists():
 @pytest.mark.parametrize(("name", "expected"), [
     ("test_escrow_money_chain.py", {"regression", "unit", "money"}),
     ("test_health.py", {"regression", "integration", "smoke"}),
-    ("test_trade_min.py", {"regression", "integration", "slow"}),
+    ("test_trade_min.py", {"regression", "integration"}),
     ("test_brand_new_feature.py", {"regression", "unit"}),
 ])
 def test_markers_by_file(name, expected):

@@ -239,6 +239,39 @@ def _pack_hash(pack: dict[str, Any]) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+def _screening(deal: Any) -> list[dict[str, Any]]:
+    """Each party's sanctions screening with the provider's evidence certificate: what was
+    checked, the verdict, when, and the link to the proof."""
+    rows = []
+    for p in getattr(deal, "parties", None) or []:
+        rows.append({
+            "role": str(getattr(getattr(p, "role", None), "value", getattr(p, "role", None)) or ""),
+            "legal_name": getattr(p, "legal_name", None),
+            "sanctions_status": getattr(p, "sanctions_status", None) or "unchecked",
+            "sanctions_reason": getattr(p, "sanctions_reason", None),
+            "checked_at": _iso(getattr(p, "sanctions_checked_at", None)),
+            "evidence_url": getattr(p, "sanctions_evidence_url", None),
+            "lei": getattr(p, "lei", None),
+        })
+    return rows
+
+
+def _link_table(rows: list[dict[str, Any]], cols: list[str], link_col: str) -> str:
+    """Like ``_table`` but ``link_col`` is an http(s) link (anything else prints as text)."""
+    if not rows:
+        return "<p class='muted'>none</p>"
+    head = "".join(f"<th>{_h(c)}</th>" for c in cols)
+
+    def cell(r: dict[str, Any], c: str) -> str:
+        v = r.get(c)
+        if c == link_col and isinstance(v, str) and v.startswith(("https://", "http://")):
+            return f"<td><a href='{_h(v)}' rel='noopener noreferrer'>certificate</a></td>"
+        return f"<td>{_h(v)}</td>"
+
+    body = "".join("<tr>" + "".join(cell(r, c) for c in cols) + "</tr>" for r in rows)
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
 async def build_evidence_pack(deal_id: str) -> dict[str, Any]:
     data, warnings = await _collect(deal_id)
     deal = data.get("deal")
@@ -251,6 +284,7 @@ async def build_evidence_pack(deal_id: str) -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "deal": _dump(deal),
         "parties": _dump(getattr(deal, "parties", None) or []),
+        "screening": _screening(deal),
         "buyer_candidates": _dump(getattr(deal, "buyer_candidates", None) or []),
         "sourcing": {"rfqs": _dump(data.get("rfqs") or []), "quotes": _dump(data.get("quotes") or [])},
         "negotiation": {
@@ -323,6 +357,9 @@ def render_evidence_html(pack: dict[str, Any]) -> str:
         "<h2>Parties</h2>",
         _table(pack.get("parties") or [], ["role", "legal_name", "country", "email", "gstin", "iec", "vat_number",
                                            "sanctions_status", "contact_source"]),
+        "<h2>Screening</h2>",
+        _link_table(pack.get("screening") or [], ["role", "legal_name", "sanctions_status", "sanctions_reason",
+                                                  "checked_at", "lei", "evidence_url"], "evidence_url"),
         "<h2>Commercial documents</h2>",
         "<h3>Proforma Invoice</h3>",
         _kv(pack.get("proforma_invoice"), ["pi_id", "status", "agreed_price", "currency", "quantity_mt", "total_value",

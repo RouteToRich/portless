@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,6 +17,17 @@ def _clean_repository() -> None:
     repository.clear()
     yield
     repository.clear()
+
+
+@pytest.fixture(autouse=True)
+def _offline(monkeypatch) -> None:
+    """The free trade-data APIs (UN Comtrade, GDELT, EU TED …) need no key, so a scan used
+    to call them for real and wait on them — 13-29 s a test. These tests check the scan's
+    HTTP surface and its no-live-data rule, so every outbound call fails at once instead."""
+    async def _refuse(self, request, *args, **kwargs):
+        raise httpx.ConnectError("network disabled in tests/test_trade_min.py", request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", _refuse)
 
 
 @pytest.fixture
@@ -135,3 +147,19 @@ def test_no_live_demand_data_means_no_opportunity(client: TestClient) -> None:
     body = client.post("/trade-min/scan", json={"hs_codes": ["090422"], "target_markets": ["ES", "DE"]}).json()
     assert body == []
     assert client.get("/trade-min/opportunities").json() == []
+
+
+def test_scan_connectors_share_one_tls_context() -> None:
+    """A new SSL context per client loads the certificate store (~0.2 s, blocking the event
+    loop); the scan connectors reuse one."""
+    from shared.http_tls import ssl_context
+
+    assert ssl_context() is ssl_context()
+    import inspect
+
+    from shared.connectors import demand_signals, trade_intel
+
+    for module in (trade_intel, demand_signals):
+        source = inspect.getsource(module)
+        assert "httpx.AsyncClient(timeout=30)" not in source
+        assert "verify=ssl_context()" in source

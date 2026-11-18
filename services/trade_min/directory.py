@@ -136,7 +136,8 @@ class InMemoryDirectory:
         rec = self._store.get(record_id)
         if rec is None:
             return None
-        self._store[record_id] = rec.model_copy(update=fields)
+        # validate, so JSON values (a validation, screening reviews) become models as in Mongo
+        self._store[record_id] = CounterpartyRecord.model_validate({**rec.model_dump(), **fields})
         return self._store[record_id]
 
     async def list(self, role: str, *, hs_code: str | None = None, market: str | None = None,

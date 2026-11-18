@@ -80,7 +80,8 @@ def _build_query(product_code: str, country_code: str, role: Party) -> str:
 
 
 def _contains_prompt_injection(text: str) -> bool:
-    return any(pattern.search(text) for pattern in _PROMPT_INJECTION_PATTERNS)
+    from shared.prompt_injection import looks_like_injection
+    return any(pattern.search(text) for pattern in _PROMPT_INJECTION_PATTERNS) or looks_like_injection(text)
 
 
 async def _search_web(query: str, top_k: int = _TOP_K) -> list[dict[str, Any]]:

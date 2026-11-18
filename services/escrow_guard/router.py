@@ -92,7 +92,7 @@ async def api_create_hold(req: EscrowHoldRequest) -> EscrowResponse:
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -131,7 +131,7 @@ async def api_create_escrow(req: CreateEscrowRequest) -> EscrowResponse:
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -165,7 +165,7 @@ async def api_release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> Esc
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -179,7 +179,7 @@ async def api_accept_escrow(escrow_id: str, req: AcceptEscrowRequest) -> EscrowR
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -196,7 +196,7 @@ async def api_request_acceptance(escrow_id: str, req: AcceptEscrowRequest, reque
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
 
 
 @router.post("/escrows/{escrow_id}/dispute", response_model=EscrowResponse)
@@ -210,7 +210,7 @@ async def api_dispute_escrow(escrow_id: str, req: DisputeEscrowRequest, request:
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
 
 
 @router.post("/escrows/{escrow_id}/open-window", response_model=EscrowResponse)
@@ -224,7 +224,7 @@ async def api_open_inspection_window(escrow_id: str, req: DisputeEscrowRequest |
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
 
 
 @router.post("/escrows/{escrow_id}/clear-dispute", response_model=EscrowResponse)
@@ -241,7 +241,7 @@ async def api_request_refund(escrow_id: str, req: RefundRequest, request: Reques
     """An operator asks to refund the undisbursed balance: opens the
     REFUND_ESCROW gate. Approving it sends the money back to the buyer."""
     if not req.reason.strip():
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A refund needs a reason")
+        raise HTTPException(422, detail="A refund needs a reason")
     caller = getattr(request.state, "user", None)
     if caller is not None:
         req.requested_by = caller.email or caller.user_id
@@ -250,7 +250,7 @@ async def api_request_refund(escrow_id: str, req: RefundRequest, request: Reques
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
 
 
 @router.post("/escrows/{escrow_id}/refund", response_model=EscrowResponse)
@@ -262,7 +262,7 @@ async def api_refund_escrow(escrow_id: str, req: RefundRequest) -> EscrowRespons
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -282,7 +282,7 @@ async def api_request_payout(req: PayoutRequest) -> PayoutResponse:
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 

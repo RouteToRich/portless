@@ -248,6 +248,19 @@ class SellerCandidate(BaseModel):
 CounterpartyRole = Literal["buyer", "supplier"]
 
 
+class ScreeningReview(BaseModel):
+    """A staff decision on a counterparty whose sanctions screening returned ``review``
+    (a possible list match, or a list that was unavailable)."""
+    decision: Literal["clear", "fail"]
+    reason: str
+    by: str
+    at: datetime
+    previous_sanctions: str
+    previous_reason: str | None = None
+    evidence_url: str | None = None
+    """The screening certificate the person looked at."""
+
+
 class CounterpartyRecord(BaseModel):
     """A buyer or supplier the scanner found — kept whether or not the scan
     produced an opportunity or a deal (``GET /trade-min/buyers`` / ``/suppliers``).
@@ -295,6 +308,9 @@ class CounterpartyRecord(BaseModel):
     promises it) or staff set it. Survives every scan; outreach skips it in every prospect."""
     dnc_reason: str | None = None
     dnc_at: datetime | None = None
+    screening_reviews: list[ScreeningReview] = Field(default_factory=list)
+    """Staff decisions on a sanctions ``review`` result (screening_review.py), oldest first —
+    the audit trail: who cleared or failed it, why, and what the screening had said."""
     # ── computed on listing (relationships.py), not stored ────────────────
     relationship: dict[str, Any] | None = None
     """Where PortLess stands with the company across every prospect and deal: stage,

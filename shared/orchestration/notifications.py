@@ -733,6 +733,22 @@ def _tpl_tranche_released(ctx: dict[str, Any]) -> tuple[str, str]:
     return subject, body
 
 
+def _retention_line(ctx: dict[str, Any], cur: str) -> str:
+    """Why part of the supplier's money waits: the holdback until the buyer accepts the goods
+    (escrow_guard ``retained_until_acceptance``, SUPPLIER_RETENTION_ENABLED)."""
+    retained = ctx.get("retained_until_acceptance") or 0
+    if not retained or not ctx.get("balance_due"):
+        return ""
+    owed = ctx.get("supplier_owed")
+    share = f" ({retained / owed * 100:.0f} % of the order value)" if owed else ""
+    return (
+        f"\n\nOf that balance, {_fmt_money(retained, cur)}{share} is held until the buyer accepts "
+        "the goods, as agreed for every PortLess order. It is paid to you as soon as the buyer "
+        "confirms acceptance, or automatically when the buyer's inspection window closes without "
+        "a complaint. Nothing is needed from you for it.\n"
+    )
+
+
 def _tpl_payout_sent(ctx: dict[str, Any]) -> tuple[str, str]:
     cur = ctx.get("currency") or "USD"
     subject = f"Payment sent for deal {ctx['deal_id']}"
@@ -747,6 +763,7 @@ def _tpl_payout_sent(ctx: dict[str, Any]) -> tuple[str, str]:
         + ("\nThis completes payment for the order." if not balance else
            f"\nThe balance of {_fmt_money(balance, cur)} follows at the next milestone "
            "(the last share after the buyer accepts the goods).")
+        + _retention_line(ctx, cur)
         + "\nPlease allow the usual bank processing time and let us know once it is credited."
         + _signature()
     )
@@ -1304,6 +1321,7 @@ async def notify_payout_sent(deal: Any, payload: dict[str, Any]) -> str | None:
         {"amount": payload.get("amount"), "currency": payload.get("currency"),
          "ext_ref": payload.get("ext_ref"), "completed_total": payload.get("completed_total"),
          "supplier_owed": payload.get("supplier_owed"), "balance_due": payload.get("balance_due"),
+         "retained_until_acceptance": payload.get("retained_until_acceptance"),
          "supplier_name": _party_name(deal, "supplier")},
         suffix=str(payload.get("payout_id") or payload.get("ext_ref") or ""), deal=deal,
     )

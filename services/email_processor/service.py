@@ -473,6 +473,9 @@ async def _price_of_bare_acceptance(negotiation_id: str, party: str, body: str) 
             offered = session.last_offer_to_buyer if party == "buyer" else session.last_offer_to_supplier
         if not offered:
             return None
+        from shared.prompt_injection import looks_like_injection
+        if looks_like_injection(body):
+            return None  # instructions aimed at the model: an operator reads it
         verdict = await classify_inbound_intent(party, body, offered)
         intent = verdict["intent"]
         accepted = is_explicit_acceptance(body) if intent == _INTENT_UNAVAILABLE else intent == "ACCEPT"

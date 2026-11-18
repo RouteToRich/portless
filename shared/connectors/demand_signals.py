@@ -29,6 +29,8 @@ from typing import Any
 
 import httpx
 
+from shared.http_tls import ssl_context
+
 from .base import Connector
 
 
@@ -123,7 +125,7 @@ class AlibabaRfqConnector(Connector):
 
         params["sign"] = self._sign(params)
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/aliinternational.trade.leads.search",
                 params=params,
@@ -172,7 +174,7 @@ class AlibabaRfqConnector(Connector):
         }
         params["sign"] = self._sign(params)
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/aliinternational.trade.leads.get",
                 params=params,
@@ -267,7 +269,7 @@ class GdeltDisruptionConnector(Connector):
             "sort":          "DateDesc",
         }
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(self._BASE, params=params)
             resp.raise_for_status()
             data = resp.json()
@@ -320,7 +322,7 @@ class GdeltDisruptionConnector(Connector):
             "enddatetime":   end_dt.strftime("%Y%m%d%H%M%S"),
         }
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(self._BASE, params=params)
             resp.raise_for_status()
             return resp.json()
@@ -398,7 +400,7 @@ class EuTedConnector(Connector):
             "limit": request.get("limit", 25),
         }
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.post(
                 f"{self._BASE}/notices/search",
                 json=payload,
@@ -447,7 +449,7 @@ class EuTedConnector(Connector):
 
         ext_ref: TED notice number, e.g. ``"2026/S 117-123456"``.
         """
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, verify=ssl_context()) as client:
             resp = await client.get(
                 f"{self._BASE}/notices/{ext_ref}",
                 headers={"Accept": "application/json"},

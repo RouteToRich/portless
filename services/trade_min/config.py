@@ -77,6 +77,7 @@ class TradeMinSettings(BaseSettings):
     # ── Scheduling (cron expressions) ─────────────────────────────────────
     scheduler_nightly_cron: str = "0 2 * * *"   # 02:00 UTC daily
     scheduler_reorder_cron: str = "0 */6 * * *"  # every 6 h
+    scheduler_rescreen_cron: str = "30 3 * * *"  # 03:30 UTC daily — re-screen linked counterparties (rescreen.py)
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,18 @@ paths are tested with fakes in ``test_event_bus.py``.
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
+
+# langgraph warns once, at import time, about a langchain default it does not pass yet — not
+# ours. langchain resets the filter for that category during its own import, which beats any
+# filter, so the module is imported here once with its warnings recorded and dropped (later
+# imports are cached and do not warn again).
+with warnings.catch_warnings(record=True):
+    try:
+        import langgraph.cache.base  # noqa: F401
+    except Exception:  # noqa: BLE001 - langgraph absent: nothing to silence
+        pass
 
 os.environ["EVENT_BUS_BACKEND"] = "inprocess"
 

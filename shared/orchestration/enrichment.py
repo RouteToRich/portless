@@ -165,6 +165,7 @@ def _apply_screening(party: Any, row: dict[str, Any] | None) -> dict[str, Any]:
         "sanctions_status": row.get("verdict") or "review",
         "sanctions_reason": (row.get("reason") or "")[:500] or None,
         "sanctions_checked_at": now,
+        "sanctions_evidence_url": row.get("evidence_url") or None,
     }
     if row.get("lei"):
         updates["lei"] = row["lei"]

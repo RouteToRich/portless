@@ -114,8 +114,11 @@ async def _full_trade(deal) -> None:
 
 def _html(tmp_path, doc) -> str:
     from urllib.parse import unquote, urlparse
-    return open(unquote(urlparse(doc.storage_uri).path).lstrip("/") if re.match(r"^/[A-Za-z]:", unquote(urlparse(doc.storage_uri).path))
-                else unquote(urlparse(doc.storage_uri).path), encoding="utf-8").read()
+    path = unquote(urlparse(doc.storage_uri).path)
+    if re.match(r"^/[A-Za-z]:", path):
+        path = path.lstrip("/")
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
 
 
 async def _gen(doc_type, **kw):

@@ -19,7 +19,7 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-18)
 
-**501 open · 43 done** (8 % done).
+**491 open · 54 done** (10 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
@@ -27,12 +27,12 @@ accountant · (Biz) founder / business · (QA) quality.
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
 | P0 — before the first real trade | 97 | 1 |
-| P1 — before more than a few deals a month | 307 | 42 |
-| P2 — improvements | 35 | 0 |
+| P1 — before more than a few deals a month | 299 | 51 |
+| P2 — improvements | 33 | 2 |
 | Decisions needed | 21 | 0 |
-| **Total** | **501** | **43** |
+| **Total** | **491** | **54** |
 
-Open items by owner: Eng 237 · Ops 27 · Legal 29 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 227 · Ops 27 · Legal 29 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
 
@@ -41,7 +41,7 @@ Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when thi
 ## Where things stand today
 
 - [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
-- Backend tests: 4917 passed, 1 skipped (2026-11-18). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
+- Backend tests: 4986 passed, 1 skipped (2026-11-18, about 1.5 minutes). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
 - End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
 - Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
 - UI repo: type-check and build pass; **no tests of any kind, no CI**. Browser cases written: TC-WEB-001 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`), none automated.
@@ -380,7 +380,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** Fees: reconcile the escrow provider fee, payout fee and bank charges per deal against the fee % assumed in the cost sheet; alert when actual > assumed.
 - [ ] **(Biz)** Kill Switch drill: pause, confirm every money path refuses, resume — monthly.
 - [x] **(Eng)** Alert when realised margin on a closed deal is below the margin floor (cost sheet estimate vs actual costs). — done 2026-11-18: when every tranche is released and the supplier is paid in full, a realised margin below the deal's margin floor (else `DEALMAKER_PO_MARGIN_FLOOR_PCT`) raises `deal.exception` `PAID:margin_below_floor` (category MARGIN_BREACH) once, with the estimate, net received, supplier paid and PortLess's costs; mid-deal figures are never judged.
-- [ ] **(Eng)** Supplier retention (10 % held until buyer acceptance): confirm the supplier contract states it, and the payout e-mail explains it.
+- [x] **(Eng)** Supplier retention (10 % held until buyer acceptance): confirm the supplier contract states it, and the payout e-mail explains it. — payout e-mail done 2026-11-18: the payment notice says how much is held until the buyer accepts (its share of the order value), why, and that it is paid on acceptance or when the window lapses (`retained_until_acceptance` on `payout.completed`). The supplier contract wording is still for counsel (3.4).
 
 ### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
 - [x] **(Eng)** Facility address: the watcher reminds the supplier about the goods-ready date, but there is no reminder for a missing facility address (`facility_address_request` is sent once). Add a reminder and a stall exception. — done 2026-11-18: while the inspection waits for the address the deal watcher sends `facility_address_reminder` every `DEAL_FACILITY_ADDRESS_REMINDER_AFTER_HOURS` (48) from the request (max `DEAL_REMINDER_MAX`), then raises `PO_ISSUED:facility_address_missing`; the "please confirm the PO" reminder is no longer sent for a PO already acknowledged; an address that arrived without a booking is booked by the sweep.
@@ -485,10 +485,11 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(QA)** Test data management: an anonymised, production-like data set for staging; `tests/factories.py` extended for every new record type; no test may depend on the order of others.
 - [ ] **(QA/Ops)** User acceptance testing with the trade desk before go-live and before each release that changes a gate, an e-mail or a document; exploratory test session on each new feature.
 - [x] **(Eng)** Control-character check: a backspace character inside a regex made a committed assertion in `tests/test_trade_documents.py` impossible to fail (found and fixed 2026-11-17) — done 2026-11-18 as `tests/test_source_hygiene.py`, run with every `pytest` (services, shared, agents, tests, scripts, app.py, CLAUDE.md, todo: only tab / newline / CR allowed); it becomes the CI check once CI exists (6.8).
-- [ ] **(Eng)** The eight scan tests in `tests/test_trade_min.py` take 13-29 s each (about 170 s of the 230 s suite, found 2026-11-18 with `--durations`): find what they wait for (a timeout or retry that is not mocked) and mock it; then drop `test_trade_min.py` from `SLOW_FILES` in `tests/markers.py`.
-- [ ] **(Eng)** Clear the pytest warnings (59 on 2026-11-17) or turn the useful ones into errors.
+- [x] **(Eng)** The eight scan tests in `tests/test_trade_min.py` take 13-29 s each (about 170 s of the 230 s suite, found 2026-11-18 with `--durations`): find what they wait for (a timeout or retry that is not mocked) and mock it; then drop `test_trade_min.py` from `SLOW_FILES` in `tests/markers.py`. — done 2026-11-18: each connector call built a new TLS context (the certificate store load, ~0.2 s, blocking the event loop — in production too); the scan connectors now share one (`shared/http_tls.py`) and the tests refuse outbound calls. 166 s → 4 s; the whole suite runs in about 1 minute. `SLOW_FILES` is empty.
+- [x] **(Eng)** Clear the pytest warnings (59 on 2026-11-17) or turn the useful ones into errors. — done 2026-11-18: 91 → 1 (deprecated 422 constant, class-based pydantic config, unclosed files / event loops, inbound form uploads now closed after reading, langgraph import warning). Our own deprecations (pydantic v1 style, the 422 constant) now fail the suite (`filterwarnings` in pyproject). One order-dependent unawaited-AsyncMock warning remains (see the new item below).
 
 ### 7 Platform, infrastructure and operations
+- [ ] **(Eng)** One pytest warning is left: a coroutine of an `AsyncMock` that is never awaited, garbage-collected during `test_automation_continuations.py::TestNotificationLegs::test_qc_booked_notifies_supplier` in the full run only (a mock from an earlier test). Find the test that calls an async mock without awaiting it.
 - [ ] **(Eng)** Secrets in a secrets manager, not a `.env` file; rotation plan for every provider key.
 - [ ] **(Eng)** Rate limiting on public endpoints (none today) and a WAF in front of the backend.
 - [ ] **(Eng)** Structured logs with PII redaction (e-mail bodies, phone numbers) and retention.
@@ -501,13 +502,13 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 8 Security and access
 - [ ] **(Eng)** Token revocation delay is the introspection cache (60 s, `AUTH_INTROSPECTION_CACHE_SECONDS`) — confirm acceptable, shorten for money approvers.
 - [ ] **(Eng)** Encrypt sensitive fields at rest (bank details, KYC documents, phone numbers).
-- [ ] **(Eng)** Prompt-injection defence for inbound e-mails: the drafting agents already treat counterparty text as data — add tests with hostile e-mails.
+- [x] **(Eng)** Prompt-injection defence for inbound e-mails: the drafting agents already treat counterparty text as data — add tests with hostile e-mails. — done 2026-11-18: `shared/prompt_injection.py` recognises wording aimed at the model; such an e-mail is never an acceptance (keyword guard, LLM verdict vetoed, bare acceptance by e-mail) — a person reads it; the intent classifier prompt says its input is untrusted; market headlines use the same check. `tests/test_prompt_injection.py`: hostile e-mails, a draft that obeyed (leak check), an out-of-band price, every prompt's untrusted-text rule.
 
 ### 9 Operator console (portless-ui)
 - [ ] **(Eng)** Show the supplier's facility address and whether the inspection waits for it on the deal page, with an edit field (backend `PATCH /deals/{id}/parties/supplier` books the waiting inspection).
-- [ ] **(Eng)** Show superseded match gates as "closed — another pair was confirmed", not as rejected.
+- [x] **(Eng)** Show superseded match gates as "closed — another pair was confirmed", not as rejected. — done 2026-11-18: approvals list and card show "Closed — another pair was confirmed" (grey) for gates closed by `system:superseded` (`portless-ui/src/lib/approvals.ts`).
 - [ ] **(Eng)** Show prices to the operator in USD with the supplier's INR figure beside it where relevant.
-- [ ] **(Eng)** Readiness page: show `GET /health/readiness` so operators see what is stubbed.
+- [x] **(Eng)** Readiness page: show `GET /health/readiness` so operators see what is stubbed. — already there (checked 2026-11-18): System Health → Production readiness lists every check with its status and fix.
 - [ ] **(Eng)** Money screens: clear four-eyes state (who signed, who is still needed), tranche order, payout cap and retention.
 - [ ] **(Eng)** Error and empty states for every page; SSE reconnect banner.
 - [ ] **(Eng)** **Money at a glance**: buy price, sell price and net profit columns on the Deal Board; the deal's profit breakdown (Overview) also on the Payments tab next to the Money Ledger, so the estimate and the money that moved are side by side; a per-cost table (freight, inspection, insurance, escrow fee, CHA, documents …) across deals on Money & Margin (today totals only).
@@ -545,8 +546,8 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 12 Buyer and supplier validation (Opportunity Radar)
 - [ ] **(Biz/Eng)** **Proof that a buyer actually imports this product.** Today a verified buyer is a real company with a working mailbox and a clean sanctions result, not a proven importer of the HS code. Needs import records (bill-of-lading data): paid Volza / ImportGenius, an Apify plan that can run the Store importer actors, or a new PortLess actor on public US customs bill-of-lading data (US-only coverage). See the decision below.
 - [ ] **(Eng)** Outreach and RFQ only to verified counterparties (switch, e.g. `OUTREACH_VERIFIED_ONLY` / `RFQ_VERIFIED_ONLY`): today a failed buyer / supplier is never contacted, but an unverified one still is. Decide first (decisions).
-- [ ] **(Eng)** Sanctions "review" queue: counterparties whose screening returned `review` (possible match or a list unavailable) listed for staff, cleared or failed with a reason, audited like the compliance hold clearances; today they simply stay "unverified".
-- [ ] **(Eng)** Re-check schedule: sanctions lists change — re-screen verified buyers / suppliers that are linked to open prospects or deals when their result passes `TRADE_MIN_VALIDATION_MAX_AGE_DAYS`, not only when a new scan finds them again.
+- [x] **(Eng)** Sanctions "review" queue: counterparties whose screening returned `review` (possible match or a list unavailable) listed for staff, cleared or failed with a reason, audited like the compliance hold clearances; today they simply stay "unverified". — done 2026-11-18: `GET /trade-min/screening/review` (staff, oldest first) and `POST /trade-min/{buyers|suppliers}/{id}/screening-review` (clear / fail + reason) — the decision and what the screening said are kept on the record (`screening_reviews`); clear → verified when the e-mail is good, fail → failed (never contacted). Console: the queue card on Buyers & Suppliers.
+- [x] **(Eng)** Re-check schedule: sanctions lists change — re-screen verified buyers / suppliers that are linked to open prospects or deals when their result passes `TRADE_MIN_VALIDATION_MAX_AGE_DAYS`, not only when a new scan finds them again. — done 2026-11-18: `services/trade_min/rescreen.py`, daily at 03:30 UTC (`scheduler_rescreen_cron`) and `POST /trade-min/screening/rescreen` (staff): verified companies of open prospects / deals whose check is older than the max age, oldest first, at most `TRADE_MIN_RESCREEN_MAX_PER_RUN` (20); now failed → `deal.exception` `SCREENING:rescreen_failed` on each open deal; review → the queue; no Apify token or no answer → the old result is kept.
 - [x] **(Eng)** Confidence score counts the check: today `confidence_score` ignores validation (a corridor with 0 verified counterparties can score the same as one with 5). Add points for verified buyers / suppliers and show it in the radar's Confidence tooltip. — done 2026-11-18: up to `confidence_verified_max` (10) points — half for at least one verified buyer, half for at least one verified supplier (capped at 100); `confidence_basis` lists every part of the score and the radar shows it as the Confidence tooltip.
 - [ ] **(Eng)** Pair matching in the "All" view: mark or down-rank a pair with an unverified side; the Best Match column in "All" can currently name an unverified pair.
 - [ ] **(Eng)** Foreign buyer company existence beyond the website: LEI (GLEIF, already returned by the screening actor), EU VIES for EU buyers (returned), and a company-register / domain-age check for other countries; show them on the badge.
@@ -789,7 +790,7 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 - [ ] **(Eng)** **Supplier performance from real deals**: QC pass rate, on-time readiness vs the promised date, disputes, price kept vs re-quoted — on the record and in the score (today only signed / completed counts from `outcomes`).
 - [ ] **(Eng)** **Duplicates**: the same company under two domains or names (group site and local site) — suggest merges, staff confirm, history moves to one record.
 - [ ] **(Eng)** **Bulk actions and export**: check the selected (with the Apify cost first), do not contact, add to a prospect, export CSV.
-- [ ] **(Eng)** **Unsubscribe link** in every outreach e-mail that sets do-not-contact without a reply (pairs with the legal item above).
+- [x] **(Eng)** **Unsubscribe link** in every outreach e-mail that sets do-not-contact without a reply (pairs with the legal item above). — done 2026-11-18: signed link (`UNSUBSCRIBE_LINK_SECRET`, else `ESCROW_PROOF_LINK_SECRET`; `PORTLESS_PUBLIC_BASE_URL`) in every introduction and follow-up; no sign-in; GET shows a confirm page (mail scanners change nothing), the POST sets do-not-contact and declines a courted candidate (the funnel moves on). No base URL / secret → the reply opt-out only.
 - [ ] **(QA)** Browser cases TC-WEB-045 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`) — not automated (6.2). Backend: `tests/test_counterparty_book.py` (16), `tests/test_counterparty_profile.py` (13).
 
 
@@ -849,7 +850,7 @@ Both:
 - [ ] **(Eng)** Interest / float on funds in escrow — record if the provider pays any.
 
 ### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
-- [ ] **(Eng)** The supplier's address read from an e-mail replaces an earlier one read from an e-mail (only an operator-entered one is protected). Keep a history of addresses and show the operator when it changed.
+- [x] **(Eng)** The supplier's address read from an e-mail replaces an earlier one read from an e-mail (only an operator-entered one is protected). Keep a history of addresses and show the operator when it changed. — done 2026-11-18: every replaced address is kept on the party (`address_history`: address, who gave it, when and by what it was replaced; `address_source` for the current one); the deal page shows "Changed <date> by <source> — was …".
 
 ### 5.3 Process design to confirm with the trade desk — Workflow gaps found end to end
 - [ ] **(Ops)** Partial shipments and multiple containers with different seals per deal — supported in data, not tested end to end.
@@ -900,7 +901,7 @@ Both:
 ### 12 Buyer and supplier validation (Opportunity Radar)
 - [ ] **(Eng)** Indian supplier age and size at scan time: MCA (company age from CIN) and Udyam need numbers a web search does not return — read them from the supplier's website / GST record when available.
 - [ ] **(Eng)** Phone check for phone-only local suppliers (number valid, WhatsApp reachable) so they can be verified without an e-mail.
-- [ ] **(Eng)** Link the screening evidence certificate (`validation.evidence_url`) from the badge and the evidence pack.
+- [x] **(Eng)** Link the screening evidence certificate (`validation.evidence_url`) from the badge and the evidence pack. — done 2026-11-18: the badge links the certificate; deal parties carry `sanctions_evidence_url` (scan check and enrichment), shown on the deal page; the evidence pack has a Screening section with the certificate link.
 
 ### 13.3 Deal composition agent — Deal composition after negotiation
 - [ ] **(Eng)** N buyers × 1 supplier: one supplier's surplus capacity sold to a second buyer in a second deal from the same composition run (two PIs, two escrows; supplier legs share one facility inspection where the dates allow).

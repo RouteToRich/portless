@@ -152,7 +152,7 @@ async def test_capture_records_a_new_address_but_never_overrides_an_operators(mo
     monkeypatch.setattr("services.deals.service.update_party", update)
     found = await supplier_address.capture("D1", "Factory address: Plot 14, SIPCOT, Thanjavur 613005", by="e-mail")
     assert found == "Plot 14, SIPCOT, Thanjavur 613005"
-    update.assert_awaited_once_with("D1", "supplier", {"address": found}, source=None)
+    update.assert_awaited_once_with("D1", "supplier", {"address": found, "address_source": "email:e-mail"}, source=None)
 
     update.reset_mock()
     party.address, party.contact_source = "7 Operator Lane, Chennai 600002", "operator"
@@ -312,3 +312,62 @@ def test_facility_address_reminder_wording():
         {"deal_id": "D1", "supplier_name": "Mill One", "known": "Thanjavur, Tamil Nadu"})
     assert "Reminder" in subject and "D1" in subject
     assert "Thanjavur, Tamil Nadu" in body and "PIN code" in body and "Purchase Order" not in body
+
+
+# --- address history -------------------------------------------------------------------- #
+
+@pytest.fixture
+def deal_repo(monkeypatch):
+    from services.deals import service as deals
+    from services.deals.schemas import DealRecord
+    from shared.domain.models import Party
+    from tests.factories import make
+
+    store = {}
+    party = Party(role="supplier", legal_name="Mill One", country="IN", address="Thanjavur, Tamil Nadu",
+                  contact_source="opportunity")
+    store["D1"] = make(DealRecord, deal_id="D1", parties=[party])
+
+    class Repo:
+        async def get(self, deal_id):
+            return store.get(deal_id)
+
+        async def save(self, deal):
+            store[deal.deal_id] = deal
+
+    monkeypatch.setattr(deals, "get_repository", lambda: Repo())
+    return store
+
+
+async def test_a_replaced_address_is_kept_in_the_history(deal_repo):
+    from services.deals.service import update_party
+
+    await update_party("D1", "supplier", {"address": "Plot 14, SIPCOT, Thanjavur 613005",
+                                          "address_source": "email:verified"}, source=None)
+    deal = await update_party("D1", "supplier", {"address": "7 Mill Road, Kumbakonam 612001"})
+    party = deal.parties[0]
+    assert party.address == "7 Mill Road, Kumbakonam 612001" and party.address_source == "operator"
+    assert [(h.address, h.source, h.replaced_by) for h in party.address_history] == [
+        ("Thanjavur, Tamil Nadu", "opportunity", "email:verified"),
+        ("Plot 14, SIPCOT, Thanjavur 613005", "email:verified", "operator"),
+    ]
+    assert all(h.replaced_at for h in party.address_history)
+
+
+async def test_the_same_address_again_adds_no_history(deal_repo):
+    from services.deals.service import update_party
+
+    deal = await update_party("D1", "supplier", {"address": "thanjavur, tamil nadu"})
+    assert deal.parties[0].address_history == []
+    deal = await update_party("D1", "supplier", {"phone": "+91 99999 00000"})
+    assert deal.parties[0].address_history == [] and deal.parties[0].address == "thanjavur, tamil nadu"
+
+
+async def test_the_history_is_capped(deal_repo):
+    from services.deals import service as deals
+
+    for i in range(deals._ADDRESS_HISTORY_MAX + 5):
+        deal = await deals.update_party("D1", "supplier", {"address": f"{i} Mill Road, Kumbakonam 612001"})
+    history = deal.parties[0].address_history
+    assert len(history) == deals._ADDRESS_HISTORY_MAX
+    assert history[-1].address == f"{deals._ADDRESS_HISTORY_MAX + 3} Mill Road, Kumbakonam 612001"

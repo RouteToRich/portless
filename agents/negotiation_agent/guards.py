@@ -214,6 +214,9 @@ def is_explicit_acceptance(inbound_message: str | None) -> bool:
     new_text = _new_reply_text(inbound_message)
     if not new_text or _NEGATION_PATTERN.search(new_text):
         return False
+    from shared.prompt_injection import looks_like_injection
+    if looks_like_injection(inbound_message):
+        return False  # wording aimed at the model is never an acceptance — a person reads it
     if _NON_COMMITTAL_PATTERN.search(new_text):
         return False
     return bool(_ACCEPT_PATTERN.search(new_text))

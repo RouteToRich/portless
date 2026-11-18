@@ -187,3 +187,41 @@ class TestPayoutGate:
         created, gate = await _open_gate(available_for_payout=0.0, payouts_total=36000.0)
         assert created is False
         gate.assert_not_awaited()
+
+
+class TestPayoutNoticeExplainsTheHoldback:
+    @pytest.mark.asyncio
+    async def test_completed_payout_event_carries_the_holdback(self):
+        from services.escrow_guard.schemas import PayoutWebhookPayload
+        from services.escrow_guard.service import handle_payout_webhook
+
+        await _escrow_released_to_t3()
+        paid = await _pay(36000.0, "k1")
+        with (
+            patch("shared.connectors.payments.PayoneerConnector.webhook_verify", new=AsyncMock(return_value=True)),
+            patch("services.escrow_guard.service._transition_deal", new=AsyncMock()),
+            patch("services.escrow_guard.service._patch_deal_realized_margin", new=AsyncMock()),
+            patch("services.escrow_guard.service._emit", new=AsyncMock()) as emit,
+        ):
+            await handle_payout_webhook(PayoutWebhookPayload(ext_ref=paid.ext_ref, status="COMPLETED"), {}, b"{}")
+        payload = next(c.args[2] for c in emit.await_args_list if c.args[0].value == "payout.completed")
+        assert payload["balance_due"] == 4000.0
+        assert payload["retained_until_acceptance"] == 4000.0
+
+    def test_payment_email_says_why_part_waits(self):
+        from shared.orchestration.notifications import _tpl_payout_sent
+
+        _, body = _tpl_payout_sent({
+            "deal_id": DEAL, "amount": 36000.0, "currency": "USD", "completed_total": 36000.0,
+            "supplier_owed": OWED, "balance_due": 4000.0, "retained_until_acceptance": 4000.0,
+        })
+        assert "is held until the buyer accepts the goods" in body
+        assert "(10 % of the order value)" in body
+        assert "window closes without a complaint" in body
+
+    def test_no_holdback_line_when_nothing_is_held_or_paid_in_full(self):
+        from shared.orchestration.notifications import _tpl_payout_sent
+
+        base = {"deal_id": DEAL, "amount": 40000.0, "currency": "USD", "supplier_owed": OWED}
+        assert "held until" not in _tpl_payout_sent({**base, "balance_due": 0, "retained_until_acceptance": 4000.0})[1]
+        assert "held until" not in _tpl_payout_sent({**base, "balance_due": 4000.0, "retained_until_acceptance": 0})[1]

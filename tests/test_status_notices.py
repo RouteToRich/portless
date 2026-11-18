@@ -102,7 +102,8 @@ class TestDeliveryOutcome:
         from agents.negotiation_agent import email_safety
         from agents.negotiation_agent.email_history import ISSUED_VALUES
         assert "logged_only" in ISSUED_VALUES
-        src = open(email_safety.__file__, encoding="utf8").read()
+        from pathlib import Path
+        src = Path(email_safety.__file__).read_text(encoding="utf8")
         assert '"logged_only"' in src
 
 

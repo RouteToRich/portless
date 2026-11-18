@@ -777,6 +777,13 @@ async def handle_payout_webhook(
                 "deal stays CLEARED until the balance is paid",
                 payout.payout_id, balance_due or 0.0, owed or 0.0, payout.deal_id,
             )
+        retained = 0.0
+        if not fully_paid:
+            try:
+                hold = await repo.get_hold_by_deal(payout.deal_id)
+                retained = _retained_until_acceptance(hold, owed) if hold else 0.0
+            except Exception as exc:  # the notice still goes out, without the holdback line
+                logger.warning("EscrowGuard: retention lookup failed for deal %s: %s", payout.deal_id, exc)
         await _emit(EventTopic.PAYOUT_COMPLETED, payout.deal_id, {
             "payout_id": payout.payout_id,
             "ext_ref": payload.ext_ref,
@@ -788,6 +795,7 @@ async def handle_payout_webhook(
             "pending_total": pending,
             "supplier_owed": owed,
             "balance_due": balance_due,
+            "retained_until_acceptance": retained,
         })
         await _patch_deal_realized_margin(payout.deal_id)
     elif payload.status == "FAILED":

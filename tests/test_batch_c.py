@@ -263,6 +263,50 @@ class TestEvidence:
             await evidence.build_timeline("DEAL-MISSING")
 
 
+    @pytest.mark.asyncio
+    async def test_evidence_pack_links_each_screening_certificate(self, monkeypatch):
+        from shared.domain.models import Party
+        from shared.orchestration import evidence
+        repo = InMemoryFallbackRepository()
+        monkeypatch.setattr("services.deals.repository._repository", repo)
+        record = _deal_record().model_copy(update={"parties": [
+            Party(role="buyer", legal_name="Acme GmbH", country="DE", sanctions_status="clear",
+                  sanctions_checked_at=NOW, sanctions_evidence_url="https://evidence.example/acme.pdf", lei="5299ABC"),
+            Party(role="supplier", legal_name="Mill One", country="IN", sanctions_status="review",
+                  sanctions_reason="possible match", sanctions_evidence_url="javascript:alert(1)"),
+        ]})
+        await repo.save(record)
+        import services.hitl_approval.repository as hitl_repo_mod
+        hitl_repo_mod._repository = InMemoryHitlApprovalRepository()
+        try:
+            pack = await evidence.build_evidence_pack("DEAL-EV1")
+        finally:
+            hitl_repo_mod._repository = None
+        buyer, supplier = pack["screening"]
+        assert buyer == {"role": "buyer", "legal_name": "Acme GmbH", "sanctions_status": "clear", "sanctions_reason": None,
+                         "checked_at": NOW.isoformat(), "evidence_url": "https://evidence.example/acme.pdf", "lei": "5299ABC"}
+        assert supplier["sanctions_status"] == "review" and supplier["checked_at"] is None
+        html_doc = evidence.render_evidence_html(pack)
+        assert "<h2>Screening</h2>" in html_doc
+        assert "<a href='https://evidence.example/acme.pdf' rel='noopener noreferrer'>certificate</a>" in html_doc
+        assert "href='javascript" not in html_doc  # only http(s) becomes a link
+
+    def test_seeded_party_carries_the_scan_checks_certificate(self):
+        from services.deals.service import _party_check_fields
+        check = SimpleNamespace(sanctions="clear", sanctions_reason=None, checked_at=NOW, status="verified",
+                                email="ok", evidence_url="https://evidence.example/c.pdf")
+        assert _party_check_fields(check, "a@b.de")["sanctions_evidence_url"] == "https://evidence.example/c.pdf"
+        unchecked = SimpleNamespace(sanctions="unchecked", checked_at=None, status="unverified", email=None,
+                                    evidence_url="https://evidence.example/old.pdf")
+        assert _party_check_fields(unchecked, None)["sanctions_evidence_url"] is None
+
+    def test_enrichment_stores_the_certificate(self):
+        from shared.orchestration.enrichment import _apply_screening
+        party = SimpleNamespace(sanctions_status=None, vat_number=None, verification_status=None)
+        updates = _apply_screening(party, {"verdict": "clear", "evidence_url": "https://evidence.example/e.pdf"})
+        assert updates["sanctions_evidence_url"] == "https://evidence.example/e.pdf"
+        assert _apply_screening(party, {"verdict": "clear"})["sanctions_evidence_url"] is None
+
 # ---------------------------------------------------------------------------
 # Telegram + digest
 # ---------------------------------------------------------------------------

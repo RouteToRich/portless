@@ -63,6 +63,15 @@ async def _run_reorder_window() -> None:
         logger.exception("Scheduler: reorder window check failed: %s", exc)
 
 
+async def _run_rescreen() -> None:
+    """Re-screen verified counterparties of open prospects / deals whose check is old."""
+    try:
+        from services.trade_min import rescreen
+        await rescreen.run()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Scheduler: re-screen failed: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Reusable startup / shutdown (called by both standalone and combined app)
 # ---------------------------------------------------------------------------
@@ -95,6 +104,14 @@ async def on_startup() -> None:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=120,
+    )
+    _scheduler.add_job(
+        _run_rescreen,
+        CronTrigger(**_cron_to_kwargs(settings.scheduler_rescreen_cron)),
+        id="trade_min_rescreen",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
     )
     _scheduler.start()
     logger.info(

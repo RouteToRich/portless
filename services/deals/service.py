@@ -39,7 +39,7 @@ from shared.bus import get_publisher
 from shared.domain.events import DomainEvent, EventTopic
 from shared.domain.state_machine import can_transition
 
-from shared.domain.models import Party
+from shared.domain.models import AddressChange, Party
 
 from .repository import get_repository, init_repository
 from .schemas import (
@@ -236,6 +236,7 @@ def _party_check_fields(check: Any, email: str | None) -> dict[str, Any]:
         "sanctions_status": sanctions,
         "sanctions_reason": getattr(check, "sanctions_reason", None),
         "sanctions_checked_at": getattr(check, "checked_at", None) if sanctions != "unchecked" else None,
+        "sanctions_evidence_url": getattr(check, "evidence_url", None) if sanctions != "unchecked" else None,
         # "scan_verified" only on a positive check; anything else stays "unverified"
         # so the enrichment leg can still record a registry match.
         "verification_status": "scan_verified" if getattr(check, "status", None) == "verified" else "unverified",
@@ -885,12 +886,34 @@ async def update_party(
         country = clean.pop("country", None) or (deal.market if role == "buyer" else "IN")
         parties.append(Party(role=role, legal_name=legal_name, country=country, **clean))
     else:
+        _record_address_change(parties[idx], clean, source)
         parties[idx] = parties[idx].model_copy(update=clean)
 
     updated = deal.model_copy(update={"parties": parties, "updated_at": datetime.now(timezone.utc)})
     await repo.save(updated)
     logger.info("Deal %s: %s party updated (%s)", deal_id, role, ", ".join(sorted(clean)))
     return updated
+
+
+_ADDRESS_HISTORY_MAX = 20
+
+
+def _record_address_change(party: Party, clean: dict[str, Any], source: str | None) -> None:
+    """When ``clean`` replaces the party's address with a different one, keep the old one in
+    ``address_history`` (who gave it, when it was replaced and by what). Mutates ``clean``."""
+    new = (clean.get("address") or "").strip()
+    if not new:
+        return
+    clean.setdefault("address_source", "operator" if source == "operator" else (source or "system"))
+    old = (party.address or "").strip()
+    if not old or old.lower() == new.lower():
+        return
+    history = list(party.address_history or [])
+    history.append(AddressChange(
+        address=old, source=party.address_source or party.contact_source,
+        replaced_at=datetime.now(timezone.utc), replaced_by=clean["address_source"],
+    ))
+    clean["address_history"] = history[-_ADDRESS_HISTORY_MAX:]
 
 
 async def update_buyer_candidate(deal_id: str, candidate_id: str, updates: dict[str, Any]) -> DealRecord:

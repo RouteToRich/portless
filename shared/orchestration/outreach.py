@@ -203,6 +203,7 @@ def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | No
     offer in two working days) → an easy opt-out.
     """
     from shared import company_profile as cp
+    from shared.orchestration import unsubscribe
     from shared.product_label import product_title
 
     product = _product_label(deal)
@@ -222,6 +223,7 @@ def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | No
             "choose.\n\n"
             "If the timing is not right, a one-line reply is enough and I will not follow up again."
             + cp.signature()
+            + "\n" + unsubscribe.opt_out_line(deal.deal_id, getattr(cand, "candidate_id")) + "\n"
         )
         return subject, body
     subject = f"{title} from verified Indian manufacturers — inspected before shipment, paid via escrow {token}"
@@ -249,7 +251,7 @@ def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | No
         "  5. Certificates or documents required at destination\n\n"
         "I would be glad to answer any questions, and I look forward to the possibility of working with you."
         + cp.signature()
-        + "\nIf you would prefer not to hear from us, simply reply \"not interested\" and we will not write again.\n"
+        + "\n" + unsubscribe.opt_out_line(deal.deal_id, getattr(cand, "candidate_id")) + "\n"
     )
     return subject, body
 

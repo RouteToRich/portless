@@ -35,6 +35,11 @@ include = ["shared*", "services*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Our own deprecations fail the suite (cleared 2026-11-18). langgraph's import-time warning: tests/conftest.py.
+filterwarnings = [
+    "error::pydantic.warnings.PydanticDeprecatedSince20",
+    "error:'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

@@ -125,7 +125,10 @@ async def capture(deal_id: str, body: str, *, by: str) -> str | None:
             return None
         if party.contact_source == "operator" and is_complete(party.address, party.country):
             return None  # a person entered it; an e-mail never overrides that
-        await update_party(deal_id, "supplier", {"address": found}, source=None)
+        await update_party(deal_id, "supplier", {"address": found, "address_source": f"email:{by}"}, source=None)
+        if (party.address or "").strip():
+            logger.warning("SupplierAddress: deal %s — facility address CHANGED by an e-mail (%s): %r → %r "
+                           "(the old one is kept in address_history)", deal_id, by, party.address, found)
         logger.info("SupplierAddress: deal %s — facility address from %s: %s", deal_id, by, found)
         return found
     except Exception as exc:  # noqa: BLE001

@@ -13,6 +13,17 @@ from pydantic import BaseModel, Field
 from .enums import AutonomyLevel, DealStatus, PartyRole, ThirdPartyType
 
 
+class AddressChange(BaseModel):
+    """An address the party no longer has: what it was, where it came from, when and by what
+    it was replaced (``Party.address_history``)."""
+    address: str
+    source: str | None = None
+    """``operator`` · ``email:<sender check>`` · ``apify:<actor>`` … — who gave the old address."""
+    replaced_at: datetime
+    replaced_by: str | None = None
+    """Source of the address that replaced it."""
+
+
 class Party(BaseModel):
     party_id: str | None = None
     role: PartyRole
@@ -31,6 +42,11 @@ class Party(BaseModel):
     website: str | None = None
     phone: str | None = None
     address: str | None = None
+    address_source: str | None = None
+    """Who gave the current address (``operator``, ``email:<by>``, an actor …)."""
+    address_history: list[AddressChange] = Field(default_factory=list)
+    """Earlier addresses, oldest first — a supplier's facility address can be replaced by a
+    later e-mail, so the operator can see that it changed and what it was."""
     contact_source: str | None = None
     """Where the contact came from: ``apify:<actor>``, ``opportunity``,
     ``operator`` — shown in the UI so a human knows how much to trust it."""
@@ -46,6 +62,9 @@ class Party(BaseModel):
     """``clear`` · ``review`` · ``block`` · ``unchecked``."""
     sanctions_reason: str | None = None
     sanctions_checked_at: datetime | None = None
+    sanctions_evidence_url: str | None = None
+    """The screening actor's evidence certificate for that result (linked from the badge and
+    the evidence pack)."""
     lei: str | None = None
     vat_valid: bool | None = None
     enriched_at: datetime | None = None

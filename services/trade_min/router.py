@@ -1,9 +1,11 @@
 """HTTP routes for the Trade-Min service (FR-1, LLD 4.5, §10)."""
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from shared import catalogue as _catalogue
@@ -67,7 +69,7 @@ async def put_catalogue(payload: CatalogueUpdate) -> dict:
     try:
         await _catalogue.set_catalogue(payload.products, updated_by=payload.updated_by)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc))
     from shared.orchestration.memory import remember_product
     for line in payload.products:
         remember_product(line)
@@ -135,7 +137,7 @@ async def put_incentive(hs_code: str, body: IncentiveUpdate, user=Depends(_staff
             confirmed_by=(getattr(user, "email", None) or getattr(user, "user_id", None)) if body.eligible_confirmed else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return await incentives.set_entry(entry)
 
 
@@ -340,10 +342,10 @@ async def add_counterparty_to_prospect(role: Literal["buyers", "suppliers"], rec
     try:
         return await counterparty_profile.add_to_prospect(role[:-1], record_id, body.deal_id)
     except counterparty_profile.ProfileError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - deal not found / duplicate candidate
         detail = str(exc)
-        code = status.HTTP_404_NOT_FOUND if "not found" in detail.lower() or exc.__class__.__name__ == "DealNotFoundError"             else status.HTTP_422_UNPROCESSABLE_ENTITY
+        code = status.HTTP_404_NOT_FOUND if "not found" in detail.lower() or exc.__class__.__name__ == "DealNotFoundError"             else 422
         raise HTTPException(status_code=code, detail=detail) from exc
 
 
@@ -358,7 +360,7 @@ async def put_contact_preference(role: Literal["buyers", "suppliers"], record_id
     """Put a company on (or take it off) the do-not-contact list — outreach skips it in
     every prospect. A reason is required to put it on."""
     if body.do_not_contact and not (body.reason or "").strip():
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="a reason is required")
+        raise HTTPException(status_code=422, detail="a reason is required")
     from datetime import datetime, timezone
     who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
     store = await directory.get_directory()
@@ -367,6 +369,74 @@ async def put_contact_preference(role: Literal["buyers", "suppliers"], record_id
         "dnc_reason": f"{body.reason.strip()} (by {who})" if body.do_not_contact else None,
         "dnc_at": datetime.now(timezone.utc) if body.do_not_contact else None,
     })
+    if rec is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such company in the directory")
+    return (await relationships.annotate([rec]))[0]
+
+
+@router.get("/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
+async def get_unsubscribe(d: str = Query(default=""), c: str = Query(default=""),
+                          sig: str = Query(default="")) -> HTMLResponse:
+    """The unsubscribe link of an outreach e-mail: a confirm page (no sign-in; ``sig`` checked).
+    Nothing is recorded on GET — mail scanners open every link."""
+    from shared.orchestration import unsubscribe
+    if not unsubscribe.verify(d, c, sig):
+        return HTMLResponse(unsubscribe.invalid_page(), status_code=403)
+    return HTMLResponse(unsubscribe.confirm_page(d, c, sig))
+
+
+@router.post("/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
+async def post_unsubscribe(d: str = Query(default=""), c: str = Query(default=""),
+                           sig: str = Query(default="")) -> HTMLResponse:
+    """Record the opt-out: do-not-contact in every prospect; a courted candidate is declined."""
+    from shared.orchestration import unsubscribe
+    if not unsubscribe.verify(d, c, sig):
+        return HTMLResponse(unsubscribe.invalid_page(), status_code=403)
+    try:
+        await unsubscribe.apply(d, c)
+    except Exception as exc:  # noqa: BLE001 - never show a stack to the recipient
+        logging.getLogger(__name__).error("Unsubscribe %s/%s failed: %s", d, c, exc)
+        return HTMLResponse(unsubscribe.invalid_page(), status_code=404)
+    return HTMLResponse(unsubscribe.done_page())
+
+
+class ScreeningDecision(BaseModel):
+    decision: Literal["clear", "fail"]
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@router.get("/screening/review", response_model=list[CounterpartyRecord])
+async def list_screening_review(role: Literal["buyer", "supplier"] | None = Query(default=None),
+                                user=Depends(_staff())) -> list[CounterpartyRecord]:
+    """Companies whose sanctions screening returned ``review`` (a possible list match or a list
+    that was unavailable), oldest check first — they stay unverified until staff decide."""
+    from services.trade_min import screening_review
+    return await relationships.annotate(await screening_review.queue(role))
+
+
+@router.post("/screening/rescreen", response_model=dict)
+async def post_rescreen(user=Depends(_staff())) -> dict:
+    """Re-check now every verified company of an open prospect / deal whose result is older
+    than TRADE_MIN_VALIDATION_MAX_AGE_DAYS (the daily job, run by hand). Paid Apify runs."""
+    from services.trade_min import rescreen
+    return await rescreen.run()
+
+
+@router.post("/{role}/{record_id:path}/screening-review", response_model=CounterpartyRecord)
+async def post_screening_review(role: Literal["buyers", "suppliers"], record_id: str, body: ScreeningDecision,
+                                user=Depends(_staff())) -> CounterpartyRecord:
+    """Clear or fail a ``review`` screening with a reason; kept on the record (``screening_reviews``)."""
+    from services.trade_min import screening_review
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    existing = await (await directory.get_directory()).get(record_id)
+    if existing is None or existing.role != role.rstrip("s"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such company in the directory")
+    try:
+        rec = await screening_review.resolve(record_id, body.decision, body.reason, who)
+    except screening_review.NotInReview as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if rec is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such company in the directory")
     return (await relationships.annotate([rec]))[0]

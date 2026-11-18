@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
+from typing import Any
 from datetime import datetime, timezone
 
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
@@ -103,8 +104,12 @@ async def inbound_sendgrid(request: Request) -> ProcessingResult:
         _verify_sendgrid_signature(settings.sendgrid_webhook_public_key, request.headers, await request.body())
 
     form = await request.form()
-    attachments = await _extract_form_attachments(form)
-    return await service.process_inbound(_sendgrid_form_to_raw(form, attachments))
+    try:
+        attachments = await _extract_form_attachments(form)
+        raw = _sendgrid_form_to_raw(form, attachments)
+    finally:
+        await form.close()  # uploaded attachments are temp files; close them now, not at GC
+    return await service.process_inbound(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +139,15 @@ async def inbound_mailgun(request: Request) -> ProcessingResult:
     """
     _refuse_unsigned(request, settings.mailgun_signing_key)
     form = await request.form()
+    try:
+        raw = await _mailgun_raw(request, form)
+    finally:
+        await form.close()  # uploaded attachments are temp files; close them now, not at GC
+    return await service.process_inbound(raw)
 
+
+async def _mailgun_raw(request: Request, form: Any) -> Any:
+    """Verify a Mailgun form post and turn it into the raw inbound e-mail."""
     if settings.mailgun_signing_key:
         _verify_mailgun_signature(
             signing_key=settings.mailgun_signing_key,
@@ -146,7 +159,7 @@ async def inbound_mailgun(request: Request) -> ProcessingResult:
             _refuse_stale_mailgun(str(form.get("timestamp", "")))
 
     attachments = await _extract_form_attachments(form)
-    return await service.process_inbound(_mailgun_form_to_raw(form, attachments))
+    return _mailgun_form_to_raw(form, attachments)
 
 
 # ---------------------------------------------------------------------------

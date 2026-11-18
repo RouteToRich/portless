@@ -60,9 +60,9 @@ async def put_hs_policy(hs_code: str, body: HsPolicyUpdate, user: AuthUser = Dep
             confirmed_by=getattr(user, "email", None) or getattr(user, "user_id", None),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if entry.status == "licensed" and not entry.licence_ref:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        raise HTTPException(status_code=422,
                             detail="status=licensed needs the licence_ref")
     return (await compliance.set_hs_policy(entry)).model_dump(mode="json")
 
@@ -168,7 +168,7 @@ _OPERATOR_SETTABLE_STATUSES = frozenset({
 async def _refuse_gated_status(deal_id: str, target: DealStatus) -> None:
     if target not in _OPERATOR_SETTABLE_STATUSES:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail=f"{target.value} is set by its own approved step or provider confirmation, not by hand",
         )
     if target == DealStatus.CANCELLED:
@@ -176,7 +176,7 @@ async def _refuse_gated_status(deal_id: str, target: DealStatus) -> None:
         hold = await escrow_repository().get_hold_by_deal(deal_id)
         if hold is not None and (hold.funded_amount or 0) > hold.refunded_total:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=422,
                 detail="the buyer has funds in this escrow — cancel it through the unfunded-deal playbook, which refunds them",
             )
 
@@ -202,7 +202,7 @@ async def update_status(
         ) from exc
     except InvalidTransitionError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail=str(exc),
         ) from exc
 
@@ -258,7 +258,7 @@ async def update_party(
                 logging.getLogger(__name__).warning("Deal %s: QC booking after the address update failed: %s", deal_id, exc)
         return deal
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except DealNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -281,7 +281,7 @@ async def set_inspection_plan(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     unknown = [t for t in body.types if str(t).upper() not in inspection_plan.ORDER]
     if unknown:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"unknown inspection type(s): {unknown}")
+        raise HTTPException(422, detail=f"unknown inspection type(s): {unknown}")
     await inspection_plan.set_plan(deal_id, body.types, "operator")
     await qc_status.sync(deal_id)
     logging.getLogger(__name__).info("Deals: inspection plan of %s set by %s (%s)", deal_id,
@@ -614,7 +614,7 @@ async def set_packing(deal_id: str, body: PackingUpdate, user: AuthUser = Depend
     if fields:
         spec = packing.PackingSpec(**{**(spec.model_dump() if spec else {}), **fields})
     if spec is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="give the packing as text or fields")
+        raise HTTPException(status_code=422, detail="give the packing as text or fields")
     spec.source = f"operator:{user.email or user.user_id}"
     session.packing = packing.merge(session.packing, spec).model_dump(mode="json") if not fields else spec.model_dump(mode="json")
     session.packing_in_supplier_price = False  # a changed packing must be confirmed by the supplier again
@@ -691,7 +691,7 @@ async def add_buyer_candidate(
     try:
         return await service.add_buyer_candidate(deal_id, candidate)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except DealNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -720,7 +720,7 @@ async def skip_buyer_candidate(
     try:
         result = await outreach.skip_candidate(deal_id, candidate_id, "skipped by operator")
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"deal_id": deal_id, "candidate_id": candidate_id, **result}
 
 
@@ -753,7 +753,7 @@ async def put_buyer_requirement(
     try:
         deal = await service.set_buyer_requirement(deal_id, candidate_id, requirement)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if requirement.target_price_usd_per_mt:
         from shared import pricebook
         from shared.orchestration import landed_cost as lc
@@ -808,15 +808,15 @@ async def request_indicative_offer(deal_id: str, ref: _PairRef, user: AuthUser =
     deal = await _org_deal(deal_id, user)
     board, pair = await _pair(deal, ref)
     if not pair.landed or pair.supplier_price.basis != "quoted":
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        raise HTTPException(status_code=422,
                             detail="an indicative offer needs this supplier's quoted price")
     if pair.blockers:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=pair.blockers[0])
+        raise HTTPException(status_code=422, detail=pair.blockers[0])
     from shared.orchestration import matchmaking
     lead = next((o.get("lead_time_days") for o in board.offers if o["offer_id"] == ref.offer_id), None)
     gid = await matchmaking.propose_indicative_offer(deal, pair, board, lead)
     if gid is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="buyer has no e-mail address")
+        raise HTTPException(status_code=422, detail="buyer has no e-mail address")
     return {"deal_id": deal_id, "approval_id": gid}
 
 
@@ -827,10 +827,10 @@ async def request_match(deal_id: str, ref: _PairRef, user: AuthUser = Depends(ge
     deal = await _org_deal(deal_id, user)
     _, pair = await _pair(deal, ref)
     if pair.blockers:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=pair.blockers[0])
+        raise HTTPException(status_code=422, detail=pair.blockers[0])
     if not pair.buyer_price.value or not pair.supplier_price.value or not pair.firm:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail="both prices are needed: one the buyer stated and the supplier's own quote, not a market estimate",
         )
     from shared.orchestration import matchmaking

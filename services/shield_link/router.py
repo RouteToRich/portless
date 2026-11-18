@@ -94,7 +94,7 @@ async def api_quote_qc(req: QcQuoteRequest) -> QcQuoteResponse:
     try:
         return await quote_qc(req)
     except UnknownQcProviderError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -107,9 +107,9 @@ async def api_book_qc(req: QcBookingRequest) -> ThirdPartyOrderResponse:
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except UnknownQcProviderError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -138,7 +138,7 @@ async def api_qc_webhook(request: Request) -> dict[str, Any]:
     except TpoNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except Exception as exc:
         logger.error("QC webhook processing error: %s", exc)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Webhook processing failed")
@@ -180,7 +180,7 @@ async def api_record_qc_status(
     except TpoNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
 
 
 @router.get("/qc/{tpo_id}/documents/{index}")
@@ -206,7 +206,7 @@ async def api_reschedule_qc(
     except TpoNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -220,7 +220,7 @@ async def api_qc_readiness(
     from shared.orchestration import qc_schedule, supplier_commitment
     ready = qc_schedule.to_date(req.ready_date)
     if ready is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ready_date must be an ISO date (YYYY-MM-DD)")
+        raise HTTPException(422, detail="ready_date must be an ISO date (YYYY-MM-DD)")
     try:
         return await supplier_commitment.record_qc_readiness(
             deal_id, ready, by=f"operator:{user.email or user.user_id}", produced_pct=req.produced_pct,
@@ -229,7 +229,7 @@ async def api_qc_readiness(
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -256,7 +256,7 @@ async def api_book_freight(req: FreightBookingRequest) -> ThirdPartyOrderRespons
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -367,7 +367,7 @@ async def api_file_cha(req: ChaFilingRequest) -> ThirdPartyOrderResponse:
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 

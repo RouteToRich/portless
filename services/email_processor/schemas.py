@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -188,8 +188,7 @@ class SendGridInboundPayload(BaseModel):
     dkim: str = ""
     spf: str = ""
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class MailgunInboundPayload(BaseModel):
@@ -207,8 +206,7 @@ class MailgunInboundPayload(BaseModel):
     token: str = ""
     signature: str = ""
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class ManualInboundRequest(BaseModel):

@@ -79,6 +79,9 @@ _PROVIDER_WEBHOOK_PATH_SUFFIXES = (
 # any call whose ``exp`` / ``sig`` query parameters do not verify
 # (shared/orchestration/escrow_proof.py), signed in or not.
 _SIGNED_LINK_PATH_MARKERS = ("/escrow-guard/proof/",)
+# The unsubscribe link in outreach e-mails (shared/orchestration/unsubscribe.py): a GET shows
+# a confirm page, the POST from it records the opt-out; the route verifies ``sig`` itself.
+_SIGNED_FORM_PATHS = ("/trade-min/unsubscribe",)
 
 
 def _is_public(path: str) -> bool:
@@ -96,6 +99,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS" or _is_public(request.url.path):
             return await call_next(request)
         if request.method == "GET" and any(m in request.url.path for m in _SIGNED_LINK_PATH_MARKERS):
+            return await call_next(request)
+        if request.method in ("GET", "POST") and request.url.path.rstrip("/").endswith(_SIGNED_FORM_PATHS):
             return await call_next(request)
 
         allow_query = any(request.url.path.endswith(s) for s in _QUERY_TOKEN_PATH_SUFFIXES)
