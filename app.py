@@ -249,9 +249,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── Daily operator digest (Telegram / e-mail at DIGEST_HOUR_UTC) ────────
     _digest: _asyncio.Task | None = None
+    _hb_monitor: _asyncio.Task | None = None
     try:
         from shared.orchestration.digest import run_digest_scheduler
         _digest = _asyncio.create_task(run_digest_scheduler())
+        # Real-time alert when a watcher stops (the digest only reports once a day).
+        from shared.heartbeat import run_monitor as _run_hb_monitor
+        _hb_monitor = _asyncio.create_task(_run_hb_monitor())
     except Exception as exc:
         logger.error("Digest scheduler start failed: %s", exc)
 
@@ -265,7 +269,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # ── Teardown (reverse order) ──────────────────────────────────────────
-    for task in (_digest, _deal_watcher):
+    for task in (_digest, _hb_monitor, _deal_watcher):
         if task and not task.done():
             task.cancel()
             try:
@@ -278,6 +282,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await close_event_bus()
     except Exception as exc:
         logger.warning("EventBus shutdown error: %s", exc)
+
+    try:
+        from shared.mongo import close_all as _close_shared_mongo
+        _close_shared_mongo()  # the shared modules' single client (shared/mongo.py)
+    except Exception as exc:
+        logger.warning("Shared Mongo client shutdown error: %s", exc)
 
     try:
         await eg_shutdown()

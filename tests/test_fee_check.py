@@ -49,3 +49,17 @@ def test_digest_line():
     text = digest.render_digest_text({"generated_at": "2026-11-19T06:00", "fees_over": [
         {"deal_id": "D1", "over_usd": 245.0, "kinds": ["escrow", "bank"]}]})
     assert "FEES ABOVE THE PRICE (1 deal(s)): D1 +245 USD (escrow/bank)" in text
+
+
+async def test_recorded_fees_reach_the_cost_lines_of_the_ledger(monkeypatch):
+    from services.escrow_guard import service as eg
+    await fc.record("D1", "bank", 45.0, ref="SWIFT", by="ops")
+    await fc.record("D1", "payout", 12.0, ref="Payoneer", by="ops")
+    await fc.record("D1", "escrow", 650.0, ref="TZP", by="ops")  # 600 estimated
+    costs, basis = {}, {}
+    await eg._recorded_fees("D1", 600.0, costs, basis)
+    assert costs == {"bank_charges": 45.0, "payout_fees": 12.0, "escrow_fee_above_estimate": 50.0}
+    assert set(basis.values()) == {"actual"}
+    costs = {}
+    await eg._recorded_fees("D1", 700.0, costs, {})  # actual below the estimate: nothing extra booked
+    assert "escrow_fee_above_estimate" not in costs

@@ -106,6 +106,15 @@ class SupplierOffer(BaseModel):
     email: str | None = None
     grade: str | None = None
     fob_price_usd_per_mt: float | None = None
+    price_basis: Literal["quoted", "usual", "estimate"] = "quoted"
+    """``quoted`` — the supplier stated it for this request (RFQ reply, phone quote); ``usual`` —
+    its usual price from the directory; ``estimate`` — PortLess's estimate. Only a quoted price
+    makes a pair firm on the match board."""
+    incoterm: str = "FOB"
+    """FOB (Indian port) or EXW (at the mill). An EXW price gets the road to the port added
+    before any margin (``trade_costs.exw_to_fob``)."""
+    port_km: float | None = None
+    """Road distance mill → port, for an EXW price."""
     moq_mt: float | None = None
     capacity_mt_per_month: float | None = None
     lead_time_days: int | None = None

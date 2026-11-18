@@ -133,8 +133,8 @@ def _mongo():
         from shared.config import settings
         if not settings.mongo_uri:
             return None
-        import motor.motor_asyncio as motor  # type: ignore[import]
-        return motor.AsyncIOMotorClient(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
+        from shared.mongo import get_client
+        return get_client(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
     except Exception as exc:  # noqa: BLE001
         logger.warning("SupplierCommitment: Mongo unavailable (%s) — in memory only", exc)
         return None
@@ -206,18 +206,6 @@ def _net_margin_pct(session: Any, buyer_price: float, supplier_price: float) -> 
     return (buyer_price - supplier_price - costs) / buyer_price * 100.0 if buyer_price else -100.0
 
 
-def _fob_equivalent(price_usd: float, basis: str | None, port_km: float | None) -> float:
-    """An ex-works price plus the road to the port (same settings as the cost sheet), so a
-    standby's margin is judged on the same footing as an FOB quote."""
-    if (basis or "FOB").upper() not in ("EXW", "EX-WORKS", "EX WORKS", "FCA"):
-        return price_usd
-    from shared.orchestration.trade_costs import _f
-    km = port_km if port_km is not None else _f("TRADE_COST_INLAND_DEFAULT_KM", 600.0)
-    rate = _f("NEGOTIATION_FALLBACK_USD_INR_RATE", 96.0)
-    inland = (km * _f("TRADE_COST_INLAND_INR_PER_TONNE_KM", 3.5) + _f("TRADE_COST_INLAND_HANDLING_INR_PER_MT", 250.0)) / rate
-    return round(price_usd + inland, 2)
-
-
 async def _manual_standbys(deal: Any, known: set[str]) -> list[dict[str, Any]]:
     """Suppliers staff added to the directory by hand for this product, with a usual price,
     an e-mail and no failed check — standby candidates too (after the deal's own)."""
@@ -237,11 +225,9 @@ async def _manual_standbys(deal: Any, known: set[str]) -> list[dict[str, Any]]:
             continue
         if not r.estimated_fob_price_usd or not any(hs.startswith(c[:6]) or c.startswith(hs[:6]) for c in r.hs_codes):
             continue
-        manual = r.manual or {}
+        # estimated_fob_price_usd of a hand-added supplier is already FOB-equivalent (manual_suppliers).
         out.append({"supplier_id": r.id, "company_name": r.name, "email": r.email, "score": 0.0,
-                    "price": _fob_equivalent(float(r.estimated_fob_price_usd), manual.get("price_basis"),
-                                             manual.get("port_km")),
-                    "source": "directory_manual"})
+                    "price": float(r.estimated_fob_price_usd), "source": "directory_manual"})
     return sorted(out, key=lambda r: r["price"])
 
 

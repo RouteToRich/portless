@@ -29,6 +29,8 @@ HOLDER = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
 _COLLECTION = "watcher_locks"
 _col: Any = None
 _resolved = False
+last_error_at: datetime | None = None
+"""When the lock store last failed to answer (the heartbeat monitor alerts on it)."""
 
 
 def _collection() -> Any:
@@ -40,8 +42,8 @@ def _collection() -> Any:
         from shared.config import settings
         if not settings.mongo_uri:
             return None
-        import motor.motor_asyncio as motor  # type: ignore[import]
-        _col = motor.AsyncIOMotorClient(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
+        from shared.mongo import get_client
+        _col = get_client(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
     except Exception as exc:  # noqa: BLE001
         logger.warning("LeaderLock: Mongo unavailable (%s) — every instance runs its watchers", exc)
         _col = None
@@ -77,6 +79,8 @@ async def acquire(name: str, ttl_seconds: float, *, now: datetime | None = None,
             return False  # the document exists, held by someone else and not expired
         return bool(doc) and doc.get("holder") == holder
     except Exception as exc:  # noqa: BLE001
+        global last_error_at
+        last_error_at = datetime.now(timezone.utc)
         logger.warning("LeaderLock: %s not acquired (%s) — %s", name, exc,
                        "running anyway (LEADER_LOCK_FAIL_OPEN)" if _fail_open() else "skipping this tick")
         return _fail_open()

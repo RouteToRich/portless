@@ -88,8 +88,10 @@ async def open_gate(deal_id: str) -> str:
     return getattr(approval, "approval_id", "")
 
 
-def body(company: str | None, price: float, quantity: float, product: str, respond_by: str) -> str:
+def body(company: str | None, price: float, quantity: float, product: str, respond_by: str,
+         email: str | None = None) -> str:
     from shared import company_profile as cp
+    from shared.orchestration.unsubscribe import supplier_opt_out_line
     greeting = f"Dear {company} team," if company else "Dear Sir / Madam,"
     return (
         f"{greeting}\n\n"
@@ -97,7 +99,8 @@ def body(company: str | None, price: float, quantity: float, product: str, respo
         f"the best price we hold for it is USD {price:,.2f} per MT FOB.\n\n"
         f"Can you match or beat this price for the same quantity and specification? If so, please reply by "
         f"{respond_by} with your best and final price and the shipment date. Payment is secured in escrow "
-        "before production, as in our first request."
+        "before production, as in our first request.\n\n"
+        + supplier_opt_out_line(email)
         + cp.signature()
     )
 
@@ -112,11 +115,16 @@ async def send(deal_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     product = product_label(payload.get("hs_code") or "") or f"HS {payload.get('hs_code')}"
     sent, failed = [], []
+    from shared.orchestration.contact_guard import blocked_supplier_keys, supplier_blocked
+    blocked = await blocked_supplier_keys()
     for s in payload.get("suppliers") or []:
+        if await supplier_blocked(s.get("email"), keys=blocked):
+            failed.append(s["supplier_id"])
+            continue
         subject = "Re: " + rfq_subject(s["rfq_id"], payload.get("hs_code") or "", payload.get("quantity_mt")) \
                   + " — best and final"
         text = body(s.get("company_name"), float(payload["best_price_usd_per_mt"]), float(payload.get("quantity_mt") or 0),
-                    product, payload.get("respond_by") or "")
+                    product, payload.get("respond_by") or "", s.get("email"))
         try:
             result = await send_email(SendEmailRequest(
                 to_address=s["email"], subject=subject, body=text, negotiation_id="", round_no=0,

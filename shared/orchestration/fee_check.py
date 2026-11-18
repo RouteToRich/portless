@@ -36,8 +36,8 @@ def _collection() -> Any:
     try:
         from shared.config import settings
         if settings.mongo_uri:
-            import motor.motor_asyncio as motor  # type: ignore[import]
-            _col = motor.AsyncIOMotorClient(settings.mongo_uri)[settings.mongo_db_name]["deal_fees"]
+            from shared.mongo import get_client
+            _col = get_client(settings.mongo_uri)[settings.mongo_db_name]["deal_fees"]
     except Exception as exc:  # noqa: BLE001
         logger.debug("FeeCheck: Mongo unavailable: %s", exc)
     return _col

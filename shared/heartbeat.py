@@ -32,8 +32,8 @@ def _collection() -> Any:
     try:
         from shared.config import settings
         if settings.mongo_uri:
-            import motor.motor_asyncio as motor  # type: ignore[import]
-            _col = motor.AsyncIOMotorClient(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
+            from shared.mongo import get_client
+            _col = get_client(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
     except Exception as exc:  # noqa: BLE001
         logger.debug("Heartbeat: Mongo unavailable (%s) — memory only", exc)
         _col = None
@@ -91,3 +91,70 @@ async def status(now: datetime | None = None) -> dict[str, Any]:
                      "stale": age is None or age > STALE_FACTOR * interval + 30})
     return {"ok": not any(r["stale"] for r in rows), "watchers": rows,
             "stale": [r["name"] for r in rows if r["stale"]]}
+
+
+# ---------------------------------------------------------------------------
+# Real-time alert (review board B-08): the digest only reports once a day
+# ---------------------------------------------------------------------------
+
+_alerted: set[str] = set()
+MONITOR_SECONDS = 60.0
+
+
+async def check_and_alert(now: datetime | None = None, *, send=None) -> list[str]:
+    """Alert once when a watcher goes stale (and once when it is back), and when the leader-lock
+    store has stopped answering in the last few minutes. Returns the messages sent."""
+    now = now or datetime.now(timezone.utc)
+    st = await status(now)
+    messages: list[str] = []
+    stale = set(st["stale"])
+    for name in sorted(stale - _alerted):
+        messages.append(f"WATCHER NOT RUNNING: {name} — reminders, auto-releases or timeouts may be waiting "
+                        "(GET /health/watchers)")
+    for name in sorted((_alerted - {"_lock_store"}) - stale):
+        messages.append(f"Watcher back: {name}")
+    from shared import leader_lock
+    lock_bad = bool(leader_lock.last_error_at and now - leader_lock.last_error_at < timedelta(minutes=5))
+    if lock_bad and "_lock_store" not in _alerted:
+        messages.append("LEADER-LOCK STORE NOT ANSWERING — every instance skips its watcher ticks until the database is back")
+    _alerted.clear()
+    _alerted.update(stale | ({"_lock_store"} if lock_bad else set()))
+    if messages:
+        sender = send
+        if sender is None:
+            from shared import telegram
+            sender = telegram.send_message if telegram.configured() else None
+        for m in messages:
+            logger.critical("Heartbeat: %s", m)
+            if sender is not None:
+                try:
+                    await sender(m)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Heartbeat: alert not sent: %s", exc)
+    return messages
+
+
+async def run_monitor() -> None:
+    """Background loop (app lifespan): one instance at a time checks every minute."""
+    import asyncio
+
+    from shared import leader_lock
+    while True:
+        try:
+            await asyncio.sleep(MONITOR_SECONDS)
+            if await leader_lock.acquire("heartbeat_monitor", ttl_seconds=MONITOR_SECONDS * 3):
+                await check_and_alert()
+            else:
+                # the lock store itself may be down — this instance still tells someone
+                if leader_lock.last_error_at:
+                    await check_and_alert()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Heartbeat monitor tick failed: %s", exc)
+
+
+def reset_for_tests() -> None:
+    _alerted.clear()
+    from shared import leader_lock
+    leader_lock.last_error_at = None

@@ -542,7 +542,7 @@ async def post_screening_review(role: Literal["buyers", "suppliers"], record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such company in the directory")
     try:
         rec = await screening_review.resolve(record_id, body.decision, body.reason, who)
-    except screening_review.NotInReview as exc:
+    except (screening_review.NotInReview, screening_review.SamePerson) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

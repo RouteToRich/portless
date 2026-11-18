@@ -140,12 +140,13 @@ def _build_rfq_message(payload: RfqRequest) -> str:
     )
 
 
-def rfq_email_body(company_name: str | None, message: str) -> str:
+def rfq_email_body(company_name: str | None, message: str, email: str | None = None) -> str:
     """The RFQ e-mail: the request, why this order is worth quoting for, and
     exactly what to send back. Payment wording follows the escrow model
     (purchase order only once the buyer's money is in escrow; production
     advance at PO) — the same terms the negotiation agent states later."""
     from shared import company_profile as cp
+    from shared.orchestration.unsubscribe import supplier_opt_out_line
 
     greeting = f"Dear {company_name} team," if company_name else "Dear Sir or Madam,"
     return (
@@ -163,7 +164,8 @@ def rfq_email_body(company_name: str | None, message: str) -> str:
         "  5. Certificates you can provide (COA, ISO, FSSAI, Halal, etc.)\n"
         "  6. Your GSTIN and IEC, so we can complete verification before the purchase order\n\n"
         "Please keep the reference in the subject line so that your quotation reaches the right desk. "
-        "We look forward to your offer and to building a long-term export partnership with you."
+        "We look forward to your offer and to building a long-term export partnership with you.\n\n"
+        + supplier_opt_out_line(email)
         + cp.signature()
     )
 
@@ -223,6 +225,11 @@ async def _dispatch_one(
     # contact finder gave an address for (and the only one that needs no
     # marketplace API key). The subject token lets the reply map back here.
     if supplier.email:
+        from shared.orchestration.contact_guard import supplier_blocked
+        if await supplier_blocked(supplier.email):
+            return DispatchResult(supplier_id=supplier.supplier_id, contact_id=contact_id, channel="email",
+                                  email=supplier.email, success=False,
+                                  error="not sent — the supplier is on the do-not-contact list")
         ext_id = await _dispatch_by_email(rfq_id, supplier, message, payload)
         if ext_id is not None and ext_id.startswith(_SEND_FAILED):
             return DispatchResult(
@@ -285,7 +292,7 @@ async def _dispatch_by_email(
         from services.email_gateway.schemas import SendEmailRequest  # type: ignore[import]
         from services.email_gateway.sender import send_email  # type: ignore[import]
 
-        body = rfq_email_body(supplier.company_name, message)
+        body = rfq_email_body(supplier.company_name, message, supplier.email)
         result = await send_email(SendEmailRequest(
             to_address=supplier.email or "",
             subject=rfq_subject(rfq_id, payload.hs_code, payload.quantity_mt),
@@ -622,7 +629,8 @@ async def _record_offer(payload: QuoteIntakeRequest, quote: QuoteRecord,
             validity_days=payload.validity_days,
             gst_verified=(verification.gst_verified if gst_checked else None),
             iec_active=(verification.iec_active if iec_checked else None),
-            verification_failed=failed, quote_id=quote.quote_id, source="quote",
+            verification_failed=failed, quote_id=quote.quote_id, source="quote", price_basis="quoted",
+            incoterm=(payload.incoterm or "FOB").upper() if getattr(payload, "incoterm", None) else "FOB",
             origin_deal_id=payload.deal_id, received_at=quote.received_at,
         )
         await upsert_supplier_offer(payload.deal_id, offer)

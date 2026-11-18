@@ -98,11 +98,14 @@ class DuplicateSupplier(ValueError):
 
 
 def _usd_price(data: ManualSupplierIn, usd_inr: float | None) -> float | None:
+    """The usual price as USD/MT **FOB-equivalent** (an ex-works price gets the road to the port)."""
     if data.usual_price is None:
         return None
-    if data.price_currency == "USD":
-        return round(data.usual_price, 2)
-    return round(data.usual_price / usd_inr, 2) if usd_inr else None
+    usd = data.usual_price if data.price_currency == "USD" else (data.usual_price / usd_inr if usd_inr else None)
+    if usd is None:
+        return None
+    from shared.orchestration.trade_costs import exw_to_fob
+    return exw_to_fob(round(usd, 2), data.price_basis, data.port_km)
 
 
 def _phone_key(phone: str | None) -> str | None:

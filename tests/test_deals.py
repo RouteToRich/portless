@@ -260,13 +260,23 @@ def test_update_status_emits_mapped_event(_repo):
     assert emit.call_args.args[0] == EventTopic.NEGOTIATION_STARTED
 
 
-def test_update_status_unmapped_status_emits_nothing(_repo):
-    # DRAFT → MATCHING is valid but MATCHING has no mapped domain event.
+def test_entering_matching_runs_the_creation_leg(_repo):
+    # A hand-made deal reaches MATCHING here (review board B-02): the same DEAL_CREATED leg as a
+    # radar deal must run — enrichment, the trade-compliance check, outreach, the RFQ gate.
     run(_repo.save(_make_deal(DealStatus.DRAFT)))
     emit = AsyncMock()
     with patch("services.deals.service._emit_event", emit):
-        run(update_status("DEAL-X", UpdateStatusRequest(target_status=DealStatus.MATCHING)))
+        run(update_status("DEAL-X", UpdateStatusRequest(target_status=DealStatus.MATCHING, reason="by hand")))
+    (topic,), kw = emit.await_args.args, emit.await_args.kwargs
+    assert topic == EventTopic.DEAL_CREATED and kw["payload"]["status"] == "MATCHING" and kw["payload"]["entered_matching"]
 
+
+def test_an_unmapped_status_emits_nothing(_repo):
+    # NEGOTIATION_FAILED → MATCHING (re-match) has no mapped event and is not a first entry.
+    run(_repo.save(_make_deal(DealStatus.NEGOTIATION_FAILED)))
+    emit = AsyncMock()
+    with patch("services.deals.service._emit_event", emit):
+        run(update_status("DEAL-X", UpdateStatusRequest(target_status=DealStatus.MATCHING)))
     emit.assert_not_awaited()
 
 

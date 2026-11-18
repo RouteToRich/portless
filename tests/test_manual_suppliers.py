@@ -46,7 +46,8 @@ def _in(**kw):
 async def test_add_stores_the_facts_and_runs_the_checks(_fresh):
     rec = await ms.add(_in(), "ops@portless.in")
     assert rec.source == "manual" and rec.gstin == "33ABCDE1234F1Z5" and rec.hs_codes == ["100630", "100640"]
-    assert rec.estimated_fob_price_usd == 700.0  # INR 61,600 at 88
+    # INR 61,600 at 88 = USD 700 ex-works + the road to the port (350 km) = FOB-equivalent
+    assert rec.estimated_fob_price_usd == round(700.0 + (350 * 3.5 + 250) / 96.0, 2)
     assert rec.manual["grades"] == ["Ponni", "Sona Masoori"] and rec.manual["bank_account_last4"] == "4321"
     assert rec.manual["added_by"] == "ops@portless.in" and rec.validation.status == "verified"
     assert _fresh == ["Thanjavur Rice Mill"]
@@ -78,7 +79,8 @@ async def test_a_scan_never_overwrites_what_staff_entered():
         email="info@tjrice.in", phone="+91 44 0000 0000", supplier_to_port_km=300.0), "100630", "AE", "found", None, NOW)
     merged = await (await dr.get_directory()).upsert(scanned)
     assert merged.id == rec.id and merged.source == "manual"
-    assert (merged.name, merged.email, merged.estimated_fob_price_usd) == ("Thanjavur Rice Mill", "sales@tjrice.in", 700.0)
+    assert (merged.name, merged.email) == ("Thanjavur Rice Mill", "sales@tjrice.in")
+    assert merged.estimated_fob_price_usd == rec.estimated_fob_price_usd
 
 
 async def test_edit_and_delete(monkeypatch):

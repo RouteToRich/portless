@@ -51,6 +51,8 @@ _COST_LABELS = {
     "ocean_freight": "Ocean freight", "marine_insurance": "Marine cargo insurance", "inspection": "Pre-shipment inspection",
     "customs_agent": "Export customs agent (CHA)", "export_documents": "Export documents and certificates",
     "inland_transport": "Inland transport to port", "origin_handling": "Origin terminal handling",
+    "bank_charges": "Bank charges", "payout_fees": "Supplier payout fees",
+    "escrow_fee_above_estimate": "Escrow fee above the quoted rate",
 }
 
 _TOLERANCE = 0.01

@@ -146,6 +146,21 @@ class TestScoring:
         assert p.margin_pct > 8 and p.p_margin > 0.9 and p.spec_fit == 1.0
         assert p.next_step.startswith("Confirm this match")
 
+    def test_a_usual_price_never_makes_a_pair_firm(self):
+        cand = _cand("a", "interested", requirement=BuyerRequirement(target_price_usd_per_mt=950.0, incoterm="CIF",
+                                                                       quantity_mt=25, grade="refined USP"))
+        p = mm.score_pair(_deal(), cand, _offer("s1", 650.0, grade="refined 99.7% USP", price_basis="usual"),
+                          buyer_est=self.B, supplier_est=self.S)
+        assert not p.firm and p.supplier_price.basis == "estimate"
+        assert any("written quote" in m for m in p.missing)
+
+    def test_an_ex_works_price_gets_the_road_to_the_port(self):
+        cand = _cand("a", "interested", requirement=BuyerRequirement(target_price_usd_per_mt=950.0, incoterm="CIF", quantity_mt=25))
+        fob = mm.score_pair(_deal(), cand, _offer("s1", 650.0), buyer_est=self.B, supplier_est=self.S)
+        exw = mm.score_pair(_deal(), cand, _offer("s1", 650.0, incoterm="EXW", port_km=400), buyer_est=self.B, supplier_est=self.S)
+        assert exw.supplier_price.value == round(650.0 + (400 * 3.5 + 250) / 96.0, 2)
+        assert exw.margin_pct < fob.margin_pct and exw.firm  # still a written quote, just ex-works
+
     def test_moq_and_grade_conflict_block(self):
         cand = _cand("a", "interested", requirement=BuyerRequirement(quantity_mt=10, grade="refined USP"))
         p = mm.score_pair(_deal(), cand, _offer("s1", moq_mt=20, grade="crude 80%"), buyer_est=self.B, supplier_est=self.S)

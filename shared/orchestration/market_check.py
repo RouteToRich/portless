@@ -99,8 +99,8 @@ def _mongo():
         from shared.config import settings
         if not settings.mongo_uri:
             return None
-        import motor.motor_asyncio as motor  # type: ignore[import]
-        return motor.AsyncIOMotorClient(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
+        from shared.mongo import get_client
+        return get_client(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
     except Exception:  # noqa: BLE001
         return None
 

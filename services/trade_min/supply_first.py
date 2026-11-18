@@ -93,7 +93,7 @@ async def start(record_id: str, market: str, *, by: str, org_id: str, hs_code: s
     manual = sup.manual or {}
     await deals.upsert_supplier_offer(deal.deal_id, SupplierOffer(
         offer_id=f"OFR-SF-{deal.deal_id[-8:]}", supplier_id=sup.id, company_name=sup.name, email=sup.email,
-        fob_price_usd_per_mt=sup.estimated_fob_price_usd, moq_mt=manual.get("moq_mt"),
+        fob_price_usd_per_mt=sup.estimated_fob_price_usd, price_basis="usual", moq_mt=manual.get("moq_mt"),
         capacity_mt_per_month=manual.get("capacity_mt_per_month"), port_of_loading=manual.get("port_of_loading"),
         source="directory_usual_price"))
     for b in buyers:

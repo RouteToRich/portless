@@ -46,6 +46,23 @@ def allow(key: str, *, now: float | None = None, limit: int | None = None, windo
     return True, 0
 
 
+def client_address(forwarded_for: str | None, peer: str | None) -> str:
+    """The caller's address for the limit, never one the caller can choose.
+
+    ``TRUSTED_PROXY_HOPS`` (default 0) = how many proxies we run in front of the backend
+    (load balancer, gateway). Each appends the address it saw to X-Forwarded-For, so the real
+    client is the entry that many places from the right; anything further left was written by
+    the caller and is ignored. With 0 the TCP peer is used and the header is ignored."""
+    try:
+        hops = max(0, int(os.getenv("TRUSTED_PROXY_HOPS", "0")))
+    except ValueError:
+        hops = 0
+    chain = [p.strip() for p in (forwarded_for or "").split(",") if p.strip()]
+    if hops and len(chain) >= hops:
+        return chain[-hops]
+    return peer or "unknown"
+
+
 def door(path: str) -> str:
     """Which public door a path is (webhooks of one provider count together)."""
     if "/webhooks/" in path or path.endswith("/webhook") or "/inbound/" in path:

@@ -13,6 +13,12 @@ not unsubscribe anyone. The POST puts the company on the directory's do-not-cont
 as declined and moves the funnel to the next buyer. A buyer already in a deal keeps its deal;
 only the marketing stops.
 
+Suppliers (review board B-12): every RFQ, quote reconfirmation and best-and-final e-mail
+carries ``supplier_opt_out_line(email)`` — the same link with ``d=supplier`` and ``c=<address>``.
+The POST puts the supplier's company (domain; a free-mail address exactly) on the directory's
+supplier do-not-contact list, which every supplier e-mail path checks (``contact_guard``);
+a supplier the directory does not know yet gets a record holding just that.
+
 Without a public base URL or a secret no link is printed and the reply opt-out stays.
 """
 from __future__ import annotations
@@ -29,6 +35,8 @@ from urllib.parse import urlencode
 logger = logging.getLogger(__name__)
 
 PATH = "/trade-min/unsubscribe"
+SUPPLIER = "supplier"
+"""``d`` of a supplier link (``c`` is the supplier's address)."""
 _COURTED = ("pending", "contacted", "followed_up", "no_reply")
 
 
@@ -71,8 +79,54 @@ def opt_out_line(deal_id: str, candidate_id: str) -> str:
     return "If you would prefer not to hear from us, simply reply \"not interested\" and we will not write again."
 
 
+def supplier_link(email: str | None) -> str | None:
+    email = (email or "").strip().lower()
+    return link(SUPPLIER, email) if "@" in email else None
+
+
+def supplier_opt_out_line(email: str | None) -> str:
+    """The last line of a supplier e-mail (RFQ, reconfirmation, best and final)."""
+    url = supplier_link(email)
+    if url:
+        return ("If you would prefer not to receive requests from us, reply \"not interested\" or unsubscribe here: "
+                f"{url}")
+    return "If you would prefer not to receive requests from us, simply reply \"not interested\"."
+
+
+async def apply_supplier(email: str) -> dict[str, Any]:
+    """A supplier's opt-out: its directory record(s) set do-not-contact (a new record when unknown)."""
+    from services.trade_min import directory, relationships  # type: ignore[import]
+    from services.trade_min.schemas import CounterpartyRecord  # type: ignore[import]
+
+    email = (email or "").strip().lower()
+    if "@" not in email:
+        raise LookupError("not an e-mail address")
+    store = await directory.get_directory()
+    keys = {k for k in relationships.keys_for(email) if k.startswith("d:")}
+    now = datetime.now(timezone.utc)
+    fields = {"do_not_contact": True, "dnc_at": now, "dnc_reason": "unsubscribed with the link in our e-mail"}
+    marked: list[str] = []
+    for r in await store.list("supplier", limit=100_000):
+        same_email = (r.email or "").strip().lower() == email
+        same_company = bool(keys) and bool({k for k in relationships.record_keys(r) if k.startswith("d:")} & keys)
+        if same_email or same_company:
+            if not r.do_not_contact:
+                await store.set_contact_preference(r.id, fields)
+            marked.append(r.id)
+    if not marked:
+        rec = await store.upsert(CounterpartyRecord(id=f"supplier:{email}", role="supplier", name=email,
+                                                    email=email, source="unsubscribe", sources=["unsubscribe"],
+                                                    first_seen_at=now, last_seen_at=now))
+        await store.set_contact_preference(rec.id, fields)
+        marked.append(rec.id)
+    logger.warning("Unsubscribe: supplier %s — do not contact (%s)", email, ", ".join(marked))
+    return {"supplier": email, "do_not_contact": True, "records": marked}
+
+
 async def apply(deal_id: str, candidate_id: str) -> dict[str, Any]:
     """Record the opt-out. Raises LookupError when the deal or candidate does not exist."""
+    if deal_id == SUPPLIER:
+        return await apply_supplier(candidate_id)
     from services.deals.service import get_deal, update_buyer_candidate  # type: ignore[import]
     from shared.orchestration import outreach
 

@@ -582,6 +582,7 @@ async def update_status(deal_id: str, payload: UpdateStatusRequest) -> DealRecor
 
     if not can_transition(deal.status, payload.target_status):
         raise InvalidTransitionError(deal.status, payload.target_status)
+    previous_status = DealStatus(deal.status)
 
     now = datetime.now(timezone.utc)
     entry = StatusHistoryEntry(
@@ -614,6 +615,19 @@ async def update_status(deal_id: str, payload: UpdateStatusRequest) -> DealRecor
                 "reason": payload.reason,
                 "winning_supplier_id": deal.winning_supplier_id,
             },
+        )
+
+    if previous_status == DealStatus.DRAFT and payload.target_status == DealStatus.MATCHING:
+        # A deal made by hand or started from a supplier reaches MATCHING here, not at creation:
+        # run the same creation leg as a radar deal (enrichment + screening, the trade-compliance
+        # check, outreach, the RFQ gate). Every step of that leg is idempotent.
+        await _emit_event(
+            EventTopic.DEAL_CREATED,
+            deal_id=deal_id,
+            payload={"operator_id": deal.operator_id, "hs_code": deal.hs_code, "market": deal.market,
+                     "status": DealStatus.MATCHING.value, "opportunity_id": getattr(deal, "opportunity_id", None),
+                     "winning_supplier_id": deal.winning_supplier_id, "entered_matching": True,
+                     "reason": payload.reason},
         )
 
     await _learn_from_status(deal, payload.target_status.value, payload.reason)

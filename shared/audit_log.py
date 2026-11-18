@@ -39,8 +39,8 @@ def _collection() -> Any:
     try:
         from shared.config import settings
         if settings.mongo_uri:
-            import motor.motor_asyncio as motor  # type: ignore[import]
-            _col = motor.AsyncIOMotorClient(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
+            from shared.mongo import get_client
+            _col = get_client(settings.mongo_uri)[settings.mongo_db_name][_COLLECTION]
     except Exception as exc:  # noqa: BLE001
         logger.warning("AuditLog: Mongo unavailable (%s) — in-memory only", exc)
         _col = None
@@ -67,27 +67,53 @@ async def _last() -> dict[str, Any] | None:
 
 
 async def record(action: str, actor: str | None, subject: str | None, detail: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """Append one entry. Returns it (None when the write failed)."""
+    """Append one entry. Returns it (None when the write failed).
+
+    Several instances may append at once: the sequence number is the document id, so a second
+    writer with the same number gets a duplicate-key error — it re-reads the last entry and
+    tries again (up to ``_RETRIES`` times). A write that still fails raises an alert."""
+    payload = json.loads(json.dumps(detail or {}, default=str))
+    last_error: Exception | None = None
+    for _attempt in range(_RETRIES):
+        try:
+            async with _lock:
+                last = await _last()
+                entry = {
+                    "seq": (last["seq"] + 1) if last else 1,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "action": action, "actor": actor or "unknown", "subject": subject or "",
+                    "detail": payload,
+                    "prev_hash": last["hash"] if last else GENESIS,
+                }
+                entry["hash"] = _digest(entry["prev_hash"], entry)
+                col = _collection()
+                if col is None:
+                    _memory.append(entry)
+                else:
+                    await col.insert_one({"_id": entry["seq"], **entry})
+                return entry
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if "duplicate key" in str(exc).lower() or type(exc).__name__ == "DuplicateKeyError":
+                await asyncio.sleep(0.05)
+                continue  # another instance took this number — re-read and try the next one
+            break
+    logger.error("AuditLog: %s by %s on %s NOT recorded: %s", action, actor, subject, last_error)
+    await _alert(action, actor, subject, last_error)
+    return None
+
+
+_RETRIES = 6
+
+
+async def _alert(action: str, actor: str | None, subject: str | None, exc: Exception | None) -> None:
+    """A missing audit entry is a control failure: tell the operators at once (Telegram)."""
     try:
-        async with _lock:
-            last = await _last()
-            entry = {
-                "seq": (last["seq"] + 1) if last else 1,
-                "at": datetime.now(timezone.utc).isoformat(),
-                "action": action, "actor": actor or "unknown", "subject": subject or "",
-                "detail": json.loads(json.dumps(detail or {}, default=str)),
-                "prev_hash": last["hash"] if last else GENESIS,
-            }
-            entry["hash"] = _digest(entry["prev_hash"], entry)
-            col = _collection()
-            if col is None:
-                _memory.append(entry)
-            else:
-                await col.insert_one({"_id": entry["seq"], **entry})
-            return entry
-    except Exception as exc:  # noqa: BLE001
-        logger.error("AuditLog: %s by %s on %s NOT recorded: %s", action, actor, subject, exc)
-        return None
+        from shared import telegram
+        if telegram.configured():
+            await telegram.send_message(f"AUDIT LOG WRITE FAILED: {action} by {actor} on {subject} — {exc}")
+    except Exception as err:  # noqa: BLE001
+        logger.debug("AuditLog: alert not sent: %s", err)
 
 
 async def entries(limit: int = 200, subject: str | None = None) -> list[dict[str, Any]]:

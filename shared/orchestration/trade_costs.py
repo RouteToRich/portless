@@ -156,6 +156,20 @@ class CostSheet(BaseModel):
     computed_at: datetime | None = None
 
 
+_EXW = ("EXW", "EX-WORKS", "EX WORKS", "FCA")
+
+
+def exw_to_fob(price_usd: float, basis: str | None, port_km: float | None = None) -> float:
+    """An ex-works price plus the road to the port and loading (the cost-sheet settings), so it
+    compares with an FOB quote. An FOB price comes back unchanged."""
+    if (basis or "FOB").upper() not in _EXW:
+        return price_usd
+    km = port_km if port_km is not None else _f("TRADE_COST_INLAND_DEFAULT_KM", 600.0)
+    rate = _f("NEGOTIATION_FALLBACK_USD_INR_RATE", 96.0)
+    inland = (km * _f("TRADE_COST_INLAND_INR_PER_TONNE_KM", 3.5) + _f("TRADE_COST_INLAND_HANDLING_INR_PER_MT", 250.0)) / rate
+    return round(price_usd + inland, 2)
+
+
 def _sum(lines: list[CostLine]) -> tuple[float, float]:
     fixed = sum(l.usd_per_mt for l in lines if l.paid_by == "PortLess")
     pct = sum(l.pct_of_price for l in lines if l.paid_by == "PortLess")

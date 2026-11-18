@@ -293,6 +293,8 @@ class ScreeningReview(BaseModel):
     previous_reason: str | None = None
     evidence_url: str | None = None
     """The screening certificate the person looked at."""
+    pending: bool = False
+    """A first ``clear`` waiting for a second, different person to countersign (two-person rule)."""
 
 
 class CounterpartyRecord(BaseModel):

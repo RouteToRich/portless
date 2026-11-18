@@ -87,8 +87,8 @@ _SIGNED_FORM_PATHS = ("/trade-min/unsubscribe",)
 def _limited(request: Request) -> JSONResponse | None:
     """429 when an anonymous caller exceeds the public rate limit (shared/rate_limit.py)."""
     from shared import rate_limit
-    client = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
-        request.client.host if request.client else "unknown")
+    client = rate_limit.client_address(request.headers.get("x-forwarded-for"),
+                                       request.client.host if request.client else None)
     ok, retry = rate_limit.allow(f"{client}|{rate_limit.door(request.url.path)}")
     if ok:
         return None

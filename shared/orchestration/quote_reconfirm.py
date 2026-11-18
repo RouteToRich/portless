@@ -75,8 +75,9 @@ async def _save_offer(deal_id: str, offer: Any) -> None:
     await upsert_supplier_offer(deal_id, offer)
 
 
-def body(company: str | None, price: float | None, until: datetime) -> str:
+def body(company: str | None, price: float | None, until: datetime, email: str | None = None) -> str:
     from shared import company_profile as cp
+    from shared.orchestration.unsubscribe import supplier_opt_out_line
     greeting = f"Dear {company} team," if company else "Dear Sir / Madam,"
     figure = f"USD {price:,.2f} per MT FOB" if price else "your quoted price"
     return (
@@ -84,7 +85,8 @@ def body(company: str | None, price: float | None, until: datetime) -> str:
         f"Thank you again for your quotation. It is valid until {until:%d %B %Y}, and our buyer's decision is "
         "close, so we would like to keep it on the table.\n\n"
         f"Could you please confirm that {figure} still stands, and until which date? A one-line reply is enough. "
-        "If anything has changed (price, quantity or shipment date), simply reply with the new figures."
+        "If anything has changed (price, quantity or shipment date), simply reply with the new figures.\n\n"
+        + supplier_opt_out_line(email)
         + cp.signature()
     )
 
@@ -101,8 +103,11 @@ async def _ask(deal: Any, offer: Any, until: datetime) -> bool:
             rfq_id = None
     if not rfq_id:
         return False
+    from shared.orchestration.contact_guard import supplier_blocked
+    if await supplier_blocked(offer.email):
+        return False  # asked PortLess to stop writing
     subject = "Re: " + rfq_subject(rfq_id, deal.hs_code, getattr(deal, "quantity_mt", None)) + " — please reconfirm"
-    text = body(offer.company_name, offer.fob_price_usd_per_mt, until)
+    text = body(offer.company_name, offer.fob_price_usd_per_mt, until, offer.email)
     result = await send_email(SendEmailRequest(
         to_address=offer.email, subject=subject, body=text, negotiation_id="", round_no=0,
         email_id=f"RECONF{deal.deal_id.replace('-', '')[-8:]}{re.sub(r'[^A-Z0-9]', '', offer.offer_id.upper())[:12]}",

@@ -269,7 +269,15 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
     incoterm = (getattr(req, "target_price_incoterm", None) or getattr(req, "incoterm", None) or "CIF") if req else "CIF"
     fob = getattr(offer, "fob_price_usd_per_mt", None)
     if fob:
-        sp = PricePoint(value=float(fob), basis="quoted", sigma=float(fob) * 0.02, incoterm="FOB")
+        from shared.orchestration.trade_costs import exw_to_fob
+        fob = exw_to_fob(float(fob), getattr(offer, "incoterm", "FOB"), getattr(offer, "port_km", None))
+        if getattr(offer, "price_basis", "quoted") == "quoted":
+            sp = PricePoint(value=fob, basis="quoted", sigma=fob * 0.02, incoterm="FOB")
+        else:
+            # A usual / estimated price is not a commitment: the pair stays an estimate until the
+            # supplier quotes in writing (the RFQ reply).
+            sp = PricePoint(value=fob, basis="estimate", sigma=fob * 0.06, incoterm="FOB")
+            missing.append("supplier's written quote (only its usual price is known)")
     elif supplier_est.median:
         sp = PricePoint(value=supplier_est.median, basis="estimate", sigma=supplier_est.sigma, incoterm="FOB")
         missing.append("supplier price")

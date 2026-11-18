@@ -524,7 +524,7 @@ class TestCatalogue:
             assert cat._mongo_collection() is None
 
     def test_mongo_collection(self):
-        with patch("shared.config.settings", new=SimpleNamespace(mongo_uri="u", mongo_db_name="d")), patch("motor.motor_asyncio.AsyncIOMotorClient", side_effect=lambda *_a: AsyncMongoMockClient()):
+        with patch("shared.config.settings", new=SimpleNamespace(mongo_uri="u", mongo_db_name="d")), patch("motor.motor_asyncio.AsyncIOMotorClient", side_effect=lambda *_a, **_k: AsyncMongoMockClient()):
             assert cat._mongo_collection() is not None
 
     async def test_persist_and_reload(self):
@@ -580,7 +580,7 @@ class TestPriceBook:
             assert pb._mongo_collection() is None
 
     def test_mongo_collection(self):
-        with patch("shared.config.settings", new=SimpleNamespace(mongo_uri="u", mongo_db_name="d")), patch("motor.motor_asyncio.AsyncIOMotorClient", side_effect=lambda *_a: AsyncMongoMockClient()):
+        with patch("shared.config.settings", new=SimpleNamespace(mongo_uri="u", mongo_db_name="d")), patch("motor.motor_asyncio.AsyncIOMotorClient", side_effect=lambda *_a, **_k: AsyncMongoMockClient()):
             assert pb._mongo_collection() is not None
 
     @pytest.mark.parametrize("price", [0.0, -5.0, float("inf")])
@@ -750,7 +750,7 @@ class TestAutonomyPolicy:
             assert au._mongo_collection() is None
 
     def test_mongo_collection(self):
-        with patch("shared.config.settings", new=SimpleNamespace(mongo_uri="u", mongo_db_name="d")), patch("motor.motor_asyncio.AsyncIOMotorClient", side_effect=lambda *_a: AsyncMongoMockClient()):
+        with patch("shared.config.settings", new=SimpleNamespace(mongo_uri="u", mongo_db_name="d")), patch("motor.motor_asyncio.AsyncIOMotorClient", side_effect=lambda *_a, **_k: AsyncMongoMockClient()):
             assert au._mongo_collection() is not None
 
     def test_clean_gate(self):

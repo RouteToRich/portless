@@ -52,18 +52,39 @@ async def test_the_queue_lists_only_review_results_oldest_first():
     assert [r.id for r in await sr.queue("buyer")] == [newer.id]
 
 
+async def _clear_by_two(rec_id, reason="not the listed entity"):
+    await sr.resolve(rec_id, "clear", reason, "ops@portless.in")
+    return await sr.resolve(rec_id, "clear", "agree: " + reason, "lead@portless.in")
+
+
 async def test_clear_verifies_and_keeps_the_audit_trail():
     rec = await _add()
-    saved = await sr.resolve(rec.id, "clear", "different company: other address and owners", "ops@portless.in")
+    first = await sr.resolve(rec.id, "clear", "different company: other address and owners", "ops@portless.in")
+    assert first.validation.sanctions == "review" and first.screening_reviews[0].pending  # waits for a second person
+    assert [r.id for r in await sr.queue()] == [rec.id]
+    saved = await sr.resolve(rec.id, "clear", "agree — other owners", "lead@portless.in")
     assert saved.validation.sanctions == "clear" and saved.validation.status == "verified"
-    assert "staff cleared" in saved.validation.sanctions_reason and "ops@portless.in" in saved.validation.sanctions_reason
-    (review,) = saved.screening_reviews
-    assert review.decision == "clear" and review.by == "ops@portless.in"
-    assert review.previous_sanctions == "review" and review.previous_reason.startswith("possible match")
-    assert review.evidence_url == "https://evidence.example/gulf.pdf"
+    assert "staff cleared" in saved.validation.sanctions_reason and "lead@portless.in" in saved.validation.sanctions_reason
+    first_review, second = saved.screening_reviews
+    assert (first_review.by, first_review.pending, second.by, second.pending) == ("ops@portless.in", False, "lead@portless.in", False)
+    assert second.previous_sanctions == "review" and second.previous_reason.startswith("possible match")
+    assert second.evidence_url == "https://evidence.example/gulf.pdf"
     assert await sr.queue() == []
-    stored = await (await dr.get_directory()).get(rec.id)
-    assert stored.screening_reviews[0].reason.startswith("different company")
+
+
+async def test_the_same_person_cannot_countersign_and_one_person_can_still_fail():
+    rec = await _add()
+    await sr.resolve(rec.id, "clear", "not listed", "ops@portless.in")
+    with pytest.raises(sr.SamePerson):
+        await sr.resolve(rec.id, "clear", "really not listed", "OPS@portless.in")
+    failed = await sr.resolve(rec.id, "fail", "the second look found the match", "lead@portless.in")
+    assert failed.validation.status == "failed" and not any(r.pending for r in failed.screening_reviews)
+
+
+async def test_two_person_rule_can_be_switched_off(monkeypatch):
+    monkeypatch.setenv("SCREENING_CLEAR_TWO_PERSON", "false")
+    rec = await _add()
+    assert (await sr.resolve(rec.id, "clear", "not listed", "ops")).validation.sanctions == "clear"
 
 
 async def test_fail_blocks_the_company():
@@ -75,7 +96,7 @@ async def test_fail_blocks_the_company():
 
 async def test_clear_with_an_undeliverable_email_stays_unverified():
     rec = await _add(email="invalid")
-    saved = await sr.resolve(rec.id, "clear", "not the listed entity", "ops@portless.in")
+    saved = await _clear_by_two(rec.id)
     assert saved.validation.sanctions == "clear" and saved.validation.status == "unverified"
 
 
@@ -126,8 +147,8 @@ async def test_decision_is_stored_in_mongo_too(monkeypatch):
                              markets=["AE"], first_seen_at=NOW, last_seen_at=NOW, validation=_v())
     await store.upsert(rec)
     assert [r.id for r in await sr.queue()] == [rec.id]
-    saved = await sr.resolve(rec.id, "clear", "not the listed entity", "ops@portless.in")
-    assert saved.validation.status == "verified" and saved.screening_reviews[0].decision == "clear"
+    saved = await _clear_by_two(rec.id)
+    assert saved.validation.status == "verified" and saved.screening_reviews[-1].decision == "clear"
     # a later scan of the same company keeps the decision and its trail
     again = await store.upsert(rec.model_copy(update={"validation": None, "screening_reviews": []}))
-    assert again.validation.sanctions == "clear" and len(again.screening_reviews) == 1
+    assert again.validation.sanctions == "clear" and len(again.screening_reviews) == 2

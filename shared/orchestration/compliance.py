@@ -261,8 +261,8 @@ def _collection(name: str):
         from shared.config import settings
         if not settings.mongo_uri:
             return None
-        import motor.motor_asyncio as motor  # type: ignore[import]
-        client: Any = motor.AsyncIOMotorClient(settings.mongo_uri)
+        from shared.mongo import get_client
+        client: Any = get_client(settings.mongo_uri)
         return client[settings.mongo_db_name][name]
     except Exception as exc:  # noqa: BLE001
         logger.warning("Compliance: Mongo unavailable (%s) — in-memory only", exc)

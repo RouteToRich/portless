@@ -1892,7 +1892,7 @@ async def _patch_deal_realized_margin(deal_id: str) -> None:
         # tranches net of provider fees; the funded principal for a legacy
         # Stripe hold) minus everything paid to the supplier, minus PortLess's
         # own costs (freight, inspection, insurance, customs, documents).
-        costs, _basis = await _portless_costs(deal_id, hold.amount)
+        costs, _basis = await _portless_costs(deal_id, hold.amount, fees_estimated=hold.fees_total)
         realized = round(_net_received(hold) - payouts_total - sum(costs.values()), 2)
         # As a % of what the buyer pays (the escrow principal = the PI total).
         pct = round(realized / hold.amount * 100.0, 2) if hold.amount else None
@@ -1976,7 +1976,7 @@ _ORDER_FEE_KEYS = {"inspection": ("fee_usd", "total_usd"), "ocean_freight": ("to
                    "customs_agent": ("fee_usd", "total_usd")}
 
 
-async def _portless_costs(deal_id: str, principal: float) -> tuple[dict[str, float], dict[str, str]]:
+async def _portless_costs(deal_id: str, principal: float, *, fees_estimated: float = 0.0) -> tuple[dict[str, float], dict[str, str]]:
     """PortLess's own costs for the deal so far: each cost-sheet line once its
     provider order exists, at the order's reported fee or the sheet's estimate.
     The escrow fee is excluded (already in ``fees_total``) and so is the
@@ -2022,7 +2022,29 @@ async def _portless_costs(deal_id: str, principal: float) -> tuple[dict[str, flo
                 costs[key], basis[key] = usd, "estimate"
     except Exception as exc:  # noqa: BLE001
         logger.warning("EscrowGuard: PortLess costs for %s not computed: %s", deal_id, exc)
+    await _recorded_fees(deal_id, fees_estimated, costs, basis)
     return costs, basis
+
+
+async def _recorded_fees(deal_id: str, fees_estimated: float, costs: dict[str, float], basis: dict[str, str]) -> None:
+    """Fees staff recorded from the provider / bank statements (fee_check): bank charges and
+    payout fees are actual costs; an escrow fee above the provider's estimate (``fees_total``)
+    is booked as the difference. So the ledger, the realised margin and the journal follow the
+    statements (review board B-05). Never raises."""
+    try:
+        from shared.orchestration import fee_check
+        rows = await fee_check.recorded(deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("EscrowGuard: recorded fees of %s unavailable: %s", deal_id, exc)
+        return
+    sums = {k: round(sum(r["amount_usd"] for r in rows if r["kind"] == k), 2) for k in ("escrow", "payout", "bank")}
+    if sums["bank"] > 0:
+        costs["bank_charges"], basis["bank_charges"] = sums["bank"], "actual"
+    if sums["payout"] > 0:
+        costs["payout_fees"], basis["payout_fees"] = sums["payout"], "actual"
+    extra = round(sums["escrow"] - fees_estimated, 2)
+    if sums["escrow"] > 0 and extra > 0:
+        costs["escrow_fee_above_estimate"], basis["escrow_fee_above_estimate"] = extra, "actual"
 
 
 async def get_deal_ledger(deal_id: str) -> DealLedger:
@@ -2055,7 +2077,7 @@ async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> De
         owed = await _supplier_owed(hold.deal_id)
     retained = _retained_until_acceptance(hold, owed)
     payable_ceiling = min(net, owed - retained) if retained else net
-    costs, basis = await _portless_costs(hold.deal_id, hold.amount)
+    costs, basis = await _portless_costs(hold.deal_id, hold.amount, fees_estimated=hold.fees_total)
     costs_total = round(sum(costs.values()), 2)
     has_margin = bool((hold.tranches and hold.released_total) or completed)
     return DealLedger(
