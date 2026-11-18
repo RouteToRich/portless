@@ -404,6 +404,8 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
                 await _sweep_in_transit(deal, now, counts)
             elif status == "CLEARED":
                 await _sweep_cleared(deal, now, counts)
+            elif status in ("DRAFT", "MATCHING") and _parked(deal, now):
+                continue  # parked from the desk: no reminders, no stall exception
             elif status == "MATCHING" and _outreach_owns(deal):
                 continue  # the buyer funnel's own follow-up cadence applies
             else:
@@ -420,6 +422,23 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     except Exception as exc:  # noqa: BLE001
         logger.error("DealWatcher: supplier confirmation sweep failed: %s", exc)
 
+    # Outreach / RFQ e-mails that failed in transport: retried on the back-off schedule.
+    try:
+        from shared.orchestration import send_retry
+        for key, value in (await send_retry.sweep(now)).items():
+            counts[f"send_retry_{key}"] = value
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: send retries failed: %s", exc)
+
+    # Supplier quotes about to expire: ask for a reconfirmation; unanswered ones expire.
+    try:
+        from shared.orchestration import quote_reconfirm
+        for key, value in (await quote_reconfirm.sweep(now)).items():
+            if value:
+                counts[f"quote_reconfirm_{key}"] = value
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: quote reconfirmation failed: %s", exc)
+
     # Buyer outreach follow-ups (MATCHING / NEGOTIATING deals waiting for a buyer).
     try:
         from shared.orchestration import outreach
@@ -433,6 +452,11 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     if any(v for k, v in counts.items() if k != "scanned"):
         logger.info("DealWatcher: %s", counts)
     return counts
+
+
+def _parked(deal: Any, now: datetime) -> bool:
+    from shared.orchestration.prospect_actions import is_parked
+    return is_parked(deal, now)
 
 
 def _outreach_owns(deal: Any) -> bool:

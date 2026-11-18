@@ -38,7 +38,7 @@ def test_the_block_at_the_top_of_todo_is_up_to_date():
 def test_counts_per_section_and_owner():
     sections, owners = tm.count(SAMPLE)
     assert sections == [("P0 — before the first real trade", 2, 1), ("P1 — before more than a few deals a month", 0, 1)]
-    assert owners == {"Eng": 1, "Ops": 1, "Legal": 1, "Biz": 0, "QA": 0}
+    assert owners == {"Eng": 1, "Apify": 0, "Ops": 1, "Legal": 1, "Biz": 0, "QA": 0}
 
 
 def test_render_inserts_once_then_replaces():

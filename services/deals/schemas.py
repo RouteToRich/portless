@@ -123,6 +123,12 @@ class SupplierOffer(BaseModel):
     origin_deal_id: str | None = None
     """The prospect the quote came in on (offers are matched across prospects of the same HS code)."""
     received_at: datetime | None = None
+    """When the price was received — or last reconfirmed (validity counts from here)."""
+    reconfirm_asked_at: datetime | None = None
+    """When PortLess asked the supplier to reconfirm before expiry (quote_reconfirm.py)."""
+    reconfirmed_at: datetime | None = None
+    reconfirm_status: str | None = None
+    """``asked`` · ``confirmed`` · ``expired`` (asked, no answer before the end)."""
 
 
 class BuyerCandidate(BaseModel):
@@ -151,6 +157,10 @@ class BuyerCandidate(BaseModel):
     send_error: str | None = None
     """Why the last e-mail to this candidate did not go out (e.g. no mailbox configured)."""
     send_attempts: int = 0
+    send_failed_at: datetime | None = None
+    """When the last send failed in transport (send_retry counts the back-off from here)."""
+    send_gave_up_at: datetime | None = None
+    """Every retry used up — the operator was told (``OUTREACH:send_failed``)."""
     requirement: BuyerRequirement | None = None
     """What this buyer wants (grade, quantity, port, target price…) — the match board's buyer side."""
     indicative_offer: IndicativeOffer | None = None
@@ -229,6 +239,12 @@ class DealRecord(BaseModel):
     realized_margin_usd: float | None = None
     est_margin_pct: float | None = None
     realized_margin_pct: float | None = None
+    # ── Prospect parked (prospect_actions.park): no reminders, record kept ──
+    parked_at: datetime | None = None
+    parked_until: datetime | None = None
+    """The park ends by itself at this time; None = until unparked by hand."""
+    parked_reason: str | None = None
+    parked_by: str | None = None
     radar_estimate: dict[str, Any] | None = None
     """The Opportunity Radar's numbers when the prospect was started (trade_min
     profit block: buyer / supplier price and basis, lot, margin, chance of

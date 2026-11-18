@@ -4,7 +4,7 @@
     python -X utf8 scripts/todo_metrics.py --check  # exit 1 when the block is out of date
 
 An item is a line starting with "- [ ]" (open) or "- [x]" (done), at any indent. Items are
-counted per "## " section, and the open ones per owner tag: (Eng), (Ops), (Legal), (Biz), (QA).
+counted per "## " section, and the open ones per owner tag: (Eng), (Apify), (Ops), (Legal), (Biz), (QA).
 The block sits between the two marker comments and is replaced on every run.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ START = "<!-- todo-metrics:start -->"
 END = "<!-- todo-metrics:end -->"
 OPEN = re.compile(r"^\s*- \[ \]")
 DONE = re.compile(r"^\s*- \[[xX]\]")
-OWNERS = ("Eng", "Ops", "Legal", "Biz", "QA")
+OWNERS = ("Eng", "Apify", "Ops", "Legal", "Biz", "QA")
 SHORT = {  # section heading prefix -> label in the table
     "Where things stand": "Where things stand",
     "Go-live blockers": "Go-live blockers",
@@ -27,6 +27,7 @@ SHORT = {  # section heading prefix -> label in the table
     "P0": "P0 — before the first real trade",
     "P1": "P1 — before more than a few deals a month",
     "P2": "P2 — improvements",
+    "Apify actors": "Apify actors (outside this repo)",
     "Decisions needed": "Decisions needed",
     "Done in the latest rounds": "Done in the latest rounds",
     "Appendix": "Appendix",

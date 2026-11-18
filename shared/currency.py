@@ -54,6 +54,20 @@ async def usd_rate(currency: str) -> float | None:
     return None
 
 
+async def rate_info(currency: str = "INR") -> dict[str, Any]:
+    """The rate the console shows beside USD prices: ``{currency, rate, source}`` —
+    ``live`` (web search) or ``fallback`` (the static ``NEGOTIATION_FALLBACK_USD_INR_RATE``)."""
+    live = None
+    if currency == "INR":
+        try:
+            from agents.negotiation_agent.market_intel import fetch_usd_inr_rate
+            live = await fetch_usd_inr_rate()
+        except Exception:  # noqa: BLE001
+            live = None
+    rate = float(live) if live else fallback_rate(currency)
+    return {"currency": currency, "rate": rate, "source": "live" if live else ("fallback" if rate else "none")}
+
+
 def money(usd: Any, currency: str = "USD", rate: float | None = None, *, decimals: int = 2) -> str:
     """``USD 910.00`` — or, for a local currency with a rate, ``INR 87,360 (USD 910.00)``."""
     try:

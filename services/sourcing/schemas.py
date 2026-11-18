@@ -63,6 +63,10 @@ class DispatchResult(BaseModel):
     """External RFQ reference returned by the connector."""
     success: bool
     error: str | None = None
+    attempts: int = 1
+    """E-mail sends tried (shared/orchestration/send_retry.py retries a transport failure)."""
+    failed_at: datetime | None = None
+    """When the last send failed in transport (the back-off counts from here)."""
 
 
 class VerificationResult(BaseModel):

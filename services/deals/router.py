@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -125,6 +126,70 @@ async def prospect_desk(user: AuthUser = Depends(get_current_user)) -> list[dict
     from shared.orchestration import prospect_desk as pd
     deals = await service.list_deals(limit=500, org_id=require_org_scope(user))
     return [row.model_dump(mode="json") for row in await pd.desk(deals)]
+
+
+class ParkRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=300)
+    until: datetime | None = None
+
+
+class DropRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=300)
+
+
+def _who(user: AuthUser) -> str:
+    return getattr(user, "email", None) or getattr(user, "user_id", None) or "staff"
+
+
+async def _prospect_action(deal_id: str, user: AuthUser, coro_factory):
+    from shared.orchestration import prospect_actions as pa
+    await _org_deal(deal_id, user)
+    try:
+        return await coro_factory(pa)
+    except pa.NotAProspect as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/fx/usd-inr", response_model=dict)
+async def usd_inr(user: AuthUser = Depends(get_current_user)) -> dict:
+    """The USD/INR rate the console uses to show an Indian supplier's INR figure beside the
+    USD price (the contract currency stays USD)."""
+    from shared.currency import rate_info
+    return await rate_info("INR")
+
+
+@router.post("/radar-estimate/backfill", response_model=dict)
+async def backfill_radar_estimate(user: AuthUser = Depends(require_portless)) -> dict:
+    """Store the radar's estimate once on every deal from an opportunity that has none (staff)."""
+    from shared.orchestration import prospect_desk as pd
+    return await pd.backfill_radar_estimates(await service.list_deals(limit=5000))
+
+
+@router.post("/{deal_id}/retry-sends", response_model=dict)
+async def retry_sends(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Re-send now every outreach / RFQ e-mail of the deal that failed in transport and has tries left."""
+    from shared.orchestration import send_retry
+    await _org_deal(deal_id, user)
+    return await send_retry.retry_now(deal_id)
+
+
+@router.post("/{deal_id}/prospect/park", response_model=DealRecord)
+async def park_prospect(deal_id: str, body: ParkRequest, user: AuthUser = Depends(get_current_user)) -> DealRecord:
+    """Stop every reminder for a prospect and keep it (optionally until a date)."""
+    return await _prospect_action(deal_id, user, lambda pa: pa.park(deal_id, body.reason, _who(user), body.until))
+
+
+@router.post("/{deal_id}/prospect/unpark", response_model=DealRecord)
+async def unpark_prospect(deal_id: str, user: AuthUser = Depends(get_current_user)) -> DealRecord:
+    return await _prospect_action(deal_id, user, lambda pa: pa.unpark(deal_id, _who(user)))
+
+
+@router.post("/{deal_id}/prospect/drop", response_model=DealRecord)
+async def drop_prospect(deal_id: str, body: DropRequest, user: AuthUser = Depends(get_current_user)) -> DealRecord:
+    """Close a prospect as CANCELLED with the reason; its pending prospect gates close as superseded."""
+    return await _prospect_action(deal_id, user, lambda pa: pa.drop(deal_id, body.reason, _who(user)))
 
 
 @router.post("", response_model=DealRecord, status_code=status.HTTP_201_CREATED)

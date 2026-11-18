@@ -224,6 +224,16 @@ async def _dispatch_one(
     # marketplace API key). The subject token lets the reply map back here.
     if supplier.email:
         ext_id = await _dispatch_by_email(rfq_id, supplier, message, payload)
+        if ext_id is not None and ext_id.startswith(_SEND_FAILED):
+            return DispatchResult(
+                supplier_id=supplier.supplier_id,
+                contact_id=contact_id,
+                channel="email",
+                email=supplier.email,
+                success=False,
+                error="send failed: " + ext_id[len(_SEND_FAILED):][:250],
+                failed_at=datetime.now(timezone.utc),
+            )
         if ext_id == _NOT_DELIVERED:
             return DispatchResult(
                 supplier_id=supplier.supplier_id,
@@ -254,6 +264,8 @@ async def _dispatch_one(
 
 
 _NOT_DELIVERED = "__not_delivered__"
+_SEND_FAILED = "__send_failed__:"
+"""Prefix of ``_dispatch_by_email``'s answer when the transport failed (retried later)."""
 
 
 def rfq_subject(rfq_id: str, hs_code: str, quantity_mt: float | None) -> str:
@@ -295,8 +307,10 @@ async def _dispatch_by_email(
         logger.info("RFQ %s e-mailed to %s (%s): %s", rfq_id, supplier.email, supplier.supplier_id, outcome_val)
         return getattr(result, "message_id", None) or f"email:{outcome_val}"
     except Exception as exc:  # noqa: BLE001
+        # A transport failure is a failed dispatch (retried with back-off), never a
+        # silent fall-through to the portal channel as if the supplier had been asked.
         logger.warning("RFQ %s e-mail to %s failed: %s", rfq_id, supplier.email, exc)
-        return None
+        return f"{_SEND_FAILED}{exc}"
 
 
 def rfq_sender_supplier(rfq: Any, from_address: str | None) -> str | None:
@@ -917,3 +931,51 @@ async def verify_supplier(
         cin=cin,
         udyam_number=udyam_number,
     )
+
+
+async def retry_failed_email_sends(deal_id: str, *, now: datetime | None = None, force: bool = False) -> dict[str, int]:
+    """Re-send the RFQ e-mails of a deal whose transport failed, on the back-off schedule
+    (``force`` = now, the operator's "Retry sends"). Gives up after the last step and raises
+    ``deal.exception`` ``RFQ:send_failed`` once per supplier."""
+    from types import SimpleNamespace
+    from shared.orchestration import send_retry
+
+    now = now or datetime.now(timezone.utc)
+    counts = {"retried": 0, "delivered": 0, "gave_up": 0}
+    repo = get_repository()
+    for rfq in await repo.list_rfqs(deal_id):
+        changed = False
+        results = list(rfq.dispatch_results)
+        for i, d in enumerate(results):
+            if d.success or d.channel != "email" or not (d.error or "").startswith("send failed") or not d.email:
+                continue
+            if send_retry.exhausted(d.attempts):
+                continue
+            if not force and not send_retry.due(d.attempts, d.failed_at, now):
+                continue
+            supplier = SupplierRef(supplier_id=d.supplier_id, email=d.email, source="other",
+                                   company_name=await _supplier_name(rfq.deal_id, d.supplier_id))
+            payload = SimpleNamespace(deal_id=rfq.deal_id, hs_code=rfq.hs_code, quantity_mt=rfq.quantity_mt)
+            ext_id = await _dispatch_by_email(rfq.rfq_id, supplier, rfq.message, payload)  # type: ignore[arg-type]
+            counts["retried"] += 1
+            attempts = d.attempts + 1
+            if ext_id is not None and not ext_id.startswith(_SEND_FAILED) and ext_id != _NOT_DELIVERED:
+                results[i] = d.model_copy(update={"success": True, "error": None, "ext_rfq_id": ext_id,
+                                                  "attempts": attempts, "failed_at": None})
+                counts["delivered"] += 1
+            else:
+                error = ("send failed: " + ext_id[len(_SEND_FAILED):][:250]) if ext_id and ext_id.startswith(_SEND_FAILED)                     else d.error
+                results[i] = d.model_copy(update={"error": error, "attempts": attempts, "failed_at": now})
+                if send_retry.exhausted(attempts):
+                    counts["gave_up"] += 1
+                    await _emit_event(EventTopic.DEAL_EXCEPTION, rfq.deal_id, {
+                        "source": "sourcing", "stage": "RFQ:send_failed",
+                        "error": f"RFQ {rfq.rfq_id} to {d.email} could not be sent after {attempts} tries: {error}",
+                        "action_required": "check_the_mailbox_then_retry_sends", "supplier_id": d.supplier_id,
+                    })
+            changed = True
+        if changed:
+            ok = sum(1 for r in results if r.success)
+            status = "COMPLETE" if ok == len(results) else ("FAILED" if ok == 0 else "PARTIAL")
+            await repo.save_rfq(rfq.model_copy(update={"dispatch_results": results, "status": status}))
+    return counts

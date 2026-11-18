@@ -104,6 +104,15 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         out["warnings"].append(f"deals unavailable: {exc}")
 
+    # ── Prospect desk: our move and stalled, with the next move ────────────
+    try:
+        from services.deals.repository import get_repository as _deals_repo  # type: ignore[import]
+        from shared.orchestration import prospect_desk
+        rows = await prospect_desk.desk(await _deals_repo().list_active(limit=1000))
+        out["prospects"] = _desk_digest(rows)
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"prospect desk unavailable: {exc}")
+
     # ── Exceptions ─────────────────────────────────────────────────────────
     try:
         from services.exception_resolver.repository import get_repository as _er_repo  # type: ignore[import]
@@ -155,6 +164,39 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
     return out
 
 
+DESK_ITEMS = 8
+
+
+def _desk_row(r: Any) -> dict[str, Any]:
+    first = r.actions[0] if r.actions else None
+    return {
+        "deal_id": r.deal_id, "hs_code": r.hs_code, "market": r.market, "idle_days": r.idle_days,
+        "waiting_on": r.waiting_on, "waiting_detail": r.waiting_detail, "priority": r.priority,
+        "expected_value_usd": r.expected_value_usd,
+        "next_move": first.text if first else None, "next_kind": first.kind if first else None,
+    }
+
+
+def _desk_digest(rows: list[Any]) -> dict[str, Any]:
+    """The prospect desk in the morning digest: every prospect where the move is ours (best
+    first) and every stalled one, each with its next move."""
+    ours = [r for r in rows if r.waiting_on == "us"]
+    stalled = [r for r in rows if r.stalled and r.waiting_on != "us"]
+    return {
+        "open": len(rows), "our_move_total": len(ours), "stalled_total": len([r for r in rows if r.stalled]),
+        "our_move": [_desk_row(r) for r in sorted(ours, key=lambda r: -r.priority)[:DESK_ITEMS]],
+        "stalled": [_desk_row(r) for r in sorted(stalled, key=lambda r: -(r.idle_days or 0))[:DESK_ITEMS]],
+    }
+
+
+def _desk_line(row: dict[str, Any]) -> str:
+    where = f"{row['hs_code']}→{row['market'] or '?'}"
+    idle = f", idle {row['idle_days']}d" if row.get("idle_days") else ""
+    ev = f", EV {row['expected_value_usd']:,.0f} USD" if row.get("expected_value_usd") else ""
+    move = row.get("next_move") or row.get("waiting_detail") or "look at it"
+    return f"  • {row['deal_id']} {where}{idle}{ev}: {move}"
+
+
 def render_digest_text(d: dict[str, Any]) -> str:
     ap, de, ex, mo = d.get("approvals") or {}, d.get("deals") or {}, d.get("exceptions") or {}, d.get("money") or {}
     lines = [f"PortLess daily digest — {d.get('generated_at', '')[:16].replace('T', ' ')} UTC", ""]
@@ -172,6 +214,17 @@ def render_digest_text(d: dict[str, Any]) -> str:
         lines.append(f"  STALLED ({len(de['stalled'])}): " + ", ".join(
             f"{s['deal_id']} {s['status']} {s['hours'] / 24:.0f}d" for s in de["stalled"][:8]))
     lines.append("")
+    pr = d.get("prospects") or {}
+    if pr:
+        lines.append(f"PROSPECTS: {pr.get('open', 0)} open · our move on {pr.get('our_move_total', 0)} · "
+                     f"{pr.get('stalled_total', 0)} stalled")
+        if pr.get("our_move"):
+            lines.append("  OUR MOVE:")
+            lines += [_desk_line(r) for r in pr["our_move"]]
+        if pr.get("stalled"):
+            lines.append("  STALLED (waiting on them):")
+            lines += [_desk_line(r) for r in pr["stalled"]]
+        lines.append("")
     lines.append(f"EXCEPTIONS OPEN: {ex.get('open_total', 0)} " + " ".join(
         f"{k}={v}" for k, v in (ex.get("by_status") or {}).items()))
     for item in (ex.get("items") or [])[:6]:

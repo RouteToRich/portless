@@ -235,7 +235,8 @@ async def rescore(opportunity_id: str, *, pairs: int = 3) -> EnrichedOpportunity
                  "counterparties: the deal's RFQ and buyer outreach ask for them."),
     }
     opp.pair_matches = after_pairs
-    opp.best_match_score = max((x.score for x in after_pairs), default=None)
+    from .pair_match import best_score
+    opp.best_match_score, opp.best_match_verified = best_score(after_pairs)
     # Prices, checks and pair scores changed: the expected profit follows them.
     from . import profit, start_check
     await start_check.annotate(opp, refresh_news=True)

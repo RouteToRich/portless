@@ -165,3 +165,62 @@ class TestSummaryAndRoutes:
         assert c.post("/trade-min/buyers/buyer:gulf.ae/add-to-prospect", json={"deal_id": "D2"}).status_code == 422
         assert c.post("/trade-min/buyers/buyer:gulf.ae/add-to-prospect", json={"deal_id": "NOPE"}).status_code == 404
         assert c.get("/trade-min/directory/summary").json()["buyer"]["total"] == 1
+
+
+# --- contact refresh on entering a prospect --------------------------------------------------
+
+class TestContactRefresh:
+    def _rec(self, **kw):
+        from datetime import UTC, datetime, timedelta
+        from services.trade_min.schemas import CounterpartyRecord, CounterpartyValidation
+        now = datetime.now(UTC)
+        base = dict(id="buyer:gulf.ae", role="buyer", name="Gulf Foods", website="https://gulf.ae", country="AE",
+                    email="old@gulf.ae", source="apify_company_search", hs_codes=["090422"], markets=["AE"],
+                    first_seen_at=now - timedelta(days=200), last_seen_at=now - timedelta(days=120),
+                    validation=CounterpartyValidation(status="verified", sanctions="clear", email="ok"))
+        base.update(kw)
+        return CounterpartyRecord(**base)
+
+    def test_when_contacts_are_stale(self):
+        from datetime import UTC, datetime, timedelta
+        from services.trade_min import contact_refresh as cr
+        from services.trade_min.schemas import CounterpartyValidation
+        assert "older than 90 days" in cr.needs_refresh(self._rec())
+        assert cr.needs_refresh(self._rec(last_seen_at=datetime.now(UTC))) is None
+        bounced = self._rec(last_seen_at=datetime.now(UTC),
+                            validation=CounterpartyValidation(status="unverified", sanctions="clear", email="invalid"))
+        assert cr.needs_refresh(bounced) == "e-mail undeliverable"
+        assert cr.needs_refresh(self._rec(contacts_refreshed_at=datetime.now(UTC) - timedelta(days=5))) is None
+
+    async def test_a_new_email_replaces_the_old_and_is_rechecked(self, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from services.trade_min import contact_refresh as cr
+        from services.trade_min import directory as dr
+        dr.reset_directory()
+        store = await dr.get_directory()
+        rec = await store.upsert(self._rec())
+        conn = SimpleNamespace(quote=AsyncMock(return_value={"contacts": [
+            {"email": "import@gulf.ae", "email_status": "unverified", "phone": "+971 4 000", "address": "Deira, Dubai"}]}))
+        monkeypatch.setattr("shared.connectors.registry.get_connector", lambda name: conn)
+        out = await cr.ensure_fresh(rec)
+        assert out.email == "import@gulf.ae" and out.phone == "+971 4 000" and out.contacts_refreshed_at
+        assert out.validation.email == "unverified" and out.validation.status == "unverified"
+        stored = await store.get(rec.id)
+        assert stored.email == "import@gulf.ae"
+        conn.quote.reset_mock()
+        assert (await cr.ensure_fresh(stored)).email == "import@gulf.ae"
+        conn.quote.assert_not_awaited()  # fresh now
+        dr.reset_directory()
+
+    async def test_stub_or_failure_keeps_the_record(self, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from services.trade_min import contact_refresh as cr
+        rec = self._rec()
+        monkeypatch.setattr("shared.connectors.registry.get_connector",
+                            lambda name: SimpleNamespace(quote=AsyncMock(return_value={"stub": True, "contacts": []})))
+        assert (await cr.ensure_fresh(rec)) is rec
+        monkeypatch.setattr("shared.connectors.registry.get_connector",
+                            lambda name: SimpleNamespace(quote=AsyncMock(side_effect=RuntimeError("apify down"))))
+        assert (await cr.ensure_fresh(rec)) is rec

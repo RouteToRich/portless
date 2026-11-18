@@ -120,6 +120,11 @@ class PairMatch(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     improve: list[str] = Field(default_factory=list)
     recommended: bool = False
+    verified: bool = False
+    """Both buyer and supplier passed the counterparty check. Verified pairs rank first and
+    give the opportunity's best-match score whenever there is one."""
+    unverified_sides: list[str] = Field(default_factory=list)
+    """``buyer`` / ``supplier`` — the side(s) not (yet) verified."""
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +505,9 @@ def score_pair(
         improve.append("Find the supplier's e-mail")
     f["track_record"], reasons["track_record"] = track_record(s, market)
 
+    unverified = [who for side, who in ((b, "buyer"), (s, "supplier"))
+                  if getattr(getattr(side, "validation", None), "status", None) != "verified"]
+
     bv, bconf = view_score(f, cfg.buyer_view, cfg)
     sv, sconf = view_score(f, cfg.seller_view, cfg)
     blocked = bool(blockers)
@@ -520,14 +528,16 @@ def score_pair(
         buyer_price_usd_per_mt=buyer_price, buyer_price_basis=basis,
         landed_cost_usd_per_mt=landed_cost,
         factors=factors, blockers=blockers, improve=improve,
+        verified=not unverified, unverified_sides=unverified,
     )
 
 
 def assign(pairs: list[PairMatch]) -> list[PairMatch]:
-    """Mark one-to-one recommended pairings, best first (greedy maximum weight)."""
+    """Mark one-to-one recommended pairings, best first (greedy maximum weight) — fully
+    verified pairs before any pair with an unverified side."""
     used_b: set[int] = set()
     used_s: set[str] = set()
-    for p in sorted(pairs, key=lambda p: (-p.score, -p.confidence)):
+    for p in sorted(pairs, key=lambda p: (not p.verified, -p.score, -p.confidence)):
         if p.score <= 0 or p.buyer_index in used_b or p.seller_id in used_s:
             continue
         p.recommended = True
@@ -543,16 +553,29 @@ def match_opportunity(opp: EnrichedOpportunity, cfg: PairMatchConfig = DEFAULT_P
              for i, b in enumerate(opp.buyer_signals)
              for s in opp.seller_candidates]
     assign(pairs)
-    pairs.sort(key=lambda p: (not p.recommended, -p.score, -p.confidence))
+    pairs.sort(key=lambda p: (not p.recommended, not p.verified, -p.score, -p.confidence))
     return pairs[: cfg.max_pairs]
+
+
+def best_score(pairs: list[PairMatch]) -> tuple[float | None, bool | None]:
+    """(best-match score, whether it is a fully verified pair): the best verified pair when
+    there is one, else the best pair overall (marked unverified) — so the radar's Best Match
+    never names an unverified pair while a verified one exists."""
+    if not pairs:
+        return None, None
+    verified = [p.score for p in pairs if p.verified and p.score > 0]
+    if verified:
+        return max(verified), True
+    return max(p.score for p in pairs), False
 
 
 def attach(opp: EnrichedOpportunity) -> EnrichedOpportunity:
     """Fill ``opp.pair_matches`` / ``best_match_score`` in place (never raises)."""
     try:
         opp.pair_matches = match_opportunity(opp)
-        opp.best_match_score = max((p.score for p in opp.pair_matches), default=None)
+        opp.best_match_score, opp.best_match_verified = best_score(opp.pair_matches)
     except Exception:  # noqa: BLE001 - scoring must never break the radar
         opp.pair_matches = []
         opp.best_match_score = None
+        opp.best_match_verified = None
     return opp

@@ -202,6 +202,9 @@ def _candidate_id(rec: CounterpartyRecord) -> str:
 async def add_to_prospect(role: str, record_id: str, deal_id: str) -> dict[str, Any]:
     """A buyer → the prospect's outreach funnel; a supplier → its match board, quote pending."""
     rec = await _record(role, record_id)
+    # Stale or bounced contacts are refreshed now, not on every scan (contact_refresh.py).
+    from services.trade_min import contact_refresh
+    rec = await contact_refresh.ensure_fresh(rec)
     reason = blocked_reason(rec)
     if reason:
         raise ProfileError(f"{rec.name} cannot be added: {reason}")

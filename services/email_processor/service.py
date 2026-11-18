@@ -615,6 +615,19 @@ async def _handle_rfq_reply(
     await repo.save(record)
 
     price = counter_price_override or await _extract_price(raw.body_text)
+    if price is None and deal_id is not None:
+        # "We confirm the price stands" in answer to our reconfirmation request.
+        try:
+            from shared.orchestration import quote_reconfirm
+            if await quote_reconfirm.confirm_from_reply(rfq, record.from_address, raw.body_text):
+                record = record.model_copy(update={"status": InboundEmailStatus.PROCESSED,
+                                                   "processed_at": datetime.now(timezone.utc),
+                                                   "updated_at": datetime.now(timezone.utc)})
+                await repo.save(record)
+                return ProcessingResult(inbound_id=record.inbound_id, status=InboundEmailStatus.PROCESSED,
+                                        message=f"Quote reconfirmed by the supplier on RFQ {rfq_id}.")
+        except Exception as exc:  # noqa: BLE001 - an operator reads it instead
+            logger.warning("RFQ reply %s: reconfirmation not applied: %s", record.inbound_id, exc)
     if price is None or deal_id is None:
         hitl_id = await _create_price_hitl(
             record,

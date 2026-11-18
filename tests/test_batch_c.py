@@ -382,6 +382,28 @@ class TestTelegramAndDigest:
         assert "GATES WAITING: 2" in text and "ISSUE_PO: 1" in text and "STALLED (1)" in text and "UNRECONCILED: D1" in text
         assert "still owed to suppliers 6,000" in text
 
+    def test_digest_carries_the_prospect_desk(self):
+        from shared.orchestration import digest
+        from shared.orchestration.prospect_desk import DeskAction, ProspectSummary
+        rows = [
+            ProspectSummary(deal_id="P1", hs_code="090422", market="AE", status="MATCHING", waiting_on="us", priority=9.0,
+                            idle_days=2, expected_value_usd=4200.0,
+                            actions=[DeskAction(kind="confirm", text="Confirm the pair Gulf Foods × Mill One")]),
+            ProspectSummary(deal_id="P2", hs_code="100630", market="DE", status="MATCHING", waiting_on="us", priority=3.0,
+                            actions=[DeskAction(kind="contact_buyers", text="Contact buyers")]),
+            ProspectSummary(deal_id="P3", hs_code="071220", market="GB", status="MATCHING", waiting_on="suppliers",
+                            stalled=True, idle_days=9, waiting_detail="waiting on supplier quotes",
+                            actions=[DeskAction(kind="chase_quotes", text="Chase the 3 suppliers for quotes")]),
+            ProspectSummary(deal_id="P4", hs_code="071220", market="GB", status="MATCHING", waiting_on="buyers"),
+        ]
+        d = digest._desk_digest(rows)
+        assert d["open"] == 4 and d["our_move_total"] == 2 and d["stalled_total"] == 1
+        assert [r["deal_id"] for r in d["our_move"]] == ["P1", "P2"] and [r["deal_id"] for r in d["stalled"]] == ["P3"]
+        text = digest.render_digest_text({"generated_at": NOW.isoformat(), "prospects": d})
+        assert "PROSPECTS: 4 open · our move on 2 · 1 stalled" in text
+        assert "P1 090422→AE, idle 2d, EV 4,200 USD: Confirm the pair Gulf Foods × Mill One" in text
+        assert "STALLED (waiting on them):" in text and "P3 071220→GB, idle 9d: Chase the 3 suppliers for quotes" in text
+
     @pytest.mark.asyncio
     async def test_send_digest_and_schedule(self, monkeypatch):
         from shared.orchestration import digest

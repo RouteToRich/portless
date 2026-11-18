@@ -403,6 +403,7 @@ async def send_outreach(deal_id: str, candidate_id: str, to_address: str, subjec
             await update_buyer_candidate(deal_id, candidate_id, {
                 "send_error": f"send failed: {exc}"[:300],
                 "send_attempts": (getattr(cand, "send_attempts", 0) or 0) + 1,
+                "send_failed_at": datetime.now(timezone.utc),
             })
         except Exception as inner:  # noqa: BLE001
             logger.error("Outreach: could not record the send failure for %s/%s: %s", deal_id, candidate_id, inner)
@@ -427,7 +428,7 @@ async def send_outreach(deal_id: str, candidate_id: str, to_address: str, subjec
         logger.warning("Outreach: %s to %s (%s) for deal %s NOT delivered — %s",
                        kind, to_address, candidate_id, deal_id, NOT_DELIVERED)
         return {"candidate_id": candidate_id, "outcome": "logged", "email_id": email_id, "delivered": False}
-    updates["send_error"] = None
+    updates.update({"send_error": None, "send_failed_at": None, "send_gave_up_at": None})
     if kind == "followup":
         updates.update({"status": "followed_up", "followed_up_at": now})
     else:
@@ -435,6 +436,47 @@ async def send_outreach(deal_id: str, candidate_id: str, to_address: str, subjec
     await update_buyer_candidate(deal_id, candidate_id, updates)
     logger.info("Outreach: %s to %s (%s) for deal %s → %s", kind, to_address, candidate_id, deal_id, outcome)
     return {"candidate_id": candidate_id, "outcome": str(outcome), "email_id": email_id, "delivered": True}
+
+
+async def retry_failed_sends(deal: Any, *, now: datetime | None = None, force: bool = False) -> dict[str, int]:
+    """Re-open the send gate for candidates whose last e-mail failed in transport, on the
+    back-off schedule (``force``: now). After the last try: ``deal.exception``
+    ``OUTREACH:send_failed`` once, and the candidate waits for the operator."""
+    from services.deals.service import update_buyer_candidate  # type: ignore[import]
+    from shared.orchestration import send_retry
+    now = now or datetime.now(timezone.utc)
+    counts = {"retried": 0, "gave_up": 0}
+    for c in _candidates(deal):
+        if not (getattr(c, "send_error", None) or "").startswith("send failed") or not getattr(c, "email", None):
+            continue
+        if _status(c) not in ("pending", "contacted"):
+            continue
+        attempts = getattr(c, "send_attempts", 0) or 0
+        if send_retry.exhausted(attempts):
+            if not getattr(c, "send_gave_up_at", None):
+                await update_buyer_candidate(deal.deal_id, c.candidate_id, {"send_gave_up_at": now})
+                await _send_failed_exception(deal.deal_id, c, attempts)
+                counts["gave_up"] += 1
+            continue
+        if not force and not send_retry.due(attempts, getattr(c, "send_failed_at", None), now):
+            continue
+        await _gate(deal, c, followup=_status(c) == "contacted")
+        counts["retried"] += 1
+    return counts
+
+
+async def _send_failed_exception(deal_id: str, cand: Any, attempts: int) -> None:
+    try:
+        from shared.bus import get_publisher
+        from shared.domain.events import DomainEvent, EventTopic
+        await get_publisher().publish(DomainEvent(topic=EventTopic.DEAL_EXCEPTION, deal_id=deal_id, payload={
+            "source": "outreach", "stage": "OUTREACH:send_failed",
+            "error": f"introduction to {cand.legal_name} <{cand.email}> could not be sent after {attempts} tries: "
+                     f"{cand.send_error}",
+            "action_required": "check_the_mailbox_then_retry_sends", "candidate_id": cand.candidate_id,
+        }))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Outreach: send-failed exception for %s not raised: %s", deal_id, exc)
 
 
 async def skip_candidate(deal_id: str, candidate_id: str, reason: str = "declined by operator") -> dict[str, Any]:
@@ -611,6 +653,9 @@ async def sweep_followups(now: datetime | None = None) -> dict[str, int]:
         status = getattr(getattr(deal, "status", ""), "value", getattr(deal, "status", "")) or ""
         if str(status) not in ("MATCHING", "NEGOTIATING") or not waiting_for_buyer(deal):
             continue
+        from shared.orchestration.prospect_actions import is_parked
+        if is_parked(deal, now):
+            continue  # parked from the desk: no follow-ups
         changed = False
         for c in _candidates(deal):
             try:

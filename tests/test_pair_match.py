@@ -129,3 +129,34 @@ def test_high_risk_buyer_blocks():
 @pytest.mark.parametrize("unit,expected", [("KG", 0.5), ("MT", 500.0), ("pcs", None)])
 def test_quantity_units(unit, expected):
     assert pm._to_mt(500.0, unit) == expected
+
+
+def _ok():
+    from services.trade_min.schemas import CounterpartyValidation
+    return CounterpartyValidation(status="verified", sanctions="clear", email="ok")
+
+
+def test_a_pair_is_verified_only_when_both_sides_are():
+    p = pm.score_pair(_buyer(validation=_ok()), 0, _seller(validation=_ok()), _opp([], []), today=TODAY)
+    assert p.verified and p.unverified_sides == []
+    q = pm.score_pair(_buyer(), 0, _seller(validation=_ok()), _opp([], []), today=TODAY)
+    assert not q.verified and q.unverified_sides == ["buyer"]
+
+
+def test_verified_pairs_rank_first_and_give_the_best_match_score():
+    # The unverified buyer has the better price, so its pair scores higher …
+    strong_unverified = _buyer(buyer_name="Fast Buyer", unit_price_usd=1600.0)
+    verified = _buyer(buyer_name="Checked Buyer", validation=_ok())
+    opp = _opp([strong_unverified, verified], [_seller(validation=_ok())])
+    pairs = pm.match_opportunity(opp, today=TODAY)
+    assert pairs[0].buyer_name == "Checked Buyer" and pairs[0].verified and pairs[0].recommended
+    pm.attach(opp)
+    verified_score = next(p.score for p in opp.pair_matches if p.verified)
+    assert opp.best_match_score == verified_score and opp.best_match_verified is True
+
+
+def test_without_any_verified_pair_the_best_is_marked_unverified():
+    opp = _opp([_buyer()], [_seller()])
+    pm.attach(opp)
+    assert opp.best_match_score is not None and opp.best_match_verified is False
+    assert pm.best_score([]) == (None, None)

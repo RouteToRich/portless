@@ -11,8 +11,9 @@ from .enums import DealStatus
 
 # Allowed forward/branch transitions of the deal lifecycle.
 DEAL_TRANSITIONS: dict[DealStatus, set[DealStatus]] = {
-    DealStatus.DRAFT: {DealStatus.MATCHING},
-    DealStatus.MATCHING: {DealStatus.NEGOTIATING},
+    # A prospect (DRAFT / MATCHING) the desk drops closes as CANCELLED (prospect_actions.drop).
+    DealStatus.DRAFT: {DealStatus.MATCHING, DealStatus.CANCELLED},
+    DealStatus.MATCHING: {DealStatus.NEGOTIATING, DealStatus.CANCELLED},
     DealStatus.NEGOTIATING: {
         DealStatus.NEGOTIATING,  # counter-round
         DealStatus.NEGOTIATION_AGREED,

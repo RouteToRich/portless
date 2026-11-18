@@ -45,7 +45,7 @@ make up    # docker compose up --build
 make down
 
 # Tests
-pytest -q                                 # full suite (4986 pass, 1 skip, ~1.5 min)
+pytest -q                                 # full suite (5022 pass, 1 skip, ~1 min)
 pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 95.46% line + branch (2026-11-09)
 pytest tests/test_health.py -q            # smoke: every service boots + /health 200
 pytest -m smoke -q                        # markers by file (tests/markers.py): smoke · money · unit · integration · slow · regression
@@ -72,6 +72,9 @@ pytest tests/test_markers.py             # suite markers applied by file and reg
 pytest tests/test_screening_review.py    # sanctions review queue: staff clear / fail with reason, audit trail, Mongo
 pytest tests/test_rescreen.py            # daily re-screen of verified counterparties of open deals: due, cap, failed → exception, no token → kept
 pytest tests/test_prompt_injection.py    # hostile e-mails: never an acceptance, leak check, out-of-band price, prompts say untrusted
+pytest tests/test_prospect_actions.py    # park / unpark / drop a prospect, watcher + follow-ups skip parked, radar estimate backfill
+pytest tests/test_send_retry.py          # failed outreach / RFQ sends retried 5 / 30 / 120 min, then OUTREACH|RFQ:send_failed once
+pytest tests/test_quote_reconfirm.py     # supplier asked before its quote expires, confirming reply restarts validity, silence → expired
 pytest tests/test_unsubscribe.py         # signed unsubscribe link: no sign-in, GET confirms, POST → do-not-contact + next buyer
 pytest tests/test_todo_metrics.py        # the counts at the top of todo match the list (recount: python -X utf8 scripts/todo_metrics.py)
 pytest tests/test_directory_paging.py    # directory paging (total beyond 200, filters before the page) and every sort key / order
@@ -167,6 +170,7 @@ In the combined monolith (`app.py`) services call each other's `service.py` dire
 | `shared/orchestration/continuations.py` | **Production automation backbone** â€” event subscribers that move a deal to its next step (opportunity â†’ deal, RFQ, negotiation start, PI, escrow, PO/QC/freight/customs/tranche/payout gates, document pack, counterparty notifications, failure triage). Registered on the bus in the monolith only |
 | `shared/orchestration/autonomy_policy.py` | Per-action gate policy **v2**: level L0â€“L3 (override store â†’ env â†’ deal profile â†’ default; money ceiling) **plus** per-action L1 timeout + on-timeout default (negotiation e-mails 4 h â†’ APPROVE, money â†’ REJECT) and a value threshold (`auto_approve_below_usd` per action or `money_auto_approve_below_usd` for all money gates) that drops a gate to L2 only when the amount is under it **and** the caller's preconditions hold (`resolve_gate(action, deal, amount=, conditions_ok=)`). Backs `GET/PUT /hitl-approval/autonomy-policy` |
 | `shared/orchestration/kill_switch.py` | **Kill Switch** (`GET/POST /hitl-approval/kill-switch`, staff, reason required, audited in Mongo `platform_controls`; console top bar). While paused: every APPROVE answers 423 (REJECT stays open), no gate auto-approves (L1/L2/L3 are created L0 with flag `platform_paused`), escrow release / acceptance / payout / refund, PO, QC, freight, customs and all e-mail refuse, and the deal, inspection-window and timeout watchers wait. Provider webhooks and replies are still recorded. A store never readable counts as paused, reported as `unreadable: true` (reason "pause state unreadable") — the console shows "State unreadable" with "Check again" (`GET …/kill-switch?refresh=true`), and a resume re-reads first: still unreadable → 503 with a clear message, readable and never paused → runs; store timeout `KILL_SWITCH_DB_TIMEOUT_MS` (8000) |
+| `shared/orchestration/prospect_actions.py` + `send_retry.py` + `quote_reconfirm.py` | **Park / drop** a prospect (`POST /deals/{id}/prospect/park|unpark|drop`, reason required; parked: no follow-ups, no stall exception, `parked_until` ends it; drop: DRAFT / MATCHING → CANCELLED, prospect gates withdrawn). **Send retry**: introductions / RFQ e-mails that failed in transport re-sent on `SEND_RETRY_MINUTES` (5,30,120), then `OUTREACH:send_failed` / `RFQ:send_failed`; `POST /deals/{id}/retry-sends`. **Quote reconfirm**: `QUOTE_RECONFIRM_DAYS_BEFORE` (3) days before a quote expires the supplier is asked on its RFQ thread; a confirming reply restarts the validity, silence → `reconfirm_status=expired`. All three run from the deal watcher |
 | `shared/orchestration/unsubscribe.py` | **Unsubscribe link** in every buyer introduction / follow-up: `{PORTLESS_PUBLIC_BASE_URL}/trade-min/unsubscribe?d=&c=&sig=` (HMAC with `UNSUBSCRIBE_LINK_SECRET`, else `ESCROW_PROOF_LINK_SECRET`; no expiry). `AuthMiddleware` lets GET / POST of that one path through; GET shows a confirm page (link scanners change nothing), POST sets do-not-contact on the directory and declines a still-courted candidate (`outreach.advance`); a buyer already in the deal keeps its deal. No base URL / secret → only the reply opt-out |
 | `shared/prompt_injection.py` | Wording aimed at the model (`looks_like_injection`): an e-mail carrying it is never an acceptance (keyword guard, the LLM verdict is vetoed, bare acceptance by e-mail) — a person reads it; market headlines with it are dropped |
 | `shared/orchestration/outreach.py` | **Buyer outreach funnel**: the buyers a scan identified (`deal.buyer_candidates`) get a templated introduction behind `SEND_BUYER_OUTREACH` (L2) with a `[BUY:<deal>:<candidate>]` subject token; replies are classified interested / declined / unclear; an interested buyer becomes the deal's buyer party and the negotiation opens; declined / silent (`OUTREACH_FOLLOWUP_DAYS`, `OUTREACH_NO_REPLY_DAYS`) â†’ next candidate; exhausted â†’ `deal.exception` (`OUTREACH:exhausted`). `on_negotiation_started` waits while the funnel is open |
@@ -218,6 +222,7 @@ NEGOTIATION_AGREED â†’ PI_SENT â†’ PI_ACCEPTED â†’ ESCROW_PENDING
 QC_PASSED â†’ IN_TRANSIT â†’ CLEARED â†’ PAID
 QC_FAILED â†’ DISPUTE â†’ CANCELLED | REFUNDED | SUPPLIER_DISPATCH_READY (re-inspection playbook)
 PI_SENT | PI_ACCEPTED | ESCROW_PENDING â†’ CANCELLED (unfunded-deal playbook, operator-gated)
+DRAFT | MATCHING â†’ CANCELLED (prospect dropped from the desk, reason required)
 Terminal: PAID, CANCELLED, REFUNDED, NEGOTIATION_FAILED
 ```
 
@@ -500,6 +505,8 @@ APIFY_ENABLE_AI / APIFY_MAX_ITEMS / APIFY_RUN_TIMEOUT_SECONDS / APIFY_MAX_DISCOV
 APIFY_MAX_RUNS_PER_DAY       # daily actor-run budget across scans / enrichment / tracking (0 = unlimited)
 ENRICHMENT_ON_DEAL_CREATED   # default true â€” contact finder + sanctions screening at deal.created
 TRADE_MIN_VALIDATION_ENABLED / TRADE_MIN_VALIDATION_TOP_N (5) / TRADE_MIN_VALIDATION_MAX_AGE_DAYS (30)   # scan-time buyer / supplier check (radar "Verified only"); readiness `counterparty_validation` fails in production when off or without APIFY_TOKEN
+CONTACT_REFRESH_DAYS (90)    # a directory company added to a prospect gets fresh contacts when older / bounced
+SEND_RETRY_MINUTES (5,30,120) / QUOTE_RECONFIRM_DAYS_BEFORE (3) / QUOTE_RECONFIRM_ENABLED (true)
 TRADE_MIN_RESCREEN_MAX_PER_RUN (20)   # daily re-screen of verified counterparties of open deals (paid Apify runs)
 UNSUBSCRIBE_LINK_SECRET      # signs the outreach unsubscribe link (else ESCROW_PROOF_LINK_SECRET); needs PORTLESS_PUBLIC_BASE_URL
 LANE_QUOTE_MAX_AGE_DAYS (14) / REEFER_FREIGHT_FACTOR (1.6)   # radar freight per lane: quote age, reefer vs dry estimate

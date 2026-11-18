@@ -308,6 +308,8 @@ class CounterpartyRecord(BaseModel):
     promises it) or staff set it. Survives every scan; outreach skips it in every prospect."""
     dnc_reason: str | None = None
     dnc_at: datetime | None = None
+    contacts_refreshed_at: datetime | None = None
+    """Last contact-finder refresh when the company entered a prospect (contact_refresh.py)."""
     screening_reviews: list[ScreeningReview] = Field(default_factory=list)
     """Staff decisions on a sanctions ``review`` result (screening_review.py), oldest first —
     the audit trail: who cleared or failed it, why, and what the screening had said."""
@@ -546,6 +548,8 @@ class EnrichedOpportunity(BaseModel):
     pair_matches: list[PairMatch] = Field(default_factory=list)
     """Scored buyer × seller pairs, one-to-one recommended pairs first."""
     best_match_score: float | None = None
+    best_match_verified: bool | None = None
+    """Whether ``best_match_score`` comes from a pair whose buyer and supplier are both verified."""
 
     # ── Scan-time counterparty validation (validation.py) ─────────────────
     counterparty_counts: dict[str, dict[str, int]] = Field(default_factory=dict)

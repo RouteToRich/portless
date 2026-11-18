@@ -371,3 +371,13 @@ async def test_the_history_is_capped(deal_repo):
     history = deal.parties[0].address_history
     assert len(history) == deals._ADDRESS_HISTORY_MAX
     assert history[-1].address == f"{deals._ADDRESS_HISTORY_MAX + 3} Mill Road, Kumbakonam 612001"
+
+
+async def test_rate_info_says_where_the_rate_comes_from(monkeypatch):
+    from shared import currency
+    monkeypatch.setattr("agents.negotiation_agent.market_intel.fetch_usd_inr_rate", AsyncMock(return_value=None))
+    info = await currency.rate_info("INR")
+    assert info["source"] == "fallback" and info["rate"] == currency.fallback_rate("INR")
+    monkeypatch.setattr("agents.negotiation_agent.market_intel.fetch_usd_inr_rate", AsyncMock(return_value=88.4))
+    assert await currency.rate_info("INR") == {"currency": "INR", "rate": 88.4, "source": "live"}
+    assert (await currency.rate_info("EUR"))["source"] == "none"

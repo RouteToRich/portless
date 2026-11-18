@@ -97,6 +97,10 @@ class ProspectSummary(BaseModel):
     # radar
     radar_expected_profit_usd: float | None = None
     radar_margin_usd_per_mt: float | None = None
+    # parked from the desk (prospect_actions)
+    parked: bool = False
+    parked_until: datetime | None = None
+    parked_reason: str | None = None
     # trader view
     priority: float = 0.0
     actions: list[DeskAction] = Field(default_factory=list)
@@ -274,6 +278,37 @@ async def _opportunity_profit(opportunity_id: str | None) -> dict[str, Any] | No
         return None
 
 
+async def _store_radar_estimate(deal: Any) -> dict[str, Any] | None:
+    """Prospects started before the deal kept its own snapshot (2026-11-17): take the
+    opportunity's profit block once and store it on the deal, marked ``backfilled_at`` —
+    so estimate → outcome (trade_min.accuracy) covers them and later reads are stable."""
+    radar = await _opportunity_profit(getattr(deal, "opportunity_id", None))
+    if not radar:
+        return None
+    radar = {**radar, "backfilled_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        from services.deals.repository import get_repository  # type: ignore[import]
+        await get_repository().set_fields(deal.deal_id, {"radar_estimate": radar})
+    except Exception as exc:  # noqa: BLE001 - shown anyway, stored next time
+        logger.warning("Prospect desk: radar estimate of %s not stored: %s", getattr(deal, "deal_id", "?"), exc)
+    return radar
+
+
+async def backfill_radar_estimates(deals: list[Any]) -> dict[str, int]:
+    """Every deal from an opportunity without a ``radar_estimate`` (any status — settled deals
+    are what the accuracy check compares) gets the snapshot once."""
+    counts = {"checked": 0, "backfilled": 0, "no_opportunity_data": 0}
+    for d in deals:
+        if getattr(d, "radar_estimate", None) or not getattr(d, "opportunity_id", None):
+            continue
+        counts["checked"] += 1
+        if await _store_radar_estimate(d):
+            counts["backfilled"] += 1
+        else:
+            counts["no_opportunity_data"] += 1
+    return counts
+
+
 async def desk(deals: list[Any]) -> list[ProspectSummary]:
     """Every open prospect, highest priority first."""
     from shared.orchestration import matchmaking
@@ -287,9 +322,17 @@ async def desk(deals: list[Any]) -> list[ProspectSummary]:
             logger.warning("Prospect desk: board failed for %s: %s", getattr(d, "deal_id", "?"), exc)
             board = None
         if not getattr(d, "radar_estimate", None):
-            radar = await _opportunity_profit(getattr(d, "opportunity_id", None))
+            radar = await _store_radar_estimate(d)
             if radar:
                 d = d.model_copy(update={"radar_estimate": radar}) if hasattr(d, "model_copy") else d
-        rows.append(summarise(d, board))
-    rows.sort(key=lambda r: (r.waiting_on == "us", r.priority), reverse=True)
+        row = summarise(d, board)
+        from shared.orchestration.prospect_actions import is_parked
+        if is_parked(d):
+            row = row.model_copy(update={
+                "parked": True, "parked_until": getattr(d, "parked_until", None),
+                "parked_reason": getattr(d, "parked_reason", None), "stalled": False,
+                "actions": [DeskAction(kind="unpark", text="Parked — unpark to work it again")],
+            })
+        rows.append(row)
+    rows.sort(key=lambda r: (not r.parked, r.waiting_on == "us", r.priority), reverse=True)
     return rows

@@ -916,6 +916,11 @@ def _record_address_change(party: Party, clean: dict[str, Any], source: str | No
     clean["address_history"] = history[-_ADDRESS_HISTORY_MAX:]
 
 
+# None normally means "leave as is"; these fields are cleared by passing None (a send that
+# went out clears the last failure).
+_CLEARABLE_CANDIDATE_FIELDS = frozenset({"reply_preview", "send_error", "send_failed_at", "send_gave_up_at"})
+
+
 async def update_buyer_candidate(deal_id: str, candidate_id: str, updates: dict[str, Any]) -> DealRecord:
     """Patch one buyer candidate of the outreach funnel (status, timestamps, reply)."""
     repo = get_repository()
@@ -926,7 +931,7 @@ async def update_buyer_candidate(deal_id: str, candidate_id: str, updates: dict[
     idx = next((i for i, c in enumerate(cands) if c.candidate_id == candidate_id), None)
     if idx is None:
         raise ValueError(f"buyer candidate {candidate_id!r} not on deal {deal_id}")
-    cands[idx] = cands[idx].model_copy(update={k: v for k, v in updates.items() if v is not None or k == "reply_preview"})
+    cands[idx] = cands[idx].model_copy(update={k: v for k, v in updates.items() if v is not None or k in _CLEARABLE_CANDIDATE_FIELDS})
     updated = deal.model_copy(update={"buyer_candidates": cands, "updated_at": datetime.now(timezone.utc)})
     await repo.save(updated)
     return updated
