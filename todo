@@ -19,7 +19,7 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-19)
 
-**403 open · 194 done** (32 % done).
+**433 open · 194 done** (31 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
@@ -27,13 +27,13 @@ accountant · (Biz) founder / business · (QA) quality.
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
 | P0 — before the first real trade | 69 | 32 |
-| P1 — before more than a few deals a month | 229 | 146 |
+| P1 — before more than a few deals a month | 249 | 146 |
 | P2 — improvements | 25 | 16 |
-| Apify actors (outside this repo) | 18 | 0 |
+| Apify actors (outside this repo) | 28 | 0 |
 | Decisions needed | 21 | 0 |
-| **Total** | **403** | **194** |
+| **Total** | **433** | **194** |
 
-Open items by owner: Eng 134 · Apify 18 · Ops 26 · Legal 27 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 154 · Apify 28 · Ops 26 · Legal 27 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
 
@@ -893,6 +893,37 @@ Both:
 
 ---
 
+### 23.1 Existing Apify actors — changes on the PortLess side (review 2026-11-19)
+
+What `shared/connectors/apify.py` and its callers do with the actors already in use today; each item names the actor. The actor-side changes are A.19 – A.28 in "Apify actors".
+
+- [ ] **(Eng) P1** **Daily run budget lives in process memory** — `APIFY_MAX_RUNS_PER_DAY` is counted in `_runs_by_day` (shared/connectors/apify.py), so every instance and every restart starts again at 0 and the cap can be passed several times over on a deployed backend. Count runs (and `usageTotalUsd`) in Mongo per UTC day (the `platform_costs` day document of `shared/cost_meter.py`) and check the cap there before each run of any actor. Saves: Apify overspend.
+- [ ] **(Eng) P1** **Daily USD cap, not only a run count** — runs of `company-contact-finder-ai` (search mode, 3 lines × 5 sites) cost far more than one `email-list-qualifier-ai` run; add `APIFY_MAX_USD_PER_DAY` checked against the day's `usageTotalUsd`, with the digest showing spend vs cap per actor.
+- [ ] **(Eng) P1** **Result cache per actor input** — identical calls are only coalesced while in flight; the same search line ("rice importers, AE" for two rice corridors) or the same company re-checked by `counterparty-check-ai` in the next scan is paid again. Mongo cache keyed by actor + normalised input line with a TTL per actor (`company-contact-finder-ai` search 14 days, `counterparty-check-ai` = `TRADE_MIN_VALIDATION_MAX_AGE_DAYS`, `export-market-finder-ai` 30 days), hit rate on `GET /trade-min/sources`.
+- [ ] **(Eng) P1** **Scan-time screening ignores the VAT number the search already found** — `company-contact-finder-ai` returns `vat_id` (and the legal name), but the scan-time check (`services/trade_min/validation.py` → `counterparty-check-ai`) sends only name + country, so the EU VIES check (`checkVat`) never runs at scan time and a name-only sanctions match is weaker. Pass `vat_number`, `lei`, legal name and (after A.19) the register number from the directory record, as enrichment already does.
+- [ ] **(Eng) P1** **Carrier tracking polls a refused actor** — the deal watcher calls `multi-carrier-tracking-ai` for every forwarder-booked IN_TRANSIT deal every `TRACKING_POLL_HOURS`, and each run ends `source_refused` (the `rich_minds` plan cannot run the public carrier Store Actors): a paid run for nothing. After the first `source_refused` of the day stop polling until A.27 is deployed, and say so on the deal ("tracking: staff milestones only").
+- [ ] **(Eng) P1** **A missing `email-list-qualifier-ai` row is read as "invalid"** — the actor only returns qualified rows, so a timed-out or partly failed run marks good addresses undeliverable and the company drops out of outreach. Until A.23: when the run did not end SUCCEEDED or returned fewer rows than it was asked before its own timeout, mark the missing addresses `unchecked`, not `invalid`.
+- [ ] **(Eng) P2** **One paid e-mail check, not two** — `company-contact-finder-ai` already verifies the mailbox when asked (`verifyMailbox`); after A.22 ask it for the top N companies of a scan and skip `email-list-qualifier-ai` for addresses it checked.
+- [ ] **(Eng) P2** **Use the legal-notice facts (after A.19)** — register court + number, VAT id and managing director from the buyer's Impressum: evidence for `verified` (a registered company, not only a working mailbox), company age for `COMPLIANCE_MIN_COMPANY_AGE_YEARS`, and the related-party check (same director or address as the supplier).
+- [ ] **(Eng) P2** **Monthly market data (after A.26)** — call `export-market-finder-ai` with monthly frequency, keep `data_period` per figure, and let the radar prefer the last 12 months over the annual figure.
+- [ ] **(Eng) P2** **Retire the dormant actor slots** — `apify_us_importers` (`us-importer-finder-ai`), `apify_alibaba_rfq` (`alibaba-rfq-leads-ai`) and `apify_india_suppliers` (`india-supplier-finder-ai`, never built) are registered, never called and listed as "not used" on `GET /trade-min/sources`; remove them (or point them at A.2 / A.16 / A.10 when those are built) so the sources page shows only what can run.
+
+### 23.2 Agents that decide on their own — more profit per deal (review 2026-11-19)
+
+Today two parts use an LLM: the negotiation agent (words; price decided by code) and the exception resolver. The agents below follow the same rule: **code decides every price, quantity and money step; the LLM reads and writes; every agent action goes through a gate at its autonomy level (`autonomy_policy`), is recorded in `outcomes` so its own track record can raise or lower that level, and stays inside a budget.** Ranked by money at stake.
+
+- [ ] **(Eng) P1** **Freight procurement agent** — most forwarders and NVOCCs quote by e-mail, not API. For each deal after the PO: e-mail 3–5 forwarders on the lane (directory role `forwarder`, `[FRT:<deal>]` thread) with the container plan, ports and ready date; read the quotes (rate per box, free days, validity, transit, sailing) into `freight_lanes`; counter the best one toward the lane index / second-best quote within a code-set band; propose the booking that is cheapest for the ready date (`BOOK_FREIGHT` gate with the comparison). Profit: freight is the largest PortLess cost on CIF deals; every quote also improves the radar's lane rates.
+- [ ] **(Eng) P1** **Inbound question agent (buyer / supplier questions answered, not parked)** — a reply that is a question (specification, certificates, packing, payment steps, inspection, lead time) goes to `NEEDS_OPERATOR` today and waits for a person. Draft the answer from the deal facts, catalogue, company profile and knowledge memory (only true statements — `company_profile` rules, `true_claims` checks), send behind `SEND_NEGOTIATION_EMAIL` (L1 4 h → APPROVE once its approval rate is high). Profit: replies within minutes instead of a day; buyers go cold when a question waits.
+- [ ] **(Eng) P1** **Supplier sourcing agent (stalled RFQs)** — when a prospect has an interested buyer but no usable quote after `PROSPECT_STALL_DAYS`, widen the supplier search on its own: other states / mandis, the worldwide and local-language search, directory suppliers of neighbouring HS codes, manual suppliers; contact-check them and send RFQs within the Apify budget, chase non-responders once, report what it tried on the desk. Profit: fewer prospects lost for want of a supplier price.
+- [ ] **(Eng) P1** **Reorder / account agent** — the reorder module only reminds staff. Before a buyer's usual next order (`reorders.due`), price a repeat offer from current supplier quotes and the price book (code: band, margin floor, validity), write it in the buyer's thread (`SEND_INDICATIVE_OFFER` gate), and on a yes open the reorder deal with the same supplier (or the standby if it re-quoted up). Profit: repeat orders need no outreach and close at a higher rate.
+- [ ] **(Eng) P1** **Claims and dispute agent** — after a failed QC or a buyer complaint, negotiate the resolution with both sides on their own threads: options computed by code (re-inspection, discount within the margin left after the supplier chargeback, replacement lot, partial refund) and ranked by what each costs PortLess; the agent explains, asks for evidence (photos, lab report), and proposes the option behind `RESOLVE_EXCEPTION` (L0). Profit: a saved deal instead of a refund and a lost buyer.
+- [ ] **(Eng) P1** **Document checking agent** — read what suppliers, inspectors and forwarders send (phytosanitary / origin certificates, invoices, packing lists, draft B/L, inspection reports as PDF or photo) and compare every field with the deal facts (`documents/facts.py`): names, quantities, HS code, marks, seal and container numbers, consignee, port. A mismatch → a correction request in the right thread before the B/L is final, and a compliance review. Profit: avoids customs rejections, demurrage and B/L amendment fees.
+- [ ] **(Eng) P2** **Scan planning agent (where to spend the Apify budget)** — decide each day which product × market corridors to scan, re-scan or skip, from expected profit per Apify dollar (radar profit, past yield per source and corridor, price alerts, policy and news changes), within `APIFY_MAX_USD_PER_DAY`; staff see the plan and can veto. Profit: search money goes to the corridors that turn into deals.
+- [ ] **(Eng) P2** **Outreach personalisation agent** — the buyer introduction is a template; let the LLM add one or two verified, company-specific lines (its product range from its website, the market fact from `outreach.market_fact`, the right language for the market), A/B-test angles per corridor, and keep the variant with the better reply rate (`funnel` + `outcomes`). Code still decides who is contacted and when. Profit: more replies from the same buyer list.
+- [ ] **(Eng) P2** **Payment chase agent** — buyers who have not funded the escrow or paid short get templated reminders today; answer their payment questions (bank charges, which account, provider steps, partial payment) from the escrow facts and agree a funding date, escalating to staff only for a refund or terms change. Profit: fewer unfunded PIs expiring.
+- [ ] **(Eng) P2** **Agent scorecard** — one page per agent: actions taken, gates approved / rejected / edited, money it moved or saved (freight saved vs first quote, deals saved, reorders won), cost (LLM, Apify), and the recommended autonomy level from its own record (`/hitl-approval/learning`), so an agent earns L2 only by evidence.
+
+
 ## P2 — improvements
 
 35 items.
@@ -1016,6 +1047,16 @@ PortLess's own actors live in the agent-pool repos on the `rich_minds` account a
 - [ ] **(Apify) P2** A.16 **`buy-leads-ai` (new)** — buy-offer boards (go4WorldBusiness, TradeKey, ExportersIndia buy leads, Alibaba RFQ public pages): buyer country, product, quantity, date.
 - [ ] **(Apify) P2** A.17 **`food-tenders-ai` (new)** — UN Global Marketplace (UNGM), World Food Programme, Saudi Etimad, US SAM.gov food awards: buyer, product, quantity, deadline.
 - [ ] **(Apify) P2** A.18 **`competitor-clients-ai` (new)** — the "our clients / where we export" pages of the leading exporters from the market's main competing origin (from the radar's `competitors`).
+- [ ] **(Apify) P1** A.19 **`company-contact-finder-ai` — legal-notice page**: read the Impressum / Mentions légales / Aviso legal / Note legali / Colofon page EU (and many Gulf) company sites must publish: legal name, register court + number (e.g. HRB), VAT id, managing director, registered address → one `legalNotice` object per row. The strongest free proof that a buyer is a real registered company.
+- [ ] **(Apify) P1** A.20 **`company-contact-finder-ai` — search in other languages**: accept non-English query lines and non-Latin names (Arabic, Turkish, Chinese) end to end, search with the market's Google domain and language (`google.de` / `hl=de`, `google.ae` / `hl=ar`) per line, and report the language and domain used per query (PortLess now sends one local-language line per market — `shared/search_terms.py`).
+- [ ] **(Apify) P2** A.21 **`company-contact-finder-ai` — every phone, typed**: all phone numbers found (not only the first), each in E.164 with type mobile / landline and a WhatsApp flag when the site links `wa.me` / `api.whatsapp.com` for that number.
+- [ ] **(Apify) P2** A.22 **`company-contact-finder-ai` — mailbox status per address**: with `verifyMailbox` on, return the SMTP result for every address in `emails` (not only `bestEmail`) so one run replaces the separate `email-list-qualifier-ai` run.
+- [ ] **(Apify) P1** A.23 **`email-list-qualifier-ai` — return every input address**: also the rejected ones, each with `disposition` and reason (undeliverable, no MX, disposable, syntax). Today only qualified rows come back, so a timeout looks like "every address invalid".
+- [ ] **(Apify) P0** A.24 **`counterparty-check-ai` — India's own lists**: the DGFT denied-entity list (fetched and cached — replaces the manual CSV upload and closes the `DgftConnector.book` known gap), MHA banned organisations under the UAPA First Schedule, RBI caution list, SEBI debarred entities; one `listsChecked` entry per list and its publication date.
+- [ ] **(Apify) P1** A.25 **`counterparty-check-ai` — company registers with free APIs**: given a register number (from A.19) or name + country, read the status and incorporation date from UK Companies House, France SIRENE, Norway Brønnøysund, Estonia e-Business Register, the Dutch KvK basic profile — `companyStatus` (active / dissolved / in liquidation) and `incorporatedOn` (company age).
+- [ ] **(Apify) P1** A.26 **`export-market-finder-ai` — monthly, per origin**: monthly frequency with the last 12 months, net weight per month next to value, and per competing origin its unit value (India's price advantage per competitor), each figure with its `dataPeriod`; today the annual figure is often two years old.
+- [ ] **(Apify) P1** A.27 **`multi-carrier-tracking-ai` — rebuild without Store actors**: read the carriers' own public tracking pages / DCSA Track & Trace endpoints (MSC, CMA CGM, Hapag-Lloyd, ONE, Evergreen, COSCO, Maersk public) directly so it runs on the `rich_minds` plan; today every run ends with 0 rows and `OUTPUT.ok: false`.
+- [ ] **(Apify) P2** A.28 **`us-importer-finder-ai` and `alibaba-rfq-leads-ai` — retire or rebuild**: both read third-party Store Actors the plan refuses and nothing in PortLess calls them; fold them into A.2 (US import records) and A.16 (`buy-leads-ai`) or unpublish them.
 
 ---
 
