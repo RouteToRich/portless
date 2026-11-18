@@ -216,9 +216,12 @@ class TestIndianRegistries:
         result = await reg.DgftConnector().quote({"iec": "i2"})
         assert (result["iec"], result["status"]) == ("I2", "X") and "sandbox" in str(http.requests[0].url)
 
-    async def test_dgft_denied_list_is_still_a_stub(self, setu):
+    async def test_dgft_denied_list_without_a_loaded_list_is_unchecked(self, setu, monkeypatch):
+        from shared.orchestration import denied_list
+        monkeypatch.setattr(denied_list, "_collection", lambda: None)
+        denied_list.reset_for_tests()
         result = await reg.DgftConnector().book({"entity_name": "Anyone"})
-        assert result["on_denied_list"] is False and "Stub" in result["note"]
+        assert result["on_denied_list"] is False and result["unchecked"] is True  # never a silent "not denied"
 
     async def test_mca(self, setu, http, _no_cache):
         incorporated = (date.today() - timedelta(days=1461)).isoformat()  # noqa: DTZ011

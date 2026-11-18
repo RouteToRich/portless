@@ -1365,6 +1365,24 @@ async def issue_pi_for_deal(
     ):
         logger.info("Continuation: PI for deal %s waits for the supplier's order confirmation", deal_id)
         return None
+    # Exposure limits (DEF-14): a PI above a limit waits for a person to accept the risk.
+    from shared.orchestration import exposure
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        _deal = await get_deal(deal_id)
+        over = await exposure.check(_deal, float(agreed_price) * float(quantity_mt or 0))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Continuation: exposure check for %s failed: %s", deal_id, exc)
+        over = []
+    if over:
+        await _publish_exception(
+            deal_id, f"EXPOSURE:{over[0]['limit']}",
+            "Proforma Invoice withheld — exposure limit: " + "; ".join(
+                f"{b['limit']} would be {b['would_be_usd']:,.0f} USD (limit {b['cap_usd']:,.0f})" for b in over),
+            {"category": "MARGIN_BREACH", "breaches": over, "action_required": "accept_the_exposure_or_reduce_the_lot"},
+        )
+        logger.warning("Continuation: PI for deal %s withheld by exposure limits %s", deal_id, [b["limit"] for b in over])
+        return None
     port = await _buyer_destination_port(deal_id)
     place = port or PORT_TO_BE_CONFIRMED
     # The escrow the buyer chose (their e-mail / an operator), else the default —
@@ -1596,9 +1614,13 @@ async def on_escrow_funded(event: DomainEvent) -> None:
                 f"no supplier price available for deal {deal_id} — PO gate needs one"
             )
         from datetime import date, timedelta
+        payload = event.payload or {}
+        overpaid = (float(payload.get("funded_amount") or 0) - float(payload.get("amount") or 0))             if payload.get("funded_amount") is not None and payload.get("amount") is not None else 0.0
         await _create_gate(
             deal_id, "ISSUE_PO",
-            summary=f"Escrow funded — issue PO for deal {deal_id} at ${supplier_ask}/unit",
+            summary=f"Escrow funded — issue PO for deal {deal_id} at ${supplier_ask}/unit"
+                    + (f" (buyer overpaid {overpaid:,.2f} — return the excess)" if overpaid > 0.01 else ""),
+            risk_flags=["escrow_overpaid"] if overpaid > 0.01 else None,
             financial_impact_usd=round(supplier_ask * quantity_mt, 2),
             callback_payload={
                 "deal_id": deal_id, "agreed_price": supplier_ask,
@@ -1938,6 +1960,8 @@ async def on_freight_booked(event: DomainEvent) -> None:
     deal = await _get_deal_in_status(deal_id, "IN_TRANSIT", "FREIGHT_BOOKED→CUSTOMS")
     if deal is None:
         return
+    from shared.orchestration import cost_overrun
+    await _best_effort("FREIGHT_BOOKED→COST_CHECK", deal_id, cost_overrun.check(deal_id, "ocean_freight"))
     payload = event.payload or {}
     await _best_effort("FREIGHT_BOOKED→SHIPPING_DOCS", deal_id, _issue_freight_documents(deal_id))
     try:

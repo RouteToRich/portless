@@ -29,6 +29,8 @@ class EscrowGuardRepository(Protocol):
     async def get_hold_by_ext_ref(self, ext_ref: str) -> EscrowHoldRecord | None: ...
     async def get_hold_by_idempotency_key(self, key: str) -> EscrowHoldRecord | None: ...
     async def list_holds(self) -> list[EscrowHoldRecord]: ...
+    async def claim_tranche(self, escrow_id: str, tranche_id: str, token: str) -> bool: ...
+    async def release_claim(self, escrow_id: str, tranche_id: str, token: str) -> None: ...
 
     # Payouts
     async def save_payout(self, payout: PayoutRecord) -> None: ...
@@ -68,6 +70,29 @@ class InMemoryEscrowGuardRepository:
 
     async def list_holds(self) -> list[EscrowHoldRecord]:
         return list(self._holds.values())
+
+    async def claim_tranche(self, escrow_id: str, tranche_id: str, token: str) -> bool:
+        """Atomic in one event loop: no await between the check and the write."""
+        hold = self._holds.get(escrow_id)
+        if hold is None:
+            return False
+        for i, t in enumerate(hold.tranches):
+            if t.tranche_id == tranche_id:
+                if t.status != "PENDING" or t.claim:
+                    return False
+                tranches = list(hold.tranches)
+                tranches[i] = t.model_copy(update={"claim": token})
+                self._holds[escrow_id] = hold.model_copy(update={"tranches": tranches})
+                return True
+        return False
+
+    async def release_claim(self, escrow_id: str, tranche_id: str, token: str) -> None:
+        hold = self._holds.get(escrow_id)
+        if hold is None:
+            return
+        tranches = [t.model_copy(update={"claim": None}) if t.tranche_id == tranche_id and t.claim == token else t
+                    for t in hold.tranches]
+        self._holds[escrow_id] = hold.model_copy(update={"tranches": tranches})
 
     # -- payouts --------------------------------------------------------------
     async def save_payout(self, payout: PayoutRecord) -> None:
@@ -136,6 +161,21 @@ class MongoEscrowGuardRepository:
             doc.pop("_id", None)
             results.append(EscrowHoldRecord(**doc))
         return results
+
+    async def claim_tranche(self, escrow_id: str, tranche_id: str, token: str) -> bool:
+        """One atomic update: the tranche must be PENDING and unclaimed (DEF-13)."""
+        res = await self._holds.update_one(
+            {"escrow_id": escrow_id,
+             "tranches": {"$elemMatch": {"tranche_id": tranche_id, "status": "PENDING", "claim": None}}},
+            {"$set": {"tranches.$.claim": token}},
+        )
+        return bool(getattr(res, "modified_count", 0))
+
+    async def release_claim(self, escrow_id: str, tranche_id: str, token: str) -> None:
+        await self._holds.update_one(
+            {"escrow_id": escrow_id, "tranches": {"$elemMatch": {"tranche_id": tranche_id, "claim": token}}},
+            {"$set": {"tranches.$.claim": None}},
+        )
 
     # -- payouts --------------------------------------------------------------
     async def save_payout(self, payout: PayoutRecord) -> None:

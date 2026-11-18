@@ -165,6 +165,8 @@ class BuyerCandidate(BaseModel):
     email_id: str | None = None
     send_error: str | None = None
     """Why the last e-mail to this candidate did not go out (e.g. no mailbox configured)."""
+    email_status: str | None = None
+    """``bounced`` when a delivery failure came back for this address (auto_mail.py, DEF-16)."""
     send_attempts: int = 0
     send_failed_at: datetime | None = None
     """When the last send failed in transport (send_retry counts the back-off from here)."""
@@ -232,6 +234,10 @@ class DealRecord(BaseModel):
     buyer_target_price_usd: float | None = None
     """Buyer-side unit price (USD/MT) from the buyer signals or the market benchmark."""
     buyer_price_source: str | None = None
+    prearranged_by: str | None = None
+    """Staff who entered this deal as a pre-arranged trade (buyer and supplier known)."""
+    exposure_accepted_by: str | None = None
+    """A person accepted this deal's exposure above a limit (shared/orchestration/exposure.py)."""
     reorder_of: str | None = None
     """The completed deal this one repeats (shared/orchestration/reorders.py)."""
     quantity_mt: float | None = None

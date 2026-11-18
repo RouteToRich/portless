@@ -257,14 +257,11 @@ class DgftConnector(Connector):
         Returns:
             on_denied_list (bool), checked_at (ISO-8601 string)
         """
-        logger.debug(
-            "DGFT denied-list check is a stub (always returns False): %s", request
-        )
-        return {
-            "on_denied_list": False,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-            "note": "Stub — cache dgft.gov.in denied list in production",
-        }
+        # The list staff loaded from dgft.gov.in (shared/orchestration/denied_list.py, DEF-17):
+        # an IEC match is certain, a name match is reported for a person to confirm; with no
+        # list loaded the answer says ``unchecked`` — never a silent "not denied".
+        from shared.orchestration import denied_list
+        return await denied_list.check(request.get("entity_name") or request.get("name"), request.get("iec"))
 
     async def status(self, ext_ref: str) -> dict[str, Any]:
         return await self.quote({"iec": ext_ref})

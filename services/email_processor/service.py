@@ -269,6 +269,23 @@ async def _process_inbound(
             message="Self-echo: from_address matches our own outbound sender.",
         )
 
+    # ── Auto-replies and bounces are not replies (DEF-16) ──────────────────
+    from shared.orchestration import auto_mail
+    kind = auto_mail.classify(from_address=raw.from_address, subject=raw.subject,
+                              headers=raw.raw_headers, body=raw.body_text or "")
+    if kind:
+        status = InboundEmailStatus.BOUNCE if kind == "bounce" else InboundEmailStatus.AUTO_REPLY
+        note = "automatic reply — not the counterparty's answer"
+        if kind == "bounce":
+            dead = auto_mail.failed_recipient(headers=raw.raw_headers, body=raw.body_text or "",
+                                              own=(raw.to_address,))
+            marked = await auto_mail.mark_bounced(dead or "", raw.subject or "delivery failed")
+            note = f"delivery failure for {dead or 'an unknown address'} — {marked} candidate(s) marked bounced"
+        record = record.model_copy(update={"status": status, "error": note, "updated_at": datetime.now(timezone.utc)})
+        await repo.save(record)
+        logger.info("Inbound %s is a %s (from=%s): %s", inbound_id, kind, raw.from_address, note)
+        return ProcessingResult(inbound_id=inbound_id, status=status, message=note)
+
     # ── Map to negotiation session ─────────────────────────────────────────
     mapping = await map_email(
         from_address=raw.from_address,

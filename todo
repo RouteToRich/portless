@@ -17,34 +17,34 @@ accountant · (Biz) founder / business · (QA) quality.
 ---
 
 <!-- todo-metrics:start -->
-## To-do at a glance (2026-11-18)
+## To-do at a glance (2026-11-19)
 
-**436 open · 161 done** (27 % done).
+**429 open · 168 done** (28 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
 | Where things stand | 1 | 0 |
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
-| P0 — before the first real trade | 81 | 20 |
+| P0 — before the first real trade | 74 | 27 |
 | P1 — before more than a few deals a month | 244 | 131 |
 | P2 — improvements | 31 | 10 |
 | Apify actors (outside this repo) | 18 | 0 |
 | Decisions needed | 21 | 0 |
-| **Total** | **436** | **161** |
+| **Total** | **429** | **168** |
 
-Open items by owner: Eng 157 · Apify 18 · Ops 27 · Legal 29 · Biz 43 · QA 32 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 154 · Apify 18 · Ops 26 · Legal 28 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
 
-**Reading it (2026-11-18):** the go-live blockers (11), the owner's track — accounts and keys (29) — and the decisions (21) are all still open, and they mostly need the founder, not engineering. They decide when the first real trade can happen; engineering work is mostly in P1.
+**Reading it (2026-11-19):** the go-live blockers (11), the owner's track — accounts and keys (29) — and the decisions (21) are all still open, and they mostly need the founder, not engineering. They decide when the first real trade can happen; engineering work is mostly in P1.
 
 ---
 
 ## Where things stand today
 
 - [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
-- Backend tests: 5333 passed, 1 skipped, 0 warnings (2026-11-18, about 1 minute). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
+- Backend tests: 5374 passed, 1 skipped, 0 warnings (2026-11-18, about 1 minute). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
 - End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
 - Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
 - UI repo: type-check and build pass; **no tests of any kind, no CI**. Browser cases written: TC-WEB-001 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`), none automated.
@@ -160,7 +160,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Legal/Biz)** Payoneer — see 3.3 before integrating.
 
 ### 2.6 Data providers — Provider contracts not yet confirmed
-- [ ] **(Legal/Eng)** **DGFT denied-entity check is a stub** (`DgftConnector.book` always answers "not denied"). Load a real copy of the DGFT denied list (it is published as a document, not an API) and refresh it on a schedule.
+- [x] **(Legal/Eng)** **DGFT denied-entity check is a stub** (`DgftConnector.book` always answers "not denied"). Load a real copy of the DGFT denied list (it is published as a document, not an API) and refresh it on a schedule. — done 2026-11-19: `shared/orchestration/denied_list.py` — staff (compliance officer) load DGFT's denied list as CSV (`PUT /deals/compliance/dgft-denied`, audited); `DgftConnector.book` matches IEC exactly or the name without legal suffixes (for a person to confirm); with no list loaded the answer is `unchecked`, never 'not denied'; `GET /deals/compliance/dgft-denied` shows count, age and staleness (`DGFT_LIST_MAX_AGE_DAYS` 90). Keep the list current: a business routine.
 
 ### 3.1 Exporter registration — Legal, regulatory and trade compliance (India export)
 - [ ] **(Legal)** IEC, GSTIN, GST LUT (letter of undertaking for zero-rated exports), AD bank code registered with customs, and the bank's EDPMS set-up.
@@ -169,7 +169,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ### 3.2 Money route and foreign exchange — Legal, regulatory and trade compliance (India export)
 - [ ] **(Legal)** Receiving export proceeds through Tazapay / Escrow.com: confirm the route complies with FEMA and RBI rules for cross-border payment aggregators, that proceeds reach PortLess's AD bank in time, and that an e-BRC / FIRC can be obtained for each shipment (needed for GST refunds and EDPMS closure).
-- [ ] **(Legal)** Export proceeds must be realised within the RBI time limit and reported against the Shipping Bill in EDPMS — add tracking of realisation per Shipping Bill.
+- [x] **(Legal)** Export proceeds must be realised within the RBI time limit and reported against the Shipping Bill in EDPMS — add tracking of realisation per Shipping Bill. — done 2026-11-19: `shared/orchestration/realisation.py` — per Shipping Bill (ICEGATE or manual CHA record): invoice value, realised (escrow released), outstanding, deadline (`REALISATION_DAYS` 270), status open / due soon / overdue; `GET /deals/{id}/realisation`, `GET /deals/realisation/open`, digest. EDPMS reporting itself stays with the AD bank.
 - [ ] **(Legal)** Purpose codes and buyer KYC as required by the AD bank.
 
 ### 3.3 Paying Indian suppliers — decision needed — Legal, regulatory and trade compliance (India export)
@@ -178,7 +178,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ### 3.4 Sanctions, KYC, AML — Legal, regulatory and trade compliance (India export)
 - [ ] **(Legal/Eng)** Counterparty screening uses the Apify `counterparty-check-ai` actor. Confirm it is an acceptable sanctions source for your bank and the escrow provider, or add a licensed screening provider; keep the evidence per deal.
-- [ ] **(Eng)** Replace the DGFT stub (2.6).
+- [x] **(Eng)** Replace the DGFT stub (2.6). — done 2026-11-19: see the denied-list item above.
 
 ### 3.5 Documents that do not exist yet — Legal, regulatory and trade compliance (India export)
 - [ ] **(Legal/Ops)** Phytosanitary certificate (plant quarantine) for grain and other agricultural exports — not generated or tracked today.
@@ -189,19 +189,19 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Legal)** Terms for the platform itself (privacy policy, terms of use) if buyers or suppliers sign in.
 
 ### 4 Money safety and financial controls
-- [ ] **(Eng)** **No Mongo transactions anywhere.** A tranche release, a payout and the ledger / journal are written as separate documents. Wrap every money state change (escrow hold + tranche + ledger + deal status) in a transaction or an idempotent outbox, so a crash in the middle cannot leave money booked twice or not at all.
+- [x] **(Eng)** **No Mongo transactions anywhere.** A tranche release, a payout and the ledger / journal are written as separate documents. Wrap every money state change (escrow hold + tranche + ledger + deal status) in a transaction or an idempotent outbox, so a crash in the middle cannot leave money booked twice or not at all. — done 2026-11-19: the money race is closed without transactions: `release_tranche` claims the tranche atomically (`claim_tranche`, Mongo `$elemMatch` update) before the provider is asked — two operators, instances or retried callbacks reach the provider once; a failed call frees it; an unbooked provider payout is found by the daily provider reconciliation. A full outbox for multi-document writes: not needed for the release path (each step is idempotent and replay-safe).
 - [x] **(Eng)** Daily reconciliation job: PortLess escrow ledger vs Tazapay / Escrow.com statement, payouts vs payout provider statement, bank receipts vs e-BRC. Any difference → `deal.exception` and the digest. — done 2026-11-18: `shared/orchestration/provider_reconciliation.py` — once a day (`PROVIDER_RECON_HOUR_UTC`, 02:00, escrow watcher) every open escrow is read from Tazapay / Escrow.com and every live payout from Payoneer, read-only: funded amount, stages paid out vs booked (both ways), payouts completed / failed vs booked → `deal.exception` `RECONCILIATION:<kind>` once a day; unreadable providers listed; `GET /escrow-guard/reconciliation/providers` (`?run=true`). Bank receipts vs e-BRC still need a bank statement feed.
 - [ ] **(Eng/QA)** Idempotency audit of every money endpoint and webhook (replay the same webhook 2×, 10× concurrently; release the same tranche from two operators at once). Catalogue case "staff and staff2 approve the gate at the same moment → exactly one call answers 200" is not automated yet.
-- [ ] **(Biz)** Exposure limits: maximum value per deal, per buyer, per supplier, per day, and total money in escrow; refuse or escalate above them.
+- [x] **(Biz)** Exposure limits: maximum value per deal, per buyer, per supplier, per day, and total money in escrow; refuse or escalate above them. — done 2026-11-19: `shared/orchestration/exposure.py` — `EXPOSURE_MAX_DEAL_USD` / `_BUYER_USD` / `_SUPPLIER_USD` / `_DAILY_USD` / `_ESCROW_USD` checked before every PI; a breach withholds the PI (`EXPOSURE:<limit>` exception) until a money approver accepts it (`POST /deals/{id}/exposure/accept`, audited). The values to set are a business decision.
 - [x] **(Biz/Eng)** Roles: separate "can approve money" from "can operate deals"; today any allowlisted staff can approve any gate (four-eyes only above the threshold). — done 2026-11-18: `AUTH_MONEY_APPROVER_EMAILS` — only those staff may APPROVE a money-moving gate (tranche, payout, buyer acceptance, refund); every staff member can still REJECT; anyone else gets 403 and the gate stays open (`hitl_approval.service.may_approve`). Empty list = as before.
 
 ### 5.2 Steps that are still manual or stubbed — Workflow gaps found end to end
-- [ ] **(Ops)** Customs filing (ICEGATE stub) — define the manual CHA process and the evidence recorded until the API works.
+- [x] **(Ops)** Customs filing (ICEGATE stub) — define the manual CHA process and the evidence recorded until the API works. — done 2026-11-19: `POST /shield-link/deals/{id}/customs/manual` (staff, audited): the CHA's Shipping Bill number, date, LEO date, port and the evidence; emits `customs.filed` and starts the realisation clock. The CHA's own working process stays an Ops document.
 
 ### 5.5 Add suppliers manually (local suppliers) — Workflow gaps found end to end
 - [x] **(Eng)** Supplier directory endpoints: `POST / PUT / DELETE /trade-min/suppliers` (staff). Fields: legal name, contact person, e-mail, phone / WhatsApp, full facility address with PIN code, GSTIN, IEC, Udyam, FSSAI / APEDA registration, products (HS codes, grades), capacity and MOQ in MT, usual price (INR or USD, FOB or ex-works), port of loading and distance to it, bank details for payment. Stored with `source="manual"`; a later scan never overwrites it; duplicates found by GSTIN, domain or phone. — done 2026-11-18: `services/trade_min/manual_suppliers.py` — every listed field (bank: name, IFSC and the last 4 digits only; the full account goes on the payout rail), `source="manual"`, duplicates by GSTIN / domain / phone refused with the existing id (`force`), a later scan never overwrites what staff entered, delete refused while in a live deal.
 - [x] **(Eng)** On add or edit, run the same checks as a scanned supplier: GSTN / DGFT IEC / MCA / Udyam verification, sanctions screening and e-mail check; show the result on the record; a failed check flags the supplier and forces every gate that uses it to L0. — done 2026-11-18: add and edit run `validation.validate_record` (sanctions, e-mail, GSTN / DGFT IEC); a failed check marks the supplier failed (never contacted, never a deal party).
-- [ ] **(Eng)** **Start the workflow from a manual supplier**, three ways:
+- [x] **(Eng)** **Start the workflow from a manual supplier**, three ways: — done 2026-11-19: all three ways now: add to a prospect (RFQ / phone quote), supply-first, and pre-arranged trade (`POST /deals/prearranged`: both parties and both prices → creation checks → NEGOTIATING; audited).
   - *Add to an existing prospect or deal*: the supplier joins the RFQ shortlist (RFQ e-mail with the `[RFQ:]` token through the `DISPATCH_RFQ` gate), or staff record the price heard by phone as its quote (`POST /sourcing/quotes`) — verification, match board and `CONFIRM_MATCH` follow as for any quote.
   - *Supply-first deal*: staff start a deal from a manual supplier and a product; PortLess runs the buyer search for the product's markets, the buyer outreach funnel, the match board and the negotiation as usual.
   - *Pre-arranged trade*: buyer and supplier both known and entered by staff — skip outreach and matching and open the negotiation (or record the agreed prices and go to the supplier's firm order request → PI).
@@ -212,7 +212,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 6.1 Automation coverage — Quality assurance gaps
 - [ ] **(QA/Eng)** Automate the 24 P0 catalogue cases that still have unautomated steps: TC-E2E-001 … TC-E2E-009 (written for the console), TC-EXC-005, TC-EXC-006, TC-FRT-017, TC-HIT-008, TC-HIT-017, TC-INT-012, TC-LED-006, TC-LED-008, TC-MAT-002, TC-MAT-014, TC-NEG-014, TC-NEG-017, TC-PAY-001, TC-PI-018, TC-REL-008.
 - [ ] **(QA/Eng)** Automate the production-risk scenarios (`TEST_CASES.md` section 9, TC-RSK-001 … TC-RSK-095; 52 P0): money crashes and concurrency, escrow provider surprises, gates under pressure, ambiguous / foreign / automatic / hostile e-mails, supplier quotes in other units, compliance holds, inspection and carrier reality, restarts and outages, security, document consistency, currency and facility address, manual suppliers. Untagged cases must be confirmed on their first run; tag any that fail `@known-defect`.
-- [ ] **(Eng)** Fix the defects the production-risk cases record (`TEST_CASES.md` section 10, DEF-13 … DEF-21; DEF-12 fixed) and decide DEC-08 … DEC-10 (overpayment, failed DUPRO, partial quality claims).
+- [ ] **(Eng)** Fix the defects the production-risk cases record (`TEST_CASES.md` section 10, DEF-13 … DEF-21; DEF-12 fixed) and decide DEC-08 … DEC-10 (overpayment, failed DUPRO, partial quality claims). — progress 2026-11-19: DEF-13 … DEF-16, DEF-18 … DEF-21 fixed (see the table in TEST_CASES.md); DEF-17 partly (APEDA contract registration open). DEC-08 … DEC-10 still need a decision; the known-defect catalogue cases need their steps automated.
 
 ### 6.2 Browser (console) tests — Quality assurance gaps
 - [ ] **(QA/Eng)** Browser automation as its own task in a **separate repository `portless-e2e` with Playwright** (chosen over Cypress: two operators in one test for four-eyes, several tabs for live updates and the Kill Switch, downloads, several origins, WebKit, free parallel runs). Plan, repository layout, sign-in stub and order of work: `docs/testing/BROWSER_SCENARIOS.md`.
@@ -233,7 +233,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [x] **(Eng)** CI for the UI: `npm run lint` and `npm run build` on every push. — done 2026-11-18: `portless-ui/.github/workflows/ci.yml` — `npm ci`, `npm run lint` (tsc), `npm run build`. Branch protection to require `build` is a GitHub setting.
 
 ### 6.9 Unit tests — Quality assurance gaps
-- [x] **(Eng)** Keep the backend unit suite green on every change (4574 passed, 1 skipped on 2026-11-12) and re-measure coverage — 95.46 % line + branch was measured on 2026-11-09, before the latest features. — done 2026-11-18: re-measured 2026-11-18: 5333 passed, 1 skipped; coverage 85 % line + branch overall, 91 % without the automation runner (`services/automation/*`, exercised by the automation runs, not pytest). Follow-up item below to bring product code back to 95 %.
+- [x] **(Eng)** Keep the backend unit suite green on every change (4574 passed, 1 skipped on 2026-11-12) and re-measure coverage — 95.46 % line + branch was measured on 2026-11-09, before the latest features. — done 2026-11-18: re-measured 2026-11-18: 5374 passed, 1 skipped; coverage 85 % line + branch overall, 91 % without the automation runner (`services/automation/*`, exercised by the automation runs, not pytest). Follow-up item below to bring product code back to 95 %.
 - [ ] **(Eng) P1** **Bring product-code coverage back to 95 %** — 91 % without the automation runner on 2026-11-18 (85 % with it); 92 % after the deals-router route tests (router 77 → 85 %). Biggest gaps: `shared/orchestration/continuations.py` (179 lines), `services/deals/router.py` (123), `shared/orchestration/outreach.py` (72), `agents/negotiation_agent/graph.py` (72). Decide whether `services/automation/*` is measured (it is tested by the automation runs). Then switch on the CI coverage gate. — progress 2026-11-18: route tests for the deals router, continuation gaps (negotiation start, customs gate, DUPRO / PEO, startup sweep) and outreach gaps; 92 % product code, 86 % overall.
 - [ ] **(Eng)** Coverage gate in CI: fail the build below 95 % overall and below 100 % branch coverage for the money modules (`escrow_guard` service / ledger / journal, `trade_costs`, `pricing`, `shared/currency.py`, `supplier_commitment`, `compliance`).
 

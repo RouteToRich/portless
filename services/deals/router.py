@@ -52,6 +52,35 @@ async def list_hs_policy(user: AuthUser = Depends(require_portless)) -> dict:
     }
 
 
+@router.get("/compliance/dgft-denied")
+async def dgft_denied_status(user: AuthUser = Depends(require_portless)) -> dict:
+    """The loaded DGFT denied-entity list: count, when and by whom it was loaded, stale or not."""
+    from shared.orchestration import denied_list
+    return await denied_list.status()
+
+
+class DgftListUpload(BaseModel):
+    csv: str = Field(min_length=10, description="CSV with a header: name, iec, address, order_ref, notified_on")
+
+
+@router.put("/compliance/dgft-denied")
+async def dgft_denied_load(body: DgftListUpload, user: AuthUser = Depends(require_portless)) -> dict:
+    """Replace the stored DGFT denied-entity list with this copy from dgft.gov.in (compliance officer)."""
+    from shared.auth.roles import RoleRequired, require_compliance_officer
+    try:
+        require_compliance_officer(user, "Loading the DGFT denied-entity list")
+    except RoleRequired as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    from shared.orchestration import denied_list
+    try:
+        meta = await denied_list.load(body.csv, by=getattr(user, "email", None) or "staff")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "compliance.dgft_list_loaded", "platform", count=meta["count"])
+    return meta
+
+
 @router.put("/compliance/hs-policy/{hs_code}")
 async def put_hs_policy(hs_code: str, body: HsPolicyUpdate, user: AuthUser = Depends(require_portless)) -> dict:
     """Record the result of checking an HS code against ITC-HS Schedule 2 / SCOMET (compliance officer)."""
@@ -210,6 +239,57 @@ async def prospects_cleanup_run(user: AuthUser = Depends(require_portless)) -> d
     """Close them now (CANCELLED with the reason; records are kept)."""
     from shared.orchestration import prospect_cleanup
     return await prospect_cleanup.run(by=getattr(user, "email", None) or "staff")
+
+
+class PrearrangedParty(BaseModel):
+    legal_name: str = Field(min_length=2)
+    country: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    gstin: str | None = None
+    iec: str | None = None
+    address: str | None = None
+
+
+class PrearrangedTrade(BaseModel):
+    hs_code: str = Field(min_length=4)
+    market: str = Field(min_length=2, max_length=2)
+    quantity_mt: float = Field(gt=0)
+    buyer: PrearrangedParty
+    supplier: PrearrangedParty
+    buyer_price_usd: float = Field(gt=0, description="USD/MT the buyer agreed or targets (CIF)")
+    supplier_price_usd: float = Field(gt=0, description="USD/MT FOB the supplier quoted")
+    supplier_quote_written: bool = False
+    incoterm: str = "FOB"
+
+
+@router.post("/prearranged", response_model=DealRecord, status_code=status.HTTP_201_CREATED)
+async def start_prearranged(body: PrearrangedTrade, user: AuthUser = Depends(require_portless)) -> DealRecord:
+    """A trade where staff know both sides: no outreach or matching — the creation checks run and
+    the negotiation opens from the two prices."""
+    from shared.orchestration import prearranged
+    try:
+        deal = await prearranged.start(
+            by=getattr(user, "email", None) or "staff", org_id=getattr(user, "org_id", None) or "portless",
+            hs_code=body.hs_code, market=body.market.upper(), quantity_mt=body.quantity_mt,
+            buyer=body.buyer.model_dump(), supplier=body.supplier.model_dump(),
+            buyer_price_usd=body.buyer_price_usd, supplier_price_usd=body.supplier_price_usd,
+            supplier_quote_written=body.supplier_quote_written, incoterm=body.incoterm)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "deal.prearranged_started", deal.deal_id, buyer=body.buyer.legal_name,
+                      supplier=body.supplier.legal_name)
+    return deal
+
+
+@router.get("/realisation/open", response_model=list[dict])
+async def realisation_open(user: AuthUser = Depends(require_portless)) -> list[dict]:
+    """Shipping Bills whose export proceeds are not fully realised, overdue first (RBI time limit)."""
+    from shared.orchestration import realisation
+    return await realisation.open_items()
 
 
 @router.get("/run-costs", response_model=list[dict])
@@ -575,6 +655,34 @@ async def deal_run_costs(deal_id: str, user: AuthUser = Depends(require_portless
     decisions and how long gates waited (shared/deal_costs.py)."""
     from shared import deal_costs
     return await deal_costs.summary(deal_id)
+
+
+class ExposureAccept(BaseModel):
+    reason: str = Field(min_length=10)
+
+
+@router.post("/{deal_id}/exposure/accept")
+async def accept_exposure(deal_id: str, body: ExposureAccept, user: AuthUser = Depends(require_portless)) -> dict:
+    """A money approver accepts this deal's exposure above a limit; the withheld PI can then go out."""
+    from shared.auth.roles import is_money_approver
+    if not is_money_approver(getattr(user, "email", None)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="accepting exposure above a limit needs a money approver (AUTH_MONEY_APPROVER_EMAILS)")
+    await _org_deal(deal_id, user)
+    from services.deals.repository import get_repository as deals_repo
+    who = getattr(user, "email", None) or "staff"
+    await deals_repo().set_fields(deal_id, {"exposure_accepted_by": who})
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "deal.exposure_accepted", deal_id, reason=body.reason)
+    return {"deal_id": deal_id, "exposure_accepted_by": who}
+
+
+@router.get("/{deal_id}/realisation")
+async def deal_realisation(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Per Shipping Bill: invoice value, realised so far, outstanding and the realisation deadline."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import realisation
+    return await realisation.for_deal(deal_id)
 
 
 @router.get("/{deal_id}/containers")

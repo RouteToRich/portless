@@ -480,10 +480,12 @@ class TestAutomation:
 
 
 class TestProviderByCost:
-    async def test_the_cheapest_enabled_provider_when_nobody_chose(self, monkeypatch):
+    async def test_the_cheapest_enabled_provider_when_nobody_chose(self, monkeypatch, world):
         from unittest.mock import AsyncMock as _AM
         from services.escrow_guard import service as eg
-        monkeypatch.setattr(eg, "_fetch_deal", _AM(return_value=None))
+        # The world fixture already patches _fetch_deal; patching it again with monkeypatch would
+        # restore the fixture's mock (not the real function) at teardown and leak into later files.
+        world.deal = None
         monkeypatch.setattr("services.dealmaker.repository.get_repository", lambda: type("R", (), {"get_pi_by_deal": _AM(return_value=None)})())
         monkeypatch.setenv("ESCROW_PROVIDERS_ENABLED", "tazapay,escrow_com")
         monkeypatch.setenv("ESCROW_DEFAULT_PROVIDER", "tazapay")

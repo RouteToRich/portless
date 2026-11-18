@@ -344,7 +344,8 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
         return 0
     active = [c for c in cands if _status(c) in ("contacted", "followed_up")]
     slots = max(0, (limit if limit is not None else parallel()) - len(active))
-    pending = [c for c in cands if _status(c) == "pending" and getattr(c, "email", None)]
+    pending = [c for c in cands if _status(c) == "pending" and getattr(c, "email", None)
+               and getattr(c, "email_status", None) != "bounced"]  # a dead address is never written to again
     if verified_only():
         waiting = [c for c in pending if getattr(c, "validation_status", None) != "verified"]
         if waiting:

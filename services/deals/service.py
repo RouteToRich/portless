@@ -905,11 +905,34 @@ async def update_party(
 
     updated = deal.model_copy(update={"parties": parties, "updated_at": datetime.now(timezone.utc)})
     await repo.save(updated)
+    if role.lower() == "supplier" and clean.get("address_history"):
+        await _address_changed_after_booking(deal_id, clean.get("address") or "")
     logger.info("Deal %s: %s party updated (%s)", deal_id, role, ", ".join(sorted(clean)))
     return updated
 
 
 _ADDRESS_HISTORY_MAX = 20
+
+
+async def _address_changed_after_booking(deal_id: str, new_address: str) -> None:
+    """The facility address changed while an inspection is booked (DEF-18): the inspector
+    would go to the old place — raise it so the booking is corrected or rescheduled."""
+    try:
+        from services.shield_link.service import list_deal_orders  # type: ignore[import]
+        open_qc = [o for o in (await list_deal_orders(deal_id)).orders
+                   if str(o.order_type).upper() == "QC" and o.status in ("PENDING", "BOOKED", "IN_PROGRESS")]
+    except Exception:  # noqa: BLE001
+        return
+    if not open_qc:
+        return
+    from shared.bus import get_publisher
+    from shared.domain.events import DomainEvent, EventTopic
+    await get_publisher().publish(DomainEvent(topic=EventTopic.DEAL_EXCEPTION, deal_id=deal_id, payload={
+        "source": "deals", "stage": "QC:address_changed_after_booking", "category": "UNKNOWN",
+        "error": f"the supplier's facility address changed after {len(open_qc)} inspection booking(s): {new_address[:160]}",
+        "action_required": "tell_the_inspector_the_new_address_or_reschedule",
+        "tpo_ids": [o.tpo_id for o in open_qc],
+    }))
 
 
 def _record_address_change(party: Party, clean: dict[str, Any], source: str | None) -> None:

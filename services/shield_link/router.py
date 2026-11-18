@@ -25,6 +25,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from shared.auth.dependencies import AuthUser, require_portless
 from shared.webhooks import parse_webhook_body, signature_required
@@ -269,6 +270,39 @@ async def api_book_freight(req: FreightBookingRequest) -> ThirdPartyOrderRespons
         raise HTTPException(422, detail=str(exc))
     except ConnectorCallError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+
+class ManualCustomsRequest(BaseModel):
+    shipping_bill_number: str = Field(min_length=3, max_length=40)
+    shipping_bill_date: str = Field(description="YYYY-MM-DD")
+    let_export_order_date: str | None = None
+    port: str | None = None
+    evidence: str | None = Field(default=None, max_length=300)
+    """Where the copy is (Drive link, e-mail from the CHA)."""
+
+
+@router.post("/deals/{deal_id}/customs/manual", response_model=ThirdPartyOrderResponse, status_code=201)
+async def api_manual_customs(deal_id: str, req: ManualCustomsRequest,
+                             user: AuthUser = Depends(require_portless)) -> ThirdPartyOrderResponse:
+    """Record a Shipping Bill the customs broker filed by hand (ICEGATE not connected)."""
+    from datetime import date as _date
+    try:
+        _date.fromisoformat(req.shipping_bill_date)
+    except ValueError:
+        raise HTTPException(422, detail="shipping_bill_date must be YYYY-MM-DD")
+    from .service import record_manual_customs
+    try:
+        out = await record_manual_customs(deal_id, shipping_bill_number=req.shipping_bill_number,
+                                          shipping_bill_date=req.shipping_bill_date,
+                                          let_export_order_date=req.let_export_order_date, port=req.port,
+                                          by=user.email or user.user_id, evidence=req.evidence)
+    except DealNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except InvalidDealState as exc:
+        raise HTTPException(422, detail=str(exc))
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "customs.manual_filing_recorded", deal_id, request=req)
+    return out
 
 
 @router.post("/freight/{ref}/milestone")

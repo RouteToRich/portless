@@ -55,6 +55,9 @@ class TrancheSpec(BaseModel):
     """Document ids the provider returned for the submitted proof (Tazapay ``doc_…``)."""
     release_source: str | None = None
     """What confirmed the payout: ``provider`` (immediate), ``webhook``, ``poll`` or ``staff``."""
+    claim: str | None = None
+    """Set atomically while one caller is releasing this tranche at the provider (DEF-13): a
+    second, concurrent release finds it claimed and is refused instead of paying twice."""
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +82,9 @@ class EscrowHoldRecord(BaseModel):
     shortfall: float | None = None
     """``amount − funded_amount`` while the provider confirmed less than the
     principal (status ``PARTIALLY_FUNDED``); None once fully funded."""
+    overpaid: float | None = None
+    """``funded_amount − amount`` when the buyer paid more than the PI (DEF-15): the PO gate
+    carries ``escrow_overpaid`` and an operator returns the excess through the provider."""
     released_at: datetime | None = None
     settled_at: datetime | None = None
     """Set when every tranche has left the escrow (money side of the trade closed)."""

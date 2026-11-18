@@ -1049,6 +1049,39 @@ async def file_cha(req: ChaFilingRequest) -> ThirdPartyOrderResponse:
     return ThirdPartyOrderResponse.from_record(updated)
 
 
+async def record_manual_customs(deal_id: str, *, shipping_bill_number: str, shipping_bill_date: str,
+                                let_export_order_date: str | None, port: str | None, by: str,
+                                evidence: str | None = None) -> ThirdPartyOrderResponse:
+    """The customs broker (CHA) filed the Shipping Bill by hand while ICEGATE is not connected:
+    staff record its number, date, the Let Export Order date and the evidence (todo: manual CHA
+    process). Same effect as an ICEGATE filing — ``customs.filed`` — and the realisation clock
+    for the export proceeds starts from the Shipping Bill date (realisation.py)."""
+    repo = get_repository()
+    key = f"manual-cha-{deal_id}-{shipping_bill_number}"
+    existing = await repo.get_by_idempotency_key(key)
+    if existing is not None:
+        return ThirdPartyOrderResponse.from_record(existing)
+    deal = await _fetch_deal(deal_id)
+    deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
+    if deal_status not in CUSTOMS_FILING_STATUSES and deal_status != "PAID":
+        raise InvalidDealState(deal_id, deal_status, " or ".join(sorted(CUSTOMS_FILING_STATUSES)))
+    now = datetime.now(timezone.utc)
+    payload = {"shipping_bill_number": shipping_bill_number, "shipping_bill_date": shipping_bill_date,
+               "let_export_order_date": let_export_order_date, "port": port, "evidence": evidence,
+               "filed_by": "cha_manual", "recorded_by": by}
+    record = ThirdPartyOrderRecord(
+        tpo_id=_new_tpo_id("CHA"), deal_id=deal_id, order_type="CHA", provider="cha_manual", status="COMPLETED",
+        ext_ref=shipping_bill_number, provider_payload=payload, idempotency_key=key, created_at=now, updated_at=now,
+    )
+    await repo.save(record)
+    await _emit(EventTopic.CUSTOMS_FILED, deal_id, {
+        "tpo_id": record.tpo_id, "shipping_bill_number": shipping_bill_number,
+        "let_export_order": let_export_order_date, "manual": True,
+    })
+    logger.info("ShieldLink: manual CHA filing %s recorded for deal %s by %s", shipping_bill_number, deal_id, by)
+    return ThirdPartyOrderResponse.from_record(record)
+
+
 # ---------------------------------------------------------------------------
 # Read helpers
 # ---------------------------------------------------------------------------

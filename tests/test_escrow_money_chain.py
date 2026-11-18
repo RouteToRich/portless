@@ -308,3 +308,130 @@ class TestStripeReplayWindow:
 
         assert await conn.webhook_verify({"stripe-signature": sig(int(time.time()))}, body) is True
         assert await conn.webhook_verify({"stripe-signature": sig(int(time.time()) - 3600)}, body) is False
+
+
+# ---------------------------------------------------------------------------
+# DEF-13: the same tranche released twice at the same moment reaches the provider once
+# ---------------------------------------------------------------------------
+
+class TestConcurrentRelease:
+    async def _race(self, emitted, monkeypatch):
+        import asyncio
+
+        from services.escrow_guard import service as svc
+        esc = await _open()
+        await _fund(esc)
+        calls = []
+
+        class _Slow:
+            async def release(self, payload):
+                calls.append(payload["tranche_id"])
+                await asyncio.sleep(0.05)  # the provider takes a moment: both requests are in flight
+                return {"status": "RELEASED", "ext_ref": "TZ-T1"}
+        monkeypatch.setattr(svc, "_payment_connector", lambda provider: _Slow())
+        with patch("services.escrow_guard.service._deal_status", new=AsyncMock(return_value="PO_ISSUED")):
+            results = await asyncio.gather(
+                release_tranche(esc.escrow_id, ReleaseTrancheRequest(tranche_id="T1", proof_refs=["po"])),
+                release_tranche(esc.escrow_id, ReleaseTrancheRequest(tranche_id="T1", proof_refs=["po"])),
+                return_exceptions=True,
+            )
+        return esc, calls, results
+
+    @pytest.mark.asyncio
+    async def test_only_one_release_reaches_the_provider(self, emitted, monkeypatch):
+        from services.escrow_guard.service import TrancheReleaseInProgress
+        esc, calls, results = await self._race(emitted, monkeypatch)
+        assert calls == ["T1"]
+        refused = [r for r in results if isinstance(r, TrancheReleaseInProgress)]
+        assert len(refused) == 1 and "nothing was sent twice" in str(refused[0])
+        hold = await get_repository().get_hold(esc.escrow_id)
+        t1 = next(t for t in hold.tranches if t.tranche_id == "T1")
+        assert t1.status == "RELEASED" and t1.claim is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_provider_call_frees_the_tranche(self, emitted, monkeypatch):
+        from services.escrow_guard import service as svc
+        from services.escrow_guard.service import ConnectorError
+        esc = await _open()
+        await _fund(esc)
+
+        class _Down:
+            async def release(self, payload):
+                raise ConnectorError("provider down")
+        monkeypatch.setattr(svc, "_payment_connector", lambda provider: _Down())
+        with patch("services.escrow_guard.service._deal_status", new=AsyncMock(return_value="PO_ISSUED")):
+            with pytest.raises(svc.ConnectorCallError):
+                await release_tranche(esc.escrow_id, ReleaseTrancheRequest(tranche_id="T1"))
+        t1 = next(t for t in (await get_repository().get_hold(esc.escrow_id)).tranches if t.tranche_id == "T1")
+        assert t1.status == "PENDING" and t1.claim is None  # free for the retry
+
+
+@pytest.mark.asyncio
+async def test_mongo_claim_is_atomic():
+    from mongomock_motor import AsyncMongoMockClient
+
+    from services.escrow_guard.repository import MongoEscrowGuardRepository
+    from services.escrow_guard.schemas import EscrowHoldRecord, TrancheSpec
+    db = AsyncMongoMockClient()["db"]
+    repo = MongoEscrowGuardRepository(db["holds"], db["payouts"])
+    now = datetime.now(timezone.utc)
+    await repo.save_hold(EscrowHoldRecord(escrow_id="E1", deal_id="D1", provider="tazapay", amount=100.0, currency="USD",
+                                          status="FUNDED", created_at=now, updated_at=now, idempotency_key="k",
+                                          tranches=[TrancheSpec(tranche_id="T1", trigger="PO_ISSUED", pct=0.3)]))
+    assert await repo.claim_tranche("E1", "T1", "a") is True
+    assert await repo.claim_tranche("E1", "T1", "b") is False
+    await repo.release_claim("E1", "T1", "b")  # not the holder: nothing changes
+    assert await repo.claim_tranche("E1", "T1", "c") is False
+    await repo.release_claim("E1", "T1", "a")
+    assert await repo.claim_tranche("E1", "T1", "c") is True
+
+
+# ---------------------------------------------------------------------------
+# DEF-15: overpayment, another currency, a payout PortLess never submitted
+# ---------------------------------------------------------------------------
+
+class TestFundingSurprises:
+    @pytest.mark.asyncio
+    async def test_overpayment_is_funded_and_flagged(self, emitted):
+        esc = await _open(amount=25000.0)
+        out, _ = await _fund(esc, amount=26000.0)
+        hold = await get_repository().get_hold(esc.escrow_id)
+        assert hold.status == "FUNDED" and hold.overpaid == 1000.0
+        exc = [p for t, _d, p in emitted if t == EventTopic.DEAL_EXCEPTION and p.get("reason") == "funding_amount_mismatch"]
+        assert exc and exc[0]["overpaid"] == 1000.0 and exc[0]["category"] == "PAYMENT_FAILED"
+
+    @pytest.mark.asyncio
+    async def test_another_currency_is_never_booked(self, emitted):
+        esc = await _open(amount=25000.0)
+        payload = EscrowFundedWebhookPayload(ext_ref=esc.ext_ref, status="FUNDED", amount=25000.0, currency="EUR")
+        trans = AsyncMock()
+        with patch("services.escrow_guard.service._transition_deal", new=trans):
+            out = await handle_escrow_funded_webhook(payload, {}, b"{}")
+        assert out["status"] == "held" and out["reason"] == "currency_mismatch"
+        assert (await get_repository().get_hold(esc.escrow_id)).status == "PENDING"
+        trans.assert_not_awaited()
+        assert any(p.get("reason") == "funding_currency_mismatch" and p["category"] == "PAYMENT_FAILED"
+                   for t, _d, p in emitted if t == EventTopic.DEAL_EXCEPTION)
+
+    @pytest.mark.asyncio
+    async def test_a_stage_never_submitted_is_not_booked(self, emitted, monkeypatch):
+        from services.escrow_guard import service as svc
+        esc = await _open()
+        await _fund(esc)
+        repo = get_repository()
+        hold = await repo.get_hold(esc.escrow_id)
+        await repo.save_hold(hold.model_copy(update={"provider": "tazapay", "ext_ref": "TZ-1"}))
+
+        class _Provider:
+            async def status(self, ref):
+                return {}
+
+            def interpret_status(self, body, tranches, event):
+                return {"funded": True, "funded_amount": 50000.0, "released": ["T2"]}
+        monkeypatch.setattr(svc, "_payment_connector", lambda p: _Provider())
+        await svc.poll_provider(esc.escrow_id)
+        await svc.poll_provider(esc.escrow_id)  # a second poll alerts nobody twice
+        t2 = next(t for t in (await repo.get_hold(esc.escrow_id)).tranches if t.tranche_id == "T2")
+        assert t2.status == "PENDING"
+        alerts = [p for t, _d, p in emitted if t == EventTopic.DEAL_EXCEPTION and p.get("reason") == "payout_never_submitted"]
+        assert len(alerts) == 1 and alerts[0]["tranche_id"] == "T2"

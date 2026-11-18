@@ -69,18 +69,36 @@ def today() -> date:
     return datetime.now(timezone.utc).date()
 
 
+def public_holidays() -> set[date]:
+    """``QC_PUBLIC_HOLIDAYS``: comma-separated YYYY-MM-DD dates the inspectors do not work
+    (national holidays, Diwali, the state's own) — skipped like weekends (DEF-18)."""
+    out: set[date] = set()
+    for part in os.getenv("QC_PUBLIC_HOLIDAYS", "").split(","):
+        try:
+            out.add(date.fromisoformat(part.strip()))
+        except ValueError:
+            continue
+    return out
+
+
+def is_working_day(d: date, holidays: set[date] | None = None) -> bool:
+    return d.weekday() < 5 and d not in (public_holidays() if holidays is None else holidays)
+
+
 def add_business_days(start: date, days: int) -> date:
+    holidays = public_holidays()
     d = start
     left = days
     while left > 0:
         d += timedelta(days=1)
-        if d.weekday() < 5:
+        if is_working_day(d, holidays):
             left -= 1
     return d
 
 
 def next_business_day(d: date) -> date:
-    while d.weekday() >= 5:
+    holidays = public_holidays()
+    while not is_working_day(d, holidays):
         d += timedelta(days=1)
     return d
 

@@ -448,6 +448,7 @@ async def _verify_supplier(
     iec: str | None,
     cin: str | None,
     udyam_number: str | None,
+    company_name: str | None = None,
 ) -> VerificationResult:
     """Run concurrent regulatory verification.  All checks are best-effort."""
     now = datetime.now(timezone.utc)
@@ -462,7 +463,8 @@ async def _verify_supplier(
             _safe_call("dgft", "quote", {"iec": iec})
         )
         tasks["dgft_denied"] = asyncio.create_task(
-            _safe_call("dgft", "book", {"supplier_id": supplier_id})
+            _safe_call("dgft", "book", {"supplier_id": supplier_id, "iec": iec,
+                                        "entity_name": company_name})
         )
     if cin:
         tasks["mca"] = asyncio.create_task(
@@ -798,6 +800,7 @@ async def receive_quote(payload: QuoteIntakeRequest) -> QuoteRecord:
             iec=payload.iec_number,
             cin=payload.cin_number,
             udyam_number=payload.udyam_number,
+            company_name=getattr(payload, "company_name", None),
         )
     )
     deal_task = asyncio.create_task(_fetch_deal(payload.deal_id))

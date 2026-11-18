@@ -215,6 +215,17 @@ async def _apply_update(
 
     docs = await _fetch_documents(tpo, refs=documents or [], source=source, product_ids=product_ids)
     all_docs = [*tpo.qc_documents, *docs]
+    # The inspector's own hash of its report (CRF) must match a file we kept (DEF-18): a report
+    # that differs from what the inspector signed is never read as a PASS / FAIL.
+    if crf_hash and all_docs and result in ("PASS", "FAIL") and             crf_hash.strip().lower() not in {str(d.get("sha256") or "").lower() for d in all_docs}:
+        logger.error("ShieldLink: report hash of %s does not match the inspector's CRF hash — held", tpo.tpo_id)
+        await sl._emit(EventTopic.DEAL_EXCEPTION, tpo.deal_id, {
+            "stage": "QC_REPORT_HASH_MISMATCH", "category": "QC_FAILED",
+            "error": f"{tpo.provider.upper()} report {tpo.provider_order_number or tpo.ext_ref}: the file kept does not "
+                     f"match the inspector's CRF hash {crf_hash[:16]}… — result {result} not applied",
+            "action_required": "get_the_original_report_from_the_inspector", "tpo_id": tpo.tpo_id,
+        })
+        result = "PENDING"
     crf = crf_hash or (all_docs[0]["sha256"] if all_docs else None) or tpo.crf_hash
     now = _now()
     update.update({

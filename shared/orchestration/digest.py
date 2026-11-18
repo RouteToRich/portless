@@ -120,6 +120,13 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         out["warnings"].append(f"price alerts unavailable: {exc}")
 
+    # ── Export proceeds not yet realised (RBI time limit) ──────────────────
+    try:
+        from shared.orchestration import realisation
+        out["realisation"] = [r for r in await realisation.open_items() if r["status"] in ("overdue", "due_soon")]
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"realisation unavailable: {exc}")
+
     # ── Buyers whose usual next order is near ──────────────────────────────
     try:
         from shared.orchestration import reorders
@@ -264,6 +271,13 @@ def render_digest_text(d: dict[str, Any]) -> str:
         if pr.get("stalled"):
             lines.append("  STALLED (waiting on them):")
             lines += [_desk_line(r) for r in pr["stalled"]]
+        lines.append("")
+    rz = d.get("realisation") or []
+    if rz:
+        lines.append(f"EXPORT PROCEEDS TO REALISE ({len(rz)}):")
+        for r in rz[:DESK_ITEMS]:
+            lines.append(f"  • {r['deal_id']} SB {r['shipping_bill_number']}: {r['outstanding']:,.2f} {r['currency']} "
+                         f"outstanding — {r['status'].replace('_', ' ')}, deadline {r['deadline']}")
         lines.append("")
     ro = d.get("reorders_due") or []
     if ro:

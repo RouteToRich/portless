@@ -140,6 +140,14 @@ class InvalidDealState(Exception):
         super().__init__(f"Deal {deal_id!r} is {current!r}; required {required!r}")
 
 
+class TrancheReleaseInProgress(InvalidDealState):
+    """Another caller holds the tranche's release claim (DEF-13)."""
+
+    def __init__(self, deal_id: str, tranche_id: str) -> None:
+        Exception.__init__(self, f"Deal {deal_id!r}: tranche {tranche_id} is being released by another request — "
+                                 "nothing was sent twice; refresh in a moment")
+
+
 class HoldNotFoundError(Exception):
     def __init__(self, escrow_id: str) -> None:
         super().__init__(f"Escrow hold {escrow_id!r} not found")
@@ -353,6 +361,19 @@ async def handle_escrow_funded_webhook(
     if hold.status in ("FUNDED", "RELEASED", "REFUNDED"):
         return {"status": "ok", "escrow_id": hold.escrow_id, "deal_id": hold.deal_id}
 
+    # Paid in another currency than the PI (DEF-15): never booked as funding — the amounts are
+    # not comparable and the PO must not go out against it.
+    if payload.currency and hold.currency and payload.currency.strip().upper() != hold.currency.upper():
+        logger.warning("EscrowGuard: deal %s funded in %s, the PI is in %s — not booked",
+                       hold.deal_id, payload.currency, hold.currency)
+        await _emit(EventTopic.DEAL_EXCEPTION, hold.deal_id, {
+            "source": "escrow_guard", "escrow_id": hold.escrow_id, "reason": "funding_currency_mismatch",
+            "category": "PAYMENT_FAILED", "received": payload.amount, "received_currency": payload.currency,
+            "expected": hold.amount, "currency": hold.currency,
+            "action_required": "ask_the_provider_and_buyer_to_fund_in_the_pi_currency",
+        })
+        return {"status": "held", "reason": "currency_mismatch", "escrow_id": hold.escrow_id, "deal_id": hold.deal_id}
+
     return await _apply_funding(
         hold,
         funded_amount=_normalize_funded_amount(hold.provider, payload.amount),
@@ -425,6 +446,8 @@ async def _apply_funding(
     }
     if funded_amount is not None:
         update["funded_amount"] = funded_amount
+        if funded_amount > hold.amount + _FUNDING_TOLERANCE:
+            update["overpaid"] = round(funded_amount - hold.amount, 2)
     updated = hold.model_copy(update=update)
     await repo.save_hold(updated)
 
@@ -444,10 +467,12 @@ async def _apply_funding(
             "source": "escrow_guard",
             "escrow_id": hold.escrow_id,
             "reason": "funding_amount_mismatch",
+            "category": "PAYMENT_FAILED",
             "expected": hold.amount,
             "received": funded_amount,
+            "overpaid": round(funded_amount - hold.amount, 2),
             "currency": hold.currency,
-            "action_required": "review_funding_amount_refund_surplus",
+            "action_required": "return_the_excess_to_the_buyer_through_the_provider",
         })
 
     await _emit(EventTopic.ESCROW_FUNDED, hold.deal_id, {
@@ -1100,6 +1125,13 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
             f"<= principal {hold.amount}",
         )
 
+    # Claim the tranche before the provider is asked (DEF-13): two operators, two instances or
+    # a retried callback releasing the same tranche at once — only one reaches the provider.
+    repo = get_repository()
+    token = f"{uuid4().hex[:12]}"
+    if not await repo.claim_tranche(escrow_id, tranche.tranche_id, token):
+        raise TrancheReleaseInProgress(hold.deal_id, tranche.tranche_id)
+    hold = await repo.get_hold(escrow_id) or hold  # carries the claim; the saves below keep it consistent
     connector = _payment_connector(hold.provider)
     try:
         result = await connector.release({  # type: ignore[union-attr]
@@ -1114,9 +1146,13 @@ async def release_tranche(escrow_id: str, req: ReleaseTrancheRequest) -> EscrowR
             "note": await _release_note(hold, tranche),
         })
     except ConnectorError as exc:
+        await repo.release_claim(escrow_id, tranche.tranche_id, token)
         raise ConnectorCallError(
             f"Tranche release failed for {escrow_id}/{req.tranche_id}: {exc}"
         ) from exc
+    except BaseException:
+        await repo.release_claim(escrow_id, tranche.tranche_id, token)
+        raise
 
     if str(result.get("status", "")).upper() == "SUBMITTED":
         updated = await _mark_submitted(hold, [tranche.tranche_id], result, req.proof_refs)
@@ -1166,6 +1202,7 @@ async def _mark_submitted(hold: EscrowHoldRecord, tranche_ids: list[str], result
         if t.tranche_id in tranche_ids and t.status == "PENDING":
             t = t.model_copy(update={
                 "status": "SUBMITTED",
+                "claim": None,
                 "submitted_at": now,
                 "proof_refs": proof_refs or t.proof_refs,
                 "provider_documents": [d for d in result.get("documents") or [] if d],
@@ -1206,6 +1243,7 @@ async def _apply_tranche_release(
     new_tranches = list(hold.tranches)
     new_tranches[idx] = tranche.model_copy(update={
         "status": "RELEASED",
+        "claim": None,
         "proof_refs": proof_refs or tranche.proof_refs,
         "ext_ref": ext_ref or tranche.ext_ref,
         "released_at": now,
@@ -2254,6 +2292,20 @@ async def poll_provider(escrow_id: str, *, event: dict[str, Any] | None = None,
     for tid in view.get("released") or []:
         current = next((t for t in hold.tranches if t.tranche_id == tid), None)
         if current is None or current.status == "RELEASED":
+            continue
+        if current.status == "PENDING" and not current.claim:
+            # The provider says it paid out a stage PortLess never submitted (DEF-15): not booked —
+            # the books follow what PortLess asked for; a person checks with the provider.
+            alerted = set((hold.provider_payload or {}).get("unsubmitted_payout_alerts") or [])
+            if tid not in alerted:
+                await _emit(EventTopic.DEAL_EXCEPTION, hold.deal_id, {
+                    "source": "escrow_guard", "escrow_id": hold.escrow_id, "reason": "payout_never_submitted",
+                    "category": "PAYMENT_FAILED", "tranche_id": tid, "provider": hold.provider,
+                    "action_required": "check_with_the_provider_why_it_paid_a_stage_portless_did_not_submit",
+                })
+                hold = hold.model_copy(update={"provider_payload": {
+                    **(hold.provider_payload or {}), "unsubmitted_payout_alerts": sorted(alerted | {tid})}})
+                await repo.save_hold(hold)
             continue
         hold = await confirm_tranche_release(escrow_id, tid, source=source)
 
