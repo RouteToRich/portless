@@ -42,6 +42,10 @@ _scheduler: AsyncIOScheduler | None = None
 # ---------------------------------------------------------------------------
 
 async def _run_nightly_scan() -> None:
+    from shared import leader_lock
+    if not await leader_lock.acquire("trade_min_nightly", ttl_seconds=3 * 3600):
+        logger.info("Scheduler: trade_min_nightly runs on another instance")
+        return
     from . import service
     logger.info("Scheduler: starting nightly full scan")
     try:
@@ -52,6 +56,10 @@ async def _run_nightly_scan() -> None:
 
 
 async def _run_reorder_window() -> None:
+    from shared import leader_lock
+    if not await leader_lock.acquire("trade_min_reorder", ttl_seconds=3 * 3600):
+        logger.info("Scheduler: trade_min_reorder runs on another instance")
+        return
     from . import service
     logger.info("Scheduler: starting reorder window check")
     try:
@@ -65,6 +73,9 @@ async def _run_reorder_window() -> None:
 
 async def _run_rescreen() -> None:
     """Re-screen verified counterparties of open prospects / deals whose check is old."""
+    from shared import leader_lock
+    if not await leader_lock.acquire("trade_min_rescreen", ttl_seconds=3 * 3600):
+        return
     try:
         from services.trade_min import rescreen
         await rescreen.run()

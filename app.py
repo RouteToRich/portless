@@ -80,6 +80,10 @@ _SERVICE_ROUTERS = [
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import asyncio as _asyncio  # shared by the background watchers below
 
+    # Counterparties' e-mail addresses and phone numbers never reach the logs in clear.
+    from shared.log_redaction import install as _redact_logs
+    _redact_logs()
+
     # ── Production readiness gate (P1-1) ──────────────────────────────────
     # Names every silent fallback (stub escrow, unsigned money webhooks,
     # log-only e-mail, missing Apify token …). Informational in dev/staging;

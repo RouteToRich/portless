@@ -2134,6 +2134,9 @@ async def run_stale_watcher() -> None:
     while True:
         try:
             await asyncio.sleep(interval)
+            from shared import leader_lock
+            if not await leader_lock.acquire("negotiation_stale_watcher", ttl_seconds=interval * 3):
+                continue
             await sweep_stale_negotiations()
         except asyncio.CancelledError:
             logger.info("StaleWatcher: stopped")

@@ -833,14 +833,17 @@ def _build_tranches(amount: float, schedule: list[TrancheInput] | None) -> list[
     src = schedule or [
         TrancheInput(tranche_id=t, trigger=trg, pct=pct) for (t, trg, pct) in DEFAULT_TRANCHES
     ]
+    # Each tranche rounded to the cent, the last one takes the remainder — rounding every
+    # tranche on its own could make them add up to a cent more or less than the principal
+    # (1.25 split 50/50 → 0.62 + 0.62), so the escrow could never release exactly what came in.
+    # Only for a schedule that is whole (shares add up to 100 %); a broken schedule keeps its
+    # raw amounts so the over-release guard in release_tranche still stops it.
+    amounts = [round(amount * t.pct, 2) for t in src]
+    if amounts and abs(sum(t.pct for t in src) - 1.0) < 1e-6:
+        amounts[-1] = round(round(amount, 2) - sum(amounts[:-1]), 2)
     return [
-        TrancheSpec(
-            tranche_id=t.tranche_id,
-            trigger=t.trigger,
-            pct=t.pct,
-            amount=round(amount * t.pct, 2),
-        )
-        for t in src
+        TrancheSpec(tranche_id=t.tranche_id, trigger=t.trigger, pct=t.pct, amount=a)
+        for t, a in zip(src, amounts)
     ]
 
 
@@ -1760,6 +1763,9 @@ async def run_inspection_watcher() -> None:
     while True:
         try:
             await asyncio.sleep(interval)
+            from shared import leader_lock
+            if not await leader_lock.acquire("escrow_watcher", ttl_seconds=interval * 3):
+                continue  # another instance runs the auto-release and reconciliation
             await check_inspection_windows()
             await poll_open_escrows()
             await check_reconciliation()

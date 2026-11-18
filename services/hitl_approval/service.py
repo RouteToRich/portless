@@ -569,6 +569,9 @@ async def run_timeout_watcher() -> None:
             from shared.orchestration import kill_switch
             if await kill_switch.is_paused():
                 continue
+            from shared import leader_lock
+            if not await leader_lock.acquire("hitl_timeout_watcher", ttl_seconds=poll * 3):
+                continue  # another instance resolves the timeouts
             now_iso = datetime.now(timezone.utc).isoformat()
             repo = get_repository()
             expired = await repo.list_pending_expired(now_iso)

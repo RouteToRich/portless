@@ -414,6 +414,9 @@ class TestNotificationLegs:
             patch("services.deals.service.get_deal", new=AsyncMock(return_value=_deal("SUPPLIER_DISPATCH_READY"))),
             patch("services.dealmaker.repository.get_repository", return_value=dm_repo),
             patch("shared.orchestration.notifications.notify_qc_booked", new=notify),
+            # the inspection-order document is not under test here; the half-mocked
+            # dealmaker repository leaked an unawaited coroutine through DocuGen
+            patch("shared.orchestration.continuations._issue_document", new=AsyncMock()),
         ):
             await c.on_qc_booked(DomainEvent(
                 topic=EventTopic.QC_BOOKED, deal_id="DEAL-1",
@@ -748,6 +751,6 @@ class TestCallbacks:
         assert {"SEND_NEGOTIATION_EMAIL", "CONFIRM_NEGOTIATION_AGREEMENT", "SEND_DEAL_NOTIFICATION",
                 "DISPATCH_RFQ", "CONFIRM_SUPPLIER_SELECTION", "CONFIRM_PI_ACCEPTANCE", "CONFIRM_SUPPLIER_ORDER",
                 "PARSE_INBOUND_EMAIL", "CONFIRM_BUYER_ACCEPTANCE", "SEND_BUYER_OUTREACH",
-                "SEND_INDICATIVE_OFFER", "CONFIRM_MATCH", "REFUND_ESCROW"} == set(SOFT_REJECT_ACTIONS)
+                "SEND_INDICATIVE_OFFER", "SEND_BEST_AND_FINAL", "CONFIRM_MATCH", "REFUND_ESCROW"} == set(SOFT_REJECT_ACTIONS)
         assert "RELEASE_ESCROW_TRANCHE" not in SOFT_REJECT_ACTIONS
         assert "RELEASE_SUPPLIER_PAYOUT" not in SOFT_REJECT_ACTIONS

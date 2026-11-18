@@ -41,3 +41,6 @@ dist/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Hypothesis example database (property-based tests)
+.hypothesis/

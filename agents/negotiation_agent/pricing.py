@@ -171,3 +171,42 @@ def supplier_band(
     rec = min(max(rec, low), high)
     final = final or bool(last_offer_to_supplier and (high - low) <= max(1.0, 0.002 * max(high, 1.0)))
     return PriceBand(_down(low), _down(high), _down(rec), final, basis)
+
+
+# ---------------------------------------------------------------------------
+# Concession ladder (operator view when a buyer counters)
+# ---------------------------------------------------------------------------
+
+LADDER_SHARES = (0.5, 0.3, 0.2)
+"""How the gap from our ask to the stop price is given away: big first, then smaller."""
+
+
+def concession_ladder(*, ask: float, walk_away: float, counter: float | None = None,
+                      moves: int = 3) -> dict:
+    """The steps from our ask down to where we stop: the buyer's counter if it is above our
+    walk-away price, else the walk-away price itself. Never a step below walk-away.
+
+    Shares of the gap: 50 % / 30 % / 20 % for three moves (two moves: 60 % / 40 %), so each
+    concession is smaller than the one before — the signal that the floor is near."""
+    if ask <= 0 or walk_away <= 0:
+        raise ValueError("ask and walk-away must be positive")
+    ask = _up(ask)  # every figure is a whole cent, so no step can sit above the ask
+    stop = max(walk_away, counter) if counter else walk_away
+    if ask <= stop:
+        return {"ask": _up(ask), "walk_away": _up(walk_away), "counter": counter, "stop": _up(stop),
+                "steps": [], "note": "our ask is already at or below where we stop — hold the price"}
+    shares = LADDER_SHARES if moves >= 3 else (0.6, 0.4)
+    gap = ask - stop
+    price, steps = ask, []
+    for i, share in enumerate(shares, start=1):
+        nxt = stop if i == len(shares) else price - gap * share
+        nxt = max(_up(nxt), _up(stop))
+        steps.append({"move": i, "price": nxt, "concede_usd": round(price - nxt, 2)})
+        price = nxt
+    meets = counter is not None and counter >= walk_away
+    return {
+        "ask": _up(ask), "walk_away": _up(walk_away), "counter": counter, "stop": _up(stop), "steps": steps,
+        "note": ("the last step meets the buyer's counter" if meets else
+                 "the buyer's counter is below our walk-away price — the last step is the walk-away price; "
+                 "do not go lower"),
+    }

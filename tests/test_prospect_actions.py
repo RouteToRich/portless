@@ -148,3 +148,46 @@ async def test_the_desk_stores_a_missing_estimate(repo, monkeypatch):
     rows = await prospect_desk.desk([await repo.get("P9")])
     assert rows[0].radar_expected_profit_usd == 900.0
     assert (await repo.get("P9")).radar_estimate["expected_profit_usd"] == 900.0
+
+
+async def test_effort_per_prospect_and_busy_not_moving(repo, monkeypatch):
+    from shared.orchestration import prospect_desk
+    monkeypatch.setattr("shared.orchestration.matchmaking.build_board", AsyncMock(return_value=None))
+    monkeypatch.setattr(prospect_desk, "_opportunity_profit", AsyncMock(return_value=None))
+    emails = [SimpleNamespace(direction="outbound")] * 10 + [SimpleNamespace(direction="inbound")] * 2
+    monkeypatch.setattr("agents.negotiation_agent.email_history.get_email_repository",
+                        lambda: SimpleNamespace(list_by_deal=AsyncMock(return_value=emails)))
+    approvals = [SimpleNamespace(resolved_by="ops@portless.in", status="APPROVED"),
+                 SimpleNamespace(resolved_by="ops@portless.in", status="REJECTED"),
+                 SimpleNamespace(resolved_by="system:superseded", status="REJECTED"),
+                 SimpleNamespace(resolved_by="system", status="AUTO_APPROVED"),
+                 SimpleNamespace(resolved_by=None, status="PENDING")]
+    monkeypatch.setattr("services.hitl_approval.service.list_approvals", AsyncMock(return_value=approvals))
+    (row,) = await prospect_desk.desk([_deal("P1")])
+    assert (row.emails_sent, row.replies, row.operator_touches) == (10, 2, 2)
+    assert row.busy_not_moving and row.actions[0].kind == "park" and "10 e-mails" in row.actions[0].text
+    monkeypatch.setenv("PROSPECT_EFFORT_HIGH", "50")
+    (row,) = await prospect_desk.desk([_deal("P1")])
+    assert not row.busy_not_moving
+
+
+async def test_idle_prospects_are_closed_by_the_cleanup(repo, monkeypatch):
+    from datetime import timedelta as td
+    from shared.orchestration import prospect_cleanup as pc
+    old = _deal("P1").model_copy(update={"created_at": NOW - td(days=120), "updated_at": NOW - td(days=90)})
+    fresh = _deal("P2").model_copy(update={"updated_at": NOW - td(days=5)})
+    parked = _deal("P3", parked_at=NOW - td(days=80)).model_copy(update={"updated_at": NOW - td(days=80)})
+    replied = _deal("P4", buyer_candidates=[BuyerCandidate(candidate_id="g", legal_name="G", country="AE",
+                                                           status="contacted", replied_at=NOW - td(days=3))]
+                    ).model_copy(update={"updated_at": NOW - td(days=90)})
+    for d in (old, fresh, parked, replied):
+        await repo.save(d)
+    monkeypatch.setattr("services.hitl_approval.service.withdraw_pending", AsyncMock(return_value=[]))
+    assert [r["deal_id"] for r in await pc.stale(NOW)] == ["P1"]
+    assert await pc.daily(NOW) is None  # off by default
+    out = await pc.run(NOW)
+    assert out["closed"] == ["P1"] and (await repo.get("P1")).status == DealStatus.CANCELLED
+    assert "no activity for 90 days" in (await repo.get("P1")).status_history[-1].reason
+    monkeypatch.setenv("PROSPECT_CLEANUP_ENABLED", "true")
+    pc._last_run.clear()
+    assert (await pc.daily(NOW))["closed"] == [] and await pc.daily(NOW) is None  # once a day

@@ -288,6 +288,12 @@ async def _gate(deal: Any, cand: Any, *, followup: bool) -> str | None:
     return approval.approval_id
 
 
+def verified_only() -> bool:
+    """OUTREACH_VERIFIED_ONLY (default off): introductions go only to buyers whose scan-time
+    check is ``verified``; the others wait as ``pending`` until checked (bulk "Check")."""
+    return os.getenv("OUTREACH_VERIFIED_ONLY", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
     """Open gates for the next pending candidates (up to the parallel slots).
     Returns the number of candidates contacted in this call."""
@@ -303,6 +309,12 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
     active = [c for c in cands if _status(c) in ("contacted", "followed_up")]
     slots = max(0, (limit if limit is not None else parallel()) - len(active))
     pending = [c for c in cands if _status(c) == "pending" and getattr(c, "email", None)]
+    if verified_only():
+        waiting = [c for c in pending if getattr(c, "validation_status", None) != "verified"]
+        if waiting:
+            logger.info("Outreach: deal %s — %d unverified buyer(s) wait for their check (OUTREACH_VERIFIED_ONLY)",
+                        deal.deal_id, len(waiting))
+        pending = [c for c in pending if getattr(c, "validation_status", None) == "verified"]
     # "Reply 'not interested' and we will not write again" holds across prospects:
     # a company on the do-not-contact list, or that declined in any prospect, is skipped.
     blocked, suspect = await _blocked(), await _suspect()

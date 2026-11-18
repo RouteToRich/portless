@@ -120,6 +120,12 @@ async def _cb_send_indicative_offer(deal_id: str, payload: dict[str, Any]) -> di
     return await send_indicative_offer(deal_id, payload)
 
 
+async def _cb_send_best_and_final(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Ask the other quoted suppliers to match or beat the best quote."""
+    from shared.orchestration.best_and_final import send
+    return await send(deal_id, payload)
+
+
 async def _cb_confirm_match(deal_id: str, payload: dict[str, Any]) -> dict | None:
     """The confirmed buyer × supplier pair becomes the deal (MATCHING → NEGOTIATING)."""
     from shared.orchestration.matchmaking import confirm_match
@@ -421,6 +427,7 @@ _CALLBACK_MAP = {
     "REFUND_ESCROW": _cb_refund_escrow,
     "SEND_BUYER_OUTREACH": _cb_send_buyer_outreach,
     "SEND_INDICATIVE_OFFER": _cb_send_indicative_offer,
+    "SEND_BEST_AND_FINAL": _cb_send_best_and_final,
     "CONFIRM_MATCH": _cb_confirm_match,
 }
 
@@ -503,6 +510,7 @@ _REJECT_CALLBACK_MAP = {
     "SEND_BUYER_OUTREACH": _rcb_send_buyer_outreach,
     # Prospect stays open: no offer sent / pair not taken — the board keeps the rest.
     "SEND_INDICATIVE_OFFER": _rcb_log_only,
+    "SEND_BEST_AND_FINAL": _rcb_log_only,
     "CONFIRM_MATCH": _rcb_confirm_match,
 }
 

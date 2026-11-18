@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -318,6 +319,78 @@ async def directory_page(
             "order": order or SORTS.get(sort, SORTS["recent"])[1]}
 
 
+class MergeRequest(BaseModel):
+    keep: str
+    merge: list[str] = Field(min_length=1, max_length=20)
+
+
+@router.get("/directory/{role}/duplicates", response_model=list[dict])
+async def directory_duplicates(role: Literal["buyers", "suppliers"], user=Depends(_staff())) -> list[dict]:
+    """Probable duplicates (same company e-mail domain, phone or name in one country) to merge."""
+    from services.trade_min import dedupe
+    return await dedupe.duplicates(role[:-1])
+
+
+@router.post("/directory/{role}/merge", response_model=CounterpartyRecord)
+async def directory_merge(role: Literal["buyers", "suppliers"], body: MergeRequest,
+                          user=Depends(_staff())) -> CounterpartyRecord:
+    """Fold the ``merge`` records into ``keep`` (history kept on the record, the others deleted)."""
+    from services.trade_min import dedupe
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    try:
+        return await dedupe.merge(role[:-1], body.keep, body.merge, who)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class BulkRequest(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=200)
+    action: Literal["check", "do_not_contact", "add_to_prospect"]
+    reason: str | None = Field(default=None, max_length=300)
+    deal_id: str | None = None
+    confirm: bool = False
+
+
+@router.post("/directory/{role}/bulk", response_model=dict)
+async def directory_bulk(role: Literal["buyers", "suppliers"], body: BulkRequest, user=Depends(_staff())) -> dict:
+    """Check / do-not-contact / add-to-prospect the selected companies (a check first answers its Apify cost)."""
+    from services.trade_min import directory_bulk as db
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    try:
+        return await db.bulk(role[:-1], body.ids, body.action, by=who, reason=body.reason,
+                             deal_id=body.deal_id, confirm=body.confirm)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/directory/{role}/export.csv")
+async def directory_export(
+    role: Literal["buyers", "suppliers"],
+    hs_code: str | None = Query(default=None),
+    market: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    country: str | None = Query(default=None),
+    validation_status: Literal["verified", "unverified", "failed"] | None = Query(default=None, alias="validation"),
+    stage: str | None = Query(default=None),
+    contactable: bool = Query(default=False),
+    sort: str = Query(default="score"),
+    order: Literal["asc", "desc"] | None = Query(default=None),
+    user=Depends(_staff()),
+):
+    """The directory as CSV, filtered and sorted like the page."""
+    from fastapi.responses import Response
+
+    from services.trade_min import directory_bulk as db
+    rows = await directory.list_counterparties(role[:-1], hs_code=hs_code, market=market, q=q,
+                                               country=country, limit=100_000, validation=validation_status)
+    rows = _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort, order=order)
+    stamp = datetime.now().strftime("%Y%m%d")
+    return Response(db.to_csv(rows), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="portless-{role}-{stamp}.csv"'})
+
+
 @router.get("/{role}/{record_id:path}/profile")
 async def counterparty_profile_view(role: Literal["buyers", "suppliers"], record_id: str) -> dict:
     """One company with everything needed to act on it: score, relationship, every prospect /
@@ -372,6 +445,42 @@ async def put_contact_preference(role: Literal["buyers", "suppliers"], record_id
     if rec is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such company in the directory")
     return (await relationships.annotate([rec]))[0]
+
+
+class NoteRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    remind_at: datetime | None = None
+
+
+@router.post("/{role}/{record_id:path}/notes/{note_id}/done", response_model=CounterpartyRecord)
+async def post_note_done(role: Literal["buyers", "suppliers"], record_id: str, note_id: str,
+                         user=Depends(_staff())) -> CounterpartyRecord:
+    """Mark a note's follow-up done (it leaves the digest)."""
+    from services.trade_min import company_notes
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    try:
+        rec = await company_notes.done(record_id, note_id, who)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if rec is None or rec.role != role.rstrip("s"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such company in the directory")
+    return rec
+
+
+@router.post("/{role}/{record_id:path}/notes", response_model=CounterpartyRecord)
+async def post_note(role: Literal["buyers", "suppliers"], record_id: str, body: NoteRequest,
+                    user=Depends(_staff())) -> CounterpartyRecord:
+    """A staff note on a company (also sent to knowledge memory), optionally with a reminder date."""
+    from services.trade_min import company_notes
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    existing = await (await directory.get_directory()).get(record_id)
+    if existing is None or existing.role != role.rstrip("s"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such company in the directory")
+    try:
+        rec = await company_notes.add(record_id, body.text, who, body.remind_at)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return rec  # type: ignore[return-value]
 
 
 @router.get("/unsubscribe", response_class=HTMLResponse, include_in_schema=False)

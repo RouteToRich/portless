@@ -24,6 +24,10 @@ with warnings.catch_warnings(record=True):
 
 os.environ["EVENT_BUS_BACKEND"] = "inprocess"
 
+# Hundreds of anonymous webhook calls run in one process: the public rate limit
+# (shared/rate_limit.py) is off for the suite; tests/test_rate_limit.py sets its own.
+os.environ["RATE_LIMIT_PUBLIC_PER_MINUTE"] = "0"
+
 # The PortLess-owned Apify actors cost money per run. A developer logged in
 # with the Apify CLI (~/.apify/auth.json) must never have a unit test start a
 # real actor run: pin the connector to stub mode for the whole suite. Tests

@@ -113,6 +113,20 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         out["warnings"].append(f"prospect desk unavailable: {exc}")
 
+    # ── Supplier price moves (price book) ──────────────────────────────────
+    try:
+        from shared.orchestration import price_alerts
+        out["price_alerts"] = await price_alerts.alerts(now)
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"price alerts unavailable: {exc}")
+
+    # ── Company follow-ups that are due ────────────────────────────────────
+    try:
+        from services.trade_min import company_notes  # type: ignore[import]
+        out["followups"] = await company_notes.due(now)
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"company follow-ups unavailable: {exc}")
+
     # ── Exceptions ─────────────────────────────────────────────────────────
     try:
         from services.exception_resolver.repository import get_repository as _er_repo  # type: ignore[import]
@@ -159,6 +173,11 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
     try:
         from shared.connectors.apify import max_runs_per_day, runs_today
         out["apify"] = {"runs_today": runs_today(), "max_runs_per_day": max_runs_per_day()}
+        try:
+            from services.trade_min import validation  # type: ignore[import]
+            out["apify"]["validation_runs_today"] = validation.runs_today()
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001
         pass
     return out
@@ -225,6 +244,19 @@ def render_digest_text(d: dict[str, Any]) -> str:
             lines.append("  STALLED (waiting on them):")
             lines += [_desk_line(r) for r in pr["stalled"]]
         lines.append("")
+    pa = d.get("price_alerts") or []
+    if pa:
+        lines.append(f"PRICE ALERTS ({len(pa)}):")
+        for a in pa[:DESK_ITEMS]:
+            lines.append(f"  • HS {a['hs_code']} supplier FOB {a['change_pct']:+.1f}% "
+                         f"({a['base_median_usd_per_mt']:,.0f} → {a['recent_median_usd_per_mt']:,.0f} USD/MT): {a['advice']}")
+        lines.append("")
+    fu = d.get("followups") or []
+    if fu:
+        lines.append(f"FOLLOW-UPS DUE ({len(fu)}):")
+        for f in fu[:DESK_ITEMS]:
+            lines.append(f"  • {f['company']} ({f['role']}, {f['remind_at'][:10]}): {f['text'][:120]}")
+        lines.append("")
     lines.append(f"EXCEPTIONS OPEN: {ex.get('open_total', 0)} " + " ".join(
         f"{k}={v}" for k, v in (ex.get("by_status") or {}).items()))
     for item in (ex.get("items") or [])[:6]:
@@ -247,7 +279,13 @@ def render_digest_text(d: dict[str, Any]) -> str:
     apify = d.get("apify") or {}
     if apify:
         cap = apify.get("max_runs_per_day") or "∞"
-        lines.append(f"APIFY: {apify.get('runs_today', 0)}/{cap} actor runs today")
+        val = apify.get("validation_runs_today")
+        lines.append(f"APIFY: {apify.get('runs_today', 0)}/{cap} actor runs today"
+                     + (f" ({val} counterparty checks, {apify.get('runs_today', 0) - val} discovery and other)"
+                        if val else ""))
+        if isinstance(apify.get("max_runs_per_day"), int) and apify["max_runs_per_day"] > 0 \
+                and apify.get("runs_today", 0) >= 0.9 * apify["max_runs_per_day"]:
+            lines.append("  ! the daily run budget is nearly used — checks and scans stop when it is reached")
     for w in d.get("warnings") or []:
         lines.append(f"! {w}")
     return "\n".join(lines)
@@ -300,6 +338,9 @@ async def run_digest_scheduler() -> None:
     while True:
         try:
             await asyncio.sleep(seconds_until_next())
+            from shared import leader_lock
+            if not await leader_lock.acquire("daily_digest", ttl_seconds=3600):
+                continue  # another instance sends today's digest
             await send_daily_digest()
         except asyncio.CancelledError:
             logger.info("Digest: stopped")

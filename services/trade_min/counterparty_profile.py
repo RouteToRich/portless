@@ -187,11 +187,61 @@ async def profile(role: str, record_id: str) -> dict[str, Any]:
     return {
         "company": rec.model_dump(mode="json"),
         "engagements": rows,
+        "correspondence": await correspondence(rec, sorted(engaged)),
         "timeline": events[:50],
         "open_prospects": opens,
         "next_actions": next_actions(rec, rows, opens),
         "blocked_reason": blocked_reason(rec),
     }
+
+
+CORRESPONDENCE_MAX = 100
+
+
+def _owns(rec: CounterpartyRecord, address: str | None) -> bool:
+    """The address is the company's mailbox or on its own (non free-mail) domain."""
+    from agents.negotiation_agent.email_safety import FREEMAIL
+    a = (address or "").strip().lower()
+    if "@" not in a:
+        return False
+    known = {e.strip().lower() for e in [rec.email] if e}
+    if a in known:
+        return True
+    domain = a.split("@", 1)[1]
+    site = (rec.website or "").lower().split("//")[-1].split("/")[0].removeprefix("www.")
+    own = {e.split("@", 1)[1] for e in known if "@" in e} | ({site} if site else set())
+    return domain not in FREEMAIL and domain in own
+
+
+async def correspondence(rec: CounterpartyRecord, deal_ids: list[str]) -> list[dict[str, Any]]:
+    """Every e-mail PortLess sent to or received from the company, across its prospects and
+    deals, newest first (subject, direction, deal, delivery) — bodies stay on the deal."""
+    try:
+        from agents.negotiation_agent.email_history import get_email_repository  # type: ignore[import]
+        repo = get_email_repository()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Profile: e-mail history unavailable: %s", exc)
+        return []
+    out: list[dict[str, Any]] = []
+    for deal_id in deal_ids:
+        try:
+            emails = await repo.list_by_deal(deal_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Profile: e-mails of %s unavailable: %s", deal_id, exc)
+            continue
+        for e in emails:
+            direction = str(getattr(getattr(e, "direction", ""), "value", getattr(e, "direction", ""))).lower()
+            counterpart = e.to_address if direction == "outbound" else e.from_address
+            if not _owns(rec, counterpart):
+                continue
+            when = getattr(e, "sent_at", None) or getattr(e, "created_at", None)
+            out.append({
+                "deal_id": deal_id, "email_id": e.email_id, "direction": direction, "address": counterpart,
+                "subject": e.subject, "status": str(getattr(getattr(e, "status", ""), "value", getattr(e, "status", ""))),
+                "kind": getattr(e, "kind", None), "at": when.isoformat() if when else None,
+            })
+    out.sort(key=lambda r: r["at"] or "", reverse=True)
+    return out[:CORRESPONDENCE_MAX]
 
 
 def _candidate_id(rec: CounterpartyRecord) -> str:
@@ -228,8 +278,17 @@ async def add_to_prospect(role: str, record_id: str, deal_id: str) -> dict[str, 
         offer_id=f"OFR-DIR-{cid[:24]}", supplier_id=cid, company_name=rec.name, email=rec.email,
         source=f"directory:{rec.source}", fob_price_usd_per_mt=None,
     ))
-    return {"deal_id": deal_id, "added": "supplier_offer", "supplier_id": cid,
-            "next": "Quote pending — ask the supplier for its FOB price (RFQ) or record a phone quote"}
+    # The supplier gets the quote request e-mail too, through the DISPATCH_RFQ gate.
+    approval_id = None
+    try:
+        from shared.orchestration.continuations import rfq_for_supplier
+        approval_id = await rfq_for_supplier(deal, cid, rec.name, rec.email)
+    except Exception as exc:  # noqa: BLE001 - the supplier is on the board either way
+        logger.warning("Directory: RFQ for %s on %s not opened: %s", rec.name, deal_id, exc)
+    return {"deal_id": deal_id, "added": "supplier_offer", "supplier_id": cid, "rfq_approval_id": approval_id,
+            "next": ("Quote request sent through the RFQ gate — the reply lands on the match board"
+                     if approval_id else
+                     "Quote pending — no e-mail address: record a phone quote or add the address")}
 
 
 async def summary() -> dict[str, Any]:

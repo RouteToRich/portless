@@ -104,6 +104,11 @@ ACTION_CLASSES: tuple[ActionClass, ...] = (
         default="L2", default_timeout_seconds=_DAY, default_on_timeout="APPROVE",
     ),
     ActionClass(
+        "SEND_BEST_AND_FINAL", "Best-and-final Requests",
+        "Ask the other quoted suppliers to match or beat the best quote (the competitor is never named).",
+        default="L0",
+    ),
+    ActionClass(
         "SEND_INDICATIVE_OFFER", "Indicative Offers",
         "Send an interested buyer a price range built from a supplier's quote + landed cost + "
         "margin floor, so their reaction (accept / counter) reveals what they will pay.",

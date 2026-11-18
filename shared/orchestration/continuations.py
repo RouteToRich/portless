@@ -195,8 +195,8 @@ async def _create_gate(
     risk_flags: list[str] | None = None,
     deal=None,
     conditions_ok: bool = True,
-) -> None:
-    """Create a HITL approval gate (idempotent on *idempotency_key*).
+) -> Any:
+    """Create a HITL approval gate (idempotent on *idempotency_key*); returns the approval.
 
     The level, the L1 timeout and the timeout default come from the autonomy
     policy (``resolve_gate``); money-moving gates at or below the value
@@ -227,7 +227,7 @@ async def _create_gate(
             flags += [f for f in held if f not in flags]
             callback_payload = {**callback_payload,
                                 "compliance_accept": [f.split(":", 1)[1] for f in held]}
-    await create_approval(CreateApprovalRequest(
+    return await create_approval(CreateApprovalRequest(
         deal_id=deal_id, action=action, summary=summary,
         financial_impact_usd=financial_impact_usd,
         risk_flags=flags,
@@ -520,7 +520,8 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
     results.sort(key=lambda m: ((m.decision != "SOURCE"), -(m.composite_score or 0)))
     out = [
         {"supplier_id": m.supplier_id, "company_name": m.company_name,
-         "source": "other", "contact_id": None, "fob_price_usd": m.fob_price_usd}
+         "source": "other", "contact_id": None, "fob_price_usd": m.fob_price_usd,
+         "verification": getattr(m, "verification", None)}
         for m in results
     ]
     if getattr(deal, "opportunity_id", None):
@@ -536,6 +537,7 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
                 "contact_id": s.get("contact_id"),
                 "fob_price_usd": s.get("fob_price_usd"),
                 "email": s.get("email"),
+                "verification": (s.get("validation") or {}).get("status"),
             } for s in (seed.top_sellers if seed else [])]
             if out:
                 by_id = {s["supplier_id"]: s for s in sellers if s["supplier_id"]}
@@ -548,7 +550,19 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Continuation[RFQ]: match seed lookup failed for %s: %s", deal.deal_id, exc)
     out = [c for c in out if c.get("supplier_id")]
+    if rfq_verified_only():
+        skipped = [c["supplier_id"] for c in out if c.get("verification") != "verified"]
+        if skipped:
+            logger.info("Continuation[RFQ]: deal %s — %d unverified supplier(s) left out (RFQ_VERIFIED_ONLY)",
+                        deal.deal_id, len(skipped))
+        out = [c for c in out if c.get("verification") == "verified"]
     return (await _rank_for_rfq(deal, out))[:_RFQ_MAX_SUPPLIERS]
+
+
+def rfq_verified_only() -> bool:
+    """RFQ_VERIFIED_ONLY (default off): quote requests go only to suppliers whose scan-time
+    check is ``verified`` (match result ``verification`` or the seed's ``validation``)."""
+    return os.getenv("RFQ_VERIFIED_ONLY", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 async def _rank_for_rfq(deal, cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -597,6 +611,32 @@ async def _ensure_buyer_target(deal, candidates: list[dict[str, Any]]) -> float 
     except Exception as exc:  # noqa: BLE001
         logger.warning("Continuation[RFQ]: could not persist buyer target for %s: %s", deal.deal_id, exc)
     return target
+
+
+async def rfq_for_supplier(deal: Any, supplier_id: str, company_name: str, email: str | None) -> str | None:
+    """One supplier added to a prospect by hand (directory "Add to prospect") gets the quote
+    request too: a DISPATCH_RFQ gate for that supplier alone (policy level as usual).
+    Returns the approval id, None when it cannot be asked (no address)."""
+    if not email:
+        return None
+    target = getattr(deal, "buyer_target_price_usd", None)
+    approval = await _create_gate(
+        deal.deal_id, "DISPATCH_RFQ",
+        summary=f"Deal {deal.deal_id} ({deal.hs_code} → {deal.market}): send RFQ to {company_name or supplier_id} "
+                f"(added from the directory)",
+        financial_impact_usd=None,
+        callback_payload={
+            "deal_id": deal.deal_id, "hs_code": deal.hs_code,
+            "suppliers": [{"supplier_id": supplier_id, "company_name": company_name, "source": "other",
+                           "contact_id": None, "email": email}],
+            "quantity_mt": _deal_quantity(deal), "target_price_usd": float(target) if target else None,
+            "validity_days": 7,
+        },
+        idempotency_key=f"auto-rfq-{deal.deal_id}-{supplier_id}",
+        risk_flags=["supplier_added_by_hand"],
+        deal=deal,
+    )
+    return getattr(approval, "approval_id", None) if approval is not None else None
 
 
 async def on_deal_created(event: DomainEvent) -> None:

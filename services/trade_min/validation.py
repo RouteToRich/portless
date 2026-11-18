@@ -141,6 +141,20 @@ def _connector(name: str):
         return None
 
 
+# Counterparty-check runs per UTC day (screening + e-mail check). They share the daily Apify
+# budget (APIFY_MAX_RUNS_PER_DAY) with discovery, so the digest shows them apart.
+_runs_by_day: dict[str, int] = {}
+
+
+def _count_run() -> None:
+    day = datetime.now(timezone.utc).date().isoformat()
+    _runs_by_day[day] = _runs_by_day.get(day, 0) + 1
+
+
+def runs_today() -> int:
+    return _runs_by_day.get(datetime.now(timezone.utc).date().isoformat(), 0)
+
+
 async def _screen(subjects: list[_Subject]) -> None:
     conn = _connector("apify_counterparty_check")
     if conn is None or not subjects:
@@ -152,6 +166,7 @@ async def _screen(subjects: list[_Subject]) -> None:
         return
     if result.get("stub"):
         return
+    _count_run()
     rows = {_norm(r.get("name")): r for r in result.get("results", []) if r.get("name")}
     for s in subjects:
         row = rows.get(_norm(s.name))
@@ -181,6 +196,7 @@ async def _qualify(subjects: list[_Subject]) -> None:
         return
     if result.get("stub"):
         return
+    _count_run()
     rows = {str(r.get("email") or "").lower(): r for r in result.get("emails", [])}
     for s in todo:
         row = rows.get((s.email or "").lower())

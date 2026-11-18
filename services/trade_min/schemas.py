@@ -248,6 +248,17 @@ class SellerCandidate(BaseModel):
 CounterpartyRole = Literal["buyer", "supplier"]
 
 
+class CompanyNote(BaseModel):
+    """A staff note on a company (a call, a meeting), optionally with a follow-up date."""
+    note_id: str
+    text: str
+    by: str
+    at: datetime
+    remind_at: datetime | None = None
+    done_at: datetime | None = None
+    done_by: str | None = None
+
+
 class ScreeningReview(BaseModel):
     """A staff decision on a counterparty whose sanctions screening returned ``review``
     (a possible list match, or a list that was unavailable)."""
@@ -308,6 +319,14 @@ class CounterpartyRecord(BaseModel):
     promises it) or staff set it. Survives every scan; outreach skips it in every prospect."""
     dnc_reason: str | None = None
     dnc_at: datetime | None = None
+    merged_from: list[str] = Field(default_factory=list)
+    """Directory ids folded into this record by a staff merge (dedupe.py)."""
+    aliases: list[str] = Field(default_factory=list)
+    """Other names the company was found under."""
+    merged_at: datetime | None = None
+    merged_by: str | None = None
+    notes: list[CompanyNote] = Field(default_factory=list)
+    """Staff notes and follow-up reminders (company_notes.py), newest last."""
     contacts_refreshed_at: datetime | None = None
     """Last contact-finder refresh when the company entered a prospect (contact_refresh.py)."""
     screening_reviews: list[ScreeningReview] = Field(default_factory=list)

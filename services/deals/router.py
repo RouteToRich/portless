@@ -152,6 +152,60 @@ async def _prospect_action(deal_id: str, user: AuthUser, coro_factory):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/{deal_id}/concession-ladder", response_model=dict)
+async def concession_ladder(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """When the buyer counters: the 2-3 concession steps from our last offer to our walk-away
+    price (the margin floor over the supplier's own price and every cost), never below it."""
+    await _org_deal(deal_id, user)
+    from agents.negotiation_agent.pricing import concession_ladder as ladder
+    from agents.negotiation_agent.repository import get_repository as neg_repo  # type: ignore[import]
+    from shared.orchestration import trade_costs
+    session = await neg_repo().get_session_by_deal(deal_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no negotiation for this deal yet")
+    supplier = session.supplier_last_quote or session.supplier_quote_price
+    ask = session.last_offer_to_buyer
+    if not supplier or not ask:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="needs the supplier's price and our offer to the buyer first")
+    if session.cost_sheet:
+        fixed, pct = trade_costs._nums(session.cost_sheet)
+    else:
+        fixed, pct = (session.cost_envelope.total() if session.cost_envelope else 0.0), 0.0
+    walk = (supplier + fixed) / max(1.0 - (session.policy.margin_floor_pct + pct) / 100.0, 0.01)
+    out = ladder(ask=float(ask), walk_away=float(walk), counter=session.buyer_last_offer)
+    return {**out, "negotiation_id": session.negotiation_id, "margin_floor_pct": session.policy.margin_floor_pct}
+
+
+@router.get("/board/money", response_model=dict)
+async def board_money(user: AuthUser = Depends(get_current_user)) -> dict:
+    """Buy price, sell price and profit per deal (firm from the PI / PO / settlement, else estimates)."""
+    from shared.orchestration import money_glance
+    deals = await service.list_deals(limit=500, org_id=require_org_scope(user))
+    return await money_glance.rows(deals)
+
+
+@router.get("/prospects/cleanup", response_model=list[dict])
+async def prospects_cleanup_preview(user: AuthUser = Depends(require_portless)) -> list[dict]:
+    """Prospects the clean-up would close: untouched for PROSPECT_RETENTION_DAYS, not parked."""
+    from shared.orchestration import prospect_cleanup
+    return await prospect_cleanup.stale()
+
+
+@router.post("/prospects/cleanup", response_model=dict)
+async def prospects_cleanup_run(user: AuthUser = Depends(require_portless)) -> dict:
+    """Close them now (CANCELLED with the reason; records are kept)."""
+    from shared.orchestration import prospect_cleanup
+    return await prospect_cleanup.run(by=getattr(user, "email", None) or "staff")
+
+
+@router.get("/price-alerts", response_model=list[dict])
+async def price_alerts(user: AuthUser = Depends(get_current_user)) -> list[dict]:
+    """Supplier price dips (buy now) and spikes (hold offers) from the price book, per product."""
+    from shared.orchestration import price_alerts as pa
+    return await pa.alerts()
+
+
 @router.get("/fx/usd-inr", response_model=dict)
 async def usd_inr(user: AuthUser = Depends(get_current_user)) -> dict:
     """The USD/INR rate the console uses to show an Indian supplier's INR figure beside the
@@ -865,6 +919,18 @@ async def _pair(deal, ref: _PairRef):
     if pair is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="pair not on the match board")
     return board, pair
+
+
+@router.post("/{deal_id}/match/best-and-final", response_model=dict)
+async def best_and_final(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Open the SEND_BEST_AND_FINAL gate: the other quoted suppliers are asked to match or
+    beat the best quote (on their RFQ threads; the competitor is never named)."""
+    from shared.orchestration import best_and_final as bf
+    await _org_deal(deal_id, user)
+    try:
+        return {"approval_id": await bf.open_gate(deal_id)}
+    except bf.NothingToAsk as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/{deal_id}/match/indicative-offer", response_model=dict)

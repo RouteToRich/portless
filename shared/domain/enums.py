@@ -178,6 +178,8 @@ class ApprovalAction(str, Enum):
     → an operator accepts the findings; APPROVE issues the PI. Always L0."""
     SEND_BUYER_OUTREACH = "SEND_BUYER_OUTREACH"
     SEND_INDICATIVE_OFFER = "SEND_INDICATIVE_OFFER"
+    SEND_BEST_AND_FINAL = "SEND_BEST_AND_FINAL"
+    """Ask every other quoted supplier to match or beat the best quote (best_and_final.py)."""
     CONFIRM_MATCH = "CONFIRM_MATCH"
     """Templated first introduction to a buyer the scan identified (the
     outreach funnel, shared/orchestration/outreach.py). Soft REJECT skips

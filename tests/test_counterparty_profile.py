@@ -123,6 +123,24 @@ class TestAddToProspect:
         offer = (await deals.get("D2")).supplier_offers[0]
         assert out["added"] == "supplier_offer" and offer.fob_price_usd_per_mt is None and offer.company_name == "Kerala Spices"
 
+    async def test_an_added_supplier_gets_the_quote_request_through_the_gate(self, deals, monkeypatch):
+        from services.hitl_approval.repository import InMemoryHitlApprovalRepository
+        import services.hitl_approval.repository as hitl_repo
+        hitl_repo._repository = InMemoryHitlApprovalRepository()
+        monkeypatch.setenv("AUTONOMY_DISPATCH_RFQ", "L0")  # keep it pending: no e-mail is sent in the test
+        try:
+            await _store(_rec("supplier", "Kerala Spices", "ks.in", country="IN"))
+            await deals.save(_deal("D2"))
+            out = await cp.add_to_prospect("supplier", "supplier:ks.in", "D2")
+            assert out["rfq_approval_id"] and "RFQ gate" in out["next"]
+            gate = await hitl_repo._repository.get(out["rfq_approval_id"])
+            assert gate.action == "DISPATCH_RFQ" and gate.status == "PENDING"
+            (sup,) = gate.callback_payload["suppliers"]
+            assert sup["email"] == "buy@ks.in" and sup["company_name"] == "Kerala Spices"
+            assert "supplier_added_by_hand" in gate.risk_flags
+        finally:
+            hitl_repo._repository = None
+
     @pytest.mark.parametrize("kw", [{"do_not_contact": True}, {"validation": CounterpartyValidation(status="failed")},
                                     {"flags": ["role_suspect"]}, {"email": None}])
     async def test_refused_when_blocked_or_unreachable(self, deals, kw):
@@ -224,3 +242,25 @@ class TestContactRefresh:
         monkeypatch.setattr("shared.connectors.registry.get_connector",
                             lambda name: SimpleNamespace(quote=AsyncMock(side_effect=RuntimeError("apify down"))))
         assert (await cr.ensure_fresh(rec)) is rec
+
+
+class TestCorrespondence:
+    async def test_every_email_with_the_company_across_its_deals(self, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        now = datetime.now(UTC)
+        rec = _rec()  # buy@gulf.ae, gulf.ae
+        def e(eid, direction, to, frm, mins):
+            return SimpleNamespace(email_id=eid, direction=direction, to_address=to, from_address=frm,
+                                   subject=f"s-{eid}", status="sent", kind="outreach_intro",
+                                   sent_at=now - timedelta(minutes=mins), created_at=now - timedelta(minutes=mins))
+        mails = {"D1": [e("1", "outbound", "buy@gulf.ae", "trade@portless.in", 30),
+                        e("2", "inbound", "trade@portless.in", "ceo@gulf.ae", 20),       # same company domain
+                        e("3", "outbound", "sales@mill.in", "trade@portless.in", 10)],   # the supplier
+                 "D2": [e("4", "inbound", "trade@portless.in", "someone@gmail.com", 5)]}  # free-mail stranger
+        monkeypatch.setattr("agents.negotiation_agent.email_history.get_email_repository",
+                            lambda: SimpleNamespace(list_by_deal=AsyncMock(side_effect=lambda d: mails[d])))
+        rows = await cp.correspondence(rec, ["D1", "D2"])
+        assert [r["email_id"] for r in rows] == ["2", "1"]
+        assert rows[0]["direction"] == "inbound" and rows[0]["address"] == "ceo@gulf.ae" and rows[1]["deal_id"] == "D1"

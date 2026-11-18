@@ -331,3 +331,26 @@ class TestDealSeeding:
             {"buyer_name": "New Co"},
         ]})
         assert [(c.legal_name, c.validation_status) for c in out] == [("Good Co", "verified"), ("New Co", "unverified")]
+
+
+def test_digest_splits_validation_runs_from_the_rest():
+    from datetime import UTC, datetime
+    from shared.orchestration import digest
+    text = digest.render_digest_text({"generated_at": datetime.now(UTC).isoformat(),
+                                      "apify": {"runs_today": 46, "max_runs_per_day": 50, "validation_runs_today": 12}})
+    assert "APIFY: 46/50 actor runs today (12 counterparty checks, 34 discovery and other)" in text
+    assert "nearly used" in text
+
+
+async def test_a_real_check_counts_a_validation_run(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from services.trade_min import validation as v
+    v._runs_by_day.clear()
+    conn = SimpleNamespace(quote=AsyncMock(return_value={"results": []}))
+    monkeypatch.setattr(v, "_connector", lambda name: conn)
+    await v._screen([SimpleNamespace(name="Gulf", country="AE", v=None)])
+    assert v.runs_today() == 1
+    conn.quote = AsyncMock(return_value={"stub": True})
+    await v._screen([SimpleNamespace(name="Gulf", country="AE", v=None)])
+    assert v.runs_today() == 1  # a stub run costs nothing

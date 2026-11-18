@@ -84,6 +84,18 @@ _SIGNED_LINK_PATH_MARKERS = ("/escrow-guard/proof/",)
 _SIGNED_FORM_PATHS = ("/trade-min/unsubscribe",)
 
 
+def _limited(request: Request) -> JSONResponse | None:
+    """429 when an anonymous caller exceeds the public rate limit (shared/rate_limit.py)."""
+    from shared import rate_limit
+    client = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
+        request.client.host if request.client else "unknown")
+    ok, retry = rate_limit.allow(f"{client}|{rate_limit.door(request.url.path)}")
+    if ok:
+        return None
+    return JSONResponse(status_code=429, content={"detail": "too many requests — slow down"},
+                        headers={"Retry-After": str(retry)})
+
+
 def _is_public(path: str) -> bool:
     # "/health" and any "<service>/health" liveness endpoint are public.
     # The deeper reports (/health/downstream, /health/readiness — which names
@@ -99,9 +111,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS" or _is_public(request.url.path):
             return await call_next(request)
         if request.method == "GET" and any(m in request.url.path for m in _SIGNED_LINK_PATH_MARKERS):
-            return await call_next(request)
+            return _limited(request) or await call_next(request)
         if request.method in ("GET", "POST") and request.url.path.rstrip("/").endswith(_SIGNED_FORM_PATHS):
-            return await call_next(request)
+            return _limited(request) or await call_next(request)
 
         allow_query = any(request.url.path.endswith(s) for s in _QUERY_TOKEN_PATH_SUFFIXES)
         try:
@@ -109,7 +121,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         except IdentityError as exc:
             if request.method == "POST" and request.url.path.endswith(_PROVIDER_WEBHOOK_PATH_SUFFIXES):
                 request.state.anonymous_webhook = True
-                return await call_next(request)
+                return _limited(request) or await call_next(request)
             return JSONResponse(
                 status_code=exc.status,
                 content={"detail": exc.detail},

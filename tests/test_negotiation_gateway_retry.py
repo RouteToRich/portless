@@ -337,7 +337,9 @@ async def test_sweep_retries_deadend_before_stale_fail_check(monkeypatch):
 async def test_sweep_skips_gateway_retry_check_within_backoff_window(monkeypatch):
     """A session updated moments ago (e.g. our own retry just ran) should not
     be immediately re-checked for dead-end retry in the same tick."""
-    session = _session(round_no=2, updated_at=NOW - timedelta(seconds=5))
+    # "Moments ago" measured when the test runs: a module-level NOW drifts past the backoff
+    # window when the suite is slow (it failed on a long run).
+    session = _session(round_no=2, updated_at=datetime.now(timezone.utc) - timedelta(seconds=5))
 
     class FakeRepo:
         async def list_sessions_by_status(self, statuses):

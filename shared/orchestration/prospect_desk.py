@@ -97,6 +97,15 @@ class ProspectSummary(BaseModel):
     # radar
     radar_expected_profit_usd: float | None = None
     radar_margin_usd_per_mt: float | None = None
+    # effort spent on it (e-mails, replies, operator decisions, Apify money)
+    emails_sent: int = 0
+    replies: int = 0
+    operator_touches: int = 0
+    """Gates a person resolved for this prospect (auto-approved ones are not counted)."""
+    apify_cost_usd: float | None = None
+    """What the scans that found it cost (the opportunity's scan cost meter)."""
+    busy_not_moving: bool = False
+    """Much effort, no interested buyer and no quote — park or drop it."""
     # parked from the desk (prospect_actions)
     parked: bool = False
     parked_until: datetime | None = None
@@ -119,6 +128,46 @@ def _days(since: datetime | None, now: datetime) -> int | None:
 
 def _status(deal: Any) -> str:
     return str(getattr(getattr(deal, "status", None), "value", getattr(deal, "status", "")))
+
+
+def effort_high() -> int:
+    try:
+        return max(1, int(os.getenv("PROSPECT_EFFORT_HIGH", "12")))
+    except ValueError:
+        return 12
+
+
+async def _effort(deal: Any) -> dict[str, Any]:
+    """E-mails out / in, decisions a person made and the scan cost — never raises."""
+    out: dict[str, Any] = {"emails_sent": 0, "replies": 0, "operator_touches": 0, "apify_cost_usd": None}
+    try:
+        from agents.negotiation_agent.email_history import get_email_repository  # type: ignore[import]
+        for e in await get_email_repository().list_by_deal(deal.deal_id):
+            direction = str(getattr(getattr(e, "direction", ""), "value", getattr(e, "direction", ""))).lower()
+            if direction == "outbound":
+                out["emails_sent"] += 1
+            elif direction == "inbound":
+                out["replies"] += 1
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Prospect desk: e-mails of %s unavailable: %s", deal.deal_id, exc)
+    try:
+        from services.hitl_approval.service import list_approvals  # type: ignore[import]
+        for a in await list_approvals(deal_id=deal.deal_id):
+            who = getattr(a, "resolved_by", None) or ""
+            if who and not who.startswith("system") and getattr(a, "status", "") != "AUTO_APPROVED":
+                out["operator_touches"] += 1
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Prospect desk: approvals of %s unavailable: %s", deal.deal_id, exc)
+    if getattr(deal, "opportunity_id", None):
+        try:
+            from services.trade_min.repository import get_repository as trade_repo  # type: ignore[import]
+            opp = await (await trade_repo()).get(deal.opportunity_id)
+            cost = (getattr(opp, "scan_cost", None) or {}) if opp is not None else {}
+            if cost.get("usd") is not None:
+                out["apify_cost_usd"] = round(float(cost["usd"]), 2)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Prospect desk: scan cost of %s unavailable: %s", deal.deal_id, exc)
+    return out
 
 
 def summarise(deal: Any, board: Any | None, *, now: datetime | None = None) -> ProspectSummary:
@@ -326,6 +375,14 @@ async def desk(deals: list[Any]) -> list[ProspectSummary]:
             if radar:
                 d = d.model_copy(update={"radar_estimate": radar}) if hasattr(d, "model_copy") else d
         row = summarise(d, board)
+        effort = await _effort(d)
+        busy = (effort["emails_sent"] + effort["operator_touches"] >= effort_high()
+                and not row.buyers_interested and not row.quotes)
+        row = row.model_copy(update={**effort, "busy_not_moving": busy})
+        if busy:
+            row.actions.insert(0, DeskAction(kind="park", text=(
+                f"Much effort, nothing moving ({effort['emails_sent']} e-mails, {effort['operator_touches']} decisions, "
+                "no interested buyer, no quote) — park or drop it")))
         from shared.orchestration.prospect_actions import is_parked
         if is_parked(d):
             row = row.model_copy(update={

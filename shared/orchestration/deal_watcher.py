@@ -430,6 +430,15 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     except Exception as exc:  # noqa: BLE001
         logger.error("DealWatcher: send retries failed: %s", exc)
 
+    # Prospects untouched for PROSPECT_RETENTION_DAYS (once a day, when enabled).
+    try:
+        from shared.orchestration import prospect_cleanup
+        res = await prospect_cleanup.daily(now)
+        if res and res.get("closed"):
+            counts["prospects_closed"] = len(res["closed"])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: prospect clean-up failed: %s", exc)
+
     # Supplier quotes about to expire: ask for a reconfirmation; unanswered ones expire.
     try:
         from shared.orchestration import quote_reconfirm
@@ -476,6 +485,9 @@ async def run_deal_watcher() -> None:
     while True:
         try:
             await asyncio.sleep(interval_seconds())
+            from shared import leader_lock
+            if not await leader_lock.acquire("deal_watcher", ttl_seconds=interval_seconds() * 3):
+                continue  # another instance runs the sweep
             await sweep_stalled_deals()
         except asyncio.CancelledError:
             logger.info("DealWatcher: stopped")

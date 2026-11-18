@@ -148,6 +148,12 @@ class InMemoryDirectory:
         rows.sort(key=lambda r: r.last_seen_at, reverse=True)
         return rows[:limit]
 
+    async def replace(self, rec: CounterpartyRecord) -> None:
+        self._store[rec.id] = rec
+
+    async def delete(self, record_id: str) -> None:
+        self._store.pop(record_id, None)
+
     async def clear(self) -> None:
         self._store.clear()
 
@@ -219,6 +225,14 @@ class MongoDirectory:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Directory: skipping malformed row: %s", exc)
         return rows
+
+    async def replace(self, rec: CounterpartyRecord) -> None:
+        out = rec.model_dump(mode="json")
+        out["_id"] = rec.id
+        await self._col.replace_one({"_id": rec.id}, out, upsert=True)
+
+    async def delete(self, record_id: str) -> None:
+        await self._col.delete_one({"_id": record_id})
 
     async def clear(self) -> None:
         await self._col.delete_many({})
