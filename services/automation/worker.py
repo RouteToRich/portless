@@ -208,6 +208,11 @@ def main() -> int:
     sys.path.insert(0, str(REPO_ROOT))
     work = Path(tempfile.gettempdir()) / "portless-automation"
     work.mkdir(exist_ok=True)
+    # The automation database never holds a DGFT denied list: without this every test deal would
+    # stop at a compliance review for the missing list (the catalogue and journeys were written
+    # before the list check).
+    os.environ.setdefault("COMPLIANCE_DGFT_LIST", "allow")
+    os.environ.setdefault("EXPORT_CERTS_REQUIRED", "false")  # likewise: no certificate is ever recorded there
     os.environ.setdefault("DEALMAKER_STORAGE_DIR", str(work / "dealmaker"))
     os.environ.setdefault("DOCUGEN_STORAGE_DIR", str(work / "docugen"))
     os.chdir(work)  # a relative env_file=".env" finds nothing here

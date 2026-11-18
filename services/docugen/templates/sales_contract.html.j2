@@ -35,7 +35,8 @@
   <li><strong>Quantity.</strong> {{ quantity_mt | qty }} MT, ± {{ tolerance_pct }}% at the seller's option, invoiced at the contract price on the quantity loaded.</li>
   <li><strong>Price and delivery.</strong> {{ unit_price | money(currency) }} per MT {{ incoterm }} {{ port_of_destination or "port of destination to be confirmed by the buyer" }} (Incoterms® 2020). Shipment from {{ port_of_loading or "an Indian seaport" }} within {{ shipment_days }} days of the escrow being funded. Partial shipment not allowed; transhipment allowed.</li>
   <li><strong>Payment.</strong> 100% of the contract value into the neutral escrow account{% if escrow_provider %} ({{ escrow_provider }}){% endif %} within {{ funding_days }} days of this contract. Released to the seller in stages:
-    {{ m.timeline(tranches, total_value, currency) }}</li>
+    {{ m.timeline(tranches, total_value, currency) }}
+    Remittance purpose code: <strong>{{ exporter.purpose_code }}</strong>.</li>
   {% if incoterm in ("CIF", "CIP") %}<li><strong>Insurance.</strong> The seller insures the goods for 110% of the invoice value, Institute Cargo Clauses, from loading to the port of destination, and provides the insurance certificate.</li>{% endif %}
   <li><strong>Documents.</strong> Commercial invoice, packing list, bill of lading, certificate of origin, inspection certificate{% if incoterm in ("CIF", "CIP") %}, insurance certificate{% endif %}{% if needs_phyto %}, phytosanitary certificate{% endif %}, sent electronically on shipment.</li>
   <li><strong>Acceptance and claims.</strong> The buyer inspects the goods on delivery and confirms acceptance within {{ acceptance_hours // 24 }} days. A quality or quantity claim must be raised within that window, supported by an independent survey report; it suspends the final release until resolved. Without a claim within the window the goods are deemed accepted.</li>

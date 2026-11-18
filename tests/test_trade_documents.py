@@ -282,3 +282,16 @@ async def test_issuing_twice_returns_the_same_document(deal):
 def test_amount_in_words():
     assert amount_words(25000, "USD") == "US Dollars Twenty-Five Thousand Only"
     assert amount_words(1234.5, "USD") == "US Dollars One Thousand Two Hundred Thirty-Four and Cents Fifty Only"
+
+
+def test_purpose_code_defaults_to_advance_against_export(monkeypatch):
+    """The buyer's bank needs the RBI purpose code: escrow is funded before shipment → P0103."""
+    from shared.documents.issuer import exporter
+    monkeypatch.delenv("PORTLESS_EXPORT_PURPOSE_CODE", raising=False)
+    assert exporter()["purpose_code"] == "P0103"
+    monkeypatch.setenv("PORTLESS_EXPORT_PURPOSE_CODE", "P0102")
+    assert exporter()["purpose_code"] == "P0102"
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for tpl in ("services/dealmaker/templates/pi.html.j2", "services/docugen/templates/sales_contract.html.j2"):
+        assert "exporter.purpose_code" in (root / tpl).read_text(encoding="utf-8")

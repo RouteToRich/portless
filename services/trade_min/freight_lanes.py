@@ -166,7 +166,8 @@ async def refresh(market: str, hs_code: str, container_type: str = "dry", contai
         conn = get_connector(name)
         quote = await conn.quote({
             "origin_port": ORIGIN_PORT, "destination_country": market.upper(), "hs_code": hs_code,
-            "container_type": "20RF" if container_type == "reefer" else "20GP", "containers": 1,
+            "container_type": EQUIPMENT_CODES.get(container_type, "20GP"), "containers": 1,
+            **({"load_type": "LCL", "weight_tonnes": container_mt} if container_type == "lcl" else {}),
         })
     except Exception as exc:  # noqa: BLE001 - the regional estimate stays
         logger.info("Freight lanes: %s quote for %s failed: %s", name, market, exc)
@@ -176,6 +177,26 @@ async def refresh(market: str, hs_code: str, container_type: str = "dry", contai
         return None
     return await save(LaneRate(market=market, container_type=container_type, usd_per_container=rate,
                                container_mt=container_mt, provider=name))
+
+
+# Lane key → the equipment code the forwarder APIs use (ISO 6346 size-type groups).
+EQUIPMENT_CODES = {"dry": "20GP", "dry40": "40GP", "hc40": "40HC", "reefer": "20RF", "reefer40": "40RH", "lcl": "LCL"}
+_PAYLOAD_T = {"dry": 25.0, "dry40": 26.5, "hc40": 26.5, "reefer": 21.0, "reefer40": 26.0, "lcl": 1.0}
+
+
+async def refresh_all(market: str, hs_code: str, kind: str = "dry", lot_mt: float | None = None) -> list[LaneRate]:
+    """Quote every container size for the lane (todo: freight APIs per container type), so the
+    container choice compares real 20' / 40' / 40' HC (or reefer) prices — and LCL for a small
+    lot. Only when the quote provider is really configured; a lane quoted recently is skipped."""
+    keys = ["reefer", "reefer40"] if kind == "reefer" else ["dry", "dry40", "hc40"]
+    if kind != "reefer" and lot_mt is not None and lot_mt <= 12:
+        keys.append("lcl")
+    saved = []
+    for key in keys:
+        rate = await refresh(market, hs_code, key, _PAYLOAD_T[key])
+        if rate is not None:
+            saved.append(rate)
+    return saved
 
 
 async def freight_per_mt(market: str, container_type: str = "dry") -> tuple[float, str]:

@@ -45,3 +45,22 @@ async def test_the_connector_uses_the_list():
     await dl.load(CSV, by="co@portless.in")
     out = await DgftConnector().book({"supplier_id": "S1", "iec": "0400012345", "entity_name": "x"})
     assert out["on_denied_list"] is True
+
+
+async def test_compliance_reviews_without_a_list_and_blocks_on_an_iec_match(monkeypatch):
+    from types import SimpleNamespace
+
+    from shared.orchestration import compliance
+    monkeypatch.setenv("COMPLIANCE_DGFT_LIST", "review")
+    deal = SimpleNamespace(deal_id="D1", winning_supplier_id=None, parties=[
+        SimpleNamespace(role="supplier", legal_name="Shree Rice Mills Pvt Ltd", iec="0400012345")])
+    assert [f.code for f in await compliance.check_supplier_record(deal)] == ["dgft_list_not_loaded"]
+    await dl.load(CSV, by="co@portless.in")
+    (block,) = await compliance.check_supplier_record(deal)
+    assert block.code == "supplier_dgft_denied" and block.severity == "block"
+    deal.parties[0].iec = None
+    (review,) = await compliance.check_supplier_record(deal)
+    assert review.code == "supplier_dgft_name_match" and review.severity == "review"
+    monkeypatch.setenv("COMPLIANCE_DGFT_LIST", "allow")
+    dl.reset_for_tests()
+    assert await compliance.check_supplier_record(deal) == []

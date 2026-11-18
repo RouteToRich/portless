@@ -126,6 +126,10 @@ import shared.config  # noqa: E402,F401
 # The pre-trade market check searches the web; the suite never goes online.
 # tests/test_trade_costs.py exercises it with a mocked search.
 os.environ["MARKET_CHECK_ENABLED"] = "false"
+# No DGFT denied list is loaded in tests: a never-loaded list would put every deal into a
+# compliance review. tests/test_denied_list.py turns it back on where it is tested.
+os.environ["COMPLIANCE_DGFT_LIST"] = "allow"
+os.environ["EXPORT_CERTS_REQUIRED"] = "false"  # tests/test_export_certs.py turns it on
 
 
 # Suite markers (unit / integration / smoke / regression / slow / money), applied by

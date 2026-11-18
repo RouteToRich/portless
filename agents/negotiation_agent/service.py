@@ -414,6 +414,13 @@ async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
         session.cost_sheet = sheet.model_dump(mode="json")
         try:
             from shared.orchestration import container_choice
+            try:  # real per-size quotes when a forwarder API is configured (skipped otherwise)
+                from services.trade_min import freight_lanes  # type: ignore[import]
+                kind = "reefer" if "reefer" in str((session.cost_sheet or {}).get("container_type") or "") else "dry"
+                await freight_lanes.refresh_all(market or "", session.product_code or "", kind,
+                                                float(session.quantity_mt or 20.0))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Cost sheet: lane quotes for %s not refreshed: %s", session.negotiation_id, exc)
             session.cost_sheet["container_choice"] = await container_choice.choose(
                 market, session.product_code, float(session.quantity_mt or 20.0))
         except Exception as exc:  # noqa: BLE001 - the sheet stands without it

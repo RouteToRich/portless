@@ -95,6 +95,23 @@ async def business_alerts(now: Any = None) -> list[str]:
             out.append(f"EXCEPTIONS PILING UP: {len(open_rows)} open or escalated (Exceptions page)")
     except Exception as exc:  # noqa: BLE001
         logger.debug("FailureMonitor: exceptions unreadable: %s", exc)
+    try:  # export proceeds past the RBI deadline (realisation.py)
+        from shared.orchestration import realisation
+        overdue = [r for r in await realisation.open_items() if r["status"] == "overdue"]
+        if overdue:
+            total = sum(r["outstanding"] for r in overdue)
+            out.append(f"EXPORT PROCEEDS OVERDUE: {len(overdue)} Shipping Bill(s), {total:,.0f} outstanding past the "
+                       "realisation deadline (GET /deals/realisation/open — tell the AD bank)")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("FailureMonitor: realisation unreadable: %s", exc)
+    try:  # suppliers are checked against a list nobody loaded, or an old one (denied_list.py)
+        from shared.orchestration import denied_list
+        st = await denied_list.status()
+        if not st["loaded"] or st["stale"]:
+            out.append("DGFT DENIED LIST " + ("NOT LOADED" if not st["loaded"] else f"STALE: {st['age_days']} days old")
+                       + ": suppliers are not checked against the current list (PUT /deals/compliance/dgft-denied)")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("FailureMonitor: DGFT list status unreadable: %s", exc)
     return out
 
 
@@ -105,7 +122,7 @@ async def check_and_alert(*, now: float | None = None, send=None, business: list
     extra = business if business is not None else await business_alerts()
     for a in status(now)["alerts"] + extra:
         key = a.split(" — ")[0]  # e.g. "LLM CALLS FAILING: buyer_agent"
-        if a.startswith(("MONEY GATES WAITING", "EXCEPTIONS PILING UP")):
+        if a.startswith(("MONEY GATES WAITING", "EXCEPTIONS PILING UP", "EXPORT PROCEEDS OVERDUE", "DGFT DENIED LIST")):
             key = a.split(":")[0]  # the count changes; one alert per kind per period
         if now - _last_alert.get(key, -1e12) < repeat:
             continue

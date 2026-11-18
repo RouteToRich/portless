@@ -82,6 +82,31 @@ def plan_mix(quantity_mt: float, options: list[dict[str, Any]]) -> dict[str, Any
             "usd_per_mt_if_filled": round(cost / capacity, 2) if capacity else None, "options": usable}
 
 
+async def _lcl_option(market: str | None, kind: str, qty: float, m3_per_mt: float | None,
+                      base20: float | None) -> dict[str, Any] | None:
+    """A part-container (LCL) load for a small lot: charged per freight tonne — whichever is more
+    of tonnes and cubic metres (W/M) — from a lane quote ``lcl`` (USD per W/M), else the 20' rate
+    per tonne × ``LCL_PREMIUM`` (1.8); never above ``LCL_MAX_MT`` (12) and never for reefer."""
+    if kind != "dry" or qty <= 0 or qty > _f("LCL_MAX_MT", 12.0):
+        return None
+    rate, source = None, "estimate"
+    try:
+        from services.trade_min import freight_lanes  # type: ignore[import]
+        lane = await freight_lanes.lane(market or "", "lcl")
+        if lane is not None:
+            rate, source = lane.usd_per_container, lane.provider
+    except Exception:  # noqa: BLE001
+        pass
+    if rate is None and base20:
+        rate = base20 / EQUIPMENT["dry"][0]["payload_t"] * _f("LCL_PREMIUM", 1.8)
+    if not rate:
+        return None
+    freight_tonnes = max(qty, qty * (m3_per_mt or 1.0))
+    usd = max(rate * freight_tonnes, _f("LCL_MINIMUM_USD", 150.0))
+    return {"usd": round(usd, 2), "usd_per_wm": round(rate, 2), "freight_tonnes": round(freight_tonnes, 2),
+            "source": source}
+
+
 async def choose(market: str | None, hs_code: str | None, quantity_mt: float) -> dict[str, Any]:
     """The plan for a lot on a lane, from the lane quotes and the product's stowage factor."""
     kind, m3_per_mt = "dry", None
@@ -118,6 +143,13 @@ async def choose(market: str | None, hs_code: str | None, quantity_mt: float) ->
         options.append({"code": opt["code"], "tonnes": tonnes_per_box(opt, m3_per_mt), "usd": round(usd or 0.0, 2),
                         "source": source or "none"})
     plan = plan_mix(quantity_mt, options)
+    lcl = await _lcl_option(market, kind, float(quantity_mt or 0), m3_per_mt, base20)
+    if lcl and (plan.get("usd") in (None, 0) or lcl["usd"] < plan["usd"]):
+        plan.update({"boxes": {"LCL": 1}, "usd": lcl["usd"], "usd_per_mt": round(lcl["usd"] / quantity_mt, 2),
+                     "capacity_mt": float(quantity_mt), "fill_pct": 100.0, "fill_suggestion_mt": 0.0,
+                     "usd_per_mt_if_filled": None, "lcl": lcl})
+    elif lcl:
+        plan["lcl_alternative"] = lcl
     plan.update({"kind": kind, "m3_per_mt": m3_per_mt, "market": market,
                  "quoted": sorted(c for c in rates), "estimated": sorted(o["code"] for o in options if o["source"] == "estimate")})
     return plan

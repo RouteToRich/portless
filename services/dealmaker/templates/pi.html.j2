@@ -36,6 +36,7 @@
 <p>{{ payment_terms }}</p>
 {{ m.timeline(tranches, total_value, currency) }}
 <p class="small muted">The buyer pays the full amount into an independent escrow account{% if escrow_provider %} held by {{ escrow_provider | title }}{% endif %}. Funds are released to the seller only as each milestone is evidenced; the final share is released on the buyer's acceptance of the delivered goods or when the acceptance window lapses.</p>
+<p class="small">Remittance purpose code (for the buyer's bank): <strong>{{ exporter.purpose_code }}</strong> — advance against an export of goods. Please quote the PI number {{ pi_id }} as the payment reference.</p>
 
 <h2>Shipment & inspection</h2>
 <div class="grid-2">

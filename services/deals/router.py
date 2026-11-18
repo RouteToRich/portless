@@ -677,6 +677,38 @@ async def accept_exposure(deal_id: str, body: ExposureAccept, user: AuthUser = D
     return {"deal_id": deal_id, "exposure_accepted_by": who}
 
 
+@router.get("/{deal_id}/export-certificates")
+async def export_certificates(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Certificates this shipment needs (phytosanitary, APEDA RCAC for basmati, origin …) and which are recorded."""
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import export_certs
+    return await export_certs.status(deal)
+
+
+class ExportCertificate(BaseModel):
+    kind: str
+    number: str = Field(min_length=3, max_length=60)
+    issued_on: str | None = None
+    issuer: str | None = None
+    evidence: str | None = Field(default=None, max_length=300)
+
+
+@router.post("/{deal_id}/export-certificates")
+async def record_export_certificate(deal_id: str, body: ExportCertificate,
+                                    user: AuthUser = Depends(require_portless)) -> dict:
+    """Record an issued certificate (number, date, issuer, evidence) — audited."""
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import export_certs
+    try:
+        await export_certs.record(deal_id, body.kind, number=body.number, issued_on=body.issued_on,
+                                  issuer=body.issuer, evidence=body.evidence, by=getattr(user, "email", None) or "staff")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "shipment.certificate_recorded", deal_id, kind=body.kind, number=body.number)
+    return await export_certs.status(deal)
+
+
 @router.get("/{deal_id}/realisation")
 async def deal_realisation(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
     """Per Shipping Bill: invoice value, realised so far, outstanding and the realisation deadline."""

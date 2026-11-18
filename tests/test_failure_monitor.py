@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from unittest.mock import AsyncMock
 
 from shared import failure_monitor as fm
 
@@ -77,9 +78,15 @@ async def test_money_gate_waiting_and_exceptions_piling_up(monkeypatch):
             return [SimpleNamespace(status="OPEN") for _ in range(12)]
     monkeypatch.setattr("services.hitl_approval.repository.get_repository", lambda: _Hitl())
     monkeypatch.setattr("services.exception_resolver.repository.get_repository", lambda: _Exc())
+    from shared.orchestration import denied_list, realisation
+    monkeypatch.setattr(realisation, "open_items", AsyncMock(return_value=[
+        {"status": "overdue", "outstanding": 7500.0}, {"status": "due_soon", "outstanding": 100.0}]))
+    monkeypatch.setattr(denied_list, "status", AsyncMock(return_value={"loaded": False, "stale": True, "age_days": None}))
     alerts = await fm.business_alerts(now)
     assert alerts[0].startswith("MONEY GATES WAITING: 1 money gate") and "D1" in alerts[0]
     assert alerts[1] == "EXCEPTIONS PILING UP: 12 open or escalated (Exceptions page)"
+    assert alerts[2].startswith("EXPORT PROCEEDS OVERDUE: 1 Shipping Bill(s), 7,500 outstanding")
+    assert alerts[3].startswith("DGFT DENIED LIST NOT LOADED")
 
 
 async def test_business_alert_once_per_period_even_when_the_count_changes():

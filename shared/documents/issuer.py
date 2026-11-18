@@ -51,6 +51,9 @@ def exporter() -> dict[str, Any]:
         "pan": _env("PORTLESS_PAN") or _entity("portless_entity_pan"),
         "lut_arn": _env("PORTLESS_LUT_ARN"),
         "ad_code": _env("PORTLESS_AD_CODE"),
+        # RBI purpose code the buyer's bank puts on the remittance: the escrow is funded before
+        # shipment, so by default "advance receipts against export contracts" (P0103).
+        "purpose_code": _env("PORTLESS_EXPORT_PURPOSE_CODE") or "P0103",
         "bank_name": _env("PORTLESS_BANK_NAME"),
         "bank_account": _env("PORTLESS_BANK_ACCOUNT"),
         "bank_swift": _env("PORTLESS_BANK_SWIFT"),

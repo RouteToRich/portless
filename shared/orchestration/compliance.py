@@ -491,9 +491,42 @@ def check_related_parties(deal) -> Finding | None:
                    data={"reasons": reasons})
 
 
+async def _dgft_list_findings(deal) -> list[Finding]:
+    """The deal's supplier against the loaded DGFT denied list (denied_list.py): an IEC match
+    blocks, a name match asks a person; no list (or a stale one) is a review — never a silent
+    "not denied"."""
+    supplier = next((p for p in getattr(deal, "parties", None) or []
+                     if str(getattr(getattr(p, "role", ""), "value", getattr(p, "role", ""))).lower() == "supplier"), None)
+    if supplier is None:
+        return []
+    from shared.orchestration import denied_list
+    res = await denied_list.check(getattr(supplier, "legal_name", None), getattr(supplier, "iec", None))
+    name = getattr(supplier, "legal_name", None) or "the supplier"
+    if res.get("on_denied_list"):
+        match = res.get("match") or {}
+        if match.get("by") == "iec":
+            return [Finding(code="supplier_dgft_denied", severity="block",
+                            message=f"{name}'s IEC is on DGFT's denied-entity list ({match.get('order_ref') or 'no order ref'})")]
+        return [Finding(code="supplier_dgft_name_match", severity="review",
+                        message=f"{name} matches '{match.get('name')}' on DGFT's denied-entity list — confirm it is not the same firm")]
+    if os.getenv("COMPLIANCE_DGFT_LIST", "review").strip().lower() == "allow":
+        return []  # an operator chose to trade without the list (pinned in tests)
+    if res.get("unchecked"):
+        return [Finding(code="dgft_list_not_loaded", severity="review",
+                        message="no DGFT denied-entity list is loaded — the supplier could not be checked")]
+    if res.get("list_stale"):
+        return [Finding(code="dgft_list_stale", severity="review",
+                        message=f"the DGFT denied-entity list is {res.get('list_age_days')} days old — load the current one")]
+    return []
+
+
 async def check_supplier_record(deal) -> list[Finding]:
     """DGFT denied-entity list and company age from the winning supplier's verified quote."""
     out: list[Finding] = []
+    try:
+        out.extend(await _dgft_list_findings(deal))
+    except Exception as exc:  # noqa: BLE001 - an unreadable list is reported by its own status, never a crash
+        logger.debug("Compliance: DGFT list check failed for %s: %s", deal.deal_id, exc)
     sup_id = getattr(deal, "winning_supplier_id", None)
     if not sup_id:
         return out
@@ -506,7 +539,7 @@ async def check_supplier_record(deal) -> list[Finding]:
     if not quotes:
         return out
     v = quotes[-1].verification
-    if getattr(v, "dgft_denied", False):
+    if getattr(v, "dgft_denied", False) and not any(f.code == "supplier_dgft_denied" for f in out):
         out.append(Finding(code="supplier_dgft_denied", severity="block",
                            message=f"supplier {sup_id} is on DGFT's denied-entity list"))
     age = float(getattr(v, "business_age_years", 0.0) or 0.0)
@@ -802,6 +835,12 @@ async def check_shipment(deal) -> CheckResult:
         if not loading.photos:
             findings.append(Finding(code="shipment_no_photos", severity="review",
                                     message="no stuffing / seal photos from the inspector"))
+    from shared.orchestration import export_certs
+    if export_certs.enabled():
+        for kind in (await export_certs.status(deal))["missing"]:
+            findings.append(Finding(code=f"shipment_cert_{kind}", severity="review",
+                                    message=f"{export_certs.KINDS[kind]} not recorded — record its number before the "
+                                            "shipment sails (POST /deals/{id}/export-certificates)"))
     for f in findings:
         if f.severity == "review" and f.code in rec.cleared_holds:
             f.severity = "info"

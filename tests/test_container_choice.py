@@ -40,3 +40,34 @@ async def test_choose_uses_lane_quotes_per_size(monkeypatch):
     assert plan["quoted"] == ["20DRY", "40HC"] and plan["estimated"] == ["40DRY"]
     assert plan["boxes"] == {"40HC": 2} and plan["usd"] == 2200.0
     fl.reset_for_tests()
+
+
+async def test_a_small_lot_goes_lcl_when_it_is_cheaper(monkeypatch):
+    from services.trade_min import freight_lanes as fl
+    fl.reset_for_tests()
+    await fl.save(fl.LaneRate(market="AE", container_type="dry", usd_per_container=1000.0, container_mt=20.0, provider="staff"))
+    await fl.save(fl.LaneRate(market="AE", container_type="lcl", usd_per_container=60.0, container_mt=1.0, provider="staff"))
+    plan = await cc.choose("AE", None, 5.0)          # 5 t × 60 = 300 USD vs a 1000 USD box
+    assert plan["boxes"] == {"LCL": 1} and plan["usd"] == 300.0 and plan["lcl"]["source"] == "staff"
+    big = await cc.choose("AE", None, 18.0)          # over LCL_MAX_MT: a full box
+    assert "LCL" not in big["boxes"] and "lcl_alternative" not in big
+    fl.reset_for_tests()
+
+
+async def test_refresh_all_asks_for_every_container_size(monkeypatch):
+    from services.trade_min import freight_lanes as fl
+    fl.reset_for_tests()
+    asked = []
+
+    class _Conn:
+        async def quote(self, req):
+            asked.append((req["container_type"], req.get("load_type")))
+            return {"rate_usd": {"20GP": 900, "40GP": 1200, "40HC": 1250, "LCL": 70}[req["container_type"]]}
+    monkeypatch.setattr(fl, "provider", lambda: "cogoport")
+    monkeypatch.setattr("shared.connectors.registry.get_connector", lambda name: _Conn())
+    saved = await fl.refresh_all("AE", "10063020", "dry", lot_mt=8.0)
+    assert [c for c, _ in asked] == ["20GP", "40GP", "40HC", "LCL"] and asked[-1][1] == "LCL"
+    assert {r.container_type for r in saved} == {"dry", "dry40", "hc40", "lcl"}
+    asked.clear()
+    assert await fl.refresh_all("AE", "10063020", "dry", lot_mt=8.0) == [] and asked == []  # recent quotes kept
+    fl.reset_for_tests()
