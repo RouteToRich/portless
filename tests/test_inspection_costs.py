@@ -74,3 +74,15 @@ def test_journal_posts_the_chargeback_and_stays_balanced():
 async def test_the_switch_turns_the_charge_off(monkeypatch):
     monkeypatch.setenv("SUPPLIER_REINSPECTION_CHARGE", "false")
     assert chargebacks.reinspection_charged() is False
+
+
+def test_value_added_services_carry_a_service_charge(monkeypatch):
+    """todo: value-added services priced explicitly — extra inspections and special packing."""
+    monkeypatch.delenv("VAS_MARKUP_PCT", raising=False)
+    plain, three = _sheet(None), _sheet(["DUPRO", "PSI", "PEO"])
+    assert not [ln for ln in plain.lines if ln.key == "value_added_services"]
+    (vas,) = [ln for ln in three.lines if ln.key == "value_added_services"]
+    per_visit = landed_cost.inspection_usd_per_shipment() / 25.0
+    assert vas.usd_per_mt == pytest.approx(round(per_visit * 2 * 0.15, 2), abs=0.01)
+    monkeypatch.setenv("VAS_MARKUP_PCT", "0")
+    assert not [ln for ln in _sheet(["DUPRO", "PSI"]).lines if ln.key == "value_added_services"]

@@ -136,8 +136,20 @@ def _identity_from_me(body: dict) -> Identity | None:
     )
 
 
-async def identity_for_token(token: str) -> Identity:
-    """Check ``token`` with auth-service (cached). Raises IdentityError(401) if invalid."""
+def money_cache_seconds() -> float:
+    """``AUTH_MONEY_INTROSPECTION_CACHE_SECONDS`` (5): how old a token check may be for a
+    request that moves money (approving a gate, releasing / refunding escrow, a payout) — a
+    revoked approver is refused within seconds, not the 60 s of the general cache."""
+    import os
+    try:
+        return max(0.0, float(os.getenv("AUTH_MONEY_INTROSPECTION_CACHE_SECONDS", "5")))
+    except ValueError:
+        return 5.0
+
+
+async def identity_for_token(token: str, *, max_age: float | None = None) -> Identity:
+    """Check ``token`` with auth-service (cached). Raises IdentityError(401) if invalid.
+    ``max_age``: a cached check older than this many seconds is asked again."""
     if not token:
         raise IdentityError(401, "Authentication required")
     s = _settings()
@@ -145,7 +157,9 @@ async def identity_for_token(token: str) -> Identity:
     now = time.monotonic()
     hit = _CACHE.get(key)
     if hit is not None and hit[0] > now:
-        return hit[1]
+        checked_at = hit[0] - s.introspection_cache_seconds
+        if max_age is None or now - checked_at <= max_age:
+            return hit[1]
 
     body = await ask_gateway(token)
     identity = _identity_from_me(body) if body else None
@@ -191,11 +205,11 @@ def check_account(identity: Identity) -> None:
         )
 
 
-async def resolve(headers, token: str) -> Identity:
+async def resolve(headers, token: str, *, max_age: float | None = None) -> Identity:
     """The caller's identity: trusted gateway headers, else the checked token."""
     identity = identity_from_headers(headers)
     if identity is None:
-        identity = await identity_for_token(token)
+        identity = await identity_for_token(token, max_age=max_age)
     if not identity.email:
         # auth-service always returns the email; the gateway always forwards it.
         raise IdentityError(401, "Incomplete identity — please sign in again")

@@ -379,3 +379,29 @@ class TestIndicativeValidity:
         _, body = mm.draft_indicative(deal, cand, pair, 880.0, 910.0)
         assert f"valid until {mm.offer_valid_until(pair):%d %B %Y}" in body and "valid for 7 days" not in body
         assert pair.quote_expires_in_days is not None and mm.indicative_validity_days(pair) < 7
+
+
+# ---------------------------------------------------------------------------
+class TestCorridorMargin:
+    """Target margin per HS × market learned from indicative-offer answers (todo: margin by corridor)."""
+
+    def _offers(self, market, accepted, declined):
+        from shared.orchestration.outcomes import Outcome
+        return ([Outcome(kind="indicative_offer", deal_id="D", hs_code="290543", market=market, candidate_id=f"A{i}",
+                         response="accepted") for i in range(accepted)]
+                + [Outcome(kind="indicative_offer", deal_id="D", hs_code="290543", market=market, candidate_id=f"N{i}",
+                           response="declined") for i in range(declined)])
+
+    def test_market_with_price_power_gets_a_higher_target(self, monkeypatch):
+        from shared.orchestration.outcomes import corridor_margins
+        monkeypatch.delenv("MATCH_TARGET_MARGIN_PCT", raising=False)
+        table = corridor_margins(self._offers("ES", 5, 1) + self._offers("DE", 1, 5), "290543")
+        assert table["ES"]["adjust_pts"] == 2.0 and table["DE"]["adjust_pts"] == -2.0
+        assert mm.target_margin_pct({"corridor_margins": table}, "ES") == 14.0
+        assert mm.target_margin_pct({"corridor_margins": table}, "de") == 10.0
+        assert mm.target_margin_pct({"corridor_margins": table}, "FR") == 12.0  # all markets: 6 of 12 accepted → no change
+        assert mm.target_margin_pct(None, "ES") == 12.0
+
+    def test_too_few_answers_change_nothing(self):
+        from shared.orchestration.outcomes import corridor_margins
+        assert corridor_margins(self._offers("ES", 3, 0), "290543")["ES"]["adjust_pts"] == 0.0

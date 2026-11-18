@@ -420,6 +420,16 @@ async def api_fx_summary(deal_id: str, user: AuthUser = Depends(require_portless
     return await fx_book.summary(deal_id)
 
 
+@router.get("/reconciliation/providers", response_model=dict)
+async def api_provider_reconciliation(run: bool = False, user: AuthUser = Depends(require_portless)) -> dict:
+    """The books vs what Tazapay / Escrow.com / Payoneer report: the last daily run, or a new
+    one with ``?run=true`` (read-only at the providers)."""
+    from shared.orchestration import provider_reconciliation as pr
+    if run or pr.last_report() is None:
+        return await pr.run(alert=run)
+    return pr.last_report()
+
+
 @router.get("/ledgers", response_model=list[DealLedger])
 async def api_list_ledgers() -> list[DealLedger]:
     """Every escrow's ledger, newest first — the Money & Margin escrow view."""

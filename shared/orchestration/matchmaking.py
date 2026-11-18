@@ -192,11 +192,18 @@ def _region_transit(market: str | None) -> int:
     return _TRANSIT_DAYS.get(lc._REGION_OF.get((market or "").upper(), ""), 25)
 
 
-def target_margin_pct() -> float:
+def target_margin_pct(learned: dict[str, Any] | None = None, market: str | None = None) -> float:
+    """``MATCH_TARGET_MARGIN_PCT`` (12), moved by what buyers of this corridor accepted
+    (``outcomes.corridor_margins``: the market's own answers, else all markets of the product)."""
     try:
-        return float(os.getenv("MATCH_TARGET_MARGIN_PCT", "") or 12.0)
+        base = float(os.getenv("MATCH_TARGET_MARGIN_PCT", "") or 12.0)
     except ValueError:
-        return 12.0
+        base = 12.0
+    table = (learned or {}).get("corridor_margins") or {}
+    row = table.get((market or "").upper()) or {}
+    if not row.get("adjust_pts") and not row.get("responses"):
+        row = table.get("*") or {}
+    return round(base + float(row.get("adjust_pts") or 0.0), 2)
 
 
 def negotiation_targets(buyer_price: float | None, supplier_price: float | None, *, freight: float,
@@ -355,7 +362,7 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
     fr = landed.freight_usd_per_mt if landed else (freight_usd_per_mt if freight_usd_per_mt is not None else lc.freight_per_mt(market))
     insp = landed.inspection_usd_per_mt if landed else lc.inspection_usd_per_shipment() / qty
     tg = negotiation_targets(bp.value, sp.value, freight=fr, inspection=insp, fee_ins_pct=fee_ins,
-                             incentive_pct=incentive_pct, floor_pct=floor_pct, target_pct=max(target_margin_pct(), floor_pct))
+                             incentive_pct=incentive_pct, floor_pct=floor_pct, target_pct=max(target_margin_pct(learned, getattr(deal, "market", None)), floor_pct))
     cut = None
     if sp.value and tg["max_supplier"] is not None:
         cut = round(max(0.0, sp.value - tg["max_supplier"]), 2)
@@ -561,7 +568,7 @@ async def build_board(deal: Any) -> MatchBoard:
         },
         next_actions=actions,
         expired_offers=[o.model_dump(mode="json") for o in expired],
-        best_quote_usd_per_mt=best_quote, quote_spread_pct=spread, target_margin_pct=target_margin_pct(),
+        best_quote_usd_per_mt=best_quote, quote_spread_pct=spread, target_margin_pct=target_margin_pct(learned, market),
         learning={"calibration_active": learned["calibration"]["active"],
                   "resolved_matches": learned["calibration"]["n_resolved"],
                   "calibration_error": learned["calibration"]["ece"],

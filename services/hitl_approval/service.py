@@ -108,6 +108,40 @@ class ComplianceBlockedError(Exception):
         )
 
 
+class NotMoneyApprover(Exception):
+    """A money-moving gate was approved by a staff member who is not a money approver."""
+
+    def __init__(self, approval_id: str, action: str, approver: str | None) -> None:
+        super().__init__(f"{action} moves money: only a money approver (AUTH_MONEY_APPROVER_EMAILS) can approve it — "
+                         f"{approver or 'this operator'} can reject it or ask an approver")
+        self.approval_id = approval_id
+
+
+def money_approvers() -> set[str]:
+    """``AUTH_MONEY_APPROVER_EMAILS``: who may APPROVE a money-moving gate. Empty = every staff
+    member (as before); deal operators keep every other gate and may always REJECT."""
+    import os
+    return {e.strip().lower() for e in os.getenv("AUTH_MONEY_APPROVER_EMAILS", "").split(",") if e.strip()}
+
+
+def is_money_action(action: str) -> bool:
+    try:
+        from shared.orchestration.autonomy_policy import ACTION_CLASSES
+        cls = next((c for c in ACTION_CLASSES if c.action == action), None)
+        if cls is not None:
+            return bool(getattr(cls, "money_moving", False))
+    except Exception:  # noqa: BLE001
+        pass
+    return action in ("RELEASE_ESCROW_TRANCHE", "RELEASE_SUPPLIER_PAYOUT", "CONFIRM_BUYER_ACCEPTANCE", "REFUND_ESCROW")
+
+
+def may_approve(action: str, approver: str | None) -> bool:
+    allowed = money_approvers()
+    if not allowed or not is_money_action(action):
+        return True
+    return bool(approver) and approver.strip().lower() in allowed
+
+
 class GateNotApproved(Exception):
     """An HTTP call tried to move money without the approved gate behind it."""
 
@@ -368,6 +402,8 @@ async def resolve_approval(
 
     # Refused before any signature is taken, so the gate stays open for a retry.
     from shared.orchestration import compliance, kill_switch
+    if req.decision == "APPROVE" and not may_approve(record.action, req.resolved_by):
+        raise NotMoneyApprover(approval_id, record.action, req.resolved_by)
     if req.decision == "APPROVE":
         await kill_switch.assert_running(f"Approving {record.action}")
     if req.decision == "APPROVE" and record.action in compliance.MONEY_RELEASE_ACTIONS:

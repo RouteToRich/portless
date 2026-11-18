@@ -19,30 +19,32 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-18)
 
-**458 open · 137 done** (23 % done).
+**449 open · 147 done** (25 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
 | Where things stand | 1 | 0 |
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
-| P0 — before the first real trade | 85 | 15 |
-| P1 — before more than a few deals a month | 262 | 112 |
+| P0 — before the first real trade | 83 | 18 |
+| P1 — before more than a few deals a month | 255 | 119 |
 | P2 — improvements | 31 | 10 |
 | Apify actors (outside this repo) | 18 | 0 |
 | Decisions needed | 21 | 0 |
-| **Total** | **458** | **137** |
+| **Total** | **449** | **147** |
 
-Open items by owner: Eng 174 · Apify 18 · Ops 27 · Legal 29 · Biz 43 · QA 32 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 167 · Apify 18 · Ops 27 · Legal 29 · Biz 43 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
+
+**Reading it (2026-11-18):** the go-live blockers (11), the owner's track — accounts and keys (29) — and the decisions (21) are all still open, and they mostly need the founder, not engineering. They decide when the first real trade can happen; engineering work is mostly in P1.
 
 ---
 
 ## Where things stand today
 
 - [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
-- Backend tests: 5247 passed, 1 skipped, 0 warnings (2026-11-18, about 1 minute). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
+- Backend tests: 5273 passed, 1 skipped, 0 warnings (2026-11-18, about 1 minute). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
 - End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
 - Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
 - UI repo: type-check and build pass; **no tests of any kind, no CI**. Browser cases written: TC-WEB-001 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`), none automated.
@@ -188,10 +190,10 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ### 4 Money safety and financial controls
 - [ ] **(Eng)** **No Mongo transactions anywhere.** A tranche release, a payout and the ledger / journal are written as separate documents. Wrap every money state change (escrow hold + tranche + ledger + deal status) in a transaction or an idempotent outbox, so a crash in the middle cannot leave money booked twice or not at all.
-- [ ] **(Eng)** Daily reconciliation job: PortLess escrow ledger vs Tazapay / Escrow.com statement, payouts vs payout provider statement, bank receipts vs e-BRC. Any difference → `deal.exception` and the digest.
+- [x] **(Eng)** Daily reconciliation job: PortLess escrow ledger vs Tazapay / Escrow.com statement, payouts vs payout provider statement, bank receipts vs e-BRC. Any difference → `deal.exception` and the digest. — done 2026-11-18: `shared/orchestration/provider_reconciliation.py` — once a day (`PROVIDER_RECON_HOUR_UTC`, 02:00, escrow watcher) every open escrow is read from Tazapay / Escrow.com and every live payout from Payoneer, read-only: funded amount, stages paid out vs booked (both ways), payouts completed / failed vs booked → `deal.exception` `RECONCILIATION:<kind>` once a day; unreadable providers listed; `GET /escrow-guard/reconciliation/providers` (`?run=true`). Bank receipts vs e-BRC still need a bank statement feed.
 - [ ] **(Eng/QA)** Idempotency audit of every money endpoint and webhook (replay the same webhook 2×, 10× concurrently; release the same tranche from two operators at once). Catalogue case "staff and staff2 approve the gate at the same moment → exactly one call answers 200" is not automated yet.
 - [ ] **(Biz)** Exposure limits: maximum value per deal, per buyer, per supplier, per day, and total money in escrow; refuse or escalate above them.
-- [ ] **(Biz/Eng)** Roles: separate "can approve money" from "can operate deals"; today any allowlisted staff can approve any gate (four-eyes only above the threshold).
+- [x] **(Biz/Eng)** Roles: separate "can approve money" from "can operate deals"; today any allowlisted staff can approve any gate (four-eyes only above the threshold). — done 2026-11-18: `AUTH_MONEY_APPROVER_EMAILS` — only those staff may APPROVE a money-moving gate (tranche, payout, buyer acceptance, refund); every staff member can still REJECT; anyone else gets 403 and the gate stays open (`hitl_approval.service.may_approve`). Empty list = as before.
 
 ### 5.2 Steps that are still manual or stubbed — Workflow gaps found end to end
 - [ ] **(Ops)** Customs filing (ICEGATE stub) — define the manual CHA process and the evidence recorded until the API works.
@@ -231,7 +233,8 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [x] **(Eng)** CI for the UI: `npm run lint` and `npm run build` on every push. — done 2026-11-18: `portless-ui/.github/workflows/ci.yml` — `npm ci`, `npm run lint` (tsc), `npm run build`. Branch protection to require `build` is a GitHub setting.
 
 ### 6.9 Unit tests — Quality assurance gaps
-- [ ] **(Eng)** Keep the backend unit suite green on every change (4574 passed, 1 skipped on 2026-11-12) and re-measure coverage — 95.46 % line + branch was measured on 2026-11-09, before the latest features.
+- [x] **(Eng)** Keep the backend unit suite green on every change (4574 passed, 1 skipped on 2026-11-12) and re-measure coverage — 95.46 % line + branch was measured on 2026-11-09, before the latest features. — done 2026-11-18: re-measured 2026-11-18: 5273 passed, 1 skipped; coverage 85 % line + branch overall, 91 % without the automation runner (`services/automation/*`, exercised by the automation runs, not pytest). Follow-up item below to bring product code back to 95 %.
+- [ ] **(Eng) P1** **Bring product-code coverage back to 95 %** — 91 % without the automation runner on 2026-11-18 (85 % with it). Biggest gaps: `shared/orchestration/continuations.py` (179 lines), `services/deals/router.py` (123), `shared/orchestration/outreach.py` (72), `agents/negotiation_agent/graph.py` (72). Decide whether `services/automation/*` is measured (it is tested by the automation runs). Then switch on the CI coverage gate.
 - [ ] **(Eng)** Coverage gate in CI: fail the build below 95 % overall and below 100 % branch coverage for the money modules (`escrow_guard` service / ledger / journal, `trade_costs`, `pricing`, `shared/currency.py`, `supplier_commitment`, `compliance`).
 
 ### 6.10 Integration tests — Quality assurance gaps
@@ -445,7 +448,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(QA)** Load: 50 / 200 concurrent deals, SSE with many open consoles, IMAP poll with a large inbox.
 
 ### 6.5 Security testing — Quality assurance gaps
-- [ ] **(Eng)** Dependency and secret scanning in CI for both repos.
+- [x] **(Eng)** Dependency and secret scanning in CI for both repos. — done 2026-11-18: see the security job (pip-audit, gitleaks, npm audit).
 
 ### 6.6 Content quality — Quality assurance gaps
 - [ ] **(QA)** Golden-file tests for every trade document (PI, PO, the 13 DocuGen documents) reviewed once by the trade desk and a CA; any change shows a diff.
@@ -475,7 +478,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ### 6.11 Sanity and smoke checks — Quality assurance gaps
 - [ ] **(Ops)** Pre-trade sanity checklist the trade desk runs on each deal before approving the PO: parties screened, HS policy confirmed, facility address complete, inspection plan agreed, escrow funded by the buyer, cost sheet margin above the floor.
-- [ ] **(Eng)** Smoke suite in the catalogue: tag the fastest P0 cases `@smoke` (auth, deal create, gate approve, webhook signature, ledger read) to run in under 2 minutes after every deploy.
+- [x] **(Eng)** Smoke suite in the catalogue: tag the fastest P0 cases `@smoke` (auth, deal create, gate approve, webhook signature, ledger read) to run in under 2 minutes after every deploy. — done 2026-11-18: 12 fast P0 cases tagged `@smoke` (auth, gate idempotency, webhook signature, PI, escrow, tranche order, PO, ledger, state machine, compliance, outreach, inbound); `POST /automation/runs {"scope": "catalogue", "tag": "smoke"}` or `worker --tag smoke`.
 
 ### 6.12 Regression suite — Quality assurance gaps
 - [ ] **(QA)** Track the regression baseline per run (pass / fail / not automated counts, duration) and a flaky-test list with a quarantine policy (a flaky test is fixed or removed within a week, never ignored).
@@ -485,7 +488,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(QA)** Release test report: what ran, what failed, what was skipped and why — signed off before each release.
 
 ### 6.13 Static checks and test hygiene — Quality assurance gaps
-- [ ] **(Eng)** Security scans in CI: `bandit` for Python, `pip-audit` and `npm audit` for dependencies, secret scanning on every push.
+- [x] **(Eng)** Security scans in CI: `bandit` for Python, `pip-audit` and `npm audit` for dependencies, secret scanning on every push. — done 2026-11-18: `.github/workflows/ci.yml` job `security`: bandit (high severity + confidence, blocking), pip-audit and gitleaks (reporting until a first clean run / `GITLEAKS_LICENSE`); UI CI: `npm audit --audit-level=high` (reporting).
 - [x] **(Eng)** Pre-commit hooks (ruff, formatting, secret scan) so problems are caught before a push. — done 2026-11-18: `.pre-commit-config.yaml` (YAML / JSON / merge markers / large files / private keys, ruff errors only, refuse `.env` / `*.creds` / the LLM tracking file via `scripts/precommit_forbidden.py`, source hygiene test); run `pre-commit install` once per clone.
 - [ ] **(QA)** Test data management: an anonymised, production-like data set for staging; `tests/factories.py` extended for every new record type; no test may depend on the order of others.
 - [ ] **(QA/Ops)** User acceptance testing with the trade desk before go-live and before each release that changes a gate, an e-mail or a document; exploratory test session on each new feature.
@@ -509,7 +512,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng) P2** **Computed views scale with the number of deals**: the directory relationships (`relationships.annotate`) read every deal on each listing, the prospect desk builds a match board per prospect on every refresh (60 s), the radar recomputes missing profits on listing. Fine for tens of deals; cache or precompute (on deal / offer change) before hundreds.
 
 ### 8 Security and access
-- [ ] **(Eng)** Token revocation delay is the introspection cache (60 s, `AUTH_INTROSPECTION_CACHE_SECONDS`) — confirm acceptable, shorten for money approvers.
+- [x] **(Eng)** Token revocation delay is the introspection cache (60 s, `AUTH_INTROSPECTION_CACHE_SECONDS`) — confirm acceptable, shorten for money approvers. — done 2026-11-18: money-moving requests (gate decisions, escrow release / accept / refund / provider-confirmed / clear-dispute, payouts, Kill Switch) re-check a token older than `AUTH_MONEY_INTROSPECTION_CACHE_SECONDS` (5); other requests keep the 60 s cache.
 - [ ] **(Eng)** Encrypt sensitive fields at rest (bank details, KYC documents, phone numbers).
 - [x] **(Eng)** Prompt-injection defence for inbound e-mails: the drafting agents already treat counterparty text as data — add tests with hostile e-mails. — done 2026-11-18: `shared/prompt_injection.py` recognises wording aimed at the model; such an e-mail is never an acceptance (keyword guard, LLM verdict vetoed, bare acceptance by e-mail) — a person reads it; the intent classifier prompt says its input is untrusted; market headlines use the same check. `tests/test_prompt_injection.py`: hostile e-mails, a draft that obeyed (leak check), an out-of-band price, every prompt's untrusted-text rule.
 
@@ -545,11 +548,11 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [x] **(Eng)** **Escrow provider by cost**: pick the cheaper provider per deal size when the buyer has no preference; pass the escrow fee to the buyer as a line item where allowed. — provider choice done 2026-11-18: `ESCROW_PROVIDER_BY_COST=true` takes the enabled provider with the lowest fee (`<PROVIDER>_FEE_PCT`) when neither the buyer nor staff chose one (off by default). Showing the escrow fee to the buyer as a line item stays open.
 
 ### 11.3 Price better — New features to raise profit per deal (product)
-- [ ] **(Eng)** **Margin by corridor and buyer**: learn from accepted / countered indicative offers (outcomes already recorded) to set the target margin per HS code × market × buyer tier instead of one floor.
-- [ ] **(Eng)** **Value-added services priced explicitly**: private label packing, fumigation, palletising, extra inspections — a markup per service, shown in the offer.
+- [x] **(Eng)** **Margin by corridor and buyer**: learn from accepted / countered indicative offers (outcomes already recorded) to set the target margin per HS code × market × buyer tier instead of one floor. — done 2026-11-18: `outcomes.corridor_margins`: per HS × market, ≥ `CORRIDOR_MARGIN_MIN_OFFERS` (5) indicative-offer answers: > 60 % accepted → target margin + `CORRIDOR_MARGIN_STEP_PTS` (2), < 20 % → − 2 (never below the floor); the match board's targets use it (`matchmaking.target_margin_pct(learned, market)`). Buyer tier: not yet.
+- [x] **(Eng)** **Value-added services priced explicitly**: private label packing, fumigation, palletising, extra inspections — a markup per service, shown in the offer. — done 2026-11-18: cost-sheet line `value_added_services`: `VAS_MARKUP_PCT` (15) on special packing and inspection phases beyond the first, so the buyer price carries a service charge, not only the cost.
 
 ### 11.4 Win more and repeat — New features to raise profit per deal (product)
-- [ ] **(Biz/Eng)** **Repeat orders and annual contracts**: a "reorder" button, reminders before the buyer's next usual order date, framework contracts with monthly lifts.
+- [x] **(Biz/Eng)** **Repeat orders and annual contracts**: a "reorder" button, reminders before the buyer's next usual order date, framework contracts with monthly lifts. — done 2026-11-18: `shared/orchestration/reorders.py` — `POST /deals/{id}/reorder` (a PAID deal → new prospect: same buyer + supplier, product, market, quantity, last agreed price as target; MATCHING so screening, compliance and the RFQ run); `GET /deals/reorders/due` + digest: buyers whose usual gap (median between their orders, else `REORDER_DEFAULT_DAYS` 90) puts the next order within `REORDER_REMIND_DAYS` (7); console Reorder button on PAID deals and a 'Reorders due' card on Prospects. Framework contracts with monthly lifts: still open.
 - [x] **(Eng)** **Already-traded buyers and suppliers first**: a company PortLess has completed a deal with (PAID, no dispute or refund) is tried before a new one of the same product. Mark it on the directory record ("traded": deals completed, last deal, HS codes, dispute / refund count) and show it on Buyers & Suppliers and the radar. Use it in four places: (1) the scan adds traded companies for the HS code to the opportunity's buyers / suppliers even when the web search did not find them; (2) the outreach funnel contacts traded buyers first and the RFQ shortlist (`RFQ_MAX_SUPPLIERS`) always includes traded suppliers; (3) pair scoring and the match board rank a traded pair higher (today `outcomes.py` only adjusts the chance of closing); (4) before a negotiation opens with a new company, check whether a traded one can take the order (product, quantity, market, still passes validation) and ask it first. Never overrides a failed validation, a compliance hold or the margin floor; a past dispute or refund lowers the priority instead of raising it. — part done 2026-11-18: traded buyers are contacted first in the funnel and traded suppliers of the product always get the RFQ, first. Open: adding traded companies to a scan's opportunity, ranking a traded pair higher on the match board, asking a traded one before a new negotiation.
 - [x] **(Eng)** **Buyer scoring for outreach**: focus the funnel on buyers most likely to close (reply rate, import history, fit score) — less outreach cost per deal. — done 2026-11-18: the funnel writes first to buyers PortLess already traded with, then verified ones, by their reply rate with PortLess, fit score and directory score (`outreach.rank_candidates`).
 - [x] **(Eng)** Funnel analytics: scans → prospects → interested → matched → PI → paid, with time and cost per step. — done 2026-11-18: `GET /deals/funnel?days=` (opportunities → prospects → interested → matched → PI → paid: counts, conversion, median days, scan cost, e-mails, biggest drop); card on Money & Margin.

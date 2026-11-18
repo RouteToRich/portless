@@ -44,12 +44,29 @@ def bearer_token(request: Request, *, allow_query: bool = False) -> str:
     return ""
 
 
+_MONEY_PATH_SUFFIXES = ("/release", "/accept", "/refund", "/request-refund", "/request-acceptance",
+                        "/provider-confirmed", "/clear-dispute")
+
+
+def moves_money(method: str, path: str) -> bool:
+    """Requests whose token check must be fresh: deciding a gate, escrow money routes, payouts."""
+    if method != "POST":
+        return False
+    if path.startswith("/hitl-approval/approvals/") and path.endswith("/resolve"):
+        return True
+    if path.startswith("/escrow-guard/"):
+        return path.rstrip("/").endswith("/payouts") or path.endswith(_MONEY_PATH_SUFFIXES)
+    return path.startswith("/hitl-approval/kill-switch")
+
+
 async def resolve_user(request: Request, *, allow_query_token: bool = False) -> AuthUser:
     """Identity (auth-service) + local record (PortLess) → AuthUser. Raises IdentityError."""
     from services.auth.organization import is_portless_user
     from services.auth.service import user_for_identity
 
-    identity = await resolve(request.headers, bearer_token(request, allow_query=allow_query_token))
+    from .identity import money_cache_seconds
+    max_age = money_cache_seconds() if moves_money(request.method, request.url.path) else None
+    identity = await resolve(request.headers, bearer_token(request, allow_query=allow_query_token), max_age=max_age)
     record = await user_for_identity(identity)
     return AuthUser(
         user_id=record.user_id,

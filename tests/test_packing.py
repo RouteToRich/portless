@@ -157,10 +157,11 @@ class TestCostSheet:
         base = _sheet(packing={"standard_ok": True})
         special = _sheet(packing=spec)
         assert _line(special).usd_per_mt == pytest.approx(18 + 220 / 25)
-        assert special.fixed_usd_per_mt == pytest.approx(base.fixed_usd_per_mt + 18 + 220 / 25, abs=0.01)
+        service = round((18 + 220 / 25) * 0.15, 2)  # VAS_MARKUP_PCT 15: the service is priced, not only its cost
+        assert special.fixed_usd_per_mt == pytest.approx(base.fixed_usd_per_mt + 18 + 220 / 25 + service, abs=0.01)
         confirmed = _sheet(packing=spec, packing_in_supplier_price=True)
         assert _line(confirmed).usd_per_mt == 0 and _line(confirmed).paid_by.startswith("supplier")
-        assert confirmed.fixed_usd_per_mt == pytest.approx(base.fixed_usd_per_mt, abs=0.01)
+        assert confirmed.fixed_usd_per_mt == pytest.approx(base.fixed_usd_per_mt + service, abs=0.01)
 
 
 # ---------------------------------------------------------------------------

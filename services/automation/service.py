@@ -160,7 +160,7 @@ def _clean(doc: dict[str, Any] | None) -> dict[str, Any] | None:
     return {("run_id" if k == "_id" else k): v for k, v in doc.items()}
 
 
-async def start_run(by: str, *, scope: str = "all", phase: str = "", priority: str = "") -> dict[str, Any]:
+async def start_run(by: str, *, scope: str = "all", phase: str = "", priority: str = "", tag: str = "") -> dict[str, Any]:
     global _process
     _refuse_in_production()
     _refuse_on_serverless()
@@ -168,13 +168,15 @@ async def start_run(by: str, *, scope: str = "all", phase: str = "", priority: s
     if _alive():
         raise AutomationError(409, "A run is already in progress.")
     run_id = f"RUN-{now():%Y%m%d-%H%M%S}-{uuid4().hex[:4]}"
-    await db[RUNS].insert_one({"_id": run_id, "status": "STARTING", "scope": scope, "phase": phase, "priority": priority,
+    await db[RUNS].insert_one({"_id": run_id, "status": "STARTING", "scope": scope, "phase": phase, "priority": priority, "tag": tag,
                                "started_by": by, "started_at": now(), "heartbeat_at": now(), "done": 0, "totals": {}})
     command = [sys.executable, "-X", "utf8", "-W", "ignore", "-m", "services.automation.worker", "--run-id", run_id, "--scope", scope]
     if phase:
         command += ["--phase", phase]
     if priority:
         command += ["--priority", priority]
+    if tag:
+        command += ["--tag", tag]
     log = Path(tempfile.gettempdir()) / f"portless-automation-{run_id}.log"
     _process = _spawn("worker", command, worker_env(live_apify=scope in ("all", "live")), log)
     logger.info("Automation: run %s started by %s (%s)", run_id, by, scope)

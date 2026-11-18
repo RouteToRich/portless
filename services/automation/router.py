@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shared.auth.dependencies import AuthUser, require_portless
 
@@ -18,6 +18,8 @@ class StartRunRequest(BaseModel):
     scope: Literal["all", "catalogue", "journeys", "live"] = "all"
     phase: str = ""
     priority: str = ""
+    tag: str = Field(default="", max_length=40)
+    """Only cases with this tag — ``smoke`` is the after-deploy set (12 fast P0 cases)."""
 
 
 class ClearRequest(BaseModel):
@@ -63,7 +65,8 @@ async def api_runs() -> list[dict[str, Any]]:
 @router.post("/runs", status_code=202)
 async def api_start(body: StartRunRequest, user: AuthUser = Depends(require_portless)) -> dict[str, Any]:
     """Start a run in its own process, pointed only at the automation database."""
-    return await _answer(service.start_run(user.email or user.user_id, scope=body.scope, phase=body.phase, priority=body.priority))
+    return await _answer(service.start_run(user.email or user.user_id, scope=body.scope, phase=body.phase,
+                                           priority=body.priority, tag=body.tag))
 
 
 @router.post("/runs/stop")

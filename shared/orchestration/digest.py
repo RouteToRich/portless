@@ -120,6 +120,13 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         out["warnings"].append(f"price alerts unavailable: {exc}")
 
+    # ── Buyers whose usual next order is near ──────────────────────────────
+    try:
+        from shared.orchestration import reorders
+        out["reorders_due"] = await reorders.due(now)
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"reorders unavailable: {exc}")
+
     # ── Company follow-ups that are due ────────────────────────────────────
     try:
         from services.trade_min import company_notes  # type: ignore[import]
@@ -257,6 +264,14 @@ def render_digest_text(d: dict[str, Any]) -> str:
         if pr.get("stalled"):
             lines.append("  STALLED (waiting on them):")
             lines += [_desk_line(r) for r in pr["stalled"]]
+        lines.append("")
+    ro = d.get("reorders_due") or []
+    if ro:
+        lines.append(f"REORDERS DUE ({len(ro)}):")
+        for r in ro[:DESK_ITEMS]:
+            lines.append(f"  • {r['buyer']} — HS {r['hs_code']} → {r['market']}: usual every {r['usual_gap_days']} d, "
+                         f"next ~{r['next_order_due']}" + (f" ({r['overdue_days']} d overdue)" if r["overdue_days"] else "")
+                         + f" · reorder from {r['deal_id']}")
         lines.append("")
     pa = d.get("price_alerts") or []
     if pa:

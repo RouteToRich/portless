@@ -232,6 +232,8 @@ class DealRecord(BaseModel):
     buyer_target_price_usd: float | None = None
     """Buyer-side unit price (USD/MT) from the buyer signals or the market benchmark."""
     buyer_price_source: str | None = None
+    reorder_of: str | None = None
+    """The completed deal this one repeats (shared/orchestration/reorders.py)."""
     quantity_mt: float | None = None
     """Shipment quantity the buyer asked for (RFQ lead / negotiation); the
     pipeline default applies when None."""

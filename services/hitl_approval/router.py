@@ -43,6 +43,7 @@ from .schemas import (
 from .service import (
     ApprovalAlreadyResolved,
     ApproverNotProvenError,
+    NotMoneyApprover,
     ComplianceBlockedError,
     SameApproverError,
     ApprovalNotFoundError,
@@ -225,6 +226,8 @@ async def api_resolve_approval(
         return resolved
     except ApproverNotProvenError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+    except NotMoneyApprover as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ApprovalNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except ApprovalAlreadyResolved as exc:

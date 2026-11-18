@@ -508,7 +508,7 @@ Feature: Authentication and access on every endpoint
       | /health/readiness  |
       | /health/downstream |
 
-  @TC-AUTH-004 @P0 @security @negative
+  @TC-AUTH-004 @P0 @smoke @security @negative
   Scenario: An identity from another application is refused
     Given I am "other_app"
     When I call "GET /deals"
@@ -670,7 +670,7 @@ Feature: Provider webhooks prove themselves with a signature
       | /shield-link/qc/webhook              | {"ext_ref":"NOPE","result":"PASS"}          |
       | /shield-link/freight/webhook         | {"ext_ref":"NOPE","milestone":"ARRIVED"}    |
 
-  @TC-HOOK-008 @P0 @security @negative
+  @TC-HOOK-008 @P0 @smoke @security @negative
   Scenario: A Stripe signature outside the replay window is refused
     Given a deal "D" at status "ESCROW_PENDING" from fixture "FX-STD" using escrow provider "stripe"
     And I am "anonymous"
@@ -835,7 +835,7 @@ Feature: Deal state machine
       | DISPUTE                 | SUPPLIER_DISPATCH_READY |
       | DISPUTE                 | REFUNDED                |
 
-  @TC-FSM-006 @P0 @money @negative
+  @TC-FSM-006 @P0 @smoke @money @negative
   Scenario: A deal holding buyer money cannot be cancelled by hand
     Given a deal "D" at status "ESCROW_PENDING" from fixture "FX-STD" funded with 15000
     And I am "staff"
@@ -1068,7 +1068,7 @@ Feature: Buyer outreach funnel
     Given I am "staff"
     And a deal "D" at status "MATCHING" from fixture "FX-STD" with 3 buyer candidates
 
-  @TC-OUT-001 @P0 @positive
+  @TC-OUT-001 @P0 @smoke @positive
   Scenario: Outreach contacts the first candidates in parallel
     When I call "POST /deals/{D}/outreach/start"
     Then the response status is 200
@@ -1732,7 +1732,7 @@ Feature: Inbound e-mail is mapped to the right counterparty
     And a deal "D" at status "NEGOTIATING" from fixture "FX-STD"
     And a negotiation "N" in status "ROUND"
 
-  @TC-INB-001 @P0 @positive
+  @TC-INB-001 @P0 @smoke @positive
   Scenario: A reply from the known address advances the negotiation
     When I call "POST /email-processor/inbound" with body:
       """
@@ -1838,7 +1838,7 @@ Feature: Trade compliance before the Proforma Invoice
   Background:
     Given I am "staff"
 
-  @TC-CMP-001 @P0 @positive
+  @TC-CMP-001 @P0 @smoke @positive
   Scenario: A clean, confirmed trade goes straight to the PI
     Given a deal "D" at status "NEGOTIATING" from fixture "FX-STD"
     And HS code "10063020" is confirmed "free"
@@ -1992,7 +1992,7 @@ Feature: Proforma Invoice issue and acceptance
   Background:
     Given I am "staff"
 
-  @TC-PI-001 @P0 @positive
+  @TC-PI-001 @P0 @smoke @positive
   Scenario: Issue a PI
     Given a deal "D" at status "NEGOTIATION_AGREED" from fixture "FX-STD"
     When I call "POST /dealmaker/pi" with body:
@@ -2367,7 +2367,7 @@ Feature: Opening and funding the escrow
   Background:
     Given I am "staff"
 
-  @TC-ESC-001 @P0 @positive
+  @TC-ESC-001 @P0 @smoke @positive
   Scenario: Create a staged escrow
     Given a deal "D" at status "PI_ACCEPTED" from fixture "FX-STD"
     When I call "POST /escrow-guard/escrows" with body:
@@ -2603,7 +2603,7 @@ Feature: Purchase Order and the first release
   Background:
     Given I am "staff"
 
-  @TC-PO-001 @P0 @positive
+  @TC-PO-001 @P0 @smoke @positive
   Scenario: Approving the PO gate issues the PO and books QC
     Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
     When "staff" approves the pending "ISSUE_PO" gate
@@ -3647,7 +3647,7 @@ Feature: Staged release and the buyer's acceptance window
   Background:
     Given I am "staff"
 
-  @TC-REL-001 @P0 @negative
+  @TC-REL-001 @P0 @smoke @negative
   Scenario: Tranches release strictly in order
     Given a deal "D" at status "QC_PASSED" from fixture "FX-STD" with T1 unreleased
     When I call with its approved gate "POST /escrow-guard/escrows/{ESC}/release" with body:
@@ -4165,7 +4165,7 @@ Feature: Supplier payout, settlement and the books
     And the gate "RELEASE_SUPPLIER_PAYOUT" has risk flag "supplier_retention_held"
     And the gate "RELEASE_SUPPLIER_PAYOUT" does not have risk flag "partial_payout_capped_by_escrow"
 
-  @TC-LED-001 @P0 @positive
+  @TC-LED-001 @P0 @smoke @positive
   Scenario: The ledger adds up after every step
     Given a deal "D" at status "PAID" from fixture "FX-STD" fully settled
     When I call "GET /escrow-guard/deals/{D}/ledger"
@@ -4273,7 +4273,7 @@ Feature: Approval gates, autonomy and four-eyes
       | L2    | AUTO_APPROVED |
       | L3    | AUTO_APPROVED |
 
-  @TC-HIT-002 @P0 @edge
+  @TC-HIT-002 @P0 @smoke @edge
   Scenario: The same idempotency key returns the same approval
     Given an approval with idempotency key "k1" exists for the deal
     When I call "POST /hitl-approval/approvals" with body:

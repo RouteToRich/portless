@@ -284,6 +284,20 @@ def build(
     lines.append(CostLine(key="inspection", label=label, usd_per_mt=round(qc * len(phases), 2), source=q_src,
                           note=f"{len(phases)} inspections, {round(qc * qty, 2)} USD each" if len(phases) > 1 else ""))
 
+    # 4b. Value-added services priced explicitly (todo): special packing and inspection
+    # phases beyond the standard one carry ``VAS_MARKUP_PCT`` (15) on their cost, so the buyer
+    # price pays for the service PortLess arranges, not only its cost.
+    vas_cost = 0.0
+    if spec is not None and packing_mod.special(spec):
+        vas_cost += packing_mod.surcharge(spec, qty)[0]
+    if len(phases) > 1:
+        vas_cost += qc * (len(phases) - 1)
+    markup = _f("VAS_MARKUP_PCT", 15.0)
+    if vas_cost > 0 and markup > 0:
+        lines.append(CostLine(key="value_added_services", label="Service charge on value-added services",
+                              usd_per_mt=round(vas_cost * markup / 100.0, 2), source="setting",
+                              note=f"{markup:g} % on special packing / extra inspections — a margin, not a cost"))
+
     # 5. Costs that scale with the price.
     lines.append(CostLine(key="marine_insurance", label="Marine cargo insurance (CIF)",
                           pct_of_price=landed_cost.insurance_pct(), source="setting"))

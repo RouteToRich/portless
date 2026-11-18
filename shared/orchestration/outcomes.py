@@ -330,6 +330,33 @@ def offer_pricing(rows: list[Outcome], hs_code: str | None = None) -> dict[str, 
             "acceptance_rate": round(rate, 3) if rate is not None else None, "price_nudge": nudge}
 
 
+def corridor_margins(rows: list[Outcome], hs_code: str | None = None) -> dict[str, Any]:
+    """Target margin per corridor (HS × market) learned from the buyers' answers to indicative
+    offers (todo: margin by corridor). With ≥ ``CORRIDOR_MARGIN_MIN_OFFERS`` (5) answers: buyers
+    accepting > 60 % → raise the target by ``CORRIDOR_MARGIN_STEP_PTS`` (2) points (price power
+    unused); < 20 % accepted → lower it by the same (never below the floor — the board clamps).
+    ``{market: {"adjust_pts", "responses", "acceptance_rate"}}`` plus ``"*"`` for all markets."""
+    import os
+    try:
+        min_n = max(1, int(os.getenv("CORRIDOR_MARGIN_MIN_OFFERS", "5")))
+        step = float(os.getenv("CORRIDOR_MARGIN_STEP_PTS", "2"))
+    except ValueError:
+        min_n, step = 5, 2.0
+    offers = [o for o in rows if o.kind == "indicative_offer" and o.response and (hs_code is None or o.hs_code == hs_code)]
+    groups: dict[str, list[Outcome]] = {"*": offers}
+    for o in offers:
+        groups.setdefault((o.market or "").upper() or "?", []).append(o)
+    out: dict[str, Any] = {}
+    for market, items in groups.items():
+        n = len(items)
+        rate = sum(1 for o in items if o.response == "accepted") / n if n else None
+        adjust = 0.0
+        if n >= min_n and rate is not None:
+            adjust = step if rate > 0.6 else -step if rate < 0.2 else 0.0
+        out[market] = {"adjust_pts": adjust, "responses": n, "acceptance_rate": round(rate, 3) if rate is not None else None}
+    return out
+
+
 async def learning_context(hs_code: str | None = None) -> dict[str, Any]:
     """Everything the board needs from past outcomes, cached for 5 minutes."""
     key = f"ctx:{hs_code}"
@@ -338,7 +365,7 @@ async def learning_context(hs_code: str | None = None) -> dict[str, Any]:
         return hit[1]
     rows = await all_outcomes()
     ctx = {"calibration": calibration_table(rows), "track_records": track_records(rows),
-           "offer_pricing": offer_pricing(rows, hs_code)}
+           "offer_pricing": offer_pricing(rows, hs_code), "corridor_margins": corridor_margins(rows, hs_code)}
     _cache[key] = (time.monotonic(), ctx)
     return ctx
 

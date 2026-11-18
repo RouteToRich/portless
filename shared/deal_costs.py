@@ -119,3 +119,17 @@ async def summary(deal_id: str) -> dict[str, Any]:
     out["deal_id"] = deal_id
     out["tool_usd"] = round(out["llm_usd"] + out["apify_usd"], 2)
     return out
+
+
+async def all_summaries(limit: int = 500) -> list[dict]:
+    """Every deal with run costs, most expensive first (Money & Margin)."""
+    ids: set[str] = set(_memory)
+    col = _collection()
+    if col is not None:
+        try:
+            async for d in col.find({}, {"_id": 1}).limit(limit):
+                ids.add(str(d["_id"]))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("DealCosts: list failed: %s", exc)
+    rows = [await summary(i) for i in list(ids)[:limit]]
+    return sorted(rows, key=lambda r: -(r["tool_usd"] + r["decisions"]))

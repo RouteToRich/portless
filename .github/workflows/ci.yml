@@ -37,3 +37,30 @@ jobs:
         run: python scripts/gen_unit_gherkin.py --check
       - name: Tests
         run: pytest -q -p no:cacheprovider
+
+  security:
+    # bandit blocks on high-severity, high-confidence findings; the dependency audits report
+    # without failing the build until a first clean run is confirmed (then drop continue-on-error).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install scanners
+        run: pip install bandit pip-audit
+      - name: bandit (high severity, high confidence)
+        run: bandit -r services shared agents app.py -lll -iii -q
+      - name: pip-audit (known vulnerable dependencies)
+        continue-on-error: true
+        run: pip-audit -r requirements.txt
+      - name: Secret scan (gitleaks; an organisation repo needs GITLEAKS_LICENSE — non-blocking until set)
+        continue-on-error: true
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}

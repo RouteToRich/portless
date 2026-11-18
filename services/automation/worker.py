@@ -31,6 +31,8 @@ def _select(cases: Sequence[Any], args: argparse.Namespace) -> list[Any]:
             continue
         if args.only and not any(case.tc_id.startswith(p) for p in args.only.split(",")):
             continue
+        if args.tag and f"@{args.tag.lstrip('@')}" not in case.tags:
+            continue
         chosen.append(case)
     return chosen
 
@@ -196,6 +198,7 @@ def main() -> int:
     parser.add_argument("--phase", default="")
     parser.add_argument("--priority", default="")
     parser.add_argument("--only", default="")
+    parser.add_argument("--tag", default="", help="only cases with this tag, e.g. smoke (the after-deploy set)")
     parser.add_argument("--report", default="")
     args = parser.parse_args()
 

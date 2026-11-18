@@ -43,3 +43,9 @@ def test_precommit_refuses_secrets_and_the_tracking_file(path, refused):
         sys.path.pop(0)
     assert precommit_forbidden.forbidden(path) is refused
     assert precommit_forbidden.main([path]) == (1 if refused else 0)
+
+
+def test_security_job_scans_code_dependencies_and_secrets():
+    text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    for step in ("bandit -r services shared agents", "pip-audit", "gitleaks"):
+        assert step in text

@@ -1812,6 +1812,8 @@ async def run_inspection_watcher() -> None:
             await check_inspection_windows()
             await poll_open_escrows()
             await check_reconciliation()
+            from shared.orchestration import provider_reconciliation
+            await provider_reconciliation.due_daily()  # once a day: the books vs what the providers report
             from shared import heartbeat
             await heartbeat.beat("escrow_watcher", interval)
         except asyncio.CancelledError:

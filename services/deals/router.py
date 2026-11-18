@@ -207,6 +207,40 @@ async def prospects_cleanup_run(user: AuthUser = Depends(require_portless)) -> d
     return await prospect_cleanup.run(by=getattr(user, "email", None) or "staff")
 
 
+@router.get("/run-costs", response_model=list[dict])
+async def all_run_costs(user: AuthUser = Depends(require_portless)) -> list[dict]:
+    """Run costs of every deal (LLM, Apify, operator decisions) — Money & Margin."""
+    from shared import deal_costs
+    return await deal_costs.all_summaries()
+
+
+@router.get("/reorders/due", response_model=list[dict])
+async def reorders_due(user: AuthUser = Depends(require_portless)) -> list[dict]:
+    """Buyers whose usual next order is within REORDER_REMIND_DAYS (median gap between their
+    completed deals) and who have no reorder open."""
+    from shared.orchestration import reorders
+    return await reorders.due()
+
+
+class ReorderRequest(BaseModel):
+    quantity_mt: float | None = Field(default=None, gt=0)
+
+
+@router.post("/{deal_id}/reorder", response_model=DealRecord, status_code=status.HTTP_201_CREATED)
+async def reorder_deal(deal_id: str, body: ReorderRequest | None = None,
+                       user: AuthUser = Depends(require_portless)) -> DealRecord:
+    """Start a repeat order from a completed deal: same product, market, buyer and supplier,
+    the last agreed price as the buyer's target; the supplier gets the RFQ for a fresh quote."""
+    from shared.orchestration import reorders
+    try:
+        return await reorders.reorder(deal_id, by=getattr(user, "email", None) or "staff",
+                                      quantity_mt=body.quantity_mt if body else None)
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.get("/price-alerts", response_model=list[dict])
 async def price_alerts(user: AuthUser = Depends(get_current_user)) -> list[dict]:
     """Supplier price dips (buy now) and spikes (hold offers) from the price book, per product."""

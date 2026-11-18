@@ -61,3 +61,10 @@ async def test_mongo_counters_increment():
 def test_add_without_a_loop_keeps_memory():
     dc.add("D6", llm_calls=2)
     assert dc._memory["D6"]["llm_calls"] == 2
+
+
+async def test_all_summaries_lists_every_deal_most_expensive_first():
+    dc.add("A", apify_usd=0.1)
+    dc.add("B", apify_usd=2.0, decisions=3)
+    rows = await dc.all_summaries()
+    assert [r["deal_id"] for r in rows] == ["B", "A"]
