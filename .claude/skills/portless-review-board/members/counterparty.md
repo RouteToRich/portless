@@ -15,3 +15,4 @@
 
 ## Learned
 (Lessons from earlier runs — add one line per lesson; read them before you start.)
+- 2026-11-18 (run 2): grep every template for claims ('verified', 'you choose', 'reorder', 'FOB') and check each against the data of that deal.

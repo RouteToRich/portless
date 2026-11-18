@@ -16,3 +16,4 @@
 ## Learned
 (Lessons from earlier runs — add one line per lesson; read them before you start.)
 - 2026-11-18: list every backend endpoint without a console entry point; flag window.prompt used for decisions.
+- 2026-11-18 (run 2): every staff relay route (phone / WhatsApp confirmations, provider confirmations, QC results) needs a button; diff backend routes against endpoints.ts with a script.

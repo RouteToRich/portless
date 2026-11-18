@@ -15,3 +15,4 @@
 
 ## Learned
 (Lessons from earlier runs — add one line per lesson; read them before you start.)
+- 2026-11-18 (run 2): ask for cost per deal (LLM, Apify, operator time) next to the realised margin.

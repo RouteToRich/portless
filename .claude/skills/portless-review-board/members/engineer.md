@@ -16,3 +16,4 @@
 ## Learned
 (Lessons from earlier runs — add one line per lesson; read them before you start.)
 - 2026-11-18: a value keyed on a client header (IP) must come from the trusted proxy; look for per-module database clients and full-collection scans in new code.
+- 2026-11-18 (run 2): run the full automation before judging and read its safety block (refused real recipients, blocked DNS) and failures; rerun failing cases on the previous commit to tell regressions from drift.

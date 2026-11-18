@@ -16,3 +16,4 @@
 ## Learned
 (Lessons from earlier runs — add one line per lesson; read them before you start.)
 - 2026-11-18: check how every price source is labelled (quoted / usual / estimate, FOB / EXW) before trusting a margin; test the operator and supply-first paths into MATCHING, not only the radar path.
+- 2026-11-18 (run 2): check every list with a cap (RFQ, outreach) for who can crowd the others out; an offer's validity must not outlive the quote behind it.

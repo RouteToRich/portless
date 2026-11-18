@@ -16,3 +16,4 @@
 ## Learned
 (Lessons from earlier runs — add one line per lesson; read them before you start.)
 - 2026-11-18: follow every recorded money figure into the ledger, the journal and the realised margin.
+- 2026-11-18 (run 2): every staff route that releases money (milestone, loading, QC result, dispute, window) must name the person and write the audit log; every new money figure must reach the realised margin, not only the journal.

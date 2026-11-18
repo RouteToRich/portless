@@ -16,3 +16,4 @@
 ## Learned
 (Lessons from earlier runs — add one line per lesson; read them before you start.)
 - 2026-11-18: every path into MATCHING must run the creation checks; every opt-out list must apply to suppliers as well as buyers.
+- 2026-11-18 (run 2): check the evidence pack against every decision that has an audit entry (compliance clearances, screening reviews, staff relays).

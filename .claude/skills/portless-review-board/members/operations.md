@@ -16,3 +16,4 @@
 ## Learned
 (Lessons from earlier runs — add one line per lesson; read them before you start.)
 - 2026-11-18: a background job that can stop needs a real-time alert, not only the daily digest.
+- 2026-11-18 (run 2): count what each inspection plan really books (phases, re-inspections) against what the cost sheet prices, and who pays a re-inspection.
