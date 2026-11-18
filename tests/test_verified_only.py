@@ -98,3 +98,58 @@ async def test_traded_suppliers_always_get_the_rfq_first(monkeypatch):
     out = await continuations._traded_suppliers_first(_deal(), [{"supplier_id": "S1", "company_name": "One", "email": "a@one.in"}])
     assert [c["supplier_id"] for c in out] == ["supplier:oldmill.in", "S1"] and out[0]["traded"]
     dr.reset_directory()
+
+
+# ---------------------------------------------------------------------------
+# RFQ slots (review board B-15): traded suppliers never crowd out the deal's own
+# ---------------------------------------------------------------------------
+
+def _c(sid, traded=False):
+    return {"supplier_id": sid, "company_name": sid, "email": f"s@{sid}.in", "traded": traded}
+
+
+def test_traded_suppliers_take_at_most_their_share(monkeypatch):
+    monkeypatch.delenv("RFQ_TRADED_MAX", raising=False)
+    ranked = [_c(f"T{i}", True) for i in range(5)] + [_c("S1"), _c("S2")]
+    out = continuations._cap_rfq(_deal(), ranked)
+    assert [c["supplier_id"] for c in out] == ["T0", "T1", "T2", "S1", "S2"]   # spare slot back to traded, ranking order kept
+
+
+def test_own_suppliers_fill_when_there_are_enough(monkeypatch):
+    monkeypatch.setenv("RFQ_TRADED_MAX", "1")
+    ranked = [_c("T0", True), _c("T1", True)] + [_c(f"S{i}") for i in range(6)]
+    out = continuations._cap_rfq(_deal(), ranked)
+    assert [c["supplier_id"] for c in out] == ["T0", "S0", "S1", "S2", "S3"]
+
+
+def test_no_traded_suppliers_keeps_the_ranking(monkeypatch):
+    ranked = [_c(f"S{i}") for i in range(7)]
+    assert [c["supplier_id"] for c in continuations._cap_rfq(_deal(), ranked)] == ["S0", "S1", "S2", "S3", "S4"]
+
+
+async def test_a_traded_company_already_on_the_deal_keeps_the_deals_contact(monkeypatch):
+    """B-15 follow-up (automation UC-15): the directory's traded record and the deal's own match
+    result are one company — the RFQ goes to the deal's contact under the deal's supplier id."""
+    from types import SimpleNamespace
+
+    from shared.orchestration import outreach
+    rec = SimpleNamespace(id="supplier:mill.in", email="old@mill.in", do_not_contact=False, hs_codes=["100630"],
+                          name="Mill One", estimated_fob_price_usd=700.0, validation=None, website="https://mill.in")
+
+    class _Store:
+        async def list(self, role, limit=0):
+            return [rec]
+
+    async def view(role):
+        from services.trade_min.relationships import record_keys
+        return [(record_keys(rec), {"deals_won": 1, "stage": "traded"})]
+
+    async def store():
+        return _Store()
+    monkeypatch.setattr(outreach, "_directory_view", view)
+    monkeypatch.setattr("services.trade_min.directory.get_directory", store)
+    deal = SimpleNamespace(deal_id="D1", hs_code="10063020")
+    own = [{"supplier_id": "S1", "company_name": "Mill One", "email": "sales@mill.in", "fob_price_usd": 690.0}]
+    out = await continuations._traded_suppliers_first(deal, own)
+    assert len(out) == 1 and out[0]["traded"] is True
+    assert out[0]["supplier_id"] == "S1" and out[0]["email"] == "sales@mill.in" and out[0]["fob_price_usd"] == 690.0

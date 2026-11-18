@@ -110,9 +110,11 @@ class LLMClient:
     # so no upfront isinstance() check is needed and both work identically.
 
     async def _tracker_start(self, caller: str, model: str) -> RequestRecord:
+        from shared.deal_costs import current
+        meta = {"deal_id": current()} if current() else {}
         if inspect.iscoroutinefunction(self._tracker.start_request):
-            return await self._tracker.start_request(caller=caller, model=model)
-        return self._tracker.start_request(caller=caller, model=model)
+            return await self._tracker.start_request(caller=caller, model=model, **meta)
+        return self._tracker.start_request(caller=caller, model=model, **meta)
 
     async def _tracker_complete(self, record: RequestRecord, **kwargs: Any) -> None:
         try:
@@ -179,6 +181,12 @@ class LLMClient:
             raise LLMExhaustedException(f"LLM Gateway call failed: {exc}") from exc
 
         record.model = response.model
+        try:
+            from shared import deal_costs
+            tokens = int(response.prompt_tokens or 0) + int(response.completion_tokens or 0)
+            deal_costs.add(llm_calls=1, llm_tokens=tokens, llm_usd=deal_costs.llm_usd(tokens))
+        except Exception:  # noqa: BLE001 - counting never affects the call
+            pass
         await self._tracker_complete(
             record,
             prompt_tokens=response.prompt_tokens,

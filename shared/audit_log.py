@@ -147,3 +147,19 @@ async def verify() -> dict[str, Any]:
             return {"ok": False, "entries": len(rows), "broken_at": e.get("seq"), "why": "entry changed"}
         prev, expected_seq = e["hash"], expected_seq + 1
     return {"ok": True, "entries": len(rows), "last_hash": prev}
+
+
+def actor_of(user: Any) -> str:
+    """The signed-in person behind a staff route."""
+    return str(getattr(user, "email", None) or getattr(user, "user_id", None) or "unknown")
+
+
+async def staff_relay(user: Any, action: str, subject: str | None, **detail: Any) -> None:
+    """Record a staff relay that moves money or a deal (review board B-16): a QC result, a
+    delivery milestone, a loading record, a dispute lifted, a supplier's phone confirmation,
+    a contact change. Never raises — the relay itself has already happened."""
+    clean = {k: (v.model_dump(mode="json") if hasattr(v, "model_dump") else v) for k, v in detail.items()}
+    try:
+        await record(action, actor_of(user), subject, clean)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("AuditLog: staff relay %s on %s not recorded: %s", action, subject, exc)

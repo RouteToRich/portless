@@ -375,6 +375,8 @@ async def update_party(
     try:
         updates = payload.model_dump(exclude_none=True)
         deal = await service.update_party(deal_id, role, updates, source="operator")
+        from shared.audit_log import staff_relay
+        await staff_relay(user, f"party.{role}_updated", deal_id, fields=sorted(updates))
         if role.lower() == "supplier" and updates.get("address"):
             # An inspection waiting for the facility address is booked now.
             from shared.orchestration import supplier_commitment
@@ -523,6 +525,14 @@ async def deal_compliance_clear_hold(
 # What a price rests on: cost sheet + pre-trade market check
 # ---------------------------------------------------------------------------
 
+@router.get("/{deal_id}/run-costs")
+async def deal_run_costs(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    """What the deal cost to run so far: LLM calls / tokens / USD, Apify runs / USD, operator
+    decisions and how long gates waited (shared/deal_costs.py)."""
+    from shared import deal_costs
+    return await deal_costs.summary(deal_id)
+
+
 @router.get("/{deal_id}/cost-sheet")
 async def deal_cost_sheet(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
     """Every PortLess cost between the supplier and the buyer's port, with its
@@ -660,6 +670,9 @@ async def supplier_commitment_confirm(
     if rec is None or rec.status != "requested" or rec.current is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no open supplier order request")
     await supplier_commitment._gate_confirmation(rec, f"operator:{user.email or user.user_id}", body.reason)
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "supplier.order_confirmation_relayed", deal_id, supplier_id=rec.current.supplier_id,
+                      reason=body.reason)
     return {"deal_id": deal_id, "status": "approval_requested", "supplier_id": rec.current.supplier_id}
 
 
@@ -673,6 +686,8 @@ async def supplier_commitment_next(
     outcome = await supplier_commitment.mark_and_advance(
         deal_id, "declined", note=f"{user.email or user.user_id}: {body.reason}",
     )
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "supplier.skipped_to_next", deal_id, outcome=outcome, reason=body.reason)
     return {"deal_id": deal_id, "status": outcome}
 
 
@@ -686,6 +701,8 @@ async def supplier_commitment_po_ack(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="deal is not at PO_ISSUED")
     from shared.orchestration import supplier_commitment
     tpo = await supplier_commitment.acknowledge_po(deal_id, by=f"{user.email or user.user_id}: {body.reason}")
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "supplier.po_ack_relayed", deal_id, reason=body.reason)
     return {"deal_id": deal_id, "status": "acknowledged", "qc_order": getattr(tpo, "tpo_id", None)}
 
 

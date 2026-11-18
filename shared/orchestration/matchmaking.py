@@ -107,6 +107,8 @@ class PairScore(BaseModel):
     spec_fit: float
     engagement: float
     reliability: float
+    supplier_verified: bool = False
+    """GST and IEC both checked and active — the only case an e-mail may call it verified."""
     timing_fit: float
     probability: float
     """Chance of closing — calibrated against past outcomes once enough are resolved."""
@@ -398,7 +400,7 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
         quantity_mt=qty, feasible=feasible, blockers=blockers, missing=list(dict.fromkeys(missing)),
         buyer_price=bp, supplier_price=sp, landed=landed, margin_usd_per_mt=margin, margin_pct=margin_pct,
         p_margin=p_margin, spec_fit=round(spec, 3), engagement=round(engagement, 3), reliability=reliability,
-        timing_fit=timing, probability=probability, probability_raw=raw, calibrated=calibrated,
+        supplier_verified=(gst is True and iec is True), timing_fit=timing, probability=probability, probability_raw=raw, calibrated=calibrated,
         buyer_history=b_hist, supplier_history=s_hist, expected_value_usd=ev, firm=firm, next_step=step,
         max_supplier_fob_usd_per_mt=tg["max_supplier"], target_supplier_fob_usd_per_mt=tg["target_supplier"],
         min_buyer_price_usd_per_mt=tg["min_buyer"], target_buyer_price_usd_per_mt=tg["target_buyer"],
@@ -587,9 +589,39 @@ def indicative_range(pair: PairScore, buyer_est: pricebook.PriceEstimate | None 
     return float(round(low / 5) * 5), float(round(high / 5) * 5)
 
 
+OFFER_VALIDITY_MAX_DAYS = 7
+
+
+def indicative_validity_days(pair: Any) -> int:
+    """An indicative offer never outlives the supplier quote it was priced on (review board B-23):
+    7 days, or one day less than the quote has left (at least 1)."""
+    left = getattr(pair, "quote_expires_in_days", None)
+    if left is None:
+        return OFFER_VALIDITY_MAX_DAYS
+    return max(1, min(OFFER_VALIDITY_MAX_DAYS, int(left) - 1))
+
+
+def offer_valid_until(pair: Any, now: datetime | None = None) -> datetime:
+    return (now or datetime.now(timezone.utc)) + timedelta(days=indicative_validity_days(pair))
+
+
+def quote_too_short(pair: Any) -> bool:
+    """Under 2 days left on the supplier quote: reconfirm it before quoting the buyer."""
+    left = getattr(pair, "quote_expires_in_days", None)
+    return left is not None and int(left) < 2
+
+
+def _supplier_line(pair: Any) -> str:
+    """Only say 'verified' when this pair's supplier passed GST and IEC (review board B-20)."""
+    if getattr(pair, "supplier_verified", False):
+        return "This is supplied by a GST- and IEC-verified Indian manufacturer,"
+    return "This is supplied by an Indian manufacturer whose GST and IEC registrations we verify before the order,"
+
+
 def draft_indicative(deal: Any, cand: Any, pair: PairScore, low: float, high: float,
                      lead_time_days: int | None = None) -> tuple[str, str]:
     from shared import company_profile as cp
+    from shared.connectors.qc_providers import inspector_phrase
     from shared.orchestration.outreach import _greeting, _product_label, subject_token
     from shared.product_label import product_title
     product = _product_label(deal)
@@ -607,14 +639,14 @@ def draft_indicative(deal: Any, cand: Any, pair: PairScore, low: float, high: fl
         + (f" ({grade})" if grade else "")
         + f", our indicative price is USD {low:,.0f}–{high:,.0f} per MT {inc}"
         + (f" {port}" if port else "")
-        + f". This is supplied by a GST- and IEC-verified Indian manufacturer, and the pre-shipment "
-        f"inspection by the agency you choose is included.{lead}\n\n"
+        + f". {_supplier_line(pair)} and the pre-shipment inspection by {inspector_phrase()} is "
+        f"included.{lead}\n\n"
         "Your payment is protected throughout: you pay into a neutral escrow account, not to us. A "
         "production advance is released when the order is placed, and the balance only after the "
         "inspection passes, the goods clear customs and you accept them.\n\n"
         "Does this range work for you? If you have a target price, please let me know and I will see how "
-        "close we can come. This indicative price is valid for 7 days; a firm proforma invoice follows as "
-        "soon as you confirm the grade, quantity and destination port."
+        f"close we can come. This indicative price is valid until {offer_valid_until(pair):%d %B %Y}; a firm "
+        "proforma invoice follows as soon as you confirm the grade, quantity and destination port."
         + cp.signature()
     )
     return subject, body
@@ -661,7 +693,8 @@ async def propose_indicative_offer(deal: Any, pair: PairScore, board: MatchBoard
                  "min_offer_usd_per_mt": pair.landed.min_offer_usd_per_mt,
                  "buyer_estimate_usd_per_mt": board.buyer_estimate.median if board else None},
         key=f"indicative-{deal.deal_id}-{cand.candidate_id}-{pair.offer_id}",
-        amount=round(low * pair.quantity_mt, 2), risk_flags=["price_disclosed_to_buyer"],
+        amount=round(low * pair.quantity_mt, 2),
+        risk_flags=["price_disclosed_to_buyer"] + (["supplier_quote_expiring_reconfirm_first"] if quote_too_short(pair) else []),
     )
 
 

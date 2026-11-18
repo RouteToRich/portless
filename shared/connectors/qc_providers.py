@@ -1000,3 +1000,13 @@ def get_qc_connector(provider: str) -> QcProviderConnector:
     key = resolve_qc_provider(provider) or str(provider or "").strip().lower()
     cls = QC_CONNECTOR_CLASSES.get(key, SgsConnector)
     return cls()
+
+
+def inspector_phrase() -> str:
+    """How a counterparty e-mail names the inspection agency: the ones PortLess can actually
+    book (review board B-20) — 'an independent inspector (QIMA)', or 'QIMA, SGS or Bureau Veritas'
+    when several are enabled. Never 'the agency you choose' unless there is a choice."""
+    names = [QC_PROVIDER_CATALOG[k].get("display_name", k) for k in enabled_qc_providers()]
+    if len(names) <= 1:
+        return f"an independent inspection agency ({names[0] if names else 'QIMA'})"
+    return "the independent inspection agency you choose (" + ", ".join(names[:-1]) + f" or {names[-1]})"

@@ -275,8 +275,10 @@ class NatsJetStreamBus:
 
     @staticmethod
     async def _run_local(handler: EventHandler, event: DomainEvent) -> None:
+        from shared.deal_costs import deal_scope
         try:
-            await handler(event)
+            with deal_scope(event.deal_id):
+                await handler(event)
         except Exception:
             logger.exception(
                 "NatsBus: local-fallback handler %s failed for %s (deal=%s)",
@@ -363,8 +365,10 @@ class NatsJetStreamBus:
 
         hb = asyncio.create_task(_heartbeat())
         try:
+            from shared.deal_costs import deal_scope
             for handler in self._handlers.get(topic, []):
-                await handler(event)
+                with deal_scope(event.deal_id):
+                    await handler(event)
         finally:
             hb.cancel()
 

@@ -636,6 +636,8 @@ def _tpl_qc_rework_notice(ctx: dict[str, Any]) -> tuple[str, str]:
         + (f" (reference {ctx['ext_ref']})" if ctx.get("ext_ref") else "")
         + "; confirm the date the reworked lot will be ready. No escrow tranche is released "
         "until a clean report is issued."
+        + (f"\n\nAs the lot failed the agreed specification, the re-inspection (USD {ctx['charge_usd']:,.2f}) is at "
+           "your cost and is deducted from your next payment." if ctx.get("charge_usd") else "")
         + _signature()
     )
     return subject, body
@@ -1213,10 +1215,12 @@ async def notify_deal_settled(deal: Any, balance_due: float | None, currency: st
     return sent
 
 
-async def notify_qc_rework(deal: Any, notes: str | None, ext_ref: str | None, attempt: int) -> str | None:
+async def notify_qc_rework(deal: Any, notes: str | None, ext_ref: str | None, attempt: int,
+                           charge_usd: float | None = None) -> str | None:
     return await notify_party(
         deal.deal_id, "supplier", "qc_rework_notice",
-        {"notes": notes, "ext_ref": ext_ref, "supplier_name": _party_name(deal, "supplier")},
+        {"notes": notes, "ext_ref": ext_ref, "supplier_name": _party_name(deal, "supplier"),
+         "charge_usd": charge_usd},
         suffix=f"a{attempt}", deal=deal,
     )
 

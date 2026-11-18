@@ -154,6 +154,8 @@ class CostSheet(BaseModel):
     pct_of_price: float = 0.0
     warnings: list[str] = Field(default_factory=list)
     computed_at: datetime | None = None
+    inspection_phases: int = 1
+    """Inspections the plan books (DUPRO / PSI / PEO); the inspection line prices each one."""
 
 
 _EXW = ("EXW", "EX-WORKS", "EX WORKS", "FCA")
@@ -190,6 +192,7 @@ def build(
     usd_inr_rate: float | None = None,
     packing: Any = None,
     packing_in_supplier_price: bool = False,
+    inspection_types: list[str] | None = None,
 ) -> CostSheet:
     """The deal's cost sheet from what is known now (quotes where they exist)."""
     from shared.orchestration import landed_cost
@@ -273,8 +276,13 @@ def build(
         qc, q_src = float(qc_usd_per_mt), ("quote" if qc_is_quote else "estimate")
     else:
         qc, q_src = landed_cost.inspection_usd_per_shipment() / qty, "estimate"
-    lines.append(CostLine(key="inspection", label="Independent pre-shipment inspection and loading supervision",
-                          usd_per_mt=round(qc, 2), source=q_src))
+    # One inspection per planned phase (review board B-17): DUPRO + PSI + PEO is three visits.
+    phases = [str(p).upper() for p in (inspection_types or []) if p] or ["PSI"]
+    label = "Independent pre-shipment inspection and loading supervision"
+    if len(phases) > 1:
+        label = f"Independent inspections ({' + '.join(phases)}) and loading supervision"
+    lines.append(CostLine(key="inspection", label=label, usd_per_mt=round(qc * len(phases), 2), source=q_src,
+                          note=f"{len(phases)} inspections, {round(qc * qty, 2)} USD each" if len(phases) > 1 else ""))
 
     # 5. Costs that scale with the price.
     lines.append(CostLine(key="marine_insurance", label="Marine cargo insurance (CIF)",
@@ -290,7 +298,7 @@ def build(
     fixed, pct = _sum(lines)
     return CostSheet(quantity_mt=qty, market=market, supplier_price_basis=basis, supplier_route=route,
                      lines=lines, fixed_usd_per_mt=fixed, pct_of_price=pct, warnings=warnings,
-                     computed_at=datetime.now(timezone.utc))
+                     computed_at=datetime.now(timezone.utc), inspection_phases=len(phases))
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +361,8 @@ def buyer_price_basis(sheet: Any, qc_provider: str | None = None) -> list[str]:
     """What the buyer's CIF price includes — never an amount (that would expose our costs)."""
     route = _route_of(sheet)
     port = route.get("port")
-    inspector = qc_provider.upper() if qc_provider else "the inspection agency you choose"
+    from shared.connectors.qc_providers import inspector_phrase
+    inspector = qc_provider.upper() if qc_provider else inspector_phrase()
     return [
         f"ocean freight from {('the port of ' + port) if port else 'the Indian port of loading'} to your destination port",
         "marine cargo insurance to your port (CIF)",

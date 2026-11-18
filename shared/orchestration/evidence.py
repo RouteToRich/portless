@@ -272,6 +272,89 @@ def _link_table(rows: list[dict[str, Any]], cols: list[str], link_col: str) -> s
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
 
+async def _directory_records(deal: Any) -> list[Any]:
+    """The directory records of the deal's parties (company domain or e-mail; never free-mail)."""
+    try:
+        from services.trade_min import directory, relationships  # type: ignore[import]
+        store = await directory.get_directory()
+        out = []
+        for p in getattr(deal, "parties", None) or []:
+            role = str(getattr(getattr(p, "role", ""), "value", getattr(p, "role", ""))).lower()
+            if role not in ("buyer", "supplier"):
+                continue
+            keys = {k for k in relationships.keys_for(getattr(p, "email", None), getattr(p, "website", None))
+                    if k.startswith("d:")}
+            email = (getattr(p, "email", None) or "").lower()
+            for r in await store.list(role, limit=100_000):
+                if (email and (r.email or "").lower() == email) or (keys and relationships.record_keys(r) & keys):
+                    out.append(r)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Evidence: directory records of %s unavailable: %s", getattr(deal, "deal_id", "?"), exc)
+        return []
+
+
+async def _controls(deal: Any, warnings: list[str]) -> dict[str, Any]:
+    """What an auditor, the bank or DGFT asks for beyond the money (review board B-19):
+    compliance checks and hold clearances, the HS policy as confirmed, the audit trail of the
+    deal and its parties with the chain check, screening reviews, fees, FX and chargebacks."""
+    deal_id = deal.deal_id
+    out: dict[str, Any] = {}
+
+    async def section(name: str, fn) -> None:
+        try:
+            out[name] = await fn()
+        except Exception as exc:  # noqa: BLE001 - one missing section never stops the pack
+            warnings.append(f"{name} unavailable: {exc}")
+            out[name] = None
+
+    async def compliance_rec():
+        from shared.orchestration import compliance
+        return _dump(await compliance.get_record(deal_id))
+
+    async def hs_policy():
+        from shared.orchestration import compliance
+        return _dump(await compliance.get_hs_policy(getattr(deal, "hs_code", "") or ""))
+
+    records = await _directory_records(deal)
+
+    async def audit():
+        from shared import audit_log
+        subjects = {deal_id} | {r.id for r in records}
+        rows: list[dict[str, Any]] = []
+        for s in subjects:
+            rows.extend(await audit_log.entries(limit=1000, subject=s))
+        rows.sort(key=lambda r: r.get("seq") or 0)
+        return {"entries": [{k: v for k, v in r.items() if k != "_id"} for r in rows],
+                "chain": await audit_log.verify()}
+
+    async def screening_reviews():
+        return [{"record_id": r.id, "role": r.role, "name": r.name,
+                 "validation": _dump(r.validation), "reviews": _dump(getattr(r, "screening_reviews", None) or [])}
+                for r in records if getattr(r, "screening_reviews", None) or r.validation]
+
+    async def fees():
+        from shared.orchestration import fee_check
+        return await fee_check.check(deal_id)
+
+    async def fx():
+        from shared.orchestration import fx_book
+        return await fx_book.summary(deal_id)
+
+    async def charged():
+        from shared.orchestration import chargebacks
+        return await chargebacks.listed(deal_id)
+
+    await section("compliance", compliance_rec)
+    await section("hs_policy", hs_policy)
+    await section("audit", audit)
+    await section("screening_reviews", screening_reviews)
+    await section("fees", fees)
+    await section("fx", fx)
+    await section("chargebacks", charged)
+    return out
+
+
 async def build_evidence_pack(deal_id: str) -> dict[str, Any]:
     data, warnings = await _collect(deal_id)
     deal = data.get("deal")
@@ -312,6 +395,7 @@ async def build_evidence_pack(deal_id: str) -> dict[str, Any]:
         "timeline": _timeline_from(data),
         "warnings": warnings,
     }
+    pack.update(await _controls(deal, warnings))
     pack["content_hash"] = _pack_hash(pack)
     return pack
 
@@ -386,6 +470,24 @@ def render_evidence_html(pack: dict[str, Any]) -> str:
         _table(journal.get("entries") or [], ["seq", "at", "event", "debit", "credit", "amount", "currency", "ref", "memo"]),
         f"<p>Balanced: <b>{_h(journal.get('balanced'))}</b> · debits {_h(journal.get('debits_total'))} · "
         f"credits {_h(journal.get('credits_total'))}</p>",
+        "<h2>Compliance</h2>",
+        _kv(pack.get("hs_policy"), ["hs_code", "status", "note", "licence_ref", "confirmed_by", "confirmed_at"]),
+        _table([dict(f, stage=stage) for stage in ("trade", "shipment", "payer")
+                for f in (((pack.get("compliance") or {}).get(stage) or {}).get("findings") or [])],
+               ["stage", "code", "severity", "message"]),
+        f"<p>Open holds: {_h(', '.join((pack.get('compliance') or {}).get('holds') or []) or 'none')}</p>",
+        "<h3>Hold clearances</h3>",
+        _table(((pack.get("compliance") or {}).get("hold_clearances") or []), ["code", "cleared_by", "reason", "evidence_ref", "cleared_at"]),
+        "<h3>Screening reviews</h3>",
+        _table([dict(rv, company=r.get("name"), role=r.get("role")) for r in (pack.get("screening_reviews") or [])
+                for rv in (r.get("reviews") or [])], ["role", "company", "decision", "by", "reason", "pending", "at"]),
+        "<h3>Fees, exchange rates, chargebacks</h3>",
+        _table(((pack.get("fees") or {}).get("lines") or []), ["kind", "assumed_pct", "actual_pct", "actual_usd", "source", "over"]),
+        _kv(pack.get("fx"), ["po_rate", "gain_loss_usd", "missing"]),
+        _table(pack.get("chargebacks") or [], ["kind", "amount_usd", "reason", "ref", "at"]),
+        "<h2>Audit log (hash-chained)</h2>",
+        f"<p>Chain: <b>{_h(((pack.get('audit') or {}).get('chain') or {}).get('ok'))}</b></p>",
+        _table(((pack.get("audit") or {}).get("entries") or []), ["seq", "at", "action", "actor", "subject", "hash"]),
         "<h2>Approvals (human decisions)</h2>",
         _table(pack.get("approvals") or [], ["approval_id", "action", "autonomy_level", "status", "financial_impact_usd",
                                              "resolved_by", "resolved_at", "resolution_note", "required_approvals"]),

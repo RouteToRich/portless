@@ -107,10 +107,9 @@ def supplier_reasons() -> list[str]:
         "with a production advance when the order is placed.",
         "No credit risk and no letter-of-credit paperwork. You never chase an overseas buyer for money.",
         "We bring the export buyer. We find and manage the overseas customer, book the ocean freight and "
-        "prepare the export documents; you deliver FOB Indian port.",
+        "prepare the export documents; you deliver FOB Indian port, or we collect ex-works.",
         "Quality settled at your gate. An independent inspection at your facility before dispatch means "
         "no disputes after arrival.",
-        "Repeat business. Buyers who receive a good first shipment reorder through us.",
     ]
 
 

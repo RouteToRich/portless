@@ -113,3 +113,25 @@ async def test_a_final_failure_alerts(monkeypatch):
         assert sent and "AUDIT LOG WRITE FAILED: kill_switch.pause" in sent[0]
     finally:
         al.set_collection_for_tests(None)
+
+
+async def test_staff_relay_records_person_and_detail_and_never_raises(monkeypatch):
+    """Review board B-16."""
+    from types import SimpleNamespace
+
+    from pydantic import BaseModel
+
+    class Milestone(BaseModel):
+        milestone: str
+
+    al.set_collection_for_tests(None)
+    user = SimpleNamespace(email="ops@portless.test", user_id="u1")
+    await al.staff_relay(user, "freight.milestone_relayed", "DEAL-9", ref="TPO-1", milestone=Milestone(milestone="DELIVERED"))
+    (row,) = await al.entries(subject="DEAL-9")
+    assert row["actor"] == "ops@portless.test" and row["detail"]["milestone"] == {"milestone": "DELIVERED"}
+    assert al.actor_of(SimpleNamespace(email=None, user_id="u2")) == "u2"
+
+    async def broken(*a, **k):
+        raise RuntimeError("store down")
+    monkeypatch.setattr(al, "record", broken)
+    await al.staff_relay(user, "x", "DEAL-9")  # logged, not raised

@@ -356,3 +356,26 @@ class TestCrossProspectOffers:
         here = _deal(deal_id="DEAL-HERE", offers=[_offer("a", reconfirm_status="expired"), _offer("b")])
         await deals_repo.save(here)
         assert [o.supplier_id for o in await mm.offers_for(here)] == ["b"]
+
+
+# ---------------------------------------------------------------------------
+class TestIndicativeValidity:
+    """Review board B-23: the offer never outlives the supplier quote behind it."""
+
+    def test_days_follow_the_quote(self):
+        assert mm.indicative_validity_days(SimpleNamespace(quote_expires_in_days=None)) == 7
+        assert mm.indicative_validity_days(SimpleNamespace(quote_expires_in_days=20)) == 7
+        assert mm.indicative_validity_days(SimpleNamespace(quote_expires_in_days=4)) == 3
+        assert mm.indicative_validity_days(SimpleNamespace(quote_expires_in_days=0)) == 1
+        assert mm.quote_too_short(SimpleNamespace(quote_expires_in_days=1))
+        assert not mm.quote_too_short(SimpleNamespace(quote_expires_in_days=None))
+
+    def test_the_email_names_the_date(self):
+        deal = _deal()
+        cand = _cand("C1")
+        pair = mm.score_pair(deal, cand, _offer("S1", received_at=NOW - timedelta(days=26)),
+                             buyer_est=pricebook.estimate_from([], hs_code="290543", side="buyer", prior=900.0),
+                             supplier_est=pricebook.estimate_from([], hs_code="290543", side="supplier", prior=700.0))
+        _, body = mm.draft_indicative(deal, cand, pair, 880.0, 910.0)
+        assert f"valid until {mm.offer_valid_until(pair):%d %B %Y}" in body and "valid for 7 days" not in body
+        assert pair.quote_expires_in_days is not None and mm.indicative_validity_days(pair) < 7

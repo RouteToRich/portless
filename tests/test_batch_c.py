@@ -291,6 +291,37 @@ class TestEvidence:
         assert "<a href='https://evidence.example/acme.pdf' rel='noopener noreferrer'>certificate</a>" in html_doc
         assert "href='javascript" not in html_doc  # only http(s) becomes a link
 
+    @pytest.mark.asyncio
+    async def test_evidence_pack_carries_the_controls(self, monkeypatch):
+        """Review board B-19: compliance clearances, audit trail + chain, screening reviews,
+        fees / FX / chargebacks are in the pack and its HTML."""
+        from shared import audit_log
+        from shared.orchestration import chargebacks, compliance, evidence
+        repo = InMemoryFallbackRepository()
+        monkeypatch.setattr("services.deals.repository._repository", repo)
+        await repo.save(_deal_record())
+        audit_log.set_collection_for_tests(None)
+        chargebacks.set_collection_for_tests(None)
+        await audit_log.record("compliance.hold_cleared", "ops@portless.test", "DEAL-EV1", {"code": "seal_mismatch"})
+        await chargebacks.record("DEAL-EV1", "reinspection", 350.0, reason="re-inspection #1", ref="TPO-2")
+        rec = compliance.ComplianceRecord(deal_id="DEAL-EV1", holds=["review:price"], hold_clearances=[
+            compliance.HoldClearance(code="seal_mismatch", cleared_by="ops@portless.test", reason="typo on the B/L")])
+        monkeypatch.setattr(compliance, "get_record", lambda deal_id, **k: _async(rec))
+        import services.hitl_approval.repository as hitl_repo_mod
+        hitl_repo_mod._repository = InMemoryHitlApprovalRepository()
+        try:
+            pack = await evidence.build_evidence_pack("DEAL-EV1")
+        finally:
+            hitl_repo_mod._repository = None
+        assert pack["compliance"]["hold_clearances"][0]["reason"] == "typo on the B/L"
+        assert [e["action"] for e in pack["audit"]["entries"]] == ["compliance.hold_cleared"] and pack["audit"]["chain"]["ok"]
+        assert pack["chargebacks"][0]["amount_usd"] == 350.0 and "fees" in pack and "fx" in pack
+        assert evidence._pack_hash(pack) == pack["content_hash"]
+        html_doc = evidence.render_evidence_html(pack)
+        for text in ("<h2>Compliance</h2>", "typo on the B/L", "Audit log (hash-chained)", "compliance.hold_cleared",
+                     "re-inspection #1", "review:price"):
+            assert text in html_doc
+
     def test_seeded_party_carries_the_scan_checks_certificate(self):
         from services.deals.service import _party_check_fields
         check = SimpleNamespace(sanctions="clear", sanctions_reason=None, checked_at=NOW, status="verified",
@@ -426,3 +457,7 @@ class TestTelegramAndDigest:
         assert secs == pytest.approx(21.5 * 3600)
         monkeypatch.setenv("DIGEST_HOUR_UTC", "bogus")
         assert digest.digest_hour_utc() == (6, 0)
+
+
+async def _async(value):
+    return value

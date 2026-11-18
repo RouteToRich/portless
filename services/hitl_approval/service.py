@@ -421,6 +421,12 @@ async def resolve_approval(
     })
     await repo.save(updated)
     response = ApprovalResponse.from_record(updated)
+    try:  # a person's decision on the deal, and how long the gate waited for it (review board B-24)
+        from shared import deal_costs
+        created = record.created_at if record.created_at.tzinfo else record.created_at.replace(tzinfo=now.tzinfo)
+        deal_costs.add(record.deal_id, decisions=1, decision_wait_hours=max(0.0, (now - created).total_seconds() / 3600))
+    except Exception:  # noqa: BLE001
+        pass
 
     # Notify UI
     await notify("approval_resolved", response.model_dump(mode="json"))

@@ -41,6 +41,40 @@ async def load_directory() -> dict[str, int]:
     return {role: len(rows) for role, rows in DIRECTORY.items()}
 
 
+def invalid_address(email: str | None, record_id: str = "") -> str | None:
+    """A real company's mailbox, turned into one on the reserved .invalid domain."""
+    if not email:
+        return None
+    if email.lower().endswith(".invalid"):
+        return email
+    local, _, domain = email.partition("@")
+    slug = "".join(ch for ch in (domain or record_id).lower() if ch.isalnum() or ch == "-")[:40] or "company"
+    return f"{local or 'info'}@{slug}.invalid"
+
+
+async def neutralise_directory() -> dict[str, int]:
+    """The live scan stores real companies with their real mailboxes. In the automation
+    database every one becomes a .invalid address, and the do-not-contact flags an earlier
+    case left behind are lifted, so no scenario can reach a real supplier (the safety guard
+    refused 5 in RUN-20261118-094219-69c2) and no case inherits another's state (B-21)."""
+    from services.trade_min import directory
+    store = await directory.get_directory()
+    changed = {"emails": 0, "do_not_contact": 0}
+    for role in ("buyer", "supplier"):
+        for r in await store.list(role, limit=100_000):
+            fields: dict[str, Any] = {}
+            safe = invalid_address(r.email, r.id)
+            if safe != r.email:
+                fields["email"] = safe
+                changed["emails"] += 1
+            if r.do_not_contact:
+                fields.update(do_not_contact=False, dnc_at=None, dnc_reason=None)
+                changed["do_not_contact"] += 1
+            if fields:
+                await store.set_contact_preference(r.id, fields)
+    return changed
+
+
 def company(role: str, fallback: str) -> Any:
     """The next real company for this role; a stand-in only when no scan has run."""
     from types import SimpleNamespace
@@ -333,6 +367,8 @@ async def seed_deal(status: str, fixture: str = "FX-STD", *, released: list[str]
     await _thread(ids, deal_id, now)
     if settled or status == "PAID":
         await add_payout(ids, supplier_price * qty, "COMPLETED")
+        from services.escrow_guard.service import _patch_deal_realized_margin
+        await _patch_deal_realized_margin(deal_id)
     wants_loading = loading if loading is not None else level >= rank("QC_PASSED")
     if wants_loading:
         await compliance.record_loading(deal_id, compliance.LoadingRecord(

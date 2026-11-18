@@ -85,6 +85,7 @@ async def _live_directory(client: Any, scope: str) -> dict[str, Any]:
         print("live scan answered", response.status_code, response.text[:200], flush=True)
         scanned = response.status_code == 200
     os.environ["APIFY_TOKEN"] = ""
+    print("directory neutralised", await seed.neutralise_directory(), flush=True)
     found = await seed.load_directory()
     print("live directory", found, flush=True)
     return {"scanned": scanned, **found}
@@ -207,7 +208,7 @@ def main() -> int:
     os.environ.setdefault("DEALMAKER_STORAGE_DIR", str(work / "dealmaker"))
     os.environ.setdefault("DOCUGEN_STORAGE_DIR", str(work / "docugen"))
     os.chdir(work)  # a relative env_file=".env" finds nothing here
-    logging.basicConfig(level=logging.WARNING, filename=str(work / f"{args.run_id}.log"), filemode="w",
+    logging.basicConfig(level=getattr(logging, os.getenv("AUTOMATION_LOG_LEVEL", "WARNING").upper(), logging.WARNING), filename=str(work / f"{args.run_id}.log"), filemode="w",
                         format="%(levelname)s %(name)s: %(message)s", encoding="utf-8")
     return asyncio.run(_run(args, guard))
 

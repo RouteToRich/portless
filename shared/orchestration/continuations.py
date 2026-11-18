@@ -557,7 +557,38 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
             logger.info("Continuation[RFQ]: deal %s — %d unverified supplier(s) left out (RFQ_VERIFIED_ONLY)",
                         deal.deal_id, len(skipped))
         out = [c for c in out if c.get("verification") == "verified"]
-    return (await _rank_for_rfq(deal, out))[:_RFQ_MAX_SUPPLIERS]
+    return _cap_rfq(deal, await _rank_for_rfq(deal, out))
+
+
+def rfq_traded_max() -> int:
+    """RFQ_TRADED_MAX (default 2): how many already-traded suppliers an RFQ may take before
+    the deal's own suppliers (Match Engine, opportunity, hand-added) get theirs."""
+    try:
+        return max(0, int(os.getenv("RFQ_TRADED_MAX", "2")))
+    except ValueError:
+        return 2
+
+
+def _cap_rfq(deal, ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The RFQ list within RFQ_MAX_SUPPLIERS (review board B-15). Traded suppliers are asked
+    first but take at most RFQ_TRADED_MAX slots, so a new — maybe cheaper — supplier is never
+    crowded out by old ones; slots nobody else wants go back to traded suppliers. Ranking
+    order is kept. The suppliers the cap leaves out are logged."""
+    cap = _RFQ_MAX_SUPPLIERS
+    traded = [c for c in ranked if c.get("traded")]
+    own = [c for c in ranked if not c.get("traded")]
+    keep_traded = traded[: rfq_traded_max()]
+    keep_own = own[: max(0, cap - len(keep_traded))]
+    spare = cap - len(keep_traded) - len(keep_own)
+    if spare > 0:
+        keep_traded += traded[len(keep_traded): len(keep_traded) + spare]
+    chosen = {id(c) for c in keep_traded + keep_own}
+    out = [c for c in ranked if id(c) in chosen]
+    dropped = [c.get("company_name") or c.get("supplier_id") for c in ranked if id(c) not in chosen]
+    if dropped:
+        logger.info("Continuation[RFQ]: deal %s — RFQ capped at %d (traded %d of max %d); not asked: %s",
+                    getattr(deal, "deal_id", "?"), cap, len(keep_traded), rfq_traded_max(), ", ".join(map(str, dropped)))
+    return out
 
 
 async def _traded_suppliers_first(deal, cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -589,8 +620,19 @@ async def _traded_suppliers_first(deal, cands: list[dict[str, Any]]) -> list[dic
     if not traded:
         return cands
     traded_keys = [keys_for(t["email"], t["supplier_id"], name=t["company_name"]) for t in traded]
-    rest = [c for c in cands if not any(keys_for(c.get("email"), c.get("supplier_id"), name=c.get("company_name")) & k
-                                        for k in traded_keys)]
+    rest = []
+    for c in cands:
+        ck = keys_for(c.get("email"), c.get("supplier_id"), name=c.get("company_name"))
+        same = next((t for t, k in zip(traded, traded_keys) if ck & k), None)
+        if same is None:
+            rest.append(c)
+            continue
+        # The same company is already on the deal (match result / opportunity / hand-added):
+        # keep the deal's own id and contact — the quote maps to its match result and the
+        # freshest address is the deal's — and mark it traded.
+        same.update({k: c[k] for k in ("supplier_id", "email", "contact_id", "source") if c.get(k)})
+        if c.get("fob_price_usd") is not None:
+            same["fob_price_usd"] = c["fob_price_usd"]
     return traded + rest
 
 
@@ -2097,6 +2139,9 @@ async def _supplier_owed_and_paid(
         pass
     if owed is None and ask:
         owed = round(float(ask) * qty, 2)
+    if owed is not None:
+        from shared.orchestration import chargebacks
+        owed = await chargebacks.net_owed(deal.deal_id, owed)
     paid = pending = released = retained = 0.0
     available: float | None = None
     reconciled = False

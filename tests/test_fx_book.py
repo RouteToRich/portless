@@ -91,3 +91,18 @@ def test_routes_record_and_show():
     assert bad.status_code == 422
     assert client.post("/escrow-guard/deals/DEAL-FX/fx", json={"kind": "po", "rate_inr_per_usd": -1}).status_code == 422
     assert client.get("/escrow-guard/deals/DEAL-FX/fx").json()["po_rate"] == 84.0
+
+
+async def test_realised_margin_includes_the_fx_gain(monkeypatch):
+    """Review board B-22: the gain / loss reaches the ledger's realised margin, not only the journal."""
+    from services.escrow_guard import service as eg
+    paid = [SimpleNamespace(payout_id="PAY-1", amount=10_000.0, status="COMPLETED")]
+    assert await eg._fx_gain_loss("D", paid) == 0.0
+    await fx_book.record("D", "po", 84.0, by="staff")
+    await fx_book.record("D", "payout", 85.0, ref="PAY-1", by="staff")
+    assert await eg._fx_gain_loss("D", paid) == pytest.approx(119.05)
+
+    async def broken(*a, **k):
+        raise RuntimeError("down")
+    monkeypatch.setattr(fx_book, "summary", broken)
+    assert await eg._fx_gain_loss("D", paid) == 0.0

@@ -514,6 +514,16 @@ async def _supplier_owed(deal_id: str) -> float | None:
     return None
 
 
+async def _net_owed(deal_id: str, owed: float | None) -> float | None:
+    """The supplier's entitlement after chargebacks (a re-inspection after its own failed QC)."""
+    try:
+        from shared.orchestration import chargebacks
+        return await chargebacks.net_owed(deal_id, owed)
+    except Exception as exc:  # noqa: BLE001 - never block a payout on the lookup
+        logger.warning("EscrowGuard: chargebacks of %s unreadable: %s", deal_id, exc)
+        return owed
+
+
 def _net_received(hold: EscrowHoldRecord) -> float:
     """Cash PortLess holds from this escrow: released tranches net of fees, or —
     for a legacy Stripe hold (no tranches) — the funded principal."""
@@ -561,7 +571,7 @@ async def _settle_if_complete(hold: EscrowHoldRecord, now: datetime) -> EscrowHo
     repo = get_repository()
     settled = hold.model_copy(update={"settled_at": now, "updated_at": now})
     await repo.save_hold(settled)
-    owed = await _supplier_owed(hold.deal_id)
+    owed = await _net_owed(hold.deal_id, await _supplier_owed(hold.deal_id))
     completed, pending = _payout_totals(await repo.list_payouts_by_deal(hold.deal_id))
     await _emit(EventTopic.ESCROW_SETTLED, hold.deal_id, {
         "escrow_id": hold.escrow_id,
@@ -632,7 +642,13 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
             "amount <= available_for_payout",
         )
     # The last part of the supplier's money waits for the buyer's acceptance.
-    owed = req.total_owed if req.total_owed is not None else await _supplier_owed(req.deal_id)
+    owed = await _net_owed(req.deal_id, req.total_owed if req.total_owed is not None else await _supplier_owed(req.deal_id))
+    if owed is not None and completed + pending + req.amount > owed + _FUNDING_TOLERANCE:
+        raise InvalidDealState(
+            req.deal_id,
+            f"payout {req.amount:.2f} would pay the supplier more than it is owed ({owed:.2f} after chargebacks, "
+            f"{completed + pending:.2f} paid or pending)",
+        )
     retained = _retained_until_acceptance(hold, owed)
     if retained and completed + pending + req.amount > owed - retained + _FUNDING_TOLERANCE:
         raise InvalidDealState(
@@ -761,7 +777,8 @@ async def handle_payout_webhook(
         # PAID means the supplier received everything they are owed — not
         # merely that *a* payout went through. Partial payouts (capped by the
         # escrow releases) leave the deal CLEARED until the balance is paid.
-        owed = updated.total_owed if updated.total_owed is not None else await _supplier_owed(payout.deal_id)
+        owed = await _net_owed(payout.deal_id, updated.total_owed if updated.total_owed is not None
+                               else await _supplier_owed(payout.deal_id))
         completed, pending = _payout_totals(await repo.list_payouts_by_deal(payout.deal_id))
         fully_paid = owed is None or completed >= owed - _FUNDING_TOLERANCE
         balance_due = round(owed - completed, 2) if owed is not None else None
@@ -1874,6 +1891,18 @@ def _payout_issues(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> list[
     return []
 
 
+async def _fx_gain_loss(deal_id: str, payouts: list[Any]) -> float:
+    """Exchange gain (+) / loss (−) of the completed payouts against the PO rate (review board
+    B-22): the journal already posts it; the realised margin and everything that learns from
+    it (deal board, accuracy) include it too. 0 without both rates. Never raises."""
+    try:
+        from shared.orchestration import fx_book
+        return float((await fx_book.summary(deal_id, payouts=payouts))["gain_loss_usd"])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("EscrowGuard: FX of %s unavailable: %s", deal_id, exc)
+        return 0.0
+
+
 async def _patch_deal_realized_margin(deal_id: str) -> None:
     """Write realized_margin_usd onto the deal when a supplier payout completes.
 
@@ -1893,7 +1922,8 @@ async def _patch_deal_realized_margin(deal_id: str) -> None:
         # Stripe hold) minus everything paid to the supplier, minus PortLess's
         # own costs (freight, inspection, insurance, customs, documents).
         costs, _basis = await _portless_costs(deal_id, hold.amount, fees_estimated=hold.fees_total)
-        realized = round(_net_received(hold) - payouts_total - sum(costs.values()), 2)
+        fx = await _fx_gain_loss(deal_id, payouts)
+        realized = round(_net_received(hold) - payouts_total - sum(costs.values()) + fx, 2)
         # As a % of what the buyer pays (the escrow principal = the PI total).
         pct = round(realized / hold.amount * 100.0, 2) if hold.amount else None
 
@@ -1927,6 +1957,7 @@ async def _check_closed_margin(deal_id: str, hold: EscrowHoldRecord, payouts: li
     owed = next((p.total_owed for p in payouts if p.total_owed is not None), None)
     if owed is None:
         owed = await _supplier_owed(deal_id)
+    owed = await _net_owed(deal_id, owed)
     completed, _pending = _payout_totals(payouts)
     if owed is None or completed < owed - _FUNDING_TOLERANCE:
         return False
@@ -1996,11 +2027,14 @@ async def _portless_costs(deal_id: str, principal: float, *, fees_estimated: flo
         per_line = trade_costs.cost_usd(sheet, principal / qty, qty)
         incurred: set[str] = set()
         fees: dict[str, float] = {}
+        qc_orders = 0
         try:
             from services.shield_link.service import list_deal_orders  # type: ignore[import]
             for order in (await list_deal_orders(deal_id)).orders:
                 if order.status in ("FAILED", "CANCELLED"):
                     continue
+                if order.order_type.upper() == "QC":
+                    qc_orders += 1
                 for key in _COSTS_BY_ORDER.get(order.order_type.upper(), ()):
                     incurred.add(key)
                     payload = getattr(order, "provider_payload", None) or {}
@@ -2013,11 +2047,15 @@ async def _portless_costs(deal_id: str, principal: float, *, fees_estimated: flo
         from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
         if await _dm_repo().get_po_by_deal(deal_id) is not None:
             incurred.update({"inland_transport", "origin_handling"})
+        phases = max(1, int(sheet.get("inspection_phases") or 1))
         for key, usd in per_line.items():
             if key in ("escrow_fee", "contingency") or key not in incurred:
                 continue
             if key in fees:
                 costs[key], basis[key] = round(fees[key], 2), "actual"
+            elif key == "inspection" and qc_orders:
+                # the sheet prices the planned phases; book each QC order actually placed
+                costs[key], basis[key] = round(usd / phases * qc_orders, 2), "estimate"
             else:
                 costs[key], basis[key] = usd, "estimate"
     except Exception as exc:  # noqa: BLE001
@@ -2075,10 +2113,12 @@ async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> De
     owed = next((p.total_owed for p in payouts if p.total_owed is not None), None)
     if owed is None:
         owed = await _supplier_owed(hold.deal_id)
+    owed = await _net_owed(hold.deal_id, owed)
     retained = _retained_until_acceptance(hold, owed)
     payable_ceiling = min(net, owed - retained) if retained else net
     costs, basis = await _portless_costs(hold.deal_id, hold.amount, fees_estimated=hold.fees_total)
     costs_total = round(sum(costs.values()), 2)
+    fx_gl = await _fx_gain_loss(hold.deal_id, payouts)
     has_margin = bool((hold.tranches and hold.released_total) or completed)
     return DealLedger(
         deal_id=hold.deal_id,
@@ -2104,7 +2144,8 @@ async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> De
         portless_costs_basis=basis,
         portless_costs_total=costs_total,
         margin_before_costs=round(net - completed, 2) if has_margin else None,
-        realized_margin=round(net - completed - costs_total, 2) if has_margin else None,
+        realized_margin=round(net - completed - costs_total + fx_gl, 2) if has_margin else None,
+        fx_gain_loss_usd=fx_gl,
         tranches=hold.tranches,
         payouts=[PayoutResponse.from_record(p) for p in payouts],
         inspection_deadline=hold.inspection_deadline,

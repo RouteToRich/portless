@@ -324,7 +324,7 @@ async def add_candidates(ctx: Ctx, count: int, *, email: bool = True) -> None:
     from services.deals.schemas import BuyerCandidate
     deal = await _deal(ctx)
     cands = [BuyerCandidate(candidate_id=f"C{i}", legal_name=fx.company("buyer", f"Emirates Foods {i} LLC").name, country="AE",
-                            email=f"buyer{i}@emiratesfoods{i}.invalid" if email else None, status="pending", source="automation")
+                            email=f"buyer{i}@emiratesfoods{i}-{ctx.ids.get('uid', 'qa')}.invalid" if email else None, status="pending", source="automation")
              for i in range(1, count + 1)]
     parties = [p for p in deal.parties if _value(p.role).lower() != "buyer"]
     await get_repository().save(deal.model_copy(update={"buyer_candidates": cands, "parties": parties}))

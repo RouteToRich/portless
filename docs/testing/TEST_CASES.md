@@ -3853,10 +3853,12 @@ Feature: Staged release and the buyer's acceptance window
 
   @TC-REL-016 @P0 @positive @needs:time
   Scenario: Silence until the deadline auto-releases the final tranche
+    # The release goes to the escrow provider (proof submitted); it is booked RELEASED when the
+    # provider reports the payout (poll / webhook).
     Given a deal "D" at status "CLEARED" from fixture "FX-STD" with the window open
     And "inspection_deadline" of the deal's escrow was set 1 hours ago
     When the sweep "escrow_watcher" runs
-    Then tranche "T4" has status "RELEASED"
+    Then tranche "T4" has status "SUBMITTED"
 
   @TC-REL-017 @P0 @positive
   Scenario: A dispute inside the window stops the release
@@ -4104,7 +4106,9 @@ Feature: Supplier payout, settlement and the books
     And the ledger field "payouts_pending" is 0
 
   @TC-PAY-014 @P0 @positive
-  Scenario: A partial completed payout leaves the deal CLEARED and gates the balance
+  Scenario: A partial completed payout leaves the deal CLEARED with the balance owed
+    # T1 + T2 are out (17,325 net) and all of it is paid: nothing is payable until the next
+    # tranche releases, so the balance is owed, not gated (the payout is capped at released funds).
     Given a deal "D" at status "CLEARED" from fixture "FX-STD" with a processing payout of 17325
     When the provider "payoneer" sends "/escrow-guard/webhooks/payout" with signature "valid" and body:
       """
@@ -4112,7 +4116,7 @@ Feature: Supplier payout, settlement and the books
       """
     Then the response status is 200
     And deal "D" has status "CLEARED"
-    And a pending gate "RELEASE_SUPPLIER_PAYOUT" exists at level "L0"
+    And the ledger field "supplier_balance_due" is 2675
 
   @TC-PAY-015 @P0 @positive
   Scenario: The completing payout closes the deal and tells both sides

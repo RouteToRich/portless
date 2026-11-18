@@ -207,7 +207,11 @@ async def api_dispute_escrow(escrow_id: str, req: DisputeEscrowRequest, request:
     if caller is not None:
         req.raised_by = caller.email or caller.user_id
     try:
-        return await dispute_escrow(escrow_id, req)
+        out = await dispute_escrow(escrow_id, req)
+        if caller is not None:
+            from shared.audit_log import staff_relay
+            await staff_relay(caller, "escrow.dispute_raised", out.deal_id, escrow_id=escrow_id, reason=req.reason)
+        return out
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
@@ -215,13 +219,17 @@ async def api_dispute_escrow(escrow_id: str, req: DisputeEscrowRequest, request:
 
 
 @router.post("/escrows/{escrow_id}/open-window", response_model=EscrowResponse)
-async def api_open_inspection_window(escrow_id: str, req: DisputeEscrowRequest | None = None) -> EscrowResponse:
+async def api_open_inspection_window(escrow_id: str, req: DisputeEscrowRequest | None = None,
+                                     user: AuthUser = Depends(require_portless)) -> EscrowResponse:
     """Operator confirms delivery → the buyer's acceptance window starts
-    (idempotent; waits for pending proof tranches)."""
+    (idempotent; waits for pending proof tranches). The final tranche releases when it lapses,
+    so the person is recorded in the audit log."""
     try:
-        return await open_inspection_window(
-            escrow_id, reason=(req.reason if req else "operator confirmed delivery"), trigger="operator",
-        )
+        reason = req.reason if req else "operator confirmed delivery"
+        out = await open_inspection_window(escrow_id, reason=reason, trigger="operator")
+        from shared.audit_log import staff_relay
+        await staff_relay(user, "escrow.window_opened_by_staff", out.deal_id, escrow_id=escrow_id, reason=reason)
+        return out
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
@@ -229,10 +237,15 @@ async def api_open_inspection_window(escrow_id: str, req: DisputeEscrowRequest |
 
 
 @router.post("/escrows/{escrow_id}/clear-dispute", response_model=EscrowResponse)
-async def api_clear_dispute(escrow_id: str, req: DisputeEscrowRequest) -> EscrowResponse:
-    """Lift a buyer dispute (re-inspection agreed / resolved in PortLess's favour)."""
+async def api_clear_dispute(escrow_id: str, req: DisputeEscrowRequest,
+                            user: AuthUser = Depends(require_portless)) -> EscrowResponse:
+    """Lift a buyer dispute (re-inspection agreed / resolved in PortLess's favour). Money can
+    then release again — recorded in the audit log with the person and the reason."""
     try:
-        return await clear_dispute(escrow_id, reason=req.reason)
+        out = await clear_dispute(escrow_id, reason=req.reason)
+        from shared.audit_log import staff_relay
+        await staff_relay(user, "escrow.dispute_cleared", out.deal_id, escrow_id=escrow_id, reason=req.reason)
+        return out
     except HoldNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
 

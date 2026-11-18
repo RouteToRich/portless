@@ -21,6 +21,7 @@ Events → entries
                          Dr buyer_deposits        Cr sales_revenue    gross
   refund                 Dr buyer_deposits        Cr escrow_trust     refunded
   supplier payout done   Dr supplier_payable      Cr portless_cash    amount
+  supplier chargeback     Dr supplier_payable      Cr trade_costs      re-inspection after its failed QC
   FX on a payout (gain)  Dr supplier_payable      Cr fx_gain_loss     INR at PO rate − USD paid
   FX on a payout (loss)  Dr fx_gain_loss          Cr supplier_payable the opposite
                          (only when the PO rate and the payout's bank rate are recorded — fx_book.py)
@@ -118,7 +119,8 @@ def _fee_share(hold: Any, gross: float) -> float:
 
 
 def journal_from(hold: Any, ledger: Any, *, po_issued_at: datetime | None = None,
-                 now: datetime | None = None, fx: dict[str, Any] | None = None) -> DealJournal:
+                 now: datetime | None = None, fx: dict[str, Any] | None = None,
+                 chargebacks: list[dict[str, Any]] | None = None) -> DealJournal:
     """Pure builder (unit-testable): hold = EscrowHoldRecord, ledger = DealLedger."""
     from datetime import timezone
     now = now or datetime.now(timezone.utc)
@@ -132,7 +134,10 @@ def journal_from(hold: Any, ledger: Any, *, po_issued_at: datetime | None = None
               ref=hold.ext_ref, memo=f"{hold.provider} escrow funded" + (
                   f" (short by {hold.shortfall:.2f})" if hold.shortfall else ""))
 
+    charged = round(sum(float(c.get("amount_usd") or 0) for c in (chargebacks or [])), 2)
     owed = getattr(ledger, "supplier_owed", None)
+    if owed is not None and charged:
+        owed = round(owed + charged, 2)  # the PO value; the chargebacks are posted below
     released_tranches = sorted(
         [t for t in (hold.tranches or []) if t.status == "RELEASED"],
         key=lambda t: (t.released_at or now),
@@ -162,6 +167,10 @@ def journal_from(hold: Any, ledger: Any, *, po_issued_at: datetime | None = None
             refund_at = hold.updated_at if hold.status == "REFUNDED" else None
         b.add(refund_at, "refund_to_buyer", "buyer_deposits", "escrow_trust", hold.refunded_total,
               memo="Undisbursed balance refunded to the buyer")
+
+    for c in chargebacks or []:
+        b.add(None, f"supplier_chargeback:{c.get('kind')}", "supplier_payable", "trade_costs", c.get("amount_usd"),
+              ref=c.get("ref"), memo=f"Charged to the supplier: {c.get('reason')}")
 
     # PortLess's own costs of moving and protecting the goods, as incurred.
     basis = getattr(ledger, "portless_costs_basis", None) or {}
@@ -226,8 +235,9 @@ async def build_journal(deal_id: str) -> DealJournal:
         po_at = getattr(po, "issued_at", None) if po else None
     except Exception:  # noqa: BLE001
         po_at = None
-    from shared.orchestration import fx_book
-    return journal_from(hold, ledger, po_issued_at=po_at, fx=await fx_book.rates(deal_id))
+    from shared.orchestration import chargebacks, fx_book
+    return journal_from(hold, ledger, po_issued_at=po_at, fx=await fx_book.rates(deal_id),
+                        chargebacks=await chargebacks.listed(deal_id))
 
 
 def journal_csv(journal: DealJournal) -> str:

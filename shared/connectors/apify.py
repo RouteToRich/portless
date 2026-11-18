@@ -122,6 +122,11 @@ def start_cost_meter() -> dict[str, Any]:
 
 
 def _meter_run(run: dict[str, Any] | None) -> None:
+    try:
+        from shared import deal_costs
+        deal_costs.add(apify_runs=1, apify_usd=float((run or {}).get("usageTotalUsd") or 0.0))
+    except Exception:  # noqa: BLE001 - counting never affects the run
+        pass
     meter = _COST_METER.get()
     if meter is None:
         return

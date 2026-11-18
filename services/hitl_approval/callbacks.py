@@ -438,6 +438,18 @@ async def execute_callback(
     callback_payload: dict[str, Any],
     approval_id: str,
 ) -> dict | None:
+    """Run the callback inside the gate's deal, so what it spends (LLM, Apify) is booked to it."""
+    from shared.deal_costs import deal_scope
+    with deal_scope(deal_id):
+        return await _execute_callback(action, deal_id, callback_payload, approval_id)
+
+
+async def _execute_callback(
+    action: str,
+    deal_id: str,
+    callback_payload: dict[str, Any],
+    approval_id: str,
+) -> dict | None:
     """Execute the saga-continuation callback for an approved action.
 
     Errors are caught and logged rather than re-raised so that a failed

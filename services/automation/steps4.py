@@ -165,6 +165,8 @@ async def _complete_payouts(ctx: Ctx) -> None:
 
 @step(r"every (?:open )?payout gate is approved and completed")
 async def payouts_done(ctx: Ctx) -> None:
+    from .steps import natural_gate
+    await natural_gate(ctx, "RELEASE_SUPPLIER_PAYOUT")  # a CLEARED deal has its payout gate
     for _ in range(6):
         if not await _gates(ctx, "RELEASE_SUPPLIER_PAYOUT", "PENDING"):
             await _complete_payouts(ctx)

@@ -242,6 +242,11 @@ def _market_facts(state: Any, audience: str) -> list[dict[str, str]]:
     return [f for f in (check.get("facts") or []) if audience in (f.get("audience") or ["buyer", "supplier"])][:4]
 
 
+def _inspector_phrase() -> str:
+    from shared.connectors.qc_providers import inspector_phrase
+    return inspector_phrase()
+
+
 def _dear(company: str | None) -> str:
     name = (company or "").strip()
     return f"Dear {name} team," if name else "Dear Sir or Madam,"
@@ -892,7 +897,7 @@ async def buyer_agent_node(state: NegotiationGraphState) -> NegotiationGraphStat
                    f"We can offer {product_phrase(session.product_code)} at USD {band.recommended:,.2f} per MT "
                    "CIF your destination port. ")
                 + "The price includes ocean freight and marine insurance to your port, export clearance and "
-                "certificates, and an independent pre-shipment inspection by the agency you choose; your payment "
+                f"certificates, and pre-shipment inspection by {_inspector_phrase()}; your payment "
                 "is protected in a neutral escrow account.\n\n"
                 "Please let us know the grade, quantity and destination port, and we will send you the "
                 "proforma invoice."

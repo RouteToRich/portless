@@ -242,6 +242,7 @@ async def deal_at_status(ctx: Ctx, alias: str, status: str, fixture: str, suffix
     opts = _options(suffix)
     hold_payout = opts.pop("delivery", False)
     after = opts.pop("_after", None)
+    await fx.neutralise_directory()  # no flag from an earlier case (do-not-contact) leaks into this one
     ctx.ids.update(await fx.seed_deal(status, fixture, **opts))
     ctx.ids[alias] = ctx.ids["D"]
     if after:

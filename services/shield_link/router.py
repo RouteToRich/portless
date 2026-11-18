@@ -176,7 +176,11 @@ async def api_record_qc_status(
     booking reference."""
     req = req.model_copy(update={"source": f"operator:{user.email or user.user_id}"})
     try:
-        return await record_qc_status(ref, req)
+        out = await record_qc_status(ref, req)
+        from shared.audit_log import staff_relay
+        await staff_relay(user, "qc.status_relayed", out.get("deal_id") if isinstance(out, dict) else ref,
+                          ref=ref, update=req)
+        return out
     except TpoNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
@@ -202,7 +206,10 @@ async def api_reschedule_qc(
     """Move the inspection to a new date: cancelled at the provider (QIMA by
     API), booked again. The deal stays at SUPPLIER_DISPATCH_READY."""
     try:
-        return await reschedule_qc(tpo_id, req)
+        out = await reschedule_qc(tpo_id, req)
+        from shared.audit_log import staff_relay
+        await staff_relay(user, "qc.rescheduled", getattr(out, "deal_id", None), tpo_id=tpo_id, request=req)
+        return out
     except TpoNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
@@ -222,10 +229,13 @@ async def api_qc_readiness(
     if ready is None:
         raise HTTPException(422, detail="ready_date must be an ISO date (YYYY-MM-DD)")
     try:
-        return await supplier_commitment.record_qc_readiness(
+        out = await supplier_commitment.record_qc_readiness(
             deal_id, ready, by=f"operator:{user.email or user.user_id}", produced_pct=req.produced_pct,
             packed_pct=req.packed_pct, note=req.note,
         )
+        from shared.audit_log import staff_relay
+        await staff_relay(user, "supplier.ready_date_relayed", deal_id, request=req)
+        return out
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
@@ -262,23 +272,32 @@ async def api_book_freight(req: FreightBookingRequest) -> ThirdPartyOrderRespons
 
 
 @router.post("/freight/{ref}/milestone")
-async def api_record_milestone(ref: str, req: RecordMilestoneRequest) -> dict[str, Any]:
-    """Record a carrier milestone by TPO id or carrier reference (operator /
-    tracking integration without a signed webhook). DELIVERED opens the
-    buyer's acceptance window on the escrow."""
+async def api_record_milestone(ref: str, req: RecordMilestoneRequest,
+                               user: AuthUser = Depends(require_portless)) -> dict[str, Any]:
+    """Record a carrier milestone by TPO id or carrier reference (staff relay without a
+    signed webhook). DELIVERED opens the buyer's acceptance window on the escrow — so
+    the person and the milestone go into the audit log."""
     try:
-        return await record_milestone(ref, req)
+        out = await record_milestone(ref, req)
+        from shared.audit_log import staff_relay
+        await staff_relay(user, "freight.milestone_relayed", out.get("deal_id") if isinstance(out, dict) else ref,
+                          ref=ref, milestone=req)
+        return out
     except TpoNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 @router.post("/deals/{deal_id}/loading")
-async def api_record_loading(deal_id: str, req: LoadingRecordRequest) -> dict[str, Any]:
+async def api_record_loading(deal_id: str, req: LoadingRecordRequest,
+                             user: AuthUser = Depends(require_portless)) -> dict[str, Any]:
     """Supervised loading record from the inspector (container + seal numbers,
     loaded quantity, HS code, photos). Freight and the QC-stage tranche are
-    gated only once this matches the PI / PO."""
+    gated only once this matches the PI / PO — recorded in the audit log."""
     try:
-        return await record_loading(deal_id, req)
+        out = await record_loading(deal_id, req)
+        from shared.audit_log import staff_relay
+        await staff_relay(user, "shipment.loading_relayed", deal_id, loading=req)
+        return out
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
 

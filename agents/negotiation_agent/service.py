@@ -358,10 +358,14 @@ async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
     try:
         address = None
         market = session.buyer_country_code
+        inspection_types: list[str] | None = None
         try:
             from services.deals.service import get_deal  # type: ignore[import]
             deal = await get_deal(session.deal_id)
             market = getattr(deal, "market", None) or market
+            from shared.orchestration import inspection_plan
+            inspection_types = inspection_plan.normalise(deal.inspection_types) if getattr(
+                deal, "inspection_types", None) else inspection_plan.default_types()
             supplier = next((p for p in (deal.parties or [])
                              if (getattr(p.role, "value", p.role) or "").lower() == "supplier"), None)
             address = getattr(supplier, "address", None) if supplier else None
@@ -389,6 +393,7 @@ async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
             supplier_address=address, supplier_price_basis=session.supplier_price_basis,
             escrow_fee_pct=fee_pct, usd_inr_rate=rate,
             packing=session.packing, packing_in_supplier_price=session.packing_in_supplier_price,
+            inspection_types=inspection_types,
         )
         session.cost_sheet = sheet.model_dump(mode="json")
     except Exception as exc:  # noqa: BLE001

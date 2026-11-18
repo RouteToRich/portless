@@ -106,8 +106,11 @@ def world(monkeypatch):
 
 @pytest.fixture
 def api():
+    from shared.auth.dependencies import require_portless
     app = FastAPI()
     app.include_router(router)
+    app.dependency_overrides[require_portless] = lambda: SimpleNamespace(
+        email="ops@portless.test", user_id="u-ops", is_portless=True, org_id=None)
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -245,6 +248,22 @@ class TestHttpJourney:
         assert api.post(f"{path}/release", json={"tranche_id": "T1"}).status_code == 422
         assert api.post(f"{path}/clear-dispute", json={"reason": "agreed"}).json()["disputed"] is False
         assert api.post(f"{path}/release", json={"tranche_id": "T1"}).status_code == 200
+
+    async def test_lifting_a_dispute_and_opening_the_window_name_the_person(self, api, world):
+        """Review board B-16: money-moving staff relays go into the hash-chained audit log."""
+        from shared import audit_log
+        audit_log.set_collection_for_tests(None)
+        escrow = api.post("/escrow-guard/escrows", json={"deal_id": "D1", "provider": "tazapay", "amount": 1000}).json()
+        api.post("/escrow-guard/webhooks/escrow-funded", json={"ext_ref": escrow["ext_ref"], "status": "FUNDED", "amount": 1000})
+        path = f"/escrow-guard/escrows/{escrow['escrow_id']}"
+        api.post(f"{path}/dispute", json={"reason": "damaged"})
+        api.post(f"{path}/clear-dispute", json={"reason": "re-inspection agreed"})
+        rows = await audit_log.entries(subject="D1")
+        actions = {r["action"]: r for r in rows}
+        assert "escrow.dispute_cleared" in actions  # "raised" names the caller the middleware set (none here)
+        assert actions["escrow.dispute_cleared"]["actor"] == "ops@portless.test"
+        assert actions["escrow.dispute_cleared"]["detail"]["reason"] == "re-inspection agreed"
+        assert (await audit_log.verify())["ok"]
 
     def test_refund_closes_a_disputed_deal(self, api, world):
         escrow = api.post("/escrow-guard/escrows", json={"deal_id": "D1", "provider": "tazapay", "amount": 1000}).json()

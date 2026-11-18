@@ -143,6 +143,21 @@ async def uc_full_flow() -> None:
         restore_registry()
 
 
+async def _close_leftover_deals(hs_code: str) -> int:
+    """Automation database only: earlier runs' still-open deals of the same product are set
+    CANCELLED, so this journey's match board sees only its own suppliers."""
+    from services.deals.repository import get_repository as deals_repo
+    from services.deals.schemas import DealStatus
+    closed = 0
+    for d in await deals_repo().list_active(limit=1000):
+        if d.hs_code == hs_code and _v(d.status) not in ("PAID", "CANCELLED", "REFUNDED", "NEGOTIATION_FAILED"):
+            await deals_repo().set_fields(d.deal_id, {"status": DealStatus.CANCELLED.value})
+            closed += 1
+    if closed:
+        j.say(f"  closed {closed} leftover open deal(s) of HS {hs_code} from earlier runs")
+    return closed
+
+
 async def _run(qima: httpx.AsyncClient, carrier_sim: Any, freight: Any) -> None:
     uid = uuid.uuid4().hex[:6]
     now = datetime.now(timezone.utc)
@@ -158,6 +173,9 @@ async def _run(qima: httpx.AsyncClient, carrier_sim: Any, freight: Any) -> None:
     # ── 1. The opportunity a scan left, and the deal made from it ─────────
     j.say(f"\n[{S}] trade-min opportunity → deal (Match Engine) → outreach + RFQ")
     from services.trade_min.repository import get_repository as tm_repo
+    # Leftovers of earlier runs: their open deals of this product would lend the match board
+    # their supplier offers (cross-prospect offers) — close them first.
+    await _close_leftover_deals(HS)
     opp = EnrichedOpportunity(
         opportunity_id=f"OPP-UC15-{uid}", hs_code=HS, market=MARKET, scanned_at=now,
         demand_index=72.0, price_gap_pct=28.0, source="apify_export_markets", net_price_gap_pct=22.0,

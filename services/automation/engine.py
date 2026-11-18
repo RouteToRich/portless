@@ -98,7 +98,7 @@ class Ctx:
 
     async def call(self, method: str, path: str, *, json_body: Any = None, content: bytes | None = None,
                    headers: dict[str, str] | None = None, persona: str | None = None, data: Any = None) -> httpx.Response:
-        who = PERSONAS[persona or self.persona]
+        who = PERSONAS[(persona or self.persona).replace("-", "_")]  # the catalogue writes org-user
         sent = {**(who or {}), **(headers or {})}
         self.extra["acted"] = True
         if any(part in path for part in ("autonomy-policy", "hs-policy", "/trade-min/catalogue")):

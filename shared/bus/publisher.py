@@ -79,8 +79,10 @@ class InProcessEventBus:
 
     @staticmethod
     async def _run_handler(handler: EventHandler, event: DomainEvent) -> None:
+        from shared.deal_costs import deal_scope
         try:
-            await handler(event)
+            with deal_scope(event.deal_id):
+                await handler(event)
         except Exception:
             logger.exception(
                 "EventBus: handler %s failed for %s (deal=%s, event_id=%s)",

@@ -112,7 +112,13 @@ async def book_reinspection(deal_id: str, *, reason: str = "re-inspection after 
         quantity_mt=getattr(deal, "quantity_mt", None),
         idempotency_key=f"reinspect-{deal_id}-{failed}",
     ), reinspection=True)
-    await notifications.notify_qc_rework(deal, reason, booking.ext_ref, failed)
+    charge = None
+    from shared.orchestration import chargebacks
+    if chargebacks.reinspection_charged():
+        charge = await chargebacks.reinspection_cost(deal_id, booking)
+        await chargebacks.record(deal_id, "reinspection", charge, ref=booking.tpo_id,
+                                 reason=f"re-inspection #{failed} after the failed QC ({reason})")
+    await notifications.notify_qc_rework(deal, reason, booking.ext_ref, failed, charge_usd=charge)
     logger.info("Playbooks: re-inspection #%d booked for deal %s (%s)", failed, deal_id, booking.tpo_id)
     return {"action": "reinspection_booked", "attempt": failed, "tpo_id": booking.tpo_id, "ext_ref": booking.ext_ref}
 

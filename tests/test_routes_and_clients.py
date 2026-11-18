@@ -55,8 +55,14 @@ from tests.factories import make
 
 
 def _api(module) -> TestClient:
+    from types import SimpleNamespace
+
+    from shared.auth.dependencies import require_portless
     app = FastAPI()
     app.include_router(module.router)
+    # staff relays name the person (audit log): a signed-in staff user, as the console sends
+    app.dependency_overrides[require_portless] = lambda: SimpleNamespace(
+        email="ops@portless.test", user_id="u-ops", is_portless=True, org_id=None)
     return TestClient(app, raise_server_exceptions=False)
 
 
