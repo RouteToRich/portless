@@ -39,6 +39,13 @@ class UserRecord(BaseModel):
     created_at: datetime
 
 
+def _roles(email: str | None) -> list[str]:
+    if not email or not is_portless_user(email):
+        return []
+    from shared.auth.roles import roles_of
+    return roles_of(email)
+
+
 class UserPublic(BaseModel):
     """User info safe to return to clients."""
 
@@ -50,6 +57,8 @@ class UserPublic(BaseModel):
     created_at: datetime | None = None
     legacy: bool = False
     """A pre-auth-service record: nobody can sign in as it any more."""
+    roles: list[str] = []
+    """Staff decision roles: trade_desk, money_approver, compliance_officer (shared/auth/roles.py)."""
 
     @classmethod
     def from_record(cls, r: UserRecord) -> "UserPublic":
@@ -61,6 +70,7 @@ class UserPublic(BaseModel):
             is_portless=is_portless_user(r.email),
             created_at=r.created_at,
             legacy=bool(r.password_hash),
+            roles=_roles(r.email),
         )
 
 

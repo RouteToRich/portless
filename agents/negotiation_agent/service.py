@@ -393,7 +393,7 @@ async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
             supplier_address=address, supplier_price_basis=session.supplier_price_basis,
             escrow_fee_pct=fee_pct, usd_inr_rate=rate,
             packing=session.packing, packing_in_supplier_price=session.packing_in_supplier_price,
-            inspection_types=inspection_types,
+            inspection_types=inspection_types, hs_code=getattr(session, "product_code", None),
         )
         session.cost_sheet = sheet.model_dump(mode="json")
     except Exception as exc:  # noqa: BLE001

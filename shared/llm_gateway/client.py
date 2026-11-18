@@ -178,9 +178,13 @@ class LLMClient:
                 status="error",
                 error_message=str(exc),
             )
+            from shared import failure_monitor
+            failure_monitor.record("llm", caller, False)
             raise LLMExhaustedException(f"LLM Gateway call failed: {exc}") from exc
 
         record.model = response.model
+        from shared import failure_monitor
+        failure_monitor.record("llm", caller, True)
         try:
             from shared import deal_costs
             tokens = int(response.prompt_tokens or 0) + int(response.completion_tokens or 0)

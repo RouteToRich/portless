@@ -144,6 +144,8 @@ async def run_monitor() -> None:
             await asyncio.sleep(MONITOR_SECONDS)
             if await leader_lock.acquire("heartbeat_monitor", ttl_seconds=MONITOR_SECONDS * 3):
                 await check_and_alert()
+                from shared import failure_monitor
+                await failure_monitor.check_and_alert()  # LLM failure rate, refused webhooks
             else:
                 # the lock store itself may be down — this instance still tells someone
                 if leader_lock.last_error_at:

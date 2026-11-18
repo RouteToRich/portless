@@ -197,6 +197,30 @@ async def stop_run() -> dict[str, Any]:
     return {"status": "STOPPED"}
 
 
+async def copy_live_directory() -> dict[str, Any]:
+    """Copy the live buyer / supplier directory into the automation database as test data, every
+    mailbox turned into a .invalid address (todo: Automation mode shows an empty Buyers &
+    Suppliers). Read-only on the live database; replaces the automation copy."""
+    from shared.config import settings
+    from .seed import invalid_address
+    db = _db()
+    if not settings.mongo_db_name or settings.mongo_db_name == AUTOMATION_DB:
+        raise AutomationError(409, "The live database is not set (or is the automation database itself).")
+    if _alive():
+        raise AutomationError(409, "Stop the run before copying the directory.")
+    live = db.client[settings.mongo_db_name]["trade_counterparties"]
+    target = db["trade_counterparties"]
+    copied = {"buyer": 0, "supplier": 0}
+    async for doc in live.find({}):
+        doc["email"] = invalid_address(doc.get("email"), str(doc.get("_id") or ""))
+        await target.replace_one({"_id": doc["_id"]}, doc, upsert=True)
+        role = doc.get("role")
+        if role in copied:
+            copied[role] += 1
+    logger.info("Automation: copied the live directory (%s) into %s", copied, AUTOMATION_DB)
+    return {"database": AUTOMATION_DB, "copied": copied, "emails": "turned into .invalid addresses"}
+
+
 async def clear(scope: str) -> dict[str, Any]:
     """``test_data``: what the runs created. ``everything``: results and catalogue too."""
     db = _db()

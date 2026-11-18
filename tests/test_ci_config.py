@@ -49,3 +49,10 @@ def test_security_job_scans_code_dependencies_and_secrets():
     text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     for step in ("bandit -r services shared agents", "pip-audit", "gitleaks"):
         assert step in text
+
+
+def test_post_deploy_smoke_and_nightly_workflows():
+    smoke = (ROOT / ".github/workflows/post-deploy-smoke.yml").read_text(encoding="utf-8")
+    assert "scripts/smoke_check.py" in smoke and "PORTLESS_SMOKE_TOKEN" in smoke
+    nightly = (ROOT / ".github/workflows/nightly-automation.yml").read_text(encoding="utf-8")
+    assert "scripts/nightly_automation.py" in nightly and "schedule" in nightly

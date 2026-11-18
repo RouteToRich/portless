@@ -86,3 +86,20 @@ def test_value_added_services_carry_a_service_charge(monkeypatch):
     assert vas.usd_per_mt == pytest.approx(round(per_visit * 2 * 0.15, 2), abs=0.01)
     monkeypatch.setenv("VAS_MARKUP_PCT", "0")
     assert not [ln for ln in _sheet(["DUPRO", "PSI"]).lines if ln.key == "value_added_services"]
+
+
+def test_container_plan_picks_the_cheapest_mix_and_suggests_a_fill(monkeypatch):
+    """todo: container fill."""
+    for v in ("CONTAINER_20_MT", "CONTAINER_40_MT_FACTOR", "CONTAINER_40_COST_FACTOR"):
+        monkeypatch.delenv(v, raising=False)
+    full = trade_costs.container_plan(40.0, 20.0)
+    assert (full["containers_20"], full["containers_40"]) == (2, 0) and full["fill_pct"] == 100.0
+    assert full["fill_suggestion_mt"] == 0.0
+    part = trade_costs.container_plan(25.0, 20.0)  # 1×40' (22 MT) + 1×20' beats 2×20'? 1.4+1 > 2 → 2×20'
+    assert (part["containers_20"], part["containers_40"]) == (2, 0)
+    assert part["fill_pct"] == 62.5 and part["fill_suggestion_mt"] == 15.0
+    one40 = trade_costs.container_plan(21.0, 20.0)  # one 40' (22 MT, cost 1.4) beats two 20' (cost 2)
+    assert (one40["containers_20"], one40["containers_40"]) == (0, 1)
+    sheet = _sheet(None)  # 25 MT lot
+    assert sheet.container_plan["fill_suggestion_mt"] == 15.0
+    assert any("15 MT more" in w for w in sheet.warnings)

@@ -1,0 +1,35 @@
+# Nightly: every catalogue case and LLM journey on the automation database; summary to Telegram.
+# Secrets: MONGO_URI (the automation run uses only its own portless_automation database),
+# LLM_GATEWAY_URL / LLM_GATEWAY_EMAIL / LLM_GATEWAY_PASSWORD / LLM_GATEWAY_ACCOUNT_ID,
+# HITL_TELEGRAM_BOT_TOKEN / HITL_TELEGRAM_CHAT_ID, AUTH_PORTLESS_EMAILS. Skipped without MONGO_URI.
+name: nightly-automation
+
+on:
+  schedule:
+    - cron: "30 21 * * *"   # 03:00 IST
+  workflow_dispatch:
+
+jobs:
+  automation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      MONGO_URI: ${{ secrets.MONGO_URI }}
+      LLM_GATEWAY_URL: ${{ secrets.LLM_GATEWAY_URL }}
+      LLM_GATEWAY_EMAIL: ${{ secrets.LLM_GATEWAY_EMAIL }}
+      LLM_GATEWAY_PASSWORD: ${{ secrets.LLM_GATEWAY_PASSWORD }}
+      LLM_GATEWAY_ACCOUNT_ID: ${{ secrets.LLM_GATEWAY_ACCOUNT_ID }}
+      HITL_TELEGRAM_BOT_TOKEN: ${{ secrets.HITL_TELEGRAM_BOT_TOKEN }}
+      HITL_TELEGRAM_CHAT_ID: ${{ secrets.HITL_TELEGRAM_CHAT_ID }}
+      AUTH_PORTLESS_EMAILS: ${{ secrets.AUTH_PORTLESS_EMAILS }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Nightly run
+        if: ${{ env.MONGO_URI != '' }}
+        run: python -X utf8 scripts/nightly_automation.py --scope all

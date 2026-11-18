@@ -84,6 +84,12 @@ async def api_view(path: str, request: Request, user: AuthUser = Depends(require
     return Response(content=answer.content, status_code=answer.status_code, media_type=answer.headers.get("content-type"), headers=passed)
 
 
+@router.post("/copy-directory")
+async def api_copy_directory() -> dict[str, Any]:
+    """Copy the live buyer / supplier directory into the automation database (mailboxes made .invalid)."""
+    return await _answer(service.copy_live_directory())
+
+
 @router.post("/clear")
 async def api_clear(body: ClearRequest) -> dict[str, Any]:
     """Delete what automation stored. Never touches any other database."""

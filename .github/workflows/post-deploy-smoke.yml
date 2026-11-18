@@ -1,0 +1,36 @@
+# After a deploy: run scripts/smoke_check.py against the deployed backend; a red run means roll back.
+# Trigger it from the deploy (workflow_dispatch / repository_dispatch "deployed") or by hand.
+# Secrets: PORTLESS_BACKEND_URL, PORTLESS_SMOKE_TOKEN (a staff bearer token).
+name: post-deploy-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      allow_warn:
+        description: "Readiness warnings do not fail the check"
+        type: boolean
+        default: true
+  repository_dispatch:
+    types: [deployed]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PORTLESS_BACKEND_URL: ${{ secrets.PORTLESS_BACKEND_URL }}
+      PORTLESS_SMOKE_TOKEN: ${{ secrets.PORTLESS_SMOKE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install httpx
+      - name: Smoke check
+        if: ${{ env.PORTLESS_BACKEND_URL != '' }}
+        run: >
+          python scripts/smoke_check.py --base "$PORTLESS_BACKEND_URL"
+          ${{ (github.event_name != 'workflow_dispatch' || inputs.allow_warn) && '--allow-warn' || '' }}
+      - name: No backend configured
+        if: ${{ env.PORTLESS_BACKEND_URL == '' }}
+        run: echo "Set the PORTLESS_BACKEND_URL and PORTLESS_SMOKE_TOKEN secrets to run the smoke check." && exit 1

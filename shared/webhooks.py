@@ -35,9 +35,12 @@ async def signature_valid(
         logger.warning("%s: anonymous webhook refused — its signing secret is not set", type(connector).__name__)
         return False
     try:
-        return bool(await connector.webhook_verify(headers, body))
+        ok = bool(await connector.webhook_verify(headers, body))
     except Exception:  # noqa: BLE001 — an unverifiable signature is an invalid one
-        return False
+        ok = False
+    from shared import failure_monitor
+    failure_monitor.record("webhook", type(connector).__name__.replace("Connector", ""), ok)
+    return ok
 
 
 def parse_webhook_body(raw_body: bytes, model: type[_Payload]) -> _Payload:

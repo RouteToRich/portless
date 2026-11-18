@@ -536,6 +536,12 @@ async def post_screening_review(role: Literal["buyers", "suppliers"], record_id:
                                 user=Depends(_staff())) -> CounterpartyRecord:
     """Clear or fail a ``review`` screening with a reason; kept on the record (``screening_reviews``)."""
     from services.trade_min import screening_review
+    from shared.auth.roles import RoleRequired, require_compliance_officer
+    if body.decision == "clear":  # failing a company is never restricted
+        try:
+            require_compliance_officer(user, "Clearing a possible sanctions match")
+        except RoleRequired as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
     existing = await (await directory.get_directory()).get(record_id)
     if existing is None or existing.role != role.rstrip("s"):

@@ -82,6 +82,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Counterparties' e-mail addresses and phone numbers never reach the logs in clear.
     from shared.log_redaction import install as _redact_logs
+    from shared.log_format import install as _json_logs
+    _json_logs()  # LOG_FORMAT=json: one JSON object per line for the hosting log search
     _redact_logs()
 
     # ── Production readiness gate (P1-1) ──────────────────────────────────
@@ -415,6 +417,12 @@ def create_app() -> FastAPI:
         currently running on, with ok / warn / fail per check (System Health page)."""
         from shared.readiness import evaluate
         return evaluate()
+
+    @app.get("/health/failures", tags=["meta"])
+    async def failures() -> dict:
+        """LLM failure rate per caller and refused webhook signatures per provider (last window)."""
+        from shared import failure_monitor
+        return failure_monitor.status()
 
     @app.get("/health/watchers", tags=["meta"])
     async def watchers() -> dict:

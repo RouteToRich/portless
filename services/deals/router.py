@@ -54,7 +54,12 @@ async def list_hs_policy(user: AuthUser = Depends(require_portless)) -> dict:
 
 @router.put("/compliance/hs-policy/{hs_code}")
 async def put_hs_policy(hs_code: str, body: HsPolicyUpdate, user: AuthUser = Depends(require_portless)) -> dict:
-    """Record the result of checking an HS code against ITC-HS Schedule 2 / SCOMET."""
+    """Record the result of checking an HS code against ITC-HS Schedule 2 / SCOMET (compliance officer)."""
+    from shared.auth.roles import RoleRequired, require_compliance_officer
+    try:
+        require_compliance_officer(user, "Confirming an HS code's export policy")
+    except RoleRequired as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     from shared.orchestration import compliance
     try:
         entry = compliance.HsPolicyEntry(
@@ -541,6 +546,11 @@ async def deal_compliance_clear_hold(
     recording it again, and legal blocks such as an embargo are never waived.
     """
     await _org_deal(deal_id, user)
+    from shared.auth.roles import RoleRequired, require_compliance_officer
+    try:
+        require_compliance_officer(user, "Clearing a compliance hold")
+    except RoleRequired as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     from shared.orchestration import compliance
     try:
         record = await compliance.clear_block(

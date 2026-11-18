@@ -156,9 +156,38 @@ class CostSheet(BaseModel):
     computed_at: datetime | None = None
     inspection_phases: int = 1
     """Inspections the plan books (DUPRO / PSI / PEO); the inspection line prices each one."""
+    container_plan: dict[str, Any] = Field(default_factory=dict)
+    """Cheapest 20' / 40' mix for the lot and how full it travels (``container_plan``)."""
 
 
 _EXW = ("EXW", "EX-WORKS", "EX WORKS", "FCA")
+
+
+def container_plan(quantity_mt: float, mt_per_20: float | None = None) -> dict[str, Any]:
+    """The cheapest mix of 20' and 40' containers for a lot, and how full the last one is
+    (todo: container fill). A 40' carries ``CONTAINER_40_MT_FACTOR`` (1.1 — dense cargo is
+    weight-limited) × a 20' load at ``CONTAINER_40_COST_FACTOR`` (1.4) × the 20' freight.
+    ``fill_suggestion_mt``: what to add so the boxes paid for travel full (offer it to the buyer
+    when the last container is less than 75 % full). Report only — the freight line is unchanged."""
+    import math
+    mt20 = float(mt_per_20 or _f("CONTAINER_20_MT", 20.0))
+    mt40 = mt20 * _f("CONTAINER_40_MT_FACTOR", 1.1)
+    cost40 = _f("CONTAINER_40_COST_FACTOR", 1.4)
+    qty = max(0.0, float(quantity_mt or 0.0))
+    best: tuple[float, int, int] | None = None
+    for n40 in range(0, int(math.ceil(qty / mt40)) + 1):
+        rest = max(0.0, qty - n40 * mt40)
+        n20 = int(math.ceil(rest / mt20 - 1e-9))
+        cost = n20 + n40 * cost40
+        if best is None or cost < best[0] - 1e-9:
+            best = (cost, n20, n40)
+    _, n20, n40 = best or (0, 0, 0)
+    capacity = n20 * mt20 + n40 * mt40
+    fill = round(qty / capacity * 100.0, 1) if capacity else 0.0
+    spare = round(capacity - qty, 2)
+    return {"containers_20": n20, "containers_40": n40, "capacity_mt": round(capacity, 2), "fill_pct": fill,
+            "spare_mt": spare, "fill_suggestion_mt": spare if capacity and fill < 75.0 and spare > 0 else 0.0,
+            "mt_per_20": mt20, "mt_per_40": round(mt40, 2)}
 
 
 def exw_to_fob(price_usd: float, basis: str | None, port_km: float | None = None) -> float:
@@ -193,6 +222,7 @@ def build(
     packing: Any = None,
     packing_in_supplier_price: bool = False,
     inspection_types: list[str] | None = None,
+    hs_code: str | None = None,
 ) -> CostSheet:
     """The deal's cost sheet from what is known now (quotes where they exist)."""
     from shared.orchestration import landed_cost
@@ -310,9 +340,18 @@ def build(
                               pct_of_price=contingency, source="setting"))
 
     fixed, pct = _sum(lines)
+    try:
+        from shared import catalogue
+        mt20 = catalogue.container_for(hs_code)[0] if hs_code else None
+    except Exception:  # noqa: BLE001
+        mt20 = None
+    plan = container_plan(qty, mt20)
+    if plan["fill_suggestion_mt"]:
+        warnings.append(f"the last container travels {plan['fill_pct']:.0f} % full — offer the buyer "
+                        f"{plan['fill_suggestion_mt']:g} MT more to fill the boxes already paid for")
     return CostSheet(quantity_mt=qty, market=market, supplier_price_basis=basis, supplier_route=route,
                      lines=lines, fixed_usd_per_mt=fixed, pct_of_price=pct, warnings=warnings,
-                     computed_at=datetime.now(timezone.utc), inspection_phases=len(phases))
+                     computed_at=datetime.now(timezone.utc), inspection_phases=len(phases), container_plan=plan)
 
 
 # ---------------------------------------------------------------------------

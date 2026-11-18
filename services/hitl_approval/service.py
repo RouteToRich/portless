@@ -112,8 +112,11 @@ class NotMoneyApprover(Exception):
     """A money-moving gate was approved by a staff member who is not a money approver."""
 
     def __init__(self, approval_id: str, action: str, approver: str | None) -> None:
-        super().__init__(f"{action} moves money: only a money approver (AUTH_MONEY_APPROVER_EMAILS) can approve it — "
-                         f"{approver or 'this operator'} can reject it or ask an approver")
+        from shared.auth.roles import COMPLIANCE_ACTIONS
+        who = ("a compliance officer (AUTH_COMPLIANCE_OFFICER_EMAILS)" if action in COMPLIANCE_ACTIONS
+               else "a money approver (AUTH_MONEY_APPROVER_EMAILS)")
+        super().__init__(f"{action}: only {who} can approve it — "
+                         f"{approver or 'this operator'} can reject it or ask one")
         self.approval_id = approval_id
 
 
@@ -136,6 +139,11 @@ def is_money_action(action: str) -> bool:
 
 
 def may_approve(action: str, approver: str | None) -> bool:
+    """Money gates need a money approver, compliance gates a compliance officer (when their
+    lists are set — shared/auth/roles.py); every other gate any staff member."""
+    from shared.auth import roles
+    if action in roles.COMPLIANCE_ACTIONS and not roles.is_compliance_officer(approver):
+        return False
     allowed = money_approvers()
     if not allowed or not is_money_action(action):
         return True
