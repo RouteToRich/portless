@@ -477,3 +477,19 @@ class TestAutomation:
         await get_repository().save_hold(seeded)
         out = await _release(seeded.escrow_id, "T1")  # simulator auto-accepts → released on the read
         assert next(t for t in out.tranches if t.tranche_id == "T1").status == "RELEASED"
+
+
+class TestProviderByCost:
+    async def test_the_cheapest_enabled_provider_when_nobody_chose(self, monkeypatch):
+        from unittest.mock import AsyncMock as _AM
+        from services.escrow_guard import service as eg
+        monkeypatch.setattr(eg, "_fetch_deal", _AM(return_value=None))
+        monkeypatch.setattr("services.dealmaker.repository.get_repository", lambda: type("R", (), {"get_pi_by_deal": _AM(return_value=None)})())
+        monkeypatch.setenv("ESCROW_PROVIDERS_ENABLED", "tazapay,escrow_com")
+        monkeypatch.setenv("ESCROW_DEFAULT_PROVIDER", "tazapay")
+        assert (await eg.resolve_provider("D-NONE"))[1] == "default"
+        monkeypatch.setenv("ESCROW_PROVIDER_BY_COST", "true")
+        assert await eg.resolve_provider("D-NONE") == ("escrow_com", "cheapest")  # 0.89 % < 1.0 %
+        monkeypatch.setenv("TAZAPAY_FEE_PCT", "0.5")
+        assert await eg.resolve_provider("D-NONE") == ("tazapay", "cheapest")
+        assert await eg.resolve_provider("D-NONE", "escrow_com") == ("escrow_com", "request")  # a choice always wins

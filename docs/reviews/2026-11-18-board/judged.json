@@ -1,0 +1,275 @@
+{
+  "date": "2026-11-18",
+  "findings": [
+    {
+      "id": "B-01",
+      "status": "accepted",
+      "title": "A supplier's directory usual price or an ex-works price counts as a firm FOB quote on the match board",
+      "members": [
+        "trader"
+      ],
+      "evidence": "shared/orchestration/matchmaking.py:270-272 — any offer with fob_price_usd_per_mt gets basis \"quoted\"; supply_first.py stores the directory's usual price (source directory_usual_price) and manual_suppliers converts an EXW price without adding the road to the port",
+      "fix": "Give SupplierOffer a price basis (quoted / usual / estimate, FOB / EXW); only a written quote is \"quoted\"; EXW gets the inland leg (as the standby list already does) before any margin; a usual price makes the pair an estimate until the RFQ reply",
+      "why_money": "no deal is confirmed on a margin that disappears when the supplier quotes for real",
+      "priority": "P0",
+      "owner": "Eng",
+      "area": "13",
+      "money": "high",
+      "risk": "high",
+      "score": 9,
+      "impact": "CONFIRM_MATCH can be proposed on a price the supplier never confirmed in writing, and an ex-works price looks FOB-cheap by the inland cost (USD 15-30/MT on a 350 km haul) — margin shown higher than real"
+    },
+    {
+      "id": "B-02",
+      "status": "accepted",
+      "title": "Hand-made and supply-first deals never get the deal-created checks",
+      "members": [
+        "trader"
+      ],
+      "evidence": "shared/orchestration/continuations.py:712 — on_deal_created only acts on DEAL_CREATED with status MATCHING; a deal created without an opportunity starts DRAFT (services/deals/service.py:529) and later moves to MATCHING by PATCH /deals/{id}/status or supply_first.start, which never emits it again",
+      "fix": "Run the deal-created leg (enrichment, compliance.check_trade, outreach, RFQ) on every move into MATCHING — or emit DEAL_CREATED with status MATCHING from update_status / supply_first",
+      "why_money": "a prohibited product or an embargoed buyer is stopped before PortLess spends on outreach — or ships it",
+      "priority": "P0",
+      "owner": "Eng",
+      "area": "5.5",
+      "money": "high",
+      "risk": "high",
+      "score": 9,
+      "impact": "no trade-compliance check (HS export policy, embargoed destination), no counterparty enrichment / screening and no RFQ gate for a deal an operator makes by hand or starts from a supplier — outreach starts anyway"
+    },
+    {
+      "id": "B-03",
+      "status": "accepted",
+      "title": "The audit log can lose entries when two instances write at the same time",
+      "members": [
+        "cfo"
+      ],
+      "evidence": "shared/audit_log.py:29 asyncio.Lock is per process; :86 insert_one({\"_id\": seq}) — two instances computing the same seq → DuplicateKeyError → entry logged as NOT recorded and dropped",
+      "fix": "On DuplicateKeyError re-read the last entry and retry (bounded); and raise a deal.exception / Telegram alert when an audit write finally fails",
+      "why_money": "the audit trail a bank, auditor or the escrow provider asks for stays complete",
+      "priority": "P1",
+      "owner": "Eng",
+      "area": "7",
+      "money": "medium",
+      "risk": "high",
+      "score": 6,
+      "impact": "a money approval or a Kill Switch toggle can be missing from the tamper-evident trail exactly when several instances run"
+    },
+    {
+      "id": "B-04",
+      "status": "accepted",
+      "title": "One operator alone can clear a possible sanctions match",
+      "members": [
+        "compliance"
+      ],
+      "evidence": "services/trade_min/screening_review.py:57 resolve() — a single staff decision turns sanctions \"review\" into \"clear\" (verified, contactable)",
+      "fix": "Clearing a review needs two different staff (like four-eyes money gates); failing needs one; both stay in the audit log",
+      "why_money": "one sanctions breach can freeze the escrow, the bank account and the company",
+      "priority": "P1",
+      "owner": "Eng",
+      "area": "12",
+      "money": "high",
+      "risk": "medium",
+      "score": 6,
+      "impact": "a true sanctions hit cleared by mistake (or by one compromised account) makes a listed company a buyer or supplier"
+    },
+    {
+      "id": "B-05",
+      "status": "accepted",
+      "title": "A stalled watcher is only reported in the next morning's digest",
+      "members": [
+        "operations"
+      ],
+      "evidence": "shared/heartbeat.py marks a watcher stale; only shared/orchestration/digest.py reports it (daily at DIGEST_HOUR_UTC); shared/leader_lock.py fails closed when Mongo is unreachable, so every instance skips its ticks",
+      "fix": "Push a Telegram alert the moment a watcher goes stale (checked by every instance, sent once per stale period) and when the leader lock store cannot be reached",
+      "why_money": "a stuck shipment or a supplier waiting for its money is caught in minutes, not a day",
+      "priority": "P1",
+      "owner": "Eng",
+      "area": "7",
+      "money": "medium",
+      "risk": "high",
+      "score": 6,
+      "impact": "for up to a day no reminders, no QC / freight polling, no lapsed-window auto-release and no approval timeouts — and nobody is told"
+    },
+    {
+      "id": "B-06",
+      "status": "accepted",
+      "title": "Fees recorded from statements never reach the ledger, the journal or the realised margin",
+      "members": [
+        "cfo"
+      ],
+      "evidence": "shared/orchestration/fee_check.py keeps recorded fees in collection deal_fees; services/escrow_guard/service.py realised margin and journal.py use fees_total = provider fee % × released and portless_costs only",
+      "fix": "Feed recorded actual fees into the ledger (fees_total = actual when recorded) and post them to the journal (provider_fees / bank charges); realised margin then follows",
+      "why_money": "the margin per corridor that pricing learns from is the real one",
+      "priority": "P1",
+      "owner": "Eng",
+      "area": "4",
+      "money": "medium",
+      "risk": "medium",
+      "score": 4,
+      "impact": "bank charges and fees above the quote are reported in the digest but the deal's realised margin and the books still show the estimate"
+    },
+    {
+      "id": "B-07",
+      "status": "accepted",
+      "title": "A supplier on the do-not-contact list still gets RFQs, reconfirmations and best-and-final e-mails",
+      "members": [
+        "compliance"
+      ],
+      "evidence": "shared/orchestration/continuations.py _rfq_candidates / _hand_added_suppliers (no do_not_contact filter; only _traded_suppliers_first checks it); services/trade_min/relationships.py:297 blocked_contacts reads buyers only",
+      "fix": "Apply the directory's do-not-contact and declined lists to every supplier e-mail path (RFQ dispatch, quote_reconfirm, best_and_final, send retries)",
+      "why_money": "the mailbox's reputation is what makes every introduction land",
+      "priority": "P1",
+      "owner": "Eng",
+      "area": "20",
+      "money": "medium",
+      "risk": "medium",
+      "score": 4,
+      "impact": "a supplier that asked not to be written to is e-mailed again — complaints, spam reports against the trade-desk domain"
+    },
+    {
+      "id": "B-08",
+      "status": "accepted",
+      "title": "Five money and risk switches are built but left off, waiting for a decision",
+      "members": [
+        "ceo"
+      ],
+      "evidence": "OUTREACH_VERIFIED_ONLY, RFQ_VERIFIED_ONLY (outreach.py, continuations.py), ESCROW_PROVIDER_BY_COST (escrow_guard/service.py), PROSPECT_CLEANUP_ENABLED (prospect_cleanup.py), SUPPLY_FIRST / manual suppliers without a buyer-side check — all default off or permissive",
+      "fix": "Decide each switch with a recommended setting (verified-only outreach / RFQ on once Apify screening is live; cheapest escrow when both providers are live; clean-up at 60 days) and set it in the deployed environment",
+      "why_money": "each switch either saves fees or keeps unverified counterparties out of the money path",
+      "priority": "P1",
+      "owner": "Biz",
+      "area": "decisions",
+      "money": "medium",
+      "risk": "medium",
+      "score": 4,
+      "impact": "the protections and savings exist in code but do nothing until someone decides; nobody owns that decision today"
+    },
+    {
+      "id": "B-09",
+      "status": "accepted",
+      "title": "The public rate limit trusts X-Forwarded-For, so it can be bypassed",
+      "members": [
+        "engineer"
+      ],
+      "evidence": "shared/auth/middleware.py:90 — client = first value of X-Forwarded-For, which any caller can set",
+      "fix": "Use the address the trusted proxy appended (the last hop, or a TRUSTED_PROXY_HOPS setting) and fall back to request.client; never the caller-supplied first value",
+      "why_money": "the anonymous money doors stay protected against brute force and floods",
+      "priority": "P1",
+      "owner": "Eng",
+      "area": "8",
+      "money": "low",
+      "risk": "medium",
+      "score": 2,
+      "impact": "a caller rotating the header gets unlimited attempts at the webhook, unsubscribe and proof-link doors"
+    },
+    {
+      "id": "B-10",
+      "status": "accepted",
+      "title": "Each module opens its own Mongo client and connection pool",
+      "members": [
+        "engineer"
+      ],
+      "evidence": "29 modules call motor AsyncIOMotorClient(settings.mongo_uri) (e.g. shared/audit_log.py, heartbeat.py, leader_lock.py, fee_check.py, outcomes.py, pricebook.py)",
+      "fix": "One shared client per process (shared/mongo.py get_client()), every module takes its collection from it",
+      "why_money": "a smaller Atlas tier carries the load and the backend does not fall over under a scan",
+      "priority": "P1",
+      "owner": "Eng",
+      "area": "7",
+      "money": "low",
+      "risk": "medium",
+      "score": 2,
+      "impact": "up to 29 pools × maxPoolSize connections per instance — Atlas connection limits are hit early on small tiers and serverless cold starts slow down"
+    },
+    {
+      "id": "B-11",
+      "status": "accepted",
+      "title": "New back-office features have no console screen",
+      "members": [
+        "operator"
+      ],
+      "evidence": "no calls in ../portless-ui/src/api/endpoints.ts for GET /hitl-approval/audit(/verify), POST/GET /escrow-guard/deals/{id}/fees and /fees/over, GET /health/watchers, GET /deals/price-alerts, GET/POST /deals/prospects/cleanup, the journal ?format=tally|zoho",
+      "fix": "Audit log + verify on System Health, watchers status there too, a fees form and list on the deal's Payments tab and Money & Margin, price alerts on the radar, clean-up preview on Prospects, Tally / Zoho download buttons",
+      "why_money": "the controls that protect margin are used every day instead of forgotten",
+      "priority": "P1",
+      "owner": "Eng",
+      "area": "10",
+      "money": "medium",
+      "risk": "low",
+      "score": 2,
+      "impact": "staff can only use them through the API docs; fees go unrecorded, stale watchers and price moves are only seen in the digest"
+    },
+    {
+      "id": "B-12",
+      "status": "accepted",
+      "title": "Supplier e-mails have no unsubscribe and no clear opt-out",
+      "members": [
+        "counterparty"
+      ],
+      "evidence": "shared/orchestration/unsubscribe.py is used by outreach.draft only; services/sourcing/service.py rfq_email_body, quote_reconfirm.body and best_and_final.body carry none",
+      "fix": "Add the signed unsubscribe link (supplier role) to RFQ, reconfirmation and best-and-final e-mails, honoured as supplier do-not-contact",
+      "why_money": "fewer spam reports against the domain that carries every quote request",
+      "priority": "P2",
+      "owner": "Eng",
+      "area": "20",
+      "money": "low",
+      "risk": "medium",
+      "score": 2,
+      "impact": "suppliers (often small mills) have no easy way to stop PortLess's e-mails; under cold-e-mail rules every commercial e-mail should carry one"
+    },
+    {
+      "id": "B-13",
+      "status": "accepted",
+      "title": "Directory-wide scans on every request will not scale",
+      "members": [
+        "engineer"
+      ],
+      "evidence": "16 places read the whole directory (limit=100_000 / 5000): manual_suppliers.find_duplicate per added row, dedupe.duplicates, supply_first.buyers_for, offer_checks._directory_record, supplier_commitment._manual_standbys, outreach._directory_view (with relationships.annotate)",
+      "fix": "Indexed lookups (gstin, domain, phone, hs_codes) in the Mongo directory and an index map per import; cache the annotated directory view per minute",
+      "why_money": "the directory can grow to the size that finds more buyers without slowing the desk",
+      "priority": "P2",
+      "owner": "Eng",
+      "area": "7",
+      "money": "low",
+      "risk": "medium",
+      "score": 2,
+      "impact": "a CSV import of 500 rows over a 10,000-company directory reads 5 million records; the desk and outreach slow down as the directory grows"
+    },
+    {
+      "id": "B-14",
+      "status": "accepted",
+      "title": "Decisions are typed into browser prompt boxes",
+      "members": [
+        "operator"
+      ],
+      "evidence": "window.prompt in Prospects.tsx (park / drop / retry), BuyersSuppliers.tsx (bulk), CompanyViews.tsx (do-not-contact, start a prospect), ScreeningReviewCard.tsx (clear / fail) — 9 places",
+      "fix": "One small reason dialog component (reason, optional date / market, the consequence spelled out) used everywhere",
+      "why_money": "faster, better-documented decisions on the go",
+      "priority": "P2",
+      "owner": "Eng",
+      "area": "10",
+      "money": "low",
+      "risk": "low",
+      "score": 1,
+      "impact": "no validation, no context while typing a reason, unusable on a phone; reasons end up as one word"
+    },
+    {
+      "id": "B-15",
+      "status": "rejected",
+      "title": "LLM cost is not in the cost per paid deal",
+      "members": [
+        "ceo"
+      ],
+      "reason": "already in todo (Cost dashboards: LLM, Apify, Tavily, Atlas, hosting)"
+    },
+    {
+      "id": "B-16",
+      "status": "rejected",
+      "title": "QIMA results only arrive by polling",
+      "members": [
+        "operations"
+      ],
+      "reason": "already in todo (QIMA has no webhook — confirm acceptable delay)"
+    }
+  ]
+}

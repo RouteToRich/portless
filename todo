@@ -19,21 +19,21 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-18)
 
-**474 open · 95 done** (17 % done).
+**478 open · 106 done** (18 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
 | Where things stand | 1 | 0 |
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
-| P0 — before the first real trade | 89 | 9 |
-| P1 — before more than a few deals a month | 274 | 82 |
-| P2 — improvements | 31 | 4 |
+| P0 — before the first real trade | 89 | 11 |
+| P1 — before more than a few deals a month | 275 | 91 |
+| P2 — improvements | 34 | 4 |
 | Apify actors (outside this repo) | 18 | 0 |
 | Decisions needed | 21 | 0 |
-| **Total** | **474** | **95** |
+| **Total** | **478** | **106** |
 
-Open items by owner: Eng 190 · Apify 18 · Ops 27 · Legal 29 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 194 · Apify 18 · Ops 27 · Legal 29 · Biz 43 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
 
@@ -42,7 +42,7 @@ Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when thi
 ## Where things stand today
 
 - [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
-- Backend tests: 5142 passed, 1 skipped, 0 warnings (2026-11-18, about 1 minute). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
+- Backend tests: 5157 passed, 1 skipped, 0 warnings (2026-11-18, about 1 minute). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
 - End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
 - Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
 - UI repo: type-check and build pass; **no tests of any kind, no CI**. Browser cases written: TC-WEB-001 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`), none automated.
@@ -204,8 +204,8 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
   - *Supply-first deal*: staff start a deal from a manual supplier and a product; PortLess runs the buyer search for the product's markets, the buyer outreach funnel, the match board and the negotiation as usual.
   - *Pre-arranged trade*: buyer and supplier both known and entered by staff — skip outreach and matching and open the negotiation (or record the agreed prices and go to the supplier's firm order request → PI).
 - [x] **(Eng)** RFQ leg: include the deal's supplier party, its supplier offers and directory suppliers linked to the deal in `_rfq_candidates`, so a hand-made deal never parks without an RFQ. — done 2026-11-18: `_rfq_candidates` adds the deal's supplier party and supplier offers still waiting for a price (directory / staff), with an address, never one that already quoted.
-- [ ] **(Eng)** Suppliers page: "Add supplier" form, edit, verification badges, import CSV.
-- [ ] **(Eng)** On a prospect / deal: "Add supplier to this deal" (pick from the directory or add new), "Record phone quote", and "Start a deal from this supplier".
+- [x] **(Eng)** Suppliers page: "Add supplier" form, edit, verification badges, import CSV. — done 2026-11-18: Buyers & Suppliers (supplier tab) has "Add supplier" (every field, checks on save, duplicate → add anyway?), "Import CSV" (check the file first, then import) and Edit on a hand-added supplier's profile; badges come from the check.
+- [x] **(Eng)** On a prospect / deal: "Add supplier to this deal" (pick from the directory or add new), "Record phone quote", and "Start a deal from this supplier". — done 2026-11-18: "Add to prospect" (directory → prospect, now with the RFQ gate) and "Add offer" on the match board (phone quote, now checked) existed; new "Start a prospect" on a supplier's profile (`POST /trade-min/suppliers/{id}/start-prospect`: supply first — deal for its product × market, its usual price as the offer, the directory's best buyers as candidates, outreach started).
 
 ### 6.1 Automation coverage — Quality assurance gaps
 - [ ] **(QA/Eng)** Automate the 24 P0 catalogue cases that still have unautomated steps: TC-E2E-001 … TC-E2E-009 (written for the console), TC-EXC-005, TC-EXC-006, TC-FRT-017, TC-HIT-008, TC-HIT-017, TC-INT-012, TC-LED-006, TC-LED-008, TC-MAT-002, TC-MAT-014, TC-NEG-014, TC-NEG-017, TC-PAY-001, TC-PI-018, TC-REL-008.
@@ -295,6 +295,10 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Biz)** Chartered accountant on retainer: GST returns and refunds, LUT, books, tax.
 - [ ] **(Biz/Ops)** Licensed customs broker (CHA) under contract at the ports used — files the shipping bill until ICEGATE filing works (also 1.2, 5.2).
 
+### 22.2 Review-board findings (2026-11-18) — P0
+- [ ] **(Eng) P0** **A supplier's directory usual price or an ex-works price counts as a firm FOB quote on the match board** — Give SupplierOffer a price basis (quoted / usual / estimate, FOB / EXW); only a written quote is "quoted"; EXW gets the inland leg (as the standby list already does) before any margin; a usual price makes the pair an estimate until the RFQ reply. Why: no deal is confirmed on a margin that disappears when the supplier quotes for real. Evidence: shared/orchestration/matchmaking.py:270-272 — any offer with fob_price_usd_per_mt gets basis "quoted"; supply_first.py stores the directory's usual price (source directory_usual_price) and manual_suppliers converts an EXW price without adding the road to the port. (review-board B-01 2026-11-18)
+- [ ] **(Eng) P0** **Hand-made and supply-first deals never get the deal-created checks** — Run the deal-created leg (enrichment, compliance.check_trade, outreach, RFQ) on every move into MATCHING — or emit DEAL_CREATED with status MATCHING from update_status / supply_first. Why: a prohibited product or an embargoed buyer is stopped before PortLess spends on outreach — or ships it. Evidence: shared/orchestration/continuations.py:712 — on_deal_created only acts on DEAL_CREATED with status MATCHING; a deal created without an opportunity starts DRAFT (services/deals/service.py:529) and later moves to MATCHING by PATCH /deals/{id}/status or supply_first.start, which never emits it again. (review-board B-02 2026-11-18)
+
 ---
 
 ## P1 — needed before running more than a handful of deals a month
@@ -376,9 +380,9 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Legal)** Cold outreach e-mails to buyers found by scans: anti-spam rules in each destination market (opt-out is already in the template; check consent rules for the EU and others).
 
 ### 4 Money safety and financial controls
-- [ ] **(Eng)** Export the double-entry journal to the accounting system (Tally / Zoho Books / your CA's format) — CSV exists (`/escrow-guard/journals`); add account codes agreed with the CA.
+- [x] **(Eng)** Export the double-entry journal to the accounting system (Tally / Zoho Books / your CA's format) — CSV exists (`/escrow-guard/journals`); add account codes agreed with the CA. — done 2026-11-18: `?format=tally` / `?format=zoho` on `/escrow-guard/deals/{id}/journal` and `/journals` (one debit and one credit row per entry; ledger names from `JOURNAL_LEDGER_<ACCOUNT>`). Confirm the layouts with the CA's software on a real import.
 - [ ] **(Eng)** FX: record the rate at each receipt and payout and post FX gain / loss to the journal (today amounts are USD only).
-- [ ] **(Eng)** Fees: reconcile the escrow provider fee, payout fee and bank charges per deal against the fee % assumed in the cost sheet; alert when actual > assumed.
+- [x] **(Eng)** Fees: reconcile the escrow provider fee, payout fee and bank charges per deal against the fee % assumed in the cost sheet; alert when actual > assumed. — done 2026-11-18: `shared/orchestration/fee_check.py` — staff record actual fees from statements (`POST /escrow-guard/deals/{id}/fees`: escrow / payout / bank); compared with the % priced in (cost sheet / `PAYOUT_FEE_PCT`; an unassumed fee is over at any amount); `GET …/fees`, `GET /escrow-guard/fees/over`, digest line "FEES ABOVE THE PRICE".
 - [ ] **(Biz)** Kill Switch drill: pause, confirm every money path refuses, resume — monthly.
 - [x] **(Eng)** Alert when realised margin on a closed deal is below the margin floor (cost sheet estimate vs actual costs). — done 2026-11-18: when every tranche is released and the supplier is paid in full, a realised margin below the deal's margin floor (else `DEALMAKER_PO_MARGIN_FLOOR_PCT`) raises `deal.exception` `PAID:margin_below_floor` (category MARGIN_BREACH) once, with the estimate, net received, supplier paid and PortLess's costs; mid-deal figures are never judged.
 - [x] **(Eng)** Supplier retention (10 % held until buyer acceptance): confirm the supplier contract states it, and the payout e-mail explains it. — payout e-mail done 2026-11-18: the payment notice says how much is held until the buyer accepts (its share of the order value), why, and that it is paid on acceptance or when the window lapses (`retained_until_acceptance` on `payout.completed`). The supplier contract wording is still for counsel (3.4).
@@ -514,7 +518,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [x] **(Eng)** Show superseded match gates as "closed — another pair was confirmed", not as rejected. — done 2026-11-18: approvals list and card show "Closed — another pair was confirmed" (grey) for gates closed by `system:superseded` (`portless-ui/src/lib/approvals.ts`).
 - [x] **(Eng)** Show prices to the operator in USD with the supplier's INR figure beside it where relevant. — done 2026-11-18: `GET /deals/fx/usd-inr` (rate + live / fallback); the match board offers, the deal's supplier scoring and the prospect's best quote show "≈ ₹…" beside the USD price, with the rate in the tooltip.
 - [x] **(Eng)** Readiness page: show `GET /health/readiness` so operators see what is stubbed. — already there (checked 2026-11-18): System Health → Production readiness lists every check with its status and fix.
-- [ ] **(Eng)** Money screens: clear four-eyes state (who signed, who is still needed), tranche order, payout cap and retention.
+- [x] **(Eng)** Money screens: clear four-eyes state (who signed, who is still needed), tranche order, payout cap and retention. — done 2026-11-18: the approval card showed signers and who is still needed; it now also shows the deal's escrow next to a tranche / payout / acceptance gate (tranche order with ✓ released and ← this, funded / released / paid / available for payout / held back, ledger not reconciled).
 - [x] **(Eng)** SSE reconnect banner — done 2026-11-18: the Approvals page shows "Live updates lost — reconnecting (try N)" with "Reconnect now" while the stream is down.
 - [ ] **(Eng)** Error and empty states for every page.
 - [x] **(Eng)** **Money at a glance** — Deal Board part done 2026-11-18: Buy → Sell /MT and Profit columns (`GET /deals/board/money`: PI / PO prices when issued, else the buyer target and the supplier's quote in italics; realised profit after settlement, else the estimate).
@@ -538,7 +542,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** **Freight quotes from more than one source** (Maersk + forwarders) and book the cheapest that meets the date; today Maersk is booked by default.
 - [ ] **(Eng)** **Container fill**: maximise MT per container (20 ft vs 40 ft, bag weight) in the cost sheet and the offer quantity.
 - [ ] **(Eng)** **Inspection cost**: compare inspector quotes per booking; offer the buyer a cheaper inspection plan when it is enough.
-- [ ] **(Eng)** **Escrow provider by cost**: pick the cheaper provider per deal size when the buyer has no preference; pass the escrow fee to the buyer as a line item where allowed.
+- [x] **(Eng)** **Escrow provider by cost**: pick the cheaper provider per deal size when the buyer has no preference; pass the escrow fee to the buyer as a line item where allowed. — provider choice done 2026-11-18: `ESCROW_PROVIDER_BY_COST=true` takes the enabled provider with the lowest fee (`<PROVIDER>_FEE_PCT`) when neither the buyer nor staff chose one (off by default). Showing the escrow fee to the buyer as a line item stays open.
 
 ### 11.3 Price better — New features to raise profit per deal (product)
 - [ ] **(Eng)** **Margin by corridor and buyer**: learn from accepted / countered indicative offers (outcomes already recorded) to set the target margin per HS code × market × buyer tier instead of one floor.
@@ -546,9 +550,9 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ### 11.4 Win more and repeat — New features to raise profit per deal (product)
 - [ ] **(Biz/Eng)** **Repeat orders and annual contracts**: a "reorder" button, reminders before the buyer's next usual order date, framework contracts with monthly lifts.
-- [ ] **(Eng)** **Already-traded buyers and suppliers first**: a company PortLess has completed a deal with (PAID, no dispute or refund) is tried before a new one of the same product. Mark it on the directory record ("traded": deals completed, last deal, HS codes, dispute / refund count) and show it on Buyers & Suppliers and the radar. Use it in four places: (1) the scan adds traded companies for the HS code to the opportunity's buyers / suppliers even when the web search did not find them; (2) the outreach funnel contacts traded buyers first and the RFQ shortlist (`RFQ_MAX_SUPPLIERS`) always includes traded suppliers; (3) pair scoring and the match board rank a traded pair higher (today `outcomes.py` only adjusts the chance of closing); (4) before a negotiation opens with a new company, check whether a traded one can take the order (product, quantity, market, still passes validation) and ask it first. Never overrides a failed validation, a compliance hold or the margin floor; a past dispute or refund lowers the priority instead of raising it.
-- [ ] **(Eng)** **Buyer scoring for outreach**: focus the funnel on buyers most likely to close (reply rate, import history, fit score) — less outreach cost per deal.
-- [ ] **(Eng)** Funnel analytics: scans → prospects → interested → matched → PI → paid, with time and cost per step.
+- [x] **(Eng)** **Already-traded buyers and suppliers first**: a company PortLess has completed a deal with (PAID, no dispute or refund) is tried before a new one of the same product. Mark it on the directory record ("traded": deals completed, last deal, HS codes, dispute / refund count) and show it on Buyers & Suppliers and the radar. Use it in four places: (1) the scan adds traded companies for the HS code to the opportunity's buyers / suppliers even when the web search did not find them; (2) the outreach funnel contacts traded buyers first and the RFQ shortlist (`RFQ_MAX_SUPPLIERS`) always includes traded suppliers; (3) pair scoring and the match board rank a traded pair higher (today `outcomes.py` only adjusts the chance of closing); (4) before a negotiation opens with a new company, check whether a traded one can take the order (product, quantity, market, still passes validation) and ask it first. Never overrides a failed validation, a compliance hold or the margin floor; a past dispute or refund lowers the priority instead of raising it. — part done 2026-11-18: traded buyers are contacted first in the funnel and traded suppliers of the product always get the RFQ, first. Open: adding traded companies to a scan's opportunity, ranking a traded pair higher on the match board, asking a traded one before a new negotiation.
+- [x] **(Eng)** **Buyer scoring for outreach**: focus the funnel on buyers most likely to close (reply rate, import history, fit score) — less outreach cost per deal. — done 2026-11-18: the funnel writes first to buyers PortLess already traded with, then verified ones, by their reply rate with PortLess, fit score and directory score (`outreach.rank_candidates`).
+- [x] **(Eng)** Funnel analytics: scans → prospects → interested → matched → PI → paid, with time and cost per step. — done 2026-11-18: `GET /deals/funnel?days=` (opportunities → prospects → interested → matched → PI → paid: counts, conversion, median days, scan cost, e-mails, biggest drop); card on Money & Margin.
 
 ### 12 Buyer and supplier validation (Opportunity Radar)
 - [ ] **(Biz/Eng)** **Proof that a buyer actually imports this product.** Today a verified buyer is a real company with a working mailbox and a clean sanctions result, not a proven importer of the HS code. Needs import records (bill-of-lading data): paid Volza / ImportGenius, an Apify plan that can run the Store importer actors, or a new PortLess actor on public US customs bill-of-lading data (US-only coverage). See the decision below.
@@ -845,7 +849,7 @@ Both:
 
 ### 22.1 Review board — Claude skills that review the whole app and feed this list
 
-- [ ] **(Eng/Biz) P1** **Review-board skills for PortLess**: build a set of Claude Code skills (in `.claude/skills/`, the way the `/actor-verifier` board reviews an Apify Actor) that review this app end to end from several roles and turn every finding into tasks in this `todo` file, so the gaps in the trading workflow are found and closed and the app makes more money per deal.
+- [x] **(Eng/Biz) P1** **Review-board skills for PortLess**: build a set of Claude Code skills (in `.claude/skills/`, the way the `/actor-verifier` board reviews an Apify Actor) that review this app end to end from several roles and turn every finding into tasks in this `todo` file, so the gaps in the trading workflow are found and closed and the app makes more money per deal. — skills built 2026-11-18: `.claude/skills/portless-review-board/` (SKILL.md flow, eight member briefs with checklists and a "Learned" section, judge.md, `scripts/append_findings.py` — adds accepted findings to the right priority section, never twice, recounts the metrics; tested). The first full board run is the item below.
   - **One entry skill** (e.g. `/portless-review-board`) that runs the members in turn — or one member by name (`/portless-review-board trader`) — and a **judge** step that merges the findings, removes duplicates and ranks them by money at stake and risk.
   - **Board members, each its own skill / prompt with a clear brief and a checklist:**
     - **Commodity trader / trade desk** — sourcing, pricing, margins, negotiation, the prospect desk, missed revenue and deals that would stall.
@@ -860,6 +864,18 @@ Both:
   - **Output**: one review report per run (`docs/reviews/<date>-board.md`: findings per member with evidence — file / line, screen, or e-mail — severity, money impact and the fix), and every accepted finding appended to `todo` in the right priority and area, with owner tag, a P0 / P1 / P2 and a one-line "why it makes or saves money"; nothing already in the list is added twice (match against open and done items). The to-do metrics are recounted at the end.
   - **Learning loop**: the lessons of each review go into the members' checklists so the next run starts from them; re-run the board after each batch of fixes and compare the reports.
   - Done when the board can be run with one command, each member produces specific findings with evidence, and the first full run's tasks are in this list.
+- [x] **(Eng/Biz) P1** First full run of `/portless-review-board`: all eight members, the judge, the report in `docs/reviews/`, the accepted findings appended to this list; then fix, re-run and compare. — done 2026-11-18: report `docs/reviews/2026-11-18-board.md` (scorecard 6–7/10 per member, 16 findings, 14 accepted, 2 already listed); the accepted ones are under 22.2 in P0 / P1 / P2 (review-board B-01 … B-14); lessons added to the members' checklists. Re-run after fixing B-01 … B-14.
+
+### 22.2 Review-board findings (2026-11-18) — P1
+- [ ] **(Eng) P1** **The audit log can lose entries when two instances write at the same time** — On DuplicateKeyError re-read the last entry and retry (bounded); and raise a deal.exception / Telegram alert when an audit write finally fails. Why: the audit trail a bank, auditor or the escrow provider asks for stays complete. Evidence: shared/audit_log.py:29 asyncio.Lock is per process; :86 insert_one({"_id": seq}) — two instances computing the same seq → DuplicateKeyError → entry logged as NOT recorded and dropped. (review-board B-03 2026-11-18)
+- [ ] **(Eng) P1** **One operator alone can clear a possible sanctions match** — Clearing a review needs two different staff (like four-eyes money gates); failing needs one; both stay in the audit log. Why: one sanctions breach can freeze the escrow, the bank account and the company. Evidence: services/trade_min/screening_review.py:57 resolve() — a single staff decision turns sanctions "review" into "clear" (verified, contactable). (review-board B-04 2026-11-18)
+- [ ] **(Eng) P1** **A stalled watcher is only reported in the next morning's digest** — Push a Telegram alert the moment a watcher goes stale (checked by every instance, sent once per stale period) and when the leader lock store cannot be reached. Why: a stuck shipment or a supplier waiting for its money is caught in minutes, not a day. Evidence: shared/heartbeat.py marks a watcher stale; only shared/orchestration/digest.py reports it (daily at DIGEST_HOUR_UTC); shared/leader_lock.py fails closed when Mongo is unreachable, so every instance skips its ticks. (review-board B-05 2026-11-18)
+- [ ] **(Eng) P1** **Fees recorded from statements never reach the ledger, the journal or the realised margin** — Feed recorded actual fees into the ledger (fees_total = actual when recorded) and post them to the journal (provider_fees / bank charges); realised margin then follows. Why: the margin per corridor that pricing learns from is the real one. Evidence: shared/orchestration/fee_check.py keeps recorded fees in collection deal_fees; services/escrow_guard/service.py realised margin and journal.py use fees_total = provider fee % × released and portless_costs only. (review-board B-06 2026-11-18)
+- [ ] **(Eng) P1** **A supplier on the do-not-contact list still gets RFQs, reconfirmations and best-and-final e-mails** — Apply the directory's do-not-contact and declined lists to every supplier e-mail path (RFQ dispatch, quote_reconfirm, best_and_final, send retries). Why: the mailbox's reputation is what makes every introduction land. Evidence: shared/orchestration/continuations.py _rfq_candidates / _hand_added_suppliers (no do_not_contact filter; only _traded_suppliers_first checks it); services/trade_min/relationships.py:297 blocked_contacts reads buyers only. (review-board B-07 2026-11-18)
+- [ ] **(Biz) P1** **Five money and risk switches are built but left off, waiting for a decision** — Decide each switch with a recommended setting (verified-only outreach / RFQ on once Apify screening is live; cheapest escrow when both providers are live; clean-up at 60 days) and set it in the deployed environment. Why: each switch either saves fees or keeps unverified counterparties out of the money path. Evidence: OUTREACH_VERIFIED_ONLY, RFQ_VERIFIED_ONLY (outreach.py, continuations.py), ESCROW_PROVIDER_BY_COST (escrow_guard/service.py), PROSPECT_CLEANUP_ENABLED (prospect_cleanup.py), SUPPLY_FIRST / manual suppliers without a buyer-side check — all default off or permissive. (review-board B-08 2026-11-18)
+- [ ] **(Eng) P1** **The public rate limit trusts X-Forwarded-For, so it can be bypassed** — Use the address the trusted proxy appended (the last hop, or a TRUSTED_PROXY_HOPS setting) and fall back to request.client; never the caller-supplied first value. Why: the anonymous money doors stay protected against brute force and floods. Evidence: shared/auth/middleware.py:90 — client = first value of X-Forwarded-For, which any caller can set. (review-board B-09 2026-11-18)
+- [ ] **(Eng) P1** **Each module opens its own Mongo client and connection pool** — One shared client per process (shared/mongo.py get_client()), every module takes its collection from it. Why: a smaller Atlas tier carries the load and the backend does not fall over under a scan. Evidence: 29 modules call motor AsyncIOMotorClient(settings.mongo_uri) (e.g. shared/audit_log.py, heartbeat.py, leader_lock.py, fee_check.py, outcomes.py, pricebook.py). (review-board B-10 2026-11-18)
+- [ ] **(Eng) P1** **New back-office features have no console screen** — Audit log + verify on System Health, watchers status there too, a fees form and list on the deal's Payments tab and Money & Margin, price alerts on the radar, clean-up preview on Prospects, Tally / Zoho download buttons. Why: the controls that protect margin are used every day instead of forgotten. Evidence: no calls in ../portless-ui/src/api/endpoints.ts for GET /hitl-approval/audit(/verify), POST/GET /escrow-guard/deals/{id}/fees and /fees/over, GET /health/watchers, GET /deals/price-alerts, GET/POST /deals/prospects/cleanup, the journal ?format=tally|zoho. (review-board B-11 2026-11-18)
 
 ---
 
@@ -951,6 +967,11 @@ Both:
 
 ### 14.6 Office, people and records — Starting the company (non-technical: registrations, accounts, set-up)
 - [ ] **(Biz)** Business insurance: office, professional indemnity, directors' and officers' cover.
+
+### 22.2 Review-board findings (2026-11-18) — P2
+- [ ] **(Eng) P2** **Supplier e-mails have no unsubscribe and no clear opt-out** — Add the signed unsubscribe link (supplier role) to RFQ, reconfirmation and best-and-final e-mails, honoured as supplier do-not-contact. Why: fewer spam reports against the domain that carries every quote request. Evidence: shared/orchestration/unsubscribe.py is used by outreach.draft only; services/sourcing/service.py rfq_email_body, quote_reconfirm.body and best_and_final.body carry none. (review-board B-12 2026-11-18)
+- [ ] **(Eng) P2** **Directory-wide scans on every request will not scale** — Indexed lookups (gstin, domain, phone, hs_codes) in the Mongo directory and an index map per import; cache the annotated directory view per minute. Why: the directory can grow to the size that finds more buyers without slowing the desk. Evidence: 16 places read the whole directory (limit=100_000 / 5000): manual_suppliers.find_duplicate per added row, dedupe.duplicates, supply_first.buyers_for, offer_checks._directory_record, supplier_commitment._manual_standbys, outreach._directory_view (with relationships.annotate). (review-board B-13 2026-11-18)
+- [ ] **(Eng) P2** **Decisions are typed into browser prompt boxes** — One small reason dialog component (reason, optional date / market, the consequence spelled out) used everywhere. Why: faster, better-documented decisions on the go. Evidence: window.prompt in Prospects.tsx (park / drop / retry), BuyersSuppliers.tsx (bulk), CompanyViews.tsx (do-not-contact, start a prospect), ScreeningReviewCard.tsx (clear / fail) — 9 places. (review-board B-14 2026-11-18)
 
 ---
 

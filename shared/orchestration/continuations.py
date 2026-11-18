@@ -550,6 +550,7 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Continuation[RFQ]: match seed lookup failed for %s: %s", deal.deal_id, exc)
     out = [c for c in out if c.get("supplier_id")] + _hand_added_suppliers(deal, out)
+    out = await _traded_suppliers_first(deal, out)
     if rfq_verified_only():
         skipped = [c["supplier_id"] for c in out if c.get("verification") != "verified"]
         if skipped:
@@ -557,6 +558,40 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
                         deal.deal_id, len(skipped))
         out = [c for c in out if c.get("verification") == "verified"]
     return (await _rank_for_rfq(deal, out))[:_RFQ_MAX_SUPPLIERS]
+
+
+async def _traded_suppliers_first(deal, cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Suppliers PortLess already completed a deal with for this product always get the RFQ
+    (added when missing) and go first — a known supplier closes faster and safer."""
+    try:
+        from shared.orchestration.outreach import _directory_view
+        from services.trade_min import directory  # type: ignore[import]
+        view = await _directory_view("supplier")
+        store = await directory.get_directory()
+        rows = {r.id: r for r in await store.list("supplier", limit=100_000)}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Continuation[RFQ]: traded suppliers unavailable: %s", exc)
+        return cands
+    from services.trade_min.relationships import keys_for, record_keys  # type: ignore[import]
+    hs6 = str(getattr(deal, "hs_code", "") or "")[:6]
+    traded: list[dict[str, Any]] = []
+    for rec in rows.values():
+        r = next((x for k, x in view if k == record_keys(rec)), {})
+        if (r.get("deals_won") or 0) <= 0 or not rec.email or rec.do_not_contact:
+            continue
+        if rec.validation is not None and rec.validation.status == "failed":
+            continue
+        if not any(c[:6] == hs6 for c in rec.hs_codes):
+            continue
+        traded.append({"supplier_id": rec.id, "company_name": rec.name, "source": "other", "contact_id": None,
+                       "fob_price_usd": rec.estimated_fob_price_usd, "email": rec.email,
+                       "verification": rec.validation.status if rec.validation else None, "traded": True})
+    if not traded:
+        return cands
+    traded_keys = [keys_for(t["email"], t["supplier_id"], name=t["company_name"]) for t in traded]
+    rest = [c for c in cands if not any(keys_for(c.get("email"), c.get("supplier_id"), name=c.get("company_name")) & k
+                                        for k in traded_keys)]
+    return traded + rest
 
 
 def _hand_added_suppliers(deal, already: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -609,7 +644,7 @@ async def _rank_for_rfq(deal, cands: list[dict[str, Any]]) -> list[dict[str, Any
         reachable = bool(c.get("email") or c.get("contact_id"))
         fob = c.get("fob_price_usd")
         in_band = bool(fob and band and band[0] <= float(fob) <= band[1])
-        return (not reachable, not in_band, not fob, i)
+        return (not c.get("traded"), not reachable, not in_band, not fob, i)
 
     return [c for _, c in sorted(enumerate(cands), key=key)]
 

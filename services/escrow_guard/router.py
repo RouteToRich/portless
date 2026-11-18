@@ -19,10 +19,11 @@ Routes:
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
 from shared.auth.dependencies import AuthUser, require_portless
 from shared.webhooks import parse_webhook_body, signature_required
@@ -322,6 +323,10 @@ async def api_deal_journal(deal_id: str, format: str = "json") -> Any:
             content=journal_csv(journal), media_type="text/csv",
             headers={"Content-Disposition": f'attachment; filename="journal-{deal_id}.csv"'},
         )
+    if format in ("tally", "zoho"):
+        from .journal import accounting_csv
+        return Response(content=accounting_csv([journal], format), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="journal-{deal_id}-{format}.csv"'})
     return journal.model_dump(mode="json")
 
 
@@ -331,6 +336,10 @@ async def api_all_journals(format: str = "json") -> Any:
     from fastapi.responses import Response
     from .journal import build_all_journals, journal_csv
     journals = await build_all_journals()
+    if format in ("tally", "zoho"):
+        from .journal import accounting_csv
+        return Response(content=accounting_csv(journals, format), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="journals-{format}.csv"'})
     if format == "csv":
         body = ""
         for i, j in enumerate(journals):
@@ -339,6 +348,35 @@ async def api_all_journals(format: str = "json") -> Any:
         return Response(content=body, media_type="text/csv",
                         headers={"Content-Disposition": 'attachment; filename="journals.csv"'})
     return [j.model_dump(mode="json") for j in journals]
+
+
+class FeeRecord(BaseModel):
+    kind: Literal["escrow", "payout", "bank"]
+    amount_usd: float = Field(ge=0)
+    ref: str | None = Field(default=None, max_length=120)
+    """Statement reference (provider statement line, bank advice)."""
+
+
+@router.post("/deals/{deal_id}/fees", response_model=dict)
+async def api_record_fee(deal_id: str, body: FeeRecord, user: AuthUser = Depends(require_portless)) -> dict:
+    """Record a fee actually charged (from the provider / bank statement) — staff."""
+    from shared.orchestration import fee_check
+    await fee_check.record(deal_id, body.kind, body.amount_usd, ref=body.ref, by=user.email or user.user_id)
+    return await fee_check.check(deal_id)
+
+
+@router.get("/deals/{deal_id}/fees", response_model=dict)
+async def api_fee_check(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    """Actual fees vs the fees assumed in the price, per kind."""
+    from shared.orchestration import fee_check
+    return await fee_check.check(deal_id)
+
+
+@router.get("/fees/over", response_model=list[dict])
+async def api_fees_over(user: AuthUser = Depends(require_portless)) -> list[dict]:
+    """Every deal whose fees run above the assumption (margin smaller than shown)."""
+    from shared.orchestration import fee_check
+    return await fee_check.over_all()
 
 
 @router.get("/ledgers", response_model=list[DealLedger])

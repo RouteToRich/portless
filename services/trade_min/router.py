@@ -603,6 +603,28 @@ async def add_supplier(body: dict, force: bool = Query(default=False), user=Depe
                             detail={"message": str(exc), "existing_id": exc.existing_id}) from exc
 
 
+class StartProspectRequest(BaseModel):
+    market: str = Field(min_length=2, max_length=2)
+    hs_code: str | None = None
+    quantity_mt: float | None = Field(default=None, gt=0)
+
+
+@router.post("/suppliers/{record_id:path}/start-prospect", response_model=dict)
+async def start_prospect_from_supplier(record_id: str, body: StartProspectRequest, user=Depends(_staff())) -> dict:
+    """Supply first: a prospect for this supplier's product in a market, with the directory's best
+    contactable buyers as candidates and the outreach started."""
+    from services.trade_min import supply_first
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    org = getattr(user, "org_id", None) or "portless"
+    try:
+        return await supply_first.start(record_id, body.market, by=who, org_id=org, hs_code=body.hs_code,
+                                        quantity_mt=body.quantity_mt)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except supply_first.CannotStart as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.put("/suppliers/{record_id:path}", response_model=CounterpartyRecord)
 async def edit_supplier(record_id: str, body: dict, user=Depends(_staff())) -> CounterpartyRecord:
     from pydantic import ValidationError

@@ -185,6 +185,13 @@ async def board_money(user: AuthUser = Depends(get_current_user)) -> dict:
     return await money_glance.rows(deals)
 
 
+@router.get("/funnel", response_model=dict)
+async def funnel(days: int = Query(default=90, ge=1, le=730), user: AuthUser = Depends(get_current_user)) -> dict:
+    """Scans → prospects → interested → matched → PI → paid: counts, conversion, median days, cost."""
+    from shared.orchestration import funnel as f
+    return await f.build(days, org_id=require_org_scope(user))
+
+
 @router.get("/prospects/cleanup", response_model=list[dict])
 async def prospects_cleanup_preview(user: AuthUser = Depends(require_portless)) -> list[dict]:
     """Prospects the clean-up would close: untouched for PROSPECT_RETENTION_DAYS, not parked."""

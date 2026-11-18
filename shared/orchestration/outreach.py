@@ -288,6 +288,42 @@ async def _gate(deal: Any, cand: Any, *, followup: bool) -> str | None:
     return approval.approval_id
 
 
+async def _directory_view(role: str) -> list[tuple[set[str], dict]]:
+    """(match keys, relationship + score) for every directory company of a role."""
+    try:
+        from services.trade_min import directory, relationships  # type: ignore[import]
+        store = await directory.get_directory()
+        rows = await relationships.annotate(await store.list(role, limit=100_000))
+        return [(relationships.record_keys(r), {**(r.relationship or {}), "score": r.score or 0,
+                                                "verified": bool(r.validation and r.validation.status == "verified")})
+                for r in rows]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Outreach: directory view unavailable: %s", exc)
+        return []
+
+
+async def rank_candidates(cands: list[Any]) -> list[Any]:
+    """Who to write to first: a buyer PortLess already traded with (completed deal, none
+    disputed / refunded — a dispute moves it down), then the likeliest to close: verified, its
+    reply rate with PortLess, the scan's fit score and the directory score."""
+    from services.trade_min.relationships import keys_for  # type: ignore[import]
+    view = await _directory_view("buyer")
+
+    def rel(c: Any) -> dict:
+        keys = keys_for(getattr(c, "email", None), getattr(c, "website", None), getattr(c, "candidate_id", None),
+                        name=getattr(c, "legal_name", None))
+        return next((r for k, r in view if k & keys), {})
+
+    def key(item: tuple[int, Any]) -> tuple:
+        i, c = item
+        r = rel(c)
+        traded = (r.get("deals_won") or 0) > 0 and r.get("stage") != "declined"
+        return (not traded, not (r.get("verified") or getattr(c, "validation_status", None) == "verified"),
+                -(r.get("reply_rate") or 0.0), -(getattr(c, "fit_score", None) or 0), -(r.get("score") or 0), i)
+
+    return [c for _, c in sorted(enumerate(cands), key=key)]
+
+
 def verified_only() -> bool:
     """OUTREACH_VERIFIED_ONLY (default off): introductions go only to buyers whose scan-time
     check is ``verified``; the others wait as ``pending`` until checked (bulk "Check")."""
@@ -333,6 +369,7 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
             else:
                 keep.append(c)
         pending = keep
+    pending = await rank_candidates(pending)
     sent = 0
     for cand in pending[:slots]:
         try:

@@ -72,3 +72,29 @@ async def test_hand_added_suppliers_join_the_rfq(monkeypatch):
         ]})
     ids = [c["supplier_id"] for c in await continuations._rfq_candidates(deal)]
     assert ids == ["S1", "S9", "D1"]  # the quoted one and the one without an address are not asked
+
+
+async def test_traded_and_likely_buyers_are_written_to_first(monkeypatch):
+    from services.trade_min.relationships import keys_for
+    view = [(keys_for("b@traded.ae", "traded.ae"), {"deals_won": 1, "stage": "traded", "score": 40}),
+            (keys_for("b@replies.ae", "replies.ae"), {"reply_rate": 0.8, "score": 60, "verified": True}),
+            (keys_for("b@cold.ae", "cold.ae"), {"reply_rate": 0.0, "score": 90, "verified": True})]
+    monkeypatch.setattr(outreach, "_directory_view", AsyncMock(return_value=view))
+    cands = [_cand("cold.ae", "verified"), _cand("new.ae", None), _cand("replies.ae", "verified"), _cand("traded.ae", None)]
+    ranked = await outreach.rank_candidates(cands)
+    assert [c.candidate_id for c in ranked] == ["traded.ae", "replies.ae", "cold.ae", "new.ae"]
+
+
+async def test_traded_suppliers_always_get_the_rfq_first(monkeypatch):
+    from services.trade_min import directory as dr
+    from services.trade_min.relationships import record_keys
+    from services.trade_min.schemas import CounterpartyRecord
+    dr.reset_directory()
+    store = await dr.get_directory()
+    rec = await store.upsert(CounterpartyRecord(
+        id="supplier:oldmill.in", role="supplier", name="Old Mill", website="https://oldmill.in", email="s@oldmill.in",
+        source="manual", hs_codes=["090422"], first_seen_at=NOW, last_seen_at=NOW))
+    monkeypatch.setattr(outreach, "_directory_view", AsyncMock(return_value=[(record_keys(rec), {"deals_won": 2})]))
+    out = await continuations._traded_suppliers_first(_deal(), [{"supplier_id": "S1", "company_name": "One", "email": "a@one.in"}])
+    assert [c["supplier_id"] for c in out] == ["supplier:oldmill.in", "S1"] and out[0]["traded"]
+    dr.reset_directory()

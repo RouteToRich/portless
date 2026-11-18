@@ -222,6 +222,44 @@ def journal_csv(journal: DealJournal) -> str:
     return buf.getvalue()
 
 
+def ledger_name(account: str) -> str:
+    """The accountant's ledger for a PortLess account: ``JOURNAL_LEDGER_<ACCOUNT>`` (e.g.
+    ``JOURNAL_LEDGER_PORTLESS_CASH="HDFC Current A/c 1234"``), else the account's label."""
+    import os
+    return os.getenv(f"JOURNAL_LEDGER_{account.upper()}", "").strip() or ACCOUNTS.get(account, account)
+
+
+def accounting_csv(journals: list[DealJournal], target: str) -> str:
+    """The journals in the import layout of the accountant's software, one debit and one credit
+    row per entry (ledger names from ``ledger_name``):
+
+    - ``tally``: Date (dd-mm-yyyy), Voucher Type, Voucher Number, Ledger Name, Debit, Credit, Narration;
+    - ``zoho``: Journal Date (yyyy-mm-dd), Journal Number, Reference Number, Notes, Account, Debits, Credits, Currency.
+    """
+    if target not in ("tally", "zoho"):
+        raise ValueError("target must be tally or zoho")
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    if target == "tally":
+        w.writerow(["Date", "Voucher Type", "Voucher Number", "Ledger Name", "Debit", "Credit", "Narration"])
+    else:
+        w.writerow(["Journal Date", "Journal Number", "Reference Number", "Notes", "Account", "Debits", "Credits", "Currency"])
+    for j in journals:
+        for e in j.entries:
+            number = f"{j.deal_id}-{e.seq:03d}"
+            narration = " · ".join(x for x in (e.event.replace("_", " "), e.memo, e.ref) if x)
+            amount = f"{e.amount:.2f}"
+            if target == "tally":
+                day = e.at.strftime("%d-%m-%Y") if e.at else ""
+                w.writerow([day, "Journal", number, ledger_name(e.debit), amount, "", narration])
+                w.writerow([day, "Journal", number, ledger_name(e.credit), "", amount, narration])
+            else:
+                day = e.at.strftime("%Y-%m-%d") if e.at else ""
+                w.writerow([day, number, e.ref or j.deal_id, narration, ledger_name(e.debit), amount, "", e.currency])
+                w.writerow([day, number, e.ref or j.deal_id, narration, ledger_name(e.credit), "", amount, e.currency])
+    return buf.getvalue()
+
+
 async def build_all_journals() -> list[DealJournal]:
     from .repository import get_repository
     out: list[DealJournal] = []

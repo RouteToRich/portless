@@ -169,6 +169,13 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         out["warnings"].append(f"money unavailable: {exc}")
 
+    # ── Fees above what the price assumed ──────────────────────────────────
+    try:
+        from shared.orchestration import fee_check
+        out["fees_over"] = await fee_check.over_all()
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"fee check unavailable: {exc}")
+
     # ── Background watchers still beating? ─────────────────────────────────
     try:
         from shared import heartbeat
@@ -293,6 +300,10 @@ def render_digest_text(d: dict[str, Any]) -> str:
         if isinstance(apify.get("max_runs_per_day"), int) and apify["max_runs_per_day"] > 0 \
                 and apify.get("runs_today", 0) >= 0.9 * apify["max_runs_per_day"]:
             lines.append("  ! the daily run budget is nearly used — checks and scans stop when it is reached")
+    fo = d.get("fees_over") or []
+    if fo:
+        lines.append(f"FEES ABOVE THE PRICE ({len(fo)} deal(s)): " + ", ".join(
+            f"{r['deal_id']} +{r['over_usd']:,.0f} USD ({'/'.join(r['kinds'])})" for r in fo[:6]))
     wa = d.get("watchers") or {}
     if wa.get("stale"):
         lines.append("! WATCHERS NOT RUNNING: " + ", ".join(wa["stale"])

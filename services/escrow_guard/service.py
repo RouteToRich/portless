@@ -880,7 +880,33 @@ async def resolve_provider(deal_id: str, requested: str | None = None) -> tuple[
         key = resolve_escrow_provider(name)
         if key and key in enabled:
             return key, source
+    if escrow_provider_by_cost():
+        cheapest = cheapest_provider(enabled)
+        if cheapest:
+            return cheapest, "cheapest"
     return default_provider(), "default"
+
+
+def escrow_provider_by_cost() -> bool:
+    """ESCROW_PROVIDER_BY_COST (default off): with no choice by the buyer or staff, take the
+    enabled provider with the lowest fee instead of ESCROW_DEFAULT_PROVIDER."""
+    return os.getenv("ESCROW_PROVIDER_BY_COST", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def provider_fee_pct(provider: str) -> float | None:
+    from shared.connectors.escrow import ESCROW_PROVIDER_CATALOG
+    entry = ESCROW_PROVIDER_CATALOG.get(provider) or {}
+    env = os.getenv(f"{entry.get('env_prefix', provider.upper())}_FEE_PCT", "").strip()
+    try:
+        return float(env) if env else (float(entry["fee_pct"]) if entry.get("fee_pct") is not None else None)
+    except (TypeError, ValueError):
+        return None
+
+
+def cheapest_provider(enabled: list[str] | set[str]) -> str | None:
+    fees = [(provider_fee_pct(p), p) for p in enabled]
+    fees = [(f, p) for f, p in fees if f is not None]
+    return min(fees)[1] if fees else None
 
 
 def _buyer_details(deal: Any) -> dict[str, Any]:
