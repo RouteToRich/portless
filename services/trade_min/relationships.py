@@ -224,6 +224,21 @@ def score_of(r: CounterpartyRecord, rel: dict[str, Any], track: dict[str, Any] |
             delta = 10.0 * (good - bad) / max(1, good + bad)
             pts += delta
             basis.append(f"past deals {good} good / {bad} bad ({delta:+.0f})")
+    perf = rel.get("performance") or {}
+    if perf.get("qc_inspections"):
+        rate = perf.get("qc_pass_rate") or 0.0
+        delta = round(20.0 * rate - 10.0)  # 100 % pass → +10, 50 % → 0, 0 % → −10
+        pts += delta
+        basis.append(f"QC passed {perf.get('qc_passed', 0)} of {perf['qc_inspections']} ({delta:+.0f})")
+    if perf.get("late_ready"):
+        pts -= 5 * min(2, perf["late_ready"])
+        basis.append(f"goods ready late {perf['late_ready']}× (−{5 * min(2, perf['late_ready'])})")
+    if perf.get("disputes"):
+        pts -= 10
+        basis.append(f"{perf['disputes']} dispute(s) (−10)")
+    if perf.get("requoted_up"):
+        pts -= 5
+        basis.append("raised its price after quoting (−5)")
     if r.fit_score is not None:
         pts += min(10.0, r.fit_score / 10.0)
         basis.append(f"fit {r.fit_score} (+{min(10.0, r.fit_score / 10.0):.0f})")
@@ -264,8 +279,18 @@ def _track_for(r: CounterpartyRecord, tracks: dict[str, Any]) -> dict[str, Any] 
 async def annotate(rows: list[CounterpartyRecord]) -> list[CounterpartyRecord]:
     """Copies of ``rows`` with ``relationship``, ``score`` and ``score_basis`` (never raises)."""
     try:
-        index = build_index(await _deals())
-        tracks = await _tracks()
+        from shared import view_cache
+
+        async def _index():
+            return build_index(await _deals())
+
+        index = await view_cache.get_or_compute("relationships.index", _index)
+        tracks = await view_cache.get_or_compute("relationships.tracks", _tracks, deps=("deals", "outcomes"))
+        try:
+            from shared.orchestration import supplier_performance
+            performance = await supplier_performance.cached()
+        except Exception:  # noqa: BLE001
+            performance = {}
         quotes: dict[str, list[float]] = {}
         for r in rows:
             if r.role != "supplier":
@@ -279,6 +304,11 @@ async def annotate(rows: list[CounterpartyRecord]) -> list[CounterpartyRecord]:
         out = []
         for r in rows:
             rel = relationship_of(r, index, median)
+            perf = None
+            if r.role == "supplier" and performance:
+                perf = next((performance[k] for k in record_keys(r) if k in performance), None)
+                if perf:
+                    rel["performance"] = perf
             score, basis = score_of(r, rel, _track_for(r, tracks))
             out.append(r.model_copy(update={"relationship": rel, "score": score, "score_basis": basis}))
         return out

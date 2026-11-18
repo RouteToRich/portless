@@ -130,6 +130,9 @@ os.environ["MARKET_CHECK_ENABLED"] = "false"
 # compliance review. tests/test_denied_list.py turns it back on where it is tested.
 os.environ["COMPLIANCE_DGFT_LIST"] = "allow"
 os.environ["EXPORT_CERTS_REQUIRED"] = "false"  # tests/test_export_certs.py turns it on
+os.environ["FX_REFERENCE_AUTO_REFRESH"] = "false"  # never call the rate feed from the suite
+os.environ["ESCROW_LEGACY_STRIPE_HOLD"] = "true"  # the legacy hold tests; tests/test_legacy_hold.py turns it off
+os.environ["VIEW_CACHE_SECONDS"] = "0"  # every test reads fresh views; tests/test_supplier_performance.py turns it on
 
 
 # Suite markers (unit / integration / smoke / regression / slow / money), applied by

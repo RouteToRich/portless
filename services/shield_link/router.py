@@ -350,6 +350,42 @@ async def api_shipment(deal_id: str) -> dict[str, Any]:
     return await freight.shipment_view(deal_id)
 
 
+@router.get("/deals/{deal_id}/demurrage")
+async def api_demurrage(deal_id: str) -> dict[str, Any]:
+    """Demurrage (container at the port) and detention (empty not returned) clocks against the free days."""
+    from shared.orchestration import demurrage
+    return await demurrage.status(deal_id)
+
+
+class EmptyReturnedRequest(BaseModel):
+    returned_at: str | None = None
+    evidence: str | None = None
+
+
+@router.post("/deals/{deal_id}/empty-returned")
+async def api_empty_returned(deal_id: str, req: EmptyReturnedRequest,
+                             user: AuthUser = Depends(require_portless)) -> dict[str, Any]:
+    """Staff: the buyer returned the empty container to the carrier's depot (detention stops) — audited."""
+    from datetime import datetime, timezone
+
+    from shared.audit_log import staff_relay
+
+    from .repository import get_repository as _repo
+    orders = [o for o in await _repo().list_by_deal(deal_id) if o.order_type == "FREIGHT"]
+    if not orders:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"deal {deal_id} has no freight booking")
+    try:
+        at = datetime.fromisoformat(req.returned_at) if req.returned_at else datetime.now(timezone.utc)
+    except ValueError as exc:
+        raise HTTPException(422, detail="returned_at must be an ISO date / time") from exc
+    at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    tpo = orders[-1]
+    await _repo().save(tpo.model_copy(update={"empty_returned_at": at, "updated_at": datetime.now(timezone.utc)}))
+    await staff_relay(user, "shipment.empty_returned", deal_id, tpo_id=tpo.tpo_id, returned_at=at.isoformat(),
+                      evidence=req.evidence)
+    return {"deal_id": deal_id, "tpo_id": tpo.tpo_id, "empty_returned_at": at.isoformat()}
+
+
 @router.post("/carrier/maersk/webhook")
 async def api_maersk_webhook(request: Request) -> dict[str, Any]:
     """Maersk booking-status webhook. Register ``…/carrier/maersk/webhook?token=<MAERSK_WEBHOOK_SECRET>``

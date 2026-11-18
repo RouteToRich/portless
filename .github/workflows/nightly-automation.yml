@@ -33,3 +33,22 @@ jobs:
       - name: Nightly run
         if: ${{ env.MONGO_URI != '' }}
         run: python -X utf8 scripts/nightly_automation.py --scope all
+
+  performance:
+    # Response-time budgets of the key endpoints on the deployed backend (scripts/perf_budget.py).
+    # Secrets: PORTLESS_BACKEND_URL, PORTLESS_SMOKE_TOKEN; PERF_BUDGET_SCALE (variable) for a cold free tier.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PORTLESS_BACKEND_URL: ${{ secrets.PORTLESS_BACKEND_URL }}
+      PORTLESS_SMOKE_TOKEN: ${{ secrets.PORTLESS_SMOKE_TOKEN }}
+      PERF_BUDGET_SCALE: ${{ vars.PERF_BUDGET_SCALE || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install httpx
+      - name: Response-time budgets
+        if: ${{ env.PORTLESS_BACKEND_URL != '' }}
+        run: python scripts/perf_budget.py

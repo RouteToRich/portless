@@ -585,6 +585,31 @@ def _tpl_inspection_window_open(ctx: dict[str, Any]) -> tuple[str, str]:
     return subject, body
 
 
+def _tpl_free_days_warning(ctx: dict[str, Any]) -> tuple[str, str]:
+    row = ctx["clock"]
+    at_port = row["kind"] == "demurrage"
+    running = row["stage"] == "running"
+    what = "at the port of discharge" if at_port else "with you (empty container not yet returned to the carrier's depot)"
+    subject = (f"{'Free days used up' if running else 'Free days ending soon'} — container "
+               f"{'at the port' if at_port else 'return'} (deal {ctx['deal_id']})")
+    body = (
+        f"{_dear(ctx.get('buyer_name'))},\n\n"
+        f"The container(s) of deal {ctx['deal_id']} have been {what} for {row['days_used']:g} days; "
+        f"the carrier allows {row['free_days']:g} free days.\n\n"
+        + (f"The free days have run out, so the carrier's {'demurrage' if at_port else 'detention'} "
+           "charges are now running at the destination. "
+           if running else
+           f"About {max(row['days_left'], 0):g} day(s) remain before the carrier starts charging "
+           f"{'demurrage' if at_port else 'detention'} at the destination. ")
+        + ("Please arrange customs clearance and collection as soon as you can. "
+           if at_port else "Please have the empty container returned to the carrier's depot. ")
+        + "If anything is holding it up — documents, a customs query, a delivery slot — reply and we "
+        "will help with the carrier."
+        + _signature()
+    )
+    return subject, body
+
+
 def _tpl_deal_settled(ctx: dict[str, Any]) -> tuple[str, str]:
     subject = f"Escrow settled — deal {ctx['deal_id']}"
     body = (
@@ -818,6 +843,7 @@ _TEMPLATES = {
     "qc_readiness_reminder": _tpl_qc_readiness_reminder,
     "funding_shortfall": _tpl_funding_shortfall,
     "inspection_window_open": _tpl_inspection_window_open,
+    "free_days_warning": _tpl_free_days_warning,
     "deal_settled": _tpl_deal_settled,
     "escrow_opened": _tpl_escrow_opened,
     "order_confirmed_buyer": _tpl_order_confirmed_buyer,
@@ -1201,6 +1227,15 @@ async def notify_inspection_window_open(
     )
 
 
+async def notify_free_days(deal: Any, clock: dict[str, Any]) -> str | None:
+    """Demurrage / detention free days ending or used up (demurrage.py)."""
+    return await notify_party(
+        deal.deal_id, "buyer", "free_days_warning",
+        {"clock": clock, "buyer_name": _party_name(deal, "buyer")},
+        suffix=f"{clock['kind']}-{clock['stage']}", deal=deal,
+    )
+
+
 async def notify_deal_settled(deal: Any, balance_due: float | None, currency: str = "USD") -> list[str]:
     sent: list[str] = []
     for party in ("buyer", "supplier"):
@@ -1388,6 +1423,7 @@ NOTICE_LABELS: dict[str, tuple[str, str]] = {
     "cargo_cleared": ("Cargo cleared customs", "CLEARED"),
     "goods_delivered": ("Goods delivered", "CLEARED"),
     "inspection_window_open": ("Acceptance window open", "CLEARED"),
+    "free_days_warning": ("Container free days warning", "CLEARED"),
     "tranche_released": ("Escrow stage released", "—"),
     "payout_sent": ("Payment sent to supplier", "CLEARED"),
     "deal_settled": ("Escrow settled", "PAID"),

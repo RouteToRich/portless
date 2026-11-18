@@ -89,6 +89,11 @@ async def _search_web(query: str, top_k: int = _TOP_K) -> list[dict[str, Any]]:
     if not api_key:
         logger.info("Market intel: TAVILY_API_KEY not set — skipping web search.")
         return []
+    try:
+        from shared import cost_meter
+        cost_meter.tavily_search()
+    except Exception:  # noqa: BLE001
+        pass
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(
@@ -235,4 +240,13 @@ async def get_usd_inr_rate() -> float:
     """Always returns a usable rate — live search result if available and
     parseable, else the periodically-updated static fallback."""
     rate = await fetch_usd_inr_rate()
-    return rate if rate is not None else settings.fallback_usd_inr_rate
+    if rate is not None:
+        return rate
+    try:  # the latest reference rate (staff-recorded or the daily feed) before the static setting
+        from shared import fx_rates
+        row = await fx_rates.usable("INR")
+        if row:
+            return float(row["rate"])
+    except Exception:  # noqa: BLE001
+        pass
+    return settings.fallback_usd_inr_rate

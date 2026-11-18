@@ -150,6 +150,16 @@ def may_approve(action: str, approver: str | None) -> bool:
     return bool(approver) and approver.strip().lower() in allowed
 
 
+async def _save_decision(repo: Any, record: ApprovalRecord, signatures: int) -> bool:
+    """Conditional write of a decision (``save_if_pending``); a repository without it (test
+    doubles) falls back to a plain save."""
+    save_if = getattr(repo, "save_if_pending", None)
+    if save_if is None:
+        await repo.save(record)
+        return True
+    return await save_if(record, signatures)
+
+
 class GateNotApproved(Exception):
     """An HTTP call tried to move money without the approved gate behind it."""
 
@@ -434,7 +444,8 @@ async def resolve_approval(
                 "modified_body": req.modified_body or record.modified_body,
                 "updated_at": now,
             })
-            await repo.save(countersign)
+            if not await _save_decision(repo, countersign, len(record.approvals)):
+                raise ApprovalAlreadyResolved(approval_id, "decided by someone else at the same moment")
             response = ApprovalResponse.from_record(countersign)
             await notify("approval_countersign_needed", response.model_dump(mode="json"))
             await _emit(EventTopic.APPROVAL_REQUESTED, record.deal_id, {
@@ -463,7 +474,10 @@ async def resolve_approval(
         "approvals": signatures,
         "updated_at": now,
     })
-    await repo.save(updated)
+    if not await _save_decision(repo, updated, len(record.approvals)):
+        # Another operator (or instance) decided this gate between our read and our write:
+        # exactly one decision counts, so the callback — the money move — runs once.
+        raise ApprovalAlreadyResolved(approval_id, "decided by someone else at the same moment")
     response = ApprovalResponse.from_record(updated)
     try:  # a person's decision on the deal, and how long the gate waited for it (review board B-24)
         from shared import deal_costs

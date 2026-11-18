@@ -158,9 +158,17 @@ async def prospect_desk(user: AuthUser = Depends(get_current_user)) -> list[dict
     expected value, firm or estimated), walk-away prices, whose move it is and for how
     long, expiring quotes, the radar's original estimate and the next moves — highest
     priority first (shared/orchestration/prospect_desk.py)."""
+    from shared import view_cache
     from shared.orchestration import prospect_desk as pd
-    deals = await service.list_deals(limit=500, org_id=require_org_scope(user))
-    return [row.model_dump(mode="json") for row in await pd.desk(deals)]
+    org = require_org_scope(user)
+
+    async def build() -> list[dict]:
+        deals = await service.list_deals(limit=500, org_id=org)
+        return [row.model_dump(mode="json") for row in await pd.desk(deals)]
+
+    # One match board per prospect is costly: served from the view cache until a deal changes
+    # (or VIEW_CACHE_SECONDS pass, for quotes ageing and replies arriving elsewhere).
+    return await view_cache.get_or_compute(f"prospect_desk:{org or 'staff'}", build)
 
 
 class ParkRequest(BaseModel):
@@ -339,6 +347,43 @@ async def usd_inr(user: AuthUser = Depends(get_current_user)) -> dict:
     USD price (the contract currency stays USD)."""
     from shared.currency import rate_info
     return await rate_info("INR")
+
+
+class FxReferenceIn(BaseModel):
+    currency: str
+    rate: float
+    source: str
+
+
+@router.get("/fx/reference", response_model=dict)
+async def fx_reference(user: AuthUser = Depends(get_current_user)) -> dict:
+    """Reference exchange rates per currency (newest first) and which ones are usable now."""
+    from shared import fx_rates
+    rows = await fx_rates.history(limit=100)
+    usable = {}
+    for cur in fx_rates.BANDS:
+        row = await fx_rates.usable(cur)
+        if row:
+            usable[cur] = row
+    return {"usable": usable, "history": rows, "max_age_days": fx_rates._f("FX_REFERENCE_MAX_AGE_DAYS", 7)}
+
+
+@router.post("/fx/reference", response_model=dict)
+async def fx_reference_record(body: FxReferenceIn, user: AuthUser = Depends(require_portless)) -> dict:
+    """Staff record a reference rate (units per USD) with its source — audited."""
+    from shared import fx_rates
+    from shared.audit_log import actor_of
+    try:
+        return await fx_rates.record(body.currency, body.rate, source=body.source, by=actor_of(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/fx/reference/refresh", response_model=dict)
+async def fx_reference_refresh(user: AuthUser = Depends(require_portless)) -> dict:
+    """Pull the published reference feed now (staff)."""
+    from shared import fx_rates
+    return await fx_rates.refresh_from_source()
 
 
 @router.post("/radar-estimate/backfill", response_model=dict)

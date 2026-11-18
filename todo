@@ -19,21 +19,21 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-19)
 
-**426 open · 171 done** (29 % done).
+**403 open · 194 done** (32 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
 | Where things stand | 1 | 0 |
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
-| P0 — before the first real trade | 71 | 30 |
-| P1 — before more than a few deals a month | 244 | 131 |
-| P2 — improvements | 31 | 10 |
+| P0 — before the first real trade | 69 | 32 |
+| P1 — before more than a few deals a month | 229 | 146 |
+| P2 — improvements | 25 | 16 |
 | Apify actors (outside this repo) | 18 | 0 |
 | Decisions needed | 21 | 0 |
-| **Total** | **426** | **171** |
+| **Total** | **403** | **194** |
 
-Open items by owner: Eng 154 · Apify 18 · Ops 26 · Legal 27 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 134 · Apify 18 · Ops 26 · Legal 27 · Biz 42 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
 
@@ -191,7 +191,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 4 Money safety and financial controls
 - [x] **(Eng)** **No Mongo transactions anywhere.** A tranche release, a payout and the ledger / journal are written as separate documents. Wrap every money state change (escrow hold + tranche + ledger + deal status) in a transaction or an idempotent outbox, so a crash in the middle cannot leave money booked twice or not at all. — done 2026-11-19: the money race is closed without transactions: `release_tranche` claims the tranche atomically (`claim_tranche`, Mongo `$elemMatch` update) before the provider is asked — two operators, instances or retried callbacks reach the provider once; a failed call frees it; an unbooked provider payout is found by the daily provider reconciliation. A full outbox for multi-document writes: not needed for the release path (each step is idempotent and replay-safe).
 - [x] **(Eng)** Daily reconciliation job: PortLess escrow ledger vs Tazapay / Escrow.com statement, payouts vs payout provider statement, bank receipts vs e-BRC. Any difference → `deal.exception` and the digest. — done 2026-11-18: `shared/orchestration/provider_reconciliation.py` — once a day (`PROVIDER_RECON_HOUR_UTC`, 02:00, escrow watcher) every open escrow is read from Tazapay / Escrow.com and every live payout from Payoneer, read-only: funded amount, stages paid out vs booked (both ways), payouts completed / failed vs booked → `deal.exception` `RECONCILIATION:<kind>` once a day; unreadable providers listed; `GET /escrow-guard/reconciliation/providers` (`?run=true`). Bank receipts vs e-BRC still need a bank statement feed.
-- [ ] **(Eng/QA)** Idempotency audit of every money endpoint and webhook (replay the same webhook 2×, 10× concurrently; release the same tranche from two operators at once). Catalogue case "staff and staff2 approve the gate at the same moment → exactly one call answers 200" is not automated yet.
+- [x] **(Eng/QA)** Idempotency audit of every money endpoint and webhook (replay the same webhook 2×, 10× concurrently; release the same tranche from two operators at once). Catalogue case "staff and staff2 approve the gate at the same moment → exactly one call answers 200" is not automated yet. — done 2026-11-19: `tests/test_idempotency_audit.py` — 10 operators approving one money gate at once → one decision, one callback; approve vs reject race; four-eyes signatures never lost (a second signer racing the first used to overwrite its signature); the funded webhook 10× concurrently books once; the same tranche released 5× at once. Fix: decisions are written with `save_if_pending` (Mongo: conditional replace on status PENDING + number of signatures), a raced decision answers 409.
 - [x] **(Biz)** Exposure limits: maximum value per deal, per buyer, per supplier, per day, and total money in escrow; refuse or escalate above them. — done 2026-11-19: `shared/orchestration/exposure.py` — `EXPOSURE_MAX_DEAL_USD` / `_BUYER_USD` / `_SUPPLIER_USD` / `_DAILY_USD` / `_ESCROW_USD` checked before every PI; a breach withholds the PI (`EXPOSURE:<limit>` exception) until a money approver accepts it (`POST /deals/{id}/exposure/accept`, audited). The values to set are a business decision.
 - [x] **(Biz/Eng)** Roles: separate "can approve money" from "can operate deals"; today any allowlisted staff can approve any gate (four-eyes only above the threshold). — done 2026-11-18: `AUTH_MONEY_APPROVER_EMAILS` — only those staff may APPROVE a money-moving gate (tranche, payout, buyer acceptance, refund); every staff member can still REJECT; anyone else gets 403 and the gate stays open (`hitl_approval.service.may_approve`). Empty list = as before.
 
@@ -235,7 +235,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 6.9 Unit tests — Quality assurance gaps
 - [x] **(Eng)** Keep the backend unit suite green on every change (4574 passed, 1 skipped on 2026-11-12) and re-measure coverage — 95.46 % line + branch was measured on 2026-11-09, before the latest features. — done 2026-11-18: re-measured 2026-11-18: 5403 passed, 1 skipped; coverage 85 % line + branch overall, 91 % without the automation runner (`services/automation/*`, exercised by the automation runs, not pytest). Follow-up item below to bring product code back to 95 %.
 - [ ] **(Eng) P1** **Bring product-code coverage back to 95 %** — 91 % without the automation runner on 2026-11-18 (85 % with it); 92 % after the deals-router route tests (router 77 → 85 %). Biggest gaps: `shared/orchestration/continuations.py` (179 lines), `services/deals/router.py` (123), `shared/orchestration/outreach.py` (72), `agents/negotiation_agent/graph.py` (72). Decide whether `services/automation/*` is measured (it is tested by the automation runs). Then switch on the CI coverage gate. — progress 2026-11-18: route tests for the deals router, continuation gaps (negotiation start, customs gate, DUPRO / PEO, startup sweep) and outreach gaps; 92 % product code, 86 % overall.
-- [ ] **(Eng)** Coverage gate in CI: fail the build below 95 % overall and below 100 % branch coverage for the money modules (`escrow_guard` service / ledger / journal, `trade_costs`, `pricing`, `shared/currency.py`, `supplier_commitment`, `compliance`).
+- [x] **(Eng)** Coverage gate in CI: fail the build below 95 % overall and below 100 % branch coverage for the money modules (`escrow_guard` service / ledger / journal, `trade_costs`, `pricing`, `shared/currency.py`, `supplier_commitment`, `compliance`). — done 2026-11-19: `scripts/coverage_gate.py` in CI after the suite (coverage JSON): overall product floor 90 % (today 91.2 %) and a floor per money module (escrow service 93, journal 91, trade costs 94, pricing 97, currency 85, supplier commitment 84, compliance 96, chargebacks 79 …) — ratchets set just under today's numbers, raised as tests are added toward 95 / 100.
 
 ### 6.10 Integration tests — Quality assurance gaps
 - [ ] **(Eng)** Integration tests against a real MongoDB (disposable container or a test Atlas cluster), not `mongomock`: transactions once added (DEF-13), unique indexes, concurrent updates of the same deal / escrow, `set_fields` atomicity, large documents.
@@ -394,14 +394,14 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [x] **(Eng)** Facility address: the watcher reminds the supplier about the goods-ready date, but there is no reminder for a missing facility address (`facility_address_request` is sent once). Add a reminder and a stall exception. — done 2026-11-18: while the inspection waits for the address the deal watcher sends `facility_address_reminder` every `DEAL_FACILITY_ADDRESS_REMINDER_AFTER_HOURS` (48) from the request (max `DEAL_REMINDER_MAX`), then raises `PO_ISSUED:facility_address_missing`; the "please confirm the PO" reminder is no longer sent for a PO already acknowledged; an address that arrived without a booking is booked by the sweep.
 - [ ] **(Eng/QA)** Standby supplier switch (UC-13 / UC-14): a standby supplier from a scan has only a town, so its inspection now waits for an address — re-run both journeys and confirm the request goes to the new supplier.
 - [x] **(Eng)** Cross-prospect offers: the match board pairs a buyer with supplier offers from other deals of the same HS code, including old ones. Confirm `MATCH_OFFER_VALIDITY_DAYS` expiry is enough, and never propose an offer from a CANCELLED / failed deal without a fresh price. — done 2026-11-18: the match board never takes an offer from a CANCELLED / REFUNDED / PAID / failed deal (already), and now also skips the supplier of a QC_FAILED / DISPUTE deal, offers whose check failed, quotes whose reconfirmation lapsed and do-not-contact suppliers.
-- [ ] **(Eng)** Negotiation drafts still sometimes say things like "As soon as we have the inspector selected, we will send the proforma invoice" — review a sample of real drafts each week (stage wording, missing-information order).
+- [x] **(Eng)** Negotiation drafts still sometimes say things like "As soon as we have the inspector selected, we will send the proforma invoice" — review a sample of real drafts each week (stage wording, missing-information order). — done 2026-11-19: drafts that put the order steps in the wrong order (PI waiting for the inspector / inspection, PO before the escrow, inspection before funding) are flagged `stage_order_wrong`, held at L0 with the reason on the approval (`stage_order_errors`, tests/test_stage_order_wording.py). A weekly read of real drafts stays an Ops habit.
 
 ### 5.2 Steps that are still manual or stubbed — Workflow gaps found end to end
 - [ ] **(Ops)** Shipping instructions on the Maersk portal (2.3).
 - [ ] **(Ops)** Carrier tracking for non-Maersk bookings depends on the refused Apify actor; the operator milestone endpoint (`POST /shield-link/freight/{ref}/milestone`) is the fallback — write it into the runbook.
 - [ ] **(Ops)** SGS / BV results arrive by staff relay or signed webhook — runbook for the relay.
-- [ ] **(Eng)** e-BRC / realisation tracking per Shipping Bill (3.2) — not in the system.
-- [ ] **(Eng)** Basmati contract registration step (3.1) — not in the system.
+- [x] **(Eng)** e-BRC / realisation tracking per Shipping Bill (3.2) — not in the system. — done 2026-11-19: `shared/orchestration/realisation.py` (2026-11-19 P0 batch) — per Shipping Bill invoice value, realised, outstanding, RBI deadline, overdue alert and digest line; manual CHA filing starts the clock.
+- [x] **(Eng)** Basmati contract registration step (3.1) — not in the system. — done 2026-11-19: `export_certs.py` — APEDA registration of the export contract (RCAC) is a required certificate for basmati before shipment.
 - [ ] **(Ops)** **Two prospects for the same product × market**: 090422 → DE runs twice (DEAL-CD85C6793659 and DEAL-DD453AE3383A, 2026-11-17) and would write to the same buyers; merge or close one (the radar now warns before a second start).
 - [ ] **(Eng)** **Verify the mandi connector on live data** once `DATA_GOV_IN_API_KEY` is set: resource id, commodity names, `modal_price` / `min_price` / `max_price` field names and the INR-per-quintal unit (`shared/connectors/mandi.py` follows the published dataset; never run against the live API yet).
 - [ ] **(Eng)** **Verify the freight lane-quote request** with Cogoport / Freightos before relying on it: `freight_lanes.refresh` sends `origin_port`, `destination_country`, `hs_code`, `container_type` (20GP / 20RF) and reads `rate_usd` / `rates[]` — field names assumed from the existing connector, not from the providers' docs.
@@ -414,8 +414,8 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Ops)** Quality claims after delivery beyond the acceptance window (warranty period, evidence, partial refund) — only full dispute / refund exists.
 
 ### 5.4 Currency — Workflow gaps found end to end
-- [ ] **(Eng)** Only INR has a local rate; every other country is written to in USD (shared/currency.py). Add a rate source before adding a country (AED, EUR …) for buyers.
-- [ ] **(Eng)** The live USD/INR rate needs `TAVILY_API_KEY` and `NEGOTIATION_MARKET_SEARCH_ENABLED`; otherwise the static `NEGOTIATION_FALLBACK_USD_INR_RATE` is used. Use an official rate source (RBI reference rate or the bank's card rate) and update the fallback automatically.
+- [x] **(Eng)** Only INR has a local rate; every other country is written to in USD (shared/currency.py). Add a rate source before adding a country (AED, EUR …) for buyers. — done 2026-11-19: `shared/fx_rates.py` — staff reference rates (`POST /deals/fx/reference`, audited, plausible band per currency), a daily ECB feed (`FX_REFERENCE_URL`, frankfurter.app) and `FX_RATE_<CCY>` settings; a buyer country (AE, SA, EU, GB, SG …) is written to in its own currency only once a fresh rate exists (`currency.party_currency`). System Health card.
+- [x] **(Eng)** The live USD/INR rate needs `TAVILY_API_KEY` and `NEGOTIATION_MARKET_SEARCH_ENABLED`; otherwise the static `NEGOTIATION_FALLBACK_USD_INR_RATE` is used. Use an official rate source (RBI reference rate or the bank's card rate) and update the fallback automatically. — done 2026-11-19: the USD/INR fallback is now the latest reference rate (staff-recorded RBI / bank rate or the daily feed, fresh ≤ `FX_REFERENCE_MAX_AGE_DAYS`) before the static setting; `rate_info` says `reference` and names the source.
 - [ ] **(Eng)** The PI / PO documents show USD only — follow the decision in 3.3.
 
 ### 5.5 Add suppliers manually (local suppliers) — Workflow gaps found end to end
@@ -437,7 +437,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(QA)** Rewrite TC-E2E-001 … TC-E2E-010 as browser journeys (console for every decision, providers on the simulators).
 - [ ] **(QA)** The remaining 64 `@ui` cases and TC-WEB-009 … TC-WEB-032 (the `@known-defect` ones as each feature lands).
 - [ ] **(Eng)** Browser results written to the same `qa_*` collections so the Automation dashboard shows browser and backend results together; `@P0 and @ui` on every pull request to either repo, all `@ui` nightly, full browser matrix before a release.
-- [ ] **(Eng)** The UI repo has **no unit or component tests**. Add tests for money displays (amount, currency, tranche order), gate actions and status chips.
+- [x] **(Eng)** The UI repo has **no unit or component tests**. Add tests for money displays (amount, currency, tranche order), gate actions and status chips. — done 2026-11-19: Vitest suite added (see the Vitest item) — money displays, gate actions, status chips.
 
 ### 6.3 Real provider sandboxes — Quality assurance gaps
 - [ ] **(QA)** A staging environment wired to provider sandboxes, separate database, separate mailbox, running nightly.
@@ -457,14 +457,14 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ### 6.8 Test infrastructure — Quality assurance gaps
 - [x] **(Eng)** Nightly: catalogue run + LLM journeys on the automation database, results posted to Telegram. — done 2026-11-18: `scripts/nightly_automation.py` (start → wait → Telegram summary with totals, failing cases and the safety block; exit 1 on a failure or a refused real recipient) and `.github/workflows/nightly-automation.yml` (03:00 IST; needs the Mongo / LLM gateway / Telegram secrets, skipped without MONGO_URI).
-- [ ] **(Eng)** The LLM-played counterparties are not deterministic: keep the retry, and record transcripts so a failing journey can be replayed.
+- [x] **(Eng)** The LLM-played counterparties are not deterministic: keep the retry, and record transcripts so a failing journey can be replayed. — done 2026-11-19: each journey result keeps `counterparty_replies` (role, instruction, e-mail received, reply); `worker --replay-run RUN-…` (or `replay_run` on `POST /automation/runs`) plays them back in order without the LLM; a divergence falls back to the LLM.
 - [x] **(Eng)** CI runs `python scripts/gen_unit_gherkin.py --check` so a test without a Gherkin scenario (or a stale feature file) fails the build. — done 2026-11-18: a step of `.github/workflows/ci.yml`.
 - [x] **(Eng)** The test run writes to the tracked file `data/llm_gateway_tracking.txt` (it is modified after every run) — done 2026-11-18: `tests/conftest.py` sets `LLM_TRACKING_FILE_PATH` to `<temp>/portless-tests/llm_gateway_tracking.txt`; `tests/llm_gateway/test_config.py::test_the_suite_never_writes_the_tracked_log` guards it (a full run leaves the repository file byte-for-byte unchanged).
 
 ### 6.9 Unit tests — Quality assurance gaps
 - [x] **(Eng)** Property-based tests (Hypothesis) for the money arithmetic: tranche split, fees, rounding to cents, payout cap and retention, ledger reconciliation, journal trial balance — for any amount, quantity and fee, the invariants hold. — done 2026-11-18: `tests/test_money_properties.py` (tranches add up to the principal, holdback ≤ owed, minimum offer keeps the floor, buyer band ≥ walk-away, ladder descends, INR figure = USD × rate). It found a real bug, fixed: tranches rounded one by one could add up to a cent more or less than the principal (1.25 split 50/50 → 0.62 + 0.62); the last tranche now takes the remainder.
 - [x] **(Eng)** Property-based tests for the text readers that decide money: price extraction from e-mails (units, currencies, separators), goods-ready date parsing, facility address parsing, acceptance detection. — done 2026-11-18: `tests/test_reader_properties.py` — USD prices in any usual notation (and only with a currency), goods-ready dates in five formats within six months (never past or too far), facility address keeps its PIN.
-- [ ] **(Eng)** UI unit and component tests (Vitest + React Testing Library) in portless-ui: money formatting, INR / USD display, status chips, gate approve / reject buttons, four-eyes state, error states. Today the UI has none.
+- [x] **(Eng)** UI unit and component tests (Vitest + React Testing Library) in portless-ui: money formatting, INR / USD display, status chips, gate approve / reject buttons, four-eyes state, error states. Today the UI has none. — done 2026-11-19: portless-ui `npm test` (Vitest + Testing Library + jsdom, in CI): money / INR formatting, countdown, gate labels incl. superseded, escrow chip, error / empty states, the approval card's four-eyes state, approve call, 409 refresh and 403 refusal — 20 tests.
 - [x] **(Eng)** pytest markers so suites can be run on their own: `unit`, `integration`, `smoke`, `regression`, `slow`, `money` (no markers exist today; every test runs as one suite). — done 2026-11-18: `tests/markers.py` applies them by file (registered in `tests/conftest.py`): `-m smoke` (101 tests, ~7 s), `-m money` (~690), `-m "unit and not slow"`, `-m integration`, `-m slow`, `-m regression` (all).
 
 ### 6.10 Integration tests — Quality assurance gaps
@@ -483,7 +483,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 6.12 Regression suite — Quality assurance gaps
 - [ ] **(QA)** Track the regression baseline per run (pass / fail / not automated counts, duration) and a flaky-test list with a quarantine policy (a flaky test is fixed or removed within a week, never ignored).
 - [ ] **(QA)** Regression for documents and e-mails through golden files (see 6.6): any change to a PI, PO, CI, PL or notice shows a reviewed diff.
-- [ ] **(QA/Eng)** Performance regression: response-time budgets for the key endpoints (deal list, approvals, ledger, webhook handlers) checked in the nightly run.
+- [x] **(QA/Eng)** Performance regression: response-time budgets for the key endpoints (deal list, approvals, ledger, webhook handlers) checked in the nightly run. — done 2026-11-19: `scripts/perf_budget.py` — median of 5 calls per key endpoint (deal list, money board, desk, approvals, ledgers, directory, radar, watchers) against a budget (`PERF_BUDGET_SCALE`), read-only; nightly workflow job `performance`.
 - [ ] **(Eng)** Data migration regression: every schema change is run against an anonymised copy of production data before it ships.
 - [ ] **(QA)** Release test report: what ran, what failed, what was skipped and why — signed off before each release.
 
@@ -500,16 +500,16 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [x] **(Eng)** One pytest warning is left: a coroutine of an `AsyncMock` that is never awaited, garbage-collected during `test_automation_continuations.py::TestNotificationLegs::test_qc_booked_notifies_supplier` in the full run only (a mock from an earlier test). Find the test that calls an async mock without awaiting it. — done 2026-11-18: it came from `test_qc_booked_notifies_supplier` (DocuGen ran on a half-mocked repository); the document step is stubbed there. Found on the way: `test_sweep_skips_gateway_retry_check_within_backoff_window` measured "moments ago" from import time and failed on a slow run — now read at test time.
 - [x] **(Eng)** Structured (JSON) logs and a log retention period on the hosting side (PII redaction is in, 2026-11-18). — done 2026-11-18: `LOG_FORMAT=json` (`shared/log_format.py`): one JSON object per line on every root / uvicorn handler with ts, level, logger, message, the deal in scope and the exception; PII masked first. Retention stays a hosting setting.
 - [ ] **(Eng/Ops)** WAF in front of the backend (the app-level rate limit on the public doors is in, 2026-11-18).
-- [ ] **(Eng/Ops)** External synthetic check every few minutes (an uptime monitor calling `/health` and `/health/watchers` with a token, alerting on Telegram) — the endpoints exist (2026-11-18).
+- [x] **(Eng/Ops)** External synthetic check every few minutes (an uptime monitor calling `/health` and `/health/watchers` with a token, alerting on Telegram) — the endpoints exist (2026-11-18). — done 2026-11-19: `.github/workflows/uptime.yml` every 10 min → `scripts/uptime_check.py`: `/health` up and fast, `/health/watchers` without a stale watcher, else one Telegram message. Needs the PORTLESS_BACKEND_URL / PORTLESS_SMOKE_TOKEN / Telegram secrets.
 - [x] **(Eng)** Run `scripts/smoke_check.py` as the last step of every deploy; roll back on a non-zero exit. — done 2026-11-18: `.github/workflows/post-deploy-smoke.yml` (workflow_dispatch or repository_dispatch `deployed`; secrets `PORTLESS_BACKEND_URL`, `PORTLESS_SMOKE_TOKEN`); a red run means roll back.
 - [ ] **(Eng)** Secrets in a secrets manager, not a `.env` file; rotation plan for every provider key.
 - [x] **(Eng)** Rate limiting on public endpoints (none today) and a WAF in front of the backend. — rate limit done 2026-11-18: anonymous doors (provider webhooks, unsubscribe, escrow proof link) ≤ `RATE_LIMIT_PUBLIC_PER_MINUTE` (60) per address and door, else 429 + Retry-After (`shared/rate_limit.py`, in-memory per instance). The WAF stays open (hosting).
 - [x] **(Eng)** Structured logs with PII redaction (e-mail bodies, phone numbers) and retention. — redaction done 2026-11-18: `shared/log_redaction.py` masks e-mail addresses (first letter + domain) and phone numbers in every log line (`LOG_REDACT_PII`, on by default). Structured (JSON) logs and retention stay open (hosting).
 - [ ] **(Eng)** Runbooks: provider outage, stuck escrow, webhook never arrived, wrong payout, kill switch, mailbox blocked, LLM gateway down.
 - [ ] **(Eng)** Disaster recovery: region outage plan, RPO / RTO targets.
-- [ ] **(Eng)** Cost dashboards: LLM, Apify (daily run budget exists), Tavily, Atlas, hosting.
+- [x] **(Eng)** Cost dashboards: LLM, Apify (daily run budget exists), Tavily, Atlas, hosting. — done 2026-11-19: `shared/cost_meter.py` + `GET /health/costs?days=` — per day LLM calls / tokens / USD, Apify runs / USD (and today's budget), Tavily searches, fixed monthly costs (`COST_FIXED_MONTHLY_USD`, e.g. atlas / hosting), share booked to deals, cost per completed deal; System Health card.
 - [x] **(Eng)** The standalone API gateway (`services/api_gateway`) still has TODOs for signature verification, idempotency keys and request enrichment — finish them or do not deploy it. — done 2026-11-18: `POST /webhooks/{provider}` now forwards the request untouched (raw body, signature headers, query string) to the owning service's signed, replay-safe route and returns its answer; unknown provider → 404. Sign-in stays the deployed edge's job; create-deal TODO resolved in the docstring.
-- [ ] **(Eng) P2** **Computed views scale with the number of deals**: the directory relationships (`relationships.annotate`) read every deal on each listing, the prospect desk builds a match board per prospect on every refresh (60 s), the radar recomputes missing profits on listing. Fine for tens of deals; cache or precompute (on deal / offer change) before hundreds.
+- [x] **(Eng) P2** **Computed views scale with the number of deals**: the directory relationships (`relationships.annotate`) read every deal on each listing, the prospect desk builds a match board per prospect on every refresh (60 s), the radar recomputes missing profits on listing. Fine for tens of deals; cache or precompute (on deal / offer change) before hundreds. — done 2026-11-19: `shared/view_cache.py` — directory relationships, supplier performance and the prospect desk are computed once and served from memory until a deal is written (every DealRepository write bumps the generation) or `VIEW_CACHE_SECONDS` (30) pass; concurrent misses share one computation.
 
 ### 8 Security and access
 - [x] **(Eng)** Token revocation delay is the introspection cache (60 s, `AUTH_INTROSPECTION_CACHE_SECONDS`) — confirm acceptable, shorten for money approvers. — done 2026-11-18: money-moving requests (gate decisions, escrow release / accept / refund / provider-confirmed / clear-dispute, payouts, Kill Switch) re-check a token older than `AUTH_MONEY_INTROSPECTION_CACHE_SECONDS` (5); other requests keep the 60 s cache.
@@ -708,7 +708,7 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 - [ ] **(Eng) P2** **Order-size band when nothing is stated** — small / medium / large from company signals (employees, warehouses or branches on its site, number of product lines, the market's import value ÷ the number of importers found), shown as a band and labelled an estimate, never a quantity in an offer.
 - [ ] **(Eng) P1** **Show and use it**: "Buys ~X MT/yr · ships every ~N weeks (source, date)" on the directory card and profile, the radar's buyer list and the prospect desk; the radar's lot and the deal's default quantity use a stated or recorded quantity before the one-container default; pair volume fit stops being blank.
 - [ ] **(Eng)** **Quantity read from a reply is kept and checked**: write it onto the directory record with its source (15.2 "from replies, and kept"); a reply in containers, bags or kg is converted with the product's container / bag size (catalogue, 16.3) and echoed back in the next e-mail for the buyer to confirm ("2 × 20' ≈ 36 MT — correct?").
-- [ ] **(Eng)** **Quantity against supply**: when the buyer's quantity exceeds the chosen supplier's stated capacity or MOQ blocks it, the desk says so and points to a second supplier (13.4 composition) instead of the match board only listing a blocker.
+- [x] **(Eng)** **Quantity against supply**: when the buyer's quantity exceeds the chosen supplier's stated capacity or MOQ blocks it, the desk says so and points to a second supplier (13.4 composition) instead of the match board only listing a blocker. — done 2026-11-19: `prospect_desk.supply_gap` — the chosen supplier's deliverable tonnes in the buyer's window (capacity × months, capped by its offered quantity) or its minimum vs the buyer's quantity; the desk row gets `supply_gap_mt` and a `second_supplier` move naming the other quoted suppliers that cover the rest.
 - [ ] **(QA)** Tests: volume from a recorded import-record row reaches volume fit and the radar lot; a reply in containers is converted and confirmed; a band is never used as an offer quantity.
 
 ### 16.1 Hand-off from the radar to the prospect — Opportunity Radar: profit and next step
@@ -802,7 +802,7 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 - [x] **(Eng)** **Supplier added to a prospect gets the RFQ**: today it joins the match board with the quote pending; send it the quote request e-mail through the `DISPATCH_RFQ` gate (5.5 "RFQ leg"). — done 2026-11-18: "Add to prospect" opens a `DISPATCH_RFQ` gate for that supplier alone (`continuations.rfq_for_supplier`, flag `supplier_added_by_hand`); without an e-mail it says so.
 - [ ] **(Eng)** **People, not only mailboxes**: contact persons per company (name, role — purchasing / export manager, e-mail, phone / WhatsApp, preferred language), the person each prospect wrote to, and which person replied.
 - [x] **(Eng)** **Notes and follow-ups**: staff notes on a company (a call, a trade-fair meeting) and a reminder date; the notes also go to knowledge memory (`memory.remember_note`). — done 2026-11-18: `POST /trade-min/{buyers|suppliers}/{id}/notes` (optional reminder date) and `…/notes/{note_id}/done`; notes go to knowledge memory; due reminders are listed in the daily digest. Notes section on the company profile.
-- [ ] **(Eng)** **Supplier performance from real deals**: QC pass rate, on-time readiness vs the promised date, disputes, price kept vs re-quoted — on the record and in the score (today only signed / completed counts from `outcomes`).
+- [x] **(Eng)** **Supplier performance from real deals**: QC pass rate, on-time readiness vs the promised date, disputes, price kept vs re-quoted — on the record and in the score (today only signed / completed counts from `outcomes`). — done 2026-11-19: `shared/orchestration/supplier_performance.py` — per supplier: deals, completed, PSI QC pass rate, goods ready on time vs the promised date, disputes, price kept vs raised after quoting; in the directory score and on the company profile (`GET /trade-min/suppliers/{id}/performance`).
 - [x] **(Eng)** **Duplicates**: the same company under two domains or names (group site and local site) — suggest merges, staff confirm, history moves to one record. — done 2026-11-18: `GET /trade-min/directory/{role}/duplicates` (same company e-mail domain, phone, or name core in one country) and `POST …/merge` (staff; sources, HS codes, notes, screening reviews joined, do-not-contact wins, `merged_from` / `aliases` kept). Card on Buyers & Suppliers.
 - [x] **(Eng)** **Bulk actions and export**: check the selected (with the Apify cost first), do not contact, add to a prospect, export CSV. — done 2026-11-18: `POST /trade-min/directory/{role}/bulk` (check — answers its Apify cost first, do not contact — reason, add to prospect — refusals per company) and `GET /trade-min/directory/{role}/export.csv` (page filters). Table view: row selection + bulk bar; Export CSV button.
 - [x] **(Eng)** **Unsubscribe link** in every outreach e-mail that sets do-not-contact without a reply (pairs with the legal item above). — done 2026-11-18: signed link (`UNSUBSCRIBE_LINK_SECRET`, else `ESCROW_PROOF_LINK_SECRET`; `PORTLESS_PUBLIC_BASE_URL`) in every introduction and follow-up; no sign-in; GET shows a confirm page (mail scanners change nothing), the POST sets do-not-contact and declines a courted candidate (the funnel moves on). No base URL / secret → the reply opt-out only.
@@ -817,7 +817,7 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 
 ### 21.2 More about each buyer and supplier — Apify: more about each buyer and supplier
 Own actors on the `rich_minds` account (`/actor-pipeline`, or `/actor-implement` on an existing one); each new field goes onto the scan rows → directory record → relationships score. Measure every addition's cost with the scan cost meter (16) before turning it on for every scan.
-- [ ] **(Eng)** **Search in the market's language** (no new actor — PortLess side): today every query is English ("dried onions importers, DE"). Add the local terms per market (DE "Großhändler / Importeur", ES "importador / distribuidor", FR "importateur / grossiste", IT, NL, AR for the Gulf) and the product name in that language (catalogue field per product line, or the LLM gateway once with a human check). Expect far more real importers in non-English markets.
+- [x] **(Eng)** **Search in the market's language** (no new actor — PortLess side): today every query is English ("dried onions importers, DE"). Add the local terms per market (DE "Großhändler / Importeur", ES "importador / distribuidor", FR "importateur / grossiste", IT, NL, AR for the Gulf) and the product name in that language (catalogue field per product line, or the LLM gateway once with a human check). Expect far more real importers in non-English markets. — done 2026-11-19: `shared/search_terms.py` — one extra buyer search line per non-English market in its language (DE / FR / ES / IT / NL / PT / AR / TR …) with the catalogue's `local_names` product name when staff entered one; `SEARCH_LOCAL_LANGUAGE`.
 - [ ] **(Eng)** **Contact persons — PortLess side** (needs actor A.3): normalise the people onto the directory record and the deal party; feeds 20 "people".
 - [ ] **(Eng)** **What the buyer sells — PortLess side** (needs actor A.4): turn the product range into a product-fit score for buyers (today a web-search buyer's product fit is a fixed 85) and drop sites that sell something else; the specification template of 15.1 is the structured half.
 - [ ] **(Eng)** **Trade-fair exhibitors — PortLess side** (needs actor A.5): connector slot + normaliser (`source=trade_fair:<fair>`), buyers and suppliers through quality / validation into the directory. Exhibitors are active traders with a budget — a better source than a web search.
@@ -898,10 +898,10 @@ Both:
 35 items.
 
 ### 2.5 Payoneer, ICEGATE, Stripe — Provider contracts not yet confirmed
-- [ ] **(Eng)** Stripe Treasury hold is legacy — remove it or confirm it is never offered.
+- [x] **(Eng)** Stripe Treasury hold is legacy — remove it or confirm it is never offered. — done 2026-11-19: `ESCROW_LEGACY_STRIPE_HOLD` (default off): `POST /escrow-guard/holds` answers 410; provider choice never lands on Stripe; readiness `legacy_stripe_hold` fails in production when it is on. Old holds stay readable.
 
 ### 4 Money safety and financial controls
-- [ ] **(Eng)** Interest / float on funds in escrow — record if the provider pays any.
+- [x] **(Eng)** Interest / float on funds in escrow — record if the provider pays any. — done 2026-11-19: `shared/orchestration/escrow_interest.py` — `POST /escrow-guard/deals/{id}/interest` (statement ref, PortLess's or the buyer's, audited); ours raises the realised margin (`interest_income_usd` on the ledger) and posts Dr cash / Cr interest_income, the buyer's posts to buyer_deposits.
 
 ### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
 - [x] **(Eng)** The supplier's address read from an e-mail replaces an earlier one read from an e-mail (only an operator-entered one is protected). Keep a history of addresses and show the operator when it changed. — done 2026-11-18: every replaced address is kept on the party (`address_history`: address, who gave it, when and by what it was replaced; `address_source` for the current one); the deal page shows "Changed <date> by <source> — was …".
@@ -910,7 +910,7 @@ Both:
 - [ ] **(Ops)** Partial shipments and multiple containers with different seals per deal — supported in data, not tested end to end.
 
 ### 5.5 Add suppliers manually (local suppliers) — Workflow gaps found end to end
-- [ ] **(Eng)** Supplier track record per supplier (deals, on-time ready dates, QC pass rate, price vs market) to rank manual and scanned suppliers together.
+- [x] **(Eng)** Supplier track record per supplier (deals, on-time ready dates, QC pass rate, price vs market) to rank manual and scanned suppliers together. — done 2026-11-19: supplier performance from real deals (see that item) ranks manual and scanned suppliers on the same score.
 
 ### 6.4 Failure and load — Quality assurance gaps
 - [ ] **(QA)** Long-running timing: L1 timeouts, inspection window lapse, PI expiry, funding grace — with a controllable clock.
@@ -928,7 +928,7 @@ Both:
 - [ ] **(Eng)** The SSE stream goes straight to the backend (a serverless gateway cannot hold it open) — confirm the production hosting supports long-lived connections.
 
 ### 8 Security and access
-- [ ] **(Eng)** Device / IP restrictions for staff approving money.
+- [x] **(Eng)** Device / IP restrictions for staff approving money. — done 2026-11-19: `shared/auth/money_network.py` — `AUTH_MONEY_APPROVER_NETWORKS` (IPs / CIDR, the forwarded address only via TRUSTED_PROXY_HOPS) and `AUTH_MONEY_APPROVER_DEVICE_KEYS` (`X-PortLess-Device`): APPROVE of a money gate from elsewhere → 403, audited; REJECT never restricted.
 
 ### 9 Operator console (portless-ui)
 - [ ] **(Eng)** Accessibility (keyboard, contrast) and mobile layout for approvals on the go.
@@ -937,7 +937,7 @@ Both:
 - [x] **(Eng)** Data retention and clean-up for prospects that never converted. — done 2026-11-18: `shared/orchestration/prospect_cleanup.py` — prospects untouched for `PROSPECT_RETENTION_DAYS` (60), not parked, are closed as CANCELLED with the reason (records kept); `GET / POST /deals/prospects/cleanup` (staff), daily from the watcher with `PROSPECT_CLEANUP_ENABLED=true`.
 
 ### 11.2 Cut costs on every shipment — New features to raise profit per deal (product)
-- [ ] **(Eng)** Demurrage / detention alerts before free days run out.
+- [x] **(Eng)** Demurrage / detention alerts before free days run out. — done 2026-11-19: `shared/orchestration/demurrage.py` — clocks from arrival (demurrage) and delivery → empty return (detention; Maersk empty gate-in or staff `POST /shield-link/deals/{id}/empty-returned`) against `DEMURRAGE_FREE_DAYS` / `DETENTION_FREE_DAYS` (per country); Telegram + a buyer notice `DEMURRAGE_WARN_DAYS_BEFORE` days before and when running; cost so far; deal page card.
 
 ### 11.3 Price better — New features to raise profit per deal (product)
 - [x] **(Eng)** Price alerts: buy when the price book shows supplier prices dipping; hold offers when they spike. — done 2026-11-18: `shared/orchestration/price_alerts.py` — supplier FOB median of the last 14 days vs the 60 before, ±8 % (`PRICE_ALERT_*`) → dip (lock quotes / PO) or spike (hold offers); in the daily digest and `GET /deals/price-alerts`.
@@ -954,7 +954,7 @@ Both:
 
 ### 12 Buyer and supplier validation (Opportunity Radar)
 - [ ] **(Eng)** Indian supplier age and size at scan time: MCA (company age from CIN) and Udyam need numbers a web search does not return — read them from the supplier's website / GST record when available.
-- [ ] **(Eng)** Phone check for phone-only local suppliers (number valid, WhatsApp reachable) so they can be verified without an e-mail.
+- [x] **(Eng)** Phone check for phone-only local suppliers (number valid, WhatsApp reachable) so they can be verified without an e-mail. — done 2026-11-19: `shared/phone_check.py` (numbering plan: Indian mobile / landline / toll-free, E.164 elsewhere) on every check; a phone-only Indian supplier with a valid number + active GST + clear screening is verified; staff record WhatsApp reachability (`POST /trade-min/suppliers/{id}/phone-check`, profile button).
 - [x] **(Eng)** Link the screening evidence certificate (`validation.evidence_url`) from the badge and the evidence pack. — done 2026-11-18: the badge links the certificate; deal parties carry `sanctions_evidence_url` (scan check and enrichment), shown on the deal page; the evidence pack has a Screening section with the certificate link.
 
 ### 13.3 Deal composition agent — Deal composition after negotiation

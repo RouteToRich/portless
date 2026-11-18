@@ -19,6 +19,7 @@ _motor_client = None
 @runtime_checkable
 class HitlApprovalRepository(Protocol):
     async def save(self, approval: ApprovalRecord) -> None: ...
+    async def save_if_pending(self, approval: ApprovalRecord, signatures: int) -> bool: ...
     async def get(self, approval_id: str) -> ApprovalRecord | None: ...
     async def get_by_idempotency_key(self, key: str) -> ApprovalRecord | None: ...
     async def list_by_status(self, status: str | None) -> list[ApprovalRecord]: ...
@@ -32,6 +33,15 @@ class InMemoryHitlApprovalRepository:
 
     async def save(self, approval: ApprovalRecord) -> None:
         self._store[approval.approval_id] = approval
+
+    async def save_if_pending(self, approval: ApprovalRecord, signatures: int) -> bool:
+        """Write only while the stored gate is still PENDING with ``signatures`` approvals —
+        two people deciding at the same moment: exactly one write wins."""
+        cur = self._store.get(approval.approval_id)
+        if cur is None or cur.status != "PENDING" or len(cur.approvals) != signatures:
+            return False
+        self._store[approval.approval_id] = approval
+        return True
 
     async def get(self, approval_id: str) -> ApprovalRecord | None:
         return self._store.get(approval_id)
@@ -71,6 +81,12 @@ class MongoHitlApprovalRepository:
     async def save(self, approval: ApprovalRecord) -> None:
         doc = approval.model_dump(mode="json")
         await self._col.replace_one({"approval_id": approval.approval_id}, doc, upsert=True)
+
+    async def save_if_pending(self, approval: ApprovalRecord, signatures: int) -> bool:
+        doc = approval.model_dump(mode="json")
+        res = await self._col.replace_one(
+            {"approval_id": approval.approval_id, "status": "PENDING", "approvals": {"$size": signatures}}, doc)
+        return res.matched_count > 0
 
     async def get(self, approval_id: str) -> ApprovalRecord | None:
         doc = await self._col.find_one({"approval_id": approval_id})

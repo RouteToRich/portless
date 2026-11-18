@@ -203,6 +203,26 @@ async def _apply_signed_in_approver(req: ResolveApprovalRequest, request: Reques
     return True
 
 
+async def _assert_money_network(approval_id: str, req: ResolveApprovalRequest, request: Request) -> None:
+    """APPROVE of a money-moving gate only from the approved networks / devices
+    (shared/auth/money_network.py); REJECT is never restricted."""
+    from shared.auth import money_network
+    from .repository import get_repository as _repo
+    from .service import is_money_action
+    try:
+        record = await _repo().get(approval_id)
+    except Exception:  # noqa: BLE001
+        record = None
+    if record is None or not is_money_action(record.action):
+        return
+    reason = money_network.check(request)
+    if reason:
+        from shared import audit_log
+        await audit_log.record("approval.refused_network", req.resolved_by, approval_id,
+                               {"action": record.action, "address": money_network.request_address(request)})
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=reason)
+
+
 @router.post("/approvals/{approval_id}/resolve", response_model=ApprovalResponse)
 async def api_resolve_approval(
     approval_id: str,
@@ -215,6 +235,8 @@ async def api_resolve_approval(
     REJECT  → emits deal.exception + approval.resolved.
     """
     approver_proven = await _apply_signed_in_approver(req, request)
+    if str(getattr(req.decision, "value", req.decision)) == "APPROVE":
+        await _assert_money_network(approval_id, req, request)
     try:
         resolved = await resolve_approval(approval_id, req, approver_proven=approver_proven)
         from shared import audit_log

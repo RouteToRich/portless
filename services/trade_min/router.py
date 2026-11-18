@@ -393,6 +393,18 @@ async def directory_export(
                     headers={"Content-Disposition": f'attachment; filename="portless-{role}-{stamp}.csv"'})
 
 
+@router.get("/suppliers/{record_id:path}/performance")
+async def supplier_performance(record_id: str) -> dict:
+    """How this supplier did on real deals: QC pass rate, goods ready on time, disputes, price kept."""
+    from shared.orchestration import supplier_performance as sp
+    store = await directory.get_directory()
+    rec = await store.get(record_id)
+    if rec is None or rec.role != "supplier":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{record_id!r} not found")
+    perf = await sp.for_record(rec)
+    return {"supplier_id": record_id, "name": rec.name, "performance": perf, "has_history": bool(perf)}
+
+
 @router.get("/{role}/{record_id:path}/profile")
 async def counterparty_profile_view(role: Literal["buyers", "suppliers"], record_id: str) -> dict:
     """One company with everything needed to act on it: score, relationship, every prospect /
@@ -695,6 +707,34 @@ async def validate_counterparty(role: Literal["buyers", "suppliers"], record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{record_id!r} not found")
     rec = await validation.validate_record(rec)
     await store.set_validation(rec)
+    return (await directory.with_open_opportunities([rec]))[0]
+
+
+class PhoneCheckIn(BaseModel):
+    whatsapp: Literal["confirmed", "not_reachable", "unknown"]
+    evidence: str | None = None
+
+
+@router.post("/suppliers/{record_id:path}/phone-check", response_model=CounterpartyRecord)
+async def phone_check_supplier(record_id: str, body: PhoneCheckIn,
+                               user=Depends(_staff())) -> CounterpartyRecord:
+    """Staff: the supplier answered (or not) on WhatsApp — recorded on its check (audited); the
+    number itself is checked against the numbering plan again."""
+    from shared import phone_check
+    from shared.audit_log import staff_relay
+    from .schemas import CounterpartyValidation
+    store = await directory.get_directory()
+    rec = await store.get(record_id)
+    if rec is None or rec.role != "supplier":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{record_id!r} not found")
+    pc = phone_check.check(rec.phone, rec.country)
+    if pc["status"] != "valid" and body.whatsapp == "confirmed":
+        raise HTTPException(status_code=422, detail=f"the number on file is not valid: {pc['reason']}")
+    v = (rec.validation or CounterpartyValidation()).model_copy(
+        update={"phone": pc["status"], "phone_e164": pc["e164"], "whatsapp": body.whatsapp})
+    rec.validation = validation.decide(v, role="supplier", country=rec.country, has_phone=bool(rec.phone))
+    await store.set_validation(rec)
+    await staff_relay(user, "supplier.phone_check", record_id, whatsapp=body.whatsapp, evidence=body.evidence)
     return (await directory.with_open_opportunities([rec]))[0]
 
 

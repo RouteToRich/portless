@@ -35,8 +35,12 @@ jobs:
         run: ruff check . --select E9,F63,F7,F82 --output-format=github
       - name: Every test has a Gherkin scenario
         run: python scripts/gen_unit_gherkin.py --check
-      - name: Tests
-        run: pytest -q -p no:cacheprovider
+      - name: Tests (with coverage)
+        run: >
+          pytest -q -p no:cacheprovider --cov=agents --cov=services --cov=shared --cov=app --cov-branch
+          --cov-report=json:coverage.json --cov-report=term:skip-covered
+      - name: Coverage gate (overall floor + money modules — scripts/coverage_gate.py)
+        run: python scripts/coverage_gate.py coverage.json
 
   security:
     # bandit blocks on high-severity, high-confidence findings; the dependency audits report

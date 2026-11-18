@@ -51,6 +51,12 @@ EMAILS: list[dict[str, Any]] = []
 CHECKS: list[dict[str, Any]] = []
 TRANSCRIPT: list[str] = []
 LLM_REPLIES = {"ok": 0, "failed": 0}
+REPLIES: list[dict[str, Any]] = []
+"""Every counterparty reply the LLM wrote in the current journey (kept with the result)."""
+REPLAY: dict[str, list[dict[str, Any]]] = {}
+"""Journey id -> replies recorded by an earlier run; played back in order instead of asking the
+LLM, so a failing journey can be re-run with exactly the same counterparty e-mails."""
+_CURRENT: dict[str, str] = {"journey": ""}
 _background: set[asyncio.Task] = set()
 
 
@@ -351,7 +357,19 @@ def _scripted_prices(instruction: str) -> list[str]:
 
 async def persona_reply(role: str, company: str, thread: str, instruction: str) -> str:
     """The LLM plays the buyer or supplier. Raises CounterpartyUnavailable if it fails:
-    mailing the bare instruction ("Say the price is too high…") would test nothing real."""
+    mailing the bare instruction ("Say the price is too high…") would test nothing real.
+    With a replay loaded (``REPLAY``) the recorded reply for the same role and instruction is
+    used instead; a divergence (another instruction at this point) falls back to the LLM."""
+    queue = REPLAY.get(_CURRENT["journey"])
+    if queue:
+        rec = queue[0]
+        if rec.get("role") == role and rec.get("instruction") == instruction:
+            queue.pop(0)
+            REPLIES.append({**rec, "replayed": True})
+            say(f"   (replayed recorded {role} reply #{rec.get('n')})")
+            return str(rec.get("reply") or "")
+        say(f"   (replay diverged: recorded {rec.get('role')!r} / {str(rec.get('instruction'))[:60]!r} — asking the LLM)")
+        REPLAY.pop(_CURRENT["journey"], None)
     system = (
         f"You are the {role} at {company}, in an international commodity trade by e-mail. "
         "Write ONLY the body of your reply e-mail, in natural business English, under 90 words, "
@@ -376,6 +394,8 @@ async def persona_reply(role: str, company: str, thread: str, instruction: str) 
             missing = [p for p in _scripted_prices(instruction) if p not in text.replace(",", "")]
             if text and not missing:
                 LLM_REPLIES["ok"] += 1
+                REPLIES.append({"n": len(REPLIES) + 1, "role": role, "company": company, "instruction": instruction,
+                                "received": thread[-1800:], "reply": text, "attempt": attempt + 1})
                 return text
             if text:  # the persona improvised a price: the journey would test the wrong deal
                 say(f"   (LLM reply left out the scripted price {missing}, attempt {attempt + 1})")
@@ -1080,8 +1100,11 @@ def _trust_webhooks() -> None:
                 setattr(cls, "webhook_verify", verified if is_async else (lambda *_a, **_k: True))
 
 
-async def run_all(sink: Any, mail: list[dict[str, Any]], guard: Any, background: set[asyncio.Task], only: str = "") -> None:
+async def run_all(sink: Any, mail: list[dict[str, Any]], guard: Any, background: set[asyncio.Task], only: str = "",
+                  replay: dict[str, list[dict[str, Any]]] | None = None) -> None:
     global EMAILS
+    REPLAY.clear()
+    REPLAY.update({k: list(v) for k, v in (replay or {}).items() if v})
     _background.clear()
     _background.update(background)
     _trust_webhooks()
@@ -1093,6 +1116,8 @@ async def run_all(sink: Any, mail: list[dict[str, Any]], guard: Any, background:
             continue
         CHECKS.clear()
         TRANSCRIPT.clear()
+        REPLIES.clear()
+        _CURRENT["journey"] = journey["id"]
         start = len(mail)
         began = asyncio.get_running_loop().time()
         status, error = "passed", None
@@ -1110,6 +1135,8 @@ async def run_all(sink: Any, mail: list[dict[str, Any]], guard: Any, background:
             "tc_id": journey["id"], "iteration": 0, "row": {}, "status": status, "error": error,
             "phase": "llm-journeys", "layer": "e2e", "steps": list(CHECKS), "emails": mail[start:][:60],
             "transcript": "\n".join(TRANSCRIPT)[:60000],
+            "counterparty_replies": list(REPLIES)[:80],
+            "replayed": journey["id"] in (replay or {}),
             "duration_ms": int((asyncio.get_running_loop().time() - began) * 1000),
         })
 

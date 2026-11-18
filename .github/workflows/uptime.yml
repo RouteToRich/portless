@@ -1,0 +1,36 @@
+# External synthetic check: /health and /health/watchers every 10 minutes; a Telegram message when
+# the backend is down or a background watcher has gone stale (scripts/uptime_check.py).
+# Secrets: PORTLESS_BACKEND_URL, PORTLESS_SMOKE_TOKEN (staff bearer), HITL_TELEGRAM_BOT_TOKEN,
+# HITL_TELEGRAM_CHAT_ID. Without PORTLESS_BACKEND_URL the job does nothing.
+name: uptime
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PORTLESS_BACKEND_URL: ${{ secrets.PORTLESS_BACKEND_URL }}
+      PORTLESS_SMOKE_TOKEN: ${{ secrets.PORTLESS_SMOKE_TOKEN }}
+      HITL_TELEGRAM_BOT_TOKEN: ${{ secrets.HITL_TELEGRAM_BOT_TOKEN }}
+      HITL_TELEGRAM_CHAT_ID: ${{ secrets.HITL_TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        if: ${{ env.PORTLESS_BACKEND_URL != '' }}
+      - uses: actions/setup-python@v5
+        if: ${{ env.PORTLESS_BACKEND_URL != '' }}
+        with:
+          python-version: "3.13"
+      - if: ${{ env.PORTLESS_BACKEND_URL != '' }}
+        run: pip install httpx
+      - name: Uptime check
+        if: ${{ env.PORTLESS_BACKEND_URL != '' }}
+        run: python scripts/uptime_check.py

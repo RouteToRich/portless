@@ -73,6 +73,7 @@ class InMemoryFallbackRepository:
 
     async def save(self, deal: DealRecord) -> None:
         self._store[deal.deal_id] = deal
+        _changed()
 
     async def get(self, deal_id: str) -> DealRecord | None:
         return self._store.get(deal_id)
@@ -113,6 +114,7 @@ class InMemoryFallbackRepository:
                 "status_history": deal.status_history + [entry],
             }
         )
+        _changed()
         return True
 
     async def set_fields(self, deal_id: str, fields: dict) -> bool:
@@ -120,7 +122,17 @@ class InMemoryFallbackRepository:
         if deal is None:
             return False
         self._store[deal_id] = deal.model_copy(update=fields)
+        _changed()
         return True
+
+
+def _changed() -> None:
+    """Computed views that read every deal recompute on their next read (shared/view_cache.py)."""
+    try:
+        from shared import view_cache
+        view_cache.bump("deals")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +152,7 @@ class MongoDealRepository:
             doc,
             upsert=True,
         )
+        _changed()
 
     async def get(self, deal_id: str) -> DealRecord | None:
         doc = await self._col.find_one({"deal_id": deal_id})
@@ -197,6 +210,7 @@ class MongoDealRepository:
                 },
             },
         )
+        _changed()
         return res.matched_count > 0
 
     async def set_fields(self, deal_id: str, fields: dict) -> bool:
@@ -204,6 +218,7 @@ class MongoDealRepository:
         doc = {k: TypeAdapter(type(v)).dump_python(v, mode="json") if v is not None else None
                for k, v in fields.items()}
         res = await self._col.update_one({"deal_id": deal_id}, {"$set": doc})
+        _changed()
         return res.matched_count > 0
 
 

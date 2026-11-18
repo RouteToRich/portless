@@ -166,6 +166,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("HitlApproval startup failed (service will run degraded): %s", exc)
 
+    # ── Reference exchange rates into the sync cache (e-mail currency per country) ─
+    try:
+        from shared import fx_rates as _fx_rates
+        await _fx_rates.warm()
+    except Exception as exc:
+        logger.error("FX reference rates not loaded (USD / INR fallback applies): %s", exc)
+
     # ── Autonomy policy: per-action L0–L3 overrides (Mongo-persisted) ─────
     try:
         from shared.orchestration.autonomy_policy import load_policy
@@ -423,6 +430,12 @@ def create_app() -> FastAPI:
         """LLM failure rate per caller and refused webhook signatures per provider (last window)."""
         from shared import failure_monitor
         return failure_monitor.status()
+
+    @app.get("/health/costs", tags=["meta"])
+    async def costs(days: int = 30) -> dict:
+        """What running PortLess cost per day: LLM, Apify, Tavily and fixed monthly costs."""
+        from shared import cost_meter
+        return await cost_meter.report(days)
 
     @app.get("/health/watchers", tags=["meta"])
     async def watchers() -> dict:

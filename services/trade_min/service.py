@@ -742,7 +742,7 @@ async def _phase2_live_signals(
     # this market (company-contact-finder-ai, any Apify plan) — each row is a
     # real company with a checked e-mail and/or phone from its own website.
     buyer_search_req = {
-        "keyword": keyword, "countries": [market], "role": "buyer", "max_results": 5,
+        "keyword": keyword, "countries": [market], "role": "buyer", "max_results": 5, "hs_code": hs_code,
     }
 
     rfq_r, gdelt_r, ted_r, search_r = await asyncio.gather(

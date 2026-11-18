@@ -353,8 +353,11 @@ def normalize_events(events: list[dict[str, Any]], *, origin: str | None = None,
         at_destination = bool(destination and loc["unlocode"] and loc["unlocode"].upper() == destination.upper())
         at_origin = bool(origin and loc["unlocode"] and loc["unlocode"].upper() == origin.upper())
         milestone = None
+        empty = str(e.get("emptyIndicatorCode") or "").upper() == "EMPTY"
         if classifier == "ACT":
-            if code == "GTIN" and not at_destination:
+            if code == "GTIN" and empty and not at_origin:
+                milestone = "EMPTY_RETURNED"  # the box is back at the carrier's depot: detention stops
+            elif code == "GTIN" and not at_destination:
                 milestone = "GATE_IN"
             elif code == "LOAD" and not at_destination:
                 milestone = "LOADED"
@@ -378,6 +381,7 @@ def normalize_events(events: list[dict[str, Any]], *, origin: str | None = None,
             "voyage": call.get("carrierVoyageNumber") or call.get("exportVoyageNumber"),
             "mode": call.get("modeOfTransport"),
             "equipment_reference": e.get("equipmentReference"),
+            "empty": empty,
             "milestone": milestone,
         })
     out.sort(key=lambda x: str(x.get("at") or ""))

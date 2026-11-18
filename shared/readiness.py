@@ -153,6 +153,13 @@ def evaluate() -> dict[str, Any]:
         fail_detail=("PORTLESS_PUBLIC_BASE_URL / ESCROW_PROOF_LINK_SECRET unset — only proofs that are URLs "
                      "(QC report, tracking page) reach Tazapay; it may ask for the documents by e-mail"),
     ))
+    legacy = os.getenv("ESCROW_LEGACY_STRIPE_HOLD", "false").strip().lower() in ("1", "true", "yes", "on")
+    checks.append(_check(
+        "legacy_stripe_hold", "money", "Legacy Stripe hold switched off", not legacy, warn_only=not prod,
+        ok_detail="buyers pay only into a neutral staged escrow (Tazapay / Escrow.com)",
+        fail_detail=("ESCROW_LEGACY_STRIPE_HOLD is on — POST /escrow-guard/holds opens a Stripe hold with no tranches "
+                     "and no neutral release; switch it off"),
+    ))
     secrets_needed = ["TAZAPAY_WEBHOOK_SECRET", "ESCROW_COM_WEBHOOK_SECRET", "STRIPE_WEBHOOK_SECRET",
                       "PAYONEER_WEBHOOK_SECRET"]
     money_secrets = [n for n in secrets_needed if _set(n)]

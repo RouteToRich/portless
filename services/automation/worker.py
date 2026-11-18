@@ -164,12 +164,14 @@ async def _run(args: argparse.Namespace, guard: NetworkGuard) -> int:
             if args.scope in ("all", "journeys"):
                 from services.automation import journeys
                 state["all_llm"] = True
-                await journeys.run_all(sink, mail, guard, background, only=wanted)
+                await journeys.run_all(sink, mail, guard, background, only=wanted,
+                                       replay=await _replay_from(sink, getattr(args, "replay_run", "")))
                 state["all_llm"] = False
             elif linked:
                 from services.automation import journeys
                 state["all_llm"] = True
-                await journeys.run_all(sink, mail, guard, background, only=",".join(jid for _, jid in linked))
+                await journeys.run_all(sink, mail, guard, background, only=",".join(jid for _, jid in linked),
+                                       replay=await _replay_from(sink, getattr(args, "replay_run", "")))
                 state["all_llm"] = False
             for case, journey_id in linked:
                 played = next((r for r in reversed(sink.results) if r["tc_id"] == journey_id), None)
@@ -191,6 +193,19 @@ async def _run(args: argparse.Namespace, guard: NetworkGuard) -> int:
     return 0
 
 
+async def _replay_from(sink: Any, run_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Recorded counterparty replies of an earlier run, per journey (empty without a run id)."""
+    if not run_id or sink.db is None:
+        return {}
+    from .store import RESULTS
+    out: dict[str, list[dict[str, Any]]] = {}
+    async for doc in sink.db[RESULTS].find({"run_id": run_id, "phase": "llm-journeys"}):
+        replies = [r for r in (doc.get("counterparty_replies") or []) if r.get("reply")]
+        if replies and doc.get("tc_id") not in out:
+            out[doc["tc_id"]] = replies
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", required=True)
@@ -200,6 +215,8 @@ def main() -> int:
     parser.add_argument("--only", default="")
     parser.add_argument("--tag", default="", help="only cases with this tag, e.g. smoke (the after-deploy set)")
     parser.add_argument("--report", default="")
+    parser.add_argument("--replay-run", default="", help="play the journeys again with the counterparty replies "
+                        "recorded by this earlier run (deterministic re-run of a failing journey)")
     args = parser.parse_args()
 
     assert_isolated()
@@ -213,6 +230,7 @@ def main() -> int:
     # before the list check).
     os.environ.setdefault("COMPLIANCE_DGFT_LIST", "allow")
     os.environ.setdefault("EXPORT_CERTS_REQUIRED", "false")  # likewise: no certificate is ever recorded there
+    os.environ.setdefault("FX_REFERENCE_AUTO_REFRESH", "false")  # the network guard allows no rate feed
     os.environ.setdefault("DEALMAKER_STORAGE_DIR", str(work / "dealmaker"))
     os.environ.setdefault("DOCUGEN_STORAGE_DIR", str(work / "docugen"))
     os.chdir(work)  # a relative env_file=".env" finds nothing here

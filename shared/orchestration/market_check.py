@@ -173,6 +173,11 @@ async def _google_news(query: str, limit: int = 6) -> list[Headline]:
 
 async def _tavily(query: str, key: str, limit: int = 5) -> list[Headline]:
     import httpx
+    try:
+        from shared import cost_meter
+        cost_meter.tavily_search()
+    except Exception:  # noqa: BLE001
+        pass
     async with httpx.AsyncClient(timeout=15.0) as client:
         r = await client.post(_TAVILY, json={"api_key": key, "query": query, "max_results": limit,
                                              "search_depth": "basic", "topic": "news", "days": 60})

@@ -45,6 +45,7 @@ from .schemas import (
     ReleaseTrancheRequest,
 )
 from .service import (
+    LegacyHoldDisabled,
     ConnectorCallError,
     DealNotFoundError,
     HoldNotFoundError,
@@ -90,6 +91,8 @@ async def api_create_hold(req: EscrowHoldRequest) -> EscrowResponse:
     """Create buyer-side escrow hold for a deal in ESCROW_PENDING state."""
     try:
         return await create_hold(req)
+    except LegacyHoldDisabled as exc:
+        raise HTTPException(status.HTTP_410_GONE, detail=str(exc))
     except DealNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc))
     except InvalidDealState as exc:
@@ -390,6 +393,32 @@ async def api_fees_over(user: AuthUser = Depends(require_portless)) -> list[dict
     """Every deal whose fees run above the assumption (margin smaller than shown)."""
     from shared.orchestration import fee_check
     return await fee_check.over_all()
+
+
+class InterestRecord(BaseModel):
+    amount_usd: float = Field(gt=0)
+    ref: str = Field(min_length=1, max_length=120)
+    """Provider statement line / bank credit advice."""
+    period: str | None = Field(default=None, max_length=60)
+    belongs_to: Literal["portless", "buyer"] = "portless"
+
+
+@router.post("/deals/{deal_id}/interest", response_model=dict)
+async def api_record_interest(deal_id: str, body: InterestRecord, user: AuthUser = Depends(require_portless)) -> dict:
+    """Interest a provider or bank credited on the deal's escrow funds (staff, audited)."""
+    from shared.orchestration import escrow_interest
+    try:
+        row = await escrow_interest.record(deal_id, body.amount_usd, period=body.period, ref=body.ref,
+                                           belongs_to=body.belongs_to, by=user.email or user.user_id)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc))
+    return {"recorded": row, "interest": await escrow_interest.listed(deal_id)}
+
+
+@router.get("/deals/{deal_id}/interest", response_model=list[dict])
+async def api_list_interest(deal_id: str, user: AuthUser = Depends(require_portless)) -> list[dict]:
+    from shared.orchestration import escrow_interest
+    return await escrow_interest.listed(deal_id)
 
 
 class FxRateRecord(BaseModel):

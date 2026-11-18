@@ -110,6 +110,10 @@ class ProspectSummary(BaseModel):
     parked: bool = False
     parked_until: datetime | None = None
     parked_reason: str | None = None
+    # quantity against supply (supply_gap)
+    supply_gap_mt: float | None = None
+    """What the chosen supplier cannot deliver of the buyer's quantity (capacity in the window)."""
+    supply_note: str | None = None
     # trader view
     priority: float = 0.0
     actions: list[DeskAction] = Field(default_factory=list)
@@ -217,6 +221,9 @@ def summarise(deal: Any, board: Any | None, *, now: datetime | None = None) -> P
         out.min_buyer_price_usd_per_mt = best.min_buyer_price_usd_per_mt
         out.supplier_cut_needed_usd_per_mt = best.supplier_cut_needed_usd_per_mt
 
+    gap = supply_gap(deal, cands, offers, best)
+    if gap:
+        out.supply_gap_mt, out.supply_note = gap["gap_mt"], gap["note"]
     out.undelivered = sum(1 for c in cands if getattr(c, "send_error", None)
                           and getattr(c, "status", "pending") == "pending")
     _actions(out, deal, board, best, cands)
@@ -232,6 +239,62 @@ def summarise(deal: Any, board: Any | None, *, now: datetime | None = None) -> P
     if out.stalled:
         out.priority = round(out.priority * 0.7, 2)
     return out
+
+
+def _deliverable(offer: Any, window_days: float | None) -> float | None:
+    """Tonnes a supplier can deliver in the buyer's window: capacity per month × months (≥ 1),
+    capped by the quantity it offered; None when it stated neither."""
+    cap = getattr(offer, "capacity_mt_per_month", None)
+    offered = getattr(offer, "quantity_mt", None) or getattr(offer, "max_quantity_mt", None)
+    vals = []
+    if cap:
+        vals.append(float(cap) * max(1.0, (window_days or 30.0) / 30.0))
+    if offered:
+        vals.append(float(offered))
+    return min(vals) if vals else None
+
+
+def supply_gap(deal: Any, cands: list[Any], offers: list[Any], best: Any | None = None) -> dict[str, Any] | None:
+    """Pure (todo: quantity against supply): the buyer's quantity vs what the chosen supplier can
+    deliver (or its minimum order). Points to the other quoted suppliers that cover the rest — the
+    start of a two-supplier deal — instead of leaving a blocker on the match board."""
+    interested = [c for c in cands if getattr(c, "status", "") in _INTERESTED]
+    buyer = next((c for c in interested if best is not None and getattr(c, "candidate_id", None) == getattr(best, "candidate_id", None)), None) or (interested[0] if interested else None)
+    req = getattr(buyer, "requirement", None) if buyer is not None else None
+    qty = (getattr(req, "quantity_mt", None) if req else None) or getattr(deal, "quantity_mt", None)
+    if not qty or not offers:
+        return None
+    window = getattr(req, "delivery_by_days", None) if req else None
+    priced = sorted((o for o in offers if getattr(o, "fob_price_usd_per_mt", None)), key=lambda o: o.fob_price_usd_per_mt)
+    chosen = next((o for o in priced if best is not None and o.supplier_id == getattr(best, "supplier_id", None)), None) or (priced[0] if priced else None)
+    if chosen is None:
+        return None
+    name = getattr(chosen, "company_name", None) or chosen.supplier_id
+    moq = getattr(chosen, "moq_mt", None)
+    others = [o for o in priced if o.supplier_id != chosen.supplier_id]
+    if moq and qty < moq:
+        fits = [o for o in others if not getattr(o, "moq_mt", None) or o.moq_mt <= qty]
+        alt = f" or use {getattr(fits[0], 'company_name', None) or fits[0].supplier_id} (minimum fits)" if fits else ""
+        return {"gap_mt": 0.0, "kind": "moq", "note": (
+            f"{name}'s minimum is {moq:g} MT, the buyer wants {qty:g} MT — offer the buyer {moq:g} MT{alt}")}
+    can = _deliverable(chosen, window)
+    if can is None or can + 1e-9 >= qty:
+        return None
+    gap = round(qty - can, 2)
+    cover, covered = [], 0.0
+    for o in others:
+        d = _deliverable(o, window)
+        if d is None or d <= 0:
+            continue
+        cover.append(f"{getattr(o, 'company_name', None) or o.supplier_id} (up to {d:g} MT at {o.fob_price_usd_per_mt:,.0f} FOB)")
+        covered += d
+        if covered >= gap:
+            break
+    tail = (f" — add {', '.join(cover)} for the remaining {gap:g} MT (two-supplier deal)" if cover
+            else f" — ask {name} for its maximum, or find a second supplier for {gap:g} MT")
+    return {"gap_mt": gap, "kind": "capacity", "covered_by": cover, "note": (
+        f"The buyer needs {qty:g} MT; {name} can deliver about {can:g} MT"
+        + (f" in {window:g} days" if window else "") + tail)}
 
 
 def _actions(out: ProspectSummary, deal: Any, board: Any | None, best: Any | None, cands: list[Any]) -> None:
@@ -258,6 +321,8 @@ def _actions(out: ProspectSummary, deal: Any, board: Any | None, best: Any | Non
         acts.append(DeskAction(kind="send_offer", text=f"Send {best.buyer_name} an indicative offer — "
                                f"their reaction gives their price (our minimum {best.landed.min_offer_usd_per_mt:,.0f})"
                                if best.landed else f"Send {best.buyer_name} an indicative offer"))
+    if out.supply_note:
+        acts.append(DeskAction(kind="second_supplier", text=out.supply_note))
     if out.quotes_expiring:
         acts.append(DeskAction(kind="reconfirm_quote", text=f"{out.quotes_expiring} quote(s) expire within 3 days — "
                                "ask the supplier(s) to reconfirm before you commit the buyer"))

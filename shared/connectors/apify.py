@@ -1293,9 +1293,10 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
     _SUPPLIER_TERMS = ("exporter", "manufacturer")
 
     @classmethod
-    def build_queries(cls, keyword: str, countries: list[str], role: str) -> list[str]:
+    def build_queries(cls, keyword: str, countries: list[str], role: str, hs_code: str | None = None) -> list[str]:
         """``"<keyword> <term>, CC"`` per country; ``ALL`` (``WORLDWIDE``) → the line
-        without a country, a worldwide search."""
+        without a country, a worldwide search. Buyer markets with another language get one
+        more line in it (``shared.search_terms``: local terms + the catalogue's local name)."""
         terms = cls._SUPPLIER_TERMS if role == "supplier" else cls._BUYER_TERMS
         lines: list[str] = []
         for cc in countries:
@@ -1303,6 +1304,11 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
                 lines.extend(f"{keyword} {t}" for t in terms)
             elif code := iso2(cc):
                 lines.extend(f"{keyword} {t}, {code}" for t in terms)
+                if role == "buyer":
+                    from shared.search_terms import local_buyer_line
+                    local = local_buyer_line(keyword, code, hs_code)
+                    if local:
+                        lines.append(local)
         return list(dict.fromkeys(lines))
 
     async def quote(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -1310,7 +1316,7 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
         queries = [q for q in (request.get("queries") or []) if q and str(q).strip()]
         if not queries and request.get("keyword"):
             countries = request.get("countries") or (["IN"] if role == "supplier" else [])
-            queries = self.build_queries(str(request["keyword"]).strip(), countries, role)
+            queries = self.build_queries(str(request["keyword"]).strip(), countries, role, request.get("hs_code"))
         if not queries:
             raise ValueError("apify_company_search: queries (or keyword + countries) required")
         per_query = max(1, min(int(request.get("max_results") or 5), 20))

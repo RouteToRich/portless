@@ -448,6 +448,24 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     except Exception as exc:  # noqa: BLE001
         logger.error("DealWatcher: quote reconfirmation failed: %s", exc)
 
+    # Reference exchange rates: refreshed from the published feed once a day (fx_rates.py).
+    try:
+        from shared import fx_rates
+        res = await fx_rates.daily_refresh(now)
+        if res and res.get("recorded"):
+            counts["fx_rates_refreshed"] = len(res["recorded"])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: FX reference refresh failed: %s", exc)
+
+    # Containers at the port of discharge near the end of their free days (demurrage.py).
+    try:
+        from shared.orchestration import demurrage
+        warned = await demurrage.sweep(deals, now)
+        if warned:
+            counts["demurrage_warnings"] = warned
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: demurrage check failed: %s", exc)
+
     # Buyer outreach follow-ups (MATCHING / NEGOTIATING deals waiting for a buyer).
     try:
         from shared.orchestration import outreach

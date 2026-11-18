@@ -135,6 +135,16 @@ class DealNotFoundError(Exception):
         self.deal_id = deal_id
 
 
+class LegacyHoldDisabled(Exception):
+    """The legacy Stripe hold is not offered (ESCROW_LEGACY_STRIPE_HOLD off)."""
+
+
+def legacy_hold_enabled() -> bool:
+    """ESCROW_LEGACY_STRIPE_HOLD (default off): the old Stripe PaymentIntent hold with no tranches.
+    Buyers are offered only the neutral staged escrow; the hold stays readable for old deals."""
+    return os.getenv("ESCROW_LEGACY_STRIPE_HOLD", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 class InvalidDealState(Exception):
     def __init__(self, deal_id: str, current: str, required: str) -> None:
         super().__init__(f"Deal {deal_id!r} is {current!r}; required {required!r}")
@@ -259,8 +269,11 @@ async def create_hold(req: EscrowHoldRequest) -> EscrowResponse:
 
     Pre-condition: deal must be in ESCROW_PENDING state.
     Post: creates PaymentIntent; deal remains ESCROW_PENDING until funded webhook arrives.
-    Idempotent on ``idempotency_key``.
+    Idempotent on ``idempotency_key``. Refused unless ``ESCROW_LEGACY_STRIPE_HOLD`` is on.
     """
+    if not legacy_hold_enabled():
+        raise LegacyHoldDisabled("the legacy Stripe hold is not offered — open a neutral escrow "
+                                 "(POST /escrow-guard/escrows, Tazapay / Escrow.com)")
     repo = get_repository()
 
     if req.idempotency_key:
@@ -1943,6 +1956,16 @@ async def _fx_gain_loss(deal_id: str, payouts: list[Any]) -> float:
         return 0.0
 
 
+async def _interest_income(deal_id: str) -> float:
+    """Interest on escrow funds that is PortLess's own (escrow_interest.py). 0 when none. Never raises."""
+    try:
+        from shared.orchestration import escrow_interest
+        return await escrow_interest.income(deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("EscrowGuard: interest of %s unavailable: %s", deal_id, exc)
+        return 0.0
+
+
 async def _patch_deal_realized_margin(deal_id: str) -> None:
     """Write realized_margin_usd onto the deal when a supplier payout completes.
 
@@ -1963,7 +1986,8 @@ async def _patch_deal_realized_margin(deal_id: str) -> None:
         # own costs (freight, inspection, insurance, customs, documents).
         costs, _basis = await _portless_costs(deal_id, hold.amount, fees_estimated=hold.fees_total)
         fx = await _fx_gain_loss(deal_id, payouts)
-        realized = round(_net_received(hold) - payouts_total - sum(costs.values()) + fx, 2)
+        interest = await _interest_income(deal_id)
+        realized = round(_net_received(hold) - payouts_total - sum(costs.values()) + fx + interest, 2)
         # As a % of what the buyer pays (the escrow principal = the PI total).
         pct = round(realized / hold.amount * 100.0, 2) if hold.amount else None
 
@@ -2159,6 +2183,7 @@ async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> De
     costs, basis = await _portless_costs(hold.deal_id, hold.amount, fees_estimated=hold.fees_total)
     costs_total = round(sum(costs.values()), 2)
     fx_gl = await _fx_gain_loss(hold.deal_id, payouts)
+    interest = await _interest_income(hold.deal_id)
     has_margin = bool((hold.tranches and hold.released_total) or completed)
     return DealLedger(
         deal_id=hold.deal_id,
@@ -2184,8 +2209,9 @@ async def _ledger_for(hold: EscrowHoldRecord, payouts: list[PayoutRecord]) -> De
         portless_costs_basis=basis,
         portless_costs_total=costs_total,
         margin_before_costs=round(net - completed, 2) if has_margin else None,
-        realized_margin=round(net - completed - costs_total + fx_gl, 2) if has_margin else None,
+        realized_margin=round(net - completed - costs_total + fx_gl + interest, 2) if has_margin else None,
         fx_gain_loss_usd=fx_gl,
+        interest_income_usd=interest,
         tranches=hold.tranches,
         payouts=[PayoutResponse.from_record(p) for p in payouts],
         inspection_deadline=hold.inspection_deadline,

@@ -199,7 +199,8 @@ class TestNormalisers:
         assert first["role"] == "buyer" and first["query"] == "basmati rice importers, AE"
         sent = conn.run.await_args.args[0]
         assert sent["sourceMode"] == "live" and sent["maxSearchResults"] == 4
-        assert sent["searchQuery"] == "basmati rice importers, AE\nbasmati rice wholesale distributors, AE"
+        assert sent["searchQuery"] == ("basmati rice importers, AE\nbasmati rice wholesale distributors, AE\n"
+                                       "basmati rice مستورد تاجر جملة, AE")  # the market's language (search_terms)
         assert sent["preferRoles"][0] == "purchasing"
 
     @pytest.mark.parametrize("row,expected", [
@@ -402,7 +403,7 @@ class TestTradeMinWiring:
             res = await svc._phase2_live_signals("100630", "AE", svc._Phase1Result(), svc.DEFAULT_CONFIG)
         assert "apify_us_importers" not in calls and "apify_alibaba_rfq" not in calls
         assert calls["apify_company_search"] == {"keyword": svc._keyword_for("100630"), "countries": ["AE"],
-                                                 "role": "buyer", "max_results": 5}
+                                                 "role": "buyer", "max_results": 5, "hs_code": "100630"}
         b = res.buyer_signals[0]
         assert (b.buyer_name, b.email, b.source, b.signal_type) == (
             "Al Turab Foods", "purchase@alturabfood.com", "apify_company_search", "web_search")

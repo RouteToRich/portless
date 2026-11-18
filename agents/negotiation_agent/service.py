@@ -488,6 +488,29 @@ def claims_funds_already_held(body: str | None) -> bool:
     return False
 
 
+_I = re.IGNORECASE
+_STAGE_ORDER_ERRORS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:inspector|inspection(?: agency| company)?)\b[^.!?\n]{0,80}?\b(?:selected|chosen|booked|arranged|"
+                r"confirmed|appointed|scheduled)\b[^.!?\n]{0,80}?\b(?:proforma|PI)\b", _I),
+     "the Proforma Invoice does not wait for the inspector"),
+    (re.compile(r"\b(?:proforma(?: invoice)?|PI)\b[^.!?\n]{0,60}?\b(?:after|once|when|as soon as|until)\b[^.!?\n]{0,60}?"
+                r"\b(?:inspector|inspection)\b", _I),
+     "the Proforma Invoice does not wait for the inspection"),
+    (re.compile(r"\b(?:purchase order|PO)\b[^.!?\n]{0,60}?\b(?:before|without|ahead of)\b[^.!?\n]{0,40}?"
+                r"\b(?:escrow|funding|deposit|payment)\b", _I),
+     "the Purchase Order goes out only after the escrow is funded"),
+    (re.compile(r"\b(?:inspect(?:ion|or)?|QC)\b[^.!?\n]{0,60}?\bbefore\b[^.!?\n]{0,40}?\b(?:escrow|funding|deposit)\b", _I),
+     "the inspection is booked only after the escrow is funded"),
+)
+
+
+def stage_order_errors(body: str | None) -> list[str]:
+    """Sentences that put the order steps in the wrong order (agreement → Proforma Invoice →
+    escrow funded → Purchase Order → inspection → shipment), e.g. "as soon as we have the
+    inspector selected, we will send the proforma invoice"."""
+    return [why for pattern, why in _STAGE_ORDER_ERRORS if pattern.search(body or "")]
+
+
 def draft_risk_flags(body: str, degraded: bool = False) -> list[str]:
     """Deterministic draft-quality flags shown on the HITL approval.
 
@@ -503,6 +526,8 @@ def draft_risk_flags(body: str, degraded: bool = False) -> list[str]:
         flags.append("unresolved_placeholders")
     if claims_funds_already_held(body):
         flags.append("premature_funds_claim")
+    if stage_order_errors(body):
+        flags.append("stage_order_wrong")
     return flags
 
 
@@ -521,7 +546,7 @@ def _resolve_gate_level(action: str) -> str:
 _FORCE_L0_FLAGS = (
     "degraded_llm_fallback", "unresolved_placeholders", "price_out_of_band",
     "counterparty_leak", "no_real_address", "premature_funds_claim", "false_target_claim",
-    "unverified_market_claim", "internal_terms", "market_check_avoid",
+    "unverified_market_claim", "internal_terms", "market_check_avoid", "stage_order_wrong",
 )
 
 
@@ -611,6 +636,9 @@ async def _create_and_gate_email(
             quality_note = f"⛔ No real address for the {party} ({to_address}) — set the contact first. "
         elif "premature_funds_claim" in flags:
             quality_note = "⚠ Says escrow money is already there; nothing is funded yet — edit before sending. "
+        elif "stage_order_wrong" in flags:
+            quality_note = ("⚠ Puts the order steps in the wrong order (" + "; ".join(stage_order_errors(body))
+                            + ") — edit before sending. ")
         elif "degraded_llm_fallback" in flags:
             quality_note = "⚠ DEGRADED TEMPLATE (LLM unavailable) — edit before sending. "
         elif "unresolved_placeholders" in flags:

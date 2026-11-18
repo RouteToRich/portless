@@ -110,10 +110,20 @@ def decide(v: CounterpartyValidation, *, role: str, country: str | None,
             failed = True
             reasons.append("on the DGFT denied-entity list")
 
+    # A local supplier who answers by phone, not e-mail: verified on a valid number plus an
+    # active GST registration (the registry proves the company), sanctions clear.
+    phone_only = (role == "supplier" and (country or "IN").upper() == "IN" and v.email not in _CONTACTABLE
+                  and v.phone == "valid" and v.gst == "active" and v.iec != "inactive")
+    if v.phone == "invalid" and v.email not in _CONTACTABLE:
+        reasons.append("phone number is not a valid number either")
     if failed:
         status = "failed"
     elif v.sanctions == "clear" and v.email in _CONTACTABLE:
         status = "verified"
+    elif v.sanctions == "clear" and phone_only:
+        status = "verified"
+        reasons.append("phone-only supplier: valid number + active GST — contact by phone / WhatsApp"
+                       + (" (WhatsApp confirmed)" if v.whatsapp == "confirmed" else ""))
     else:
         status = "unverified"
     return v.model_copy(update={"status": status, "reasons": reasons})
@@ -250,8 +260,13 @@ def _registry_word(result: dict | None) -> str:
 
 async def _run(subjects: list[_Subject], now: datetime) -> None:
     await asyncio.gather(_screen(subjects), _qualify(subjects), *(_registries(s) for s in subjects))
+    from shared import phone_check
     for s in subjects:
         s.v.checked_at = now
+        pc = phone_check.check(s.phone, s.country)
+        s.v.phone, s.v.phone_e164 = pc["status"], pc["e164"]
+        old = getattr(s.target, "validation", None)
+        s.v.whatsapp = getattr(old, "whatsapp", None) or ("unknown" if pc["status"] == "valid" else None)
         s.target.validation = decide(s.v, role=s.role, country=s.country, has_phone=bool(s.phone))
 
 

@@ -56,6 +56,9 @@ class ProductLine(BaseModel):
     m3_per_mt: float | None = None
     """Stowage factor (m³ one tonne takes when packed): decides whether a 40' HC carries more
     than a 40' dry or the cargo is weight-limited (shared/orchestration/container_choice.py)."""
+    local_names: dict[str, str] = Field(default_factory=dict)
+    """The product's name per language (``{"de": "Zwiebeln", "ar": "بصل"}``) for the buyer search
+    in the market's own language (shared/search_terms.py). Entered and checked by staff."""
     import_requirements: dict[str, list[str]] = Field(default_factory=dict)
     """What the destination needs before the goods arrive, per ISO-2 market or ``*`` for
     every market: e.g. ``{"US": ["FDA food-facility registration", "FDA prior notice"],

@@ -45,6 +45,8 @@ class ThirdPartyOrderRecord(BaseModel):
     last_milestone_at: datetime | None = None
     last_milestone_source: str | None = None
     delivered_at: datetime | None = None
+    empty_returned_at: datetime | None = None
+    """The empty container is back at the carrier's depot (carrier event or staff) — detention stops."""
 
     # QC result (populated by webhook, provider poll or operator)
     qc_result: Literal["PASS", "FAIL", "PENDING"] | None = None

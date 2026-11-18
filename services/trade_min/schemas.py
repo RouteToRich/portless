@@ -123,6 +123,11 @@ class CounterpartyValidation(BaseModel):
     iec: str | None = None
     dgft_denied: str | None = None
     """``clear`` / ``denied`` / ``unchecked`` (the DGFT list is a stub today → unchecked)."""
+    phone: str | None = None
+    """``valid`` / ``invalid`` / ``missing`` — numbering-plan check (shared/phone_check.py)."""
+    phone_e164: str | None = None
+    whatsapp: str | None = None
+    """``unknown`` / ``confirmed`` (staff answered on WhatsApp) / ``not_reachable``."""
     checked_at: datetime | None = None
 
 

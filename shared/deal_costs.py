@@ -66,7 +66,13 @@ def set_collection_for_tests(col: Any) -> None:
 
 
 def add(deal_id: str | None = None, **amounts: float) -> None:
-    """Add to a deal's counters (the current deal when none is named). Never raises."""
+    """Add to a deal's counters (the current deal when none is named). Never raises.
+    LLM / Apify spend also goes to the platform-wide day counter (shared/cost_meter.py)."""
+    try:
+        from shared import cost_meter
+        cost_meter.add(**{k: v for k, v in amounts.items() if k.startswith(("llm_", "apify_"))})
+    except Exception:  # noqa: BLE001
+        pass
     deal_id = deal_id or current()
     if not deal_id:
         return

@@ -439,8 +439,10 @@ class DealLedger(BaseModel):
     margin_before_costs: float | None = None
     """net_to_portless − payouts_total (the spread, before PortLess's own costs)."""
     realized_margin: float | None = None
-    """net_to_portless − payouts_total − portless_costs_total + fx_gain_loss_usd — PortLess's real profit so far."""
+    """net_to_portless − payouts_total − portless_costs_total + fx_gain_loss_usd + interest_income_usd — PortLess's real profit so far."""
     fx_gain_loss_usd: float = 0.0
+    interest_income_usd: float = 0.0
+    """Interest on escrow funds credited to PortLess (escrow_interest.py) — part of the realised margin."""
     """Exchange gain (+) / loss (−) on supplier payouts made at a bank rate other than the PO rate (fx_book)."""
     tranches: list[TrancheSpec] = Field(default_factory=list)
     payouts: list[PayoutResponse] = Field(default_factory=list)

@@ -8,8 +8,10 @@ and nobody mistakes the equivalent for the contract price.
 A country gets its own currency only where PortLess has a rate for it — today
 the USD/INR rate the negotiation agent already uses (live search, else
 ``NEGOTIATION_FALLBACK_USD_INR_RATE``). Every other country is written to in
-USD, the currency the trade is invoiced in. Add a country to ``_LOCAL`` only
-together with a rate source in ``usd_rate``.
+USD, the currency the trade is invoiced in. Other countries in ``_COUNTRY_CURRENCY`` get their
+own currency once ``shared.fx_rates`` has a usable rate (staff reference rate, the daily feed,
+or a ``FX_RATE_<CCY>`` setting); the USD/INR fallback is the latest reference rate before the
+static setting.
 """
 from __future__ import annotations
 
@@ -17,6 +19,12 @@ import re
 from typing import Any
 
 _LOCAL: dict[str, str] = {"IN": "INR"}
+_EUR = ("DE", "FR", "IT", "ES", "NL", "BE", "AT", "IE", "PT", "FI", "GR", "LU", "SK", "SI", "EE", "LV", "LT", "MT", "CY", "HR")
+_COUNTRY_CURRENCY: dict[str, str] = {
+    "AE": "AED", "SA": "SAR", "QA": "QAR", "OM": "OMR", "KW": "KWD", "BH": "BHD", "GB": "GBP",
+    "SG": "SGD", "MY": "MYR", "JP": "JPY", "CN": "CNY", "AU": "AUD", "CA": "CAD",
+    **{c: "EUR" for c in _EUR},
+}
 
 _NAMES = {"INDIA": "IN", "BHARAT": "IN"}
 
@@ -28,10 +36,28 @@ def _iso2(country: Any) -> str:
 
 def party_currency(country: Any) -> str:
     """The currency to write to a party of this country in: its own where a rate exists, else USD."""
-    return _LOCAL.get(_iso2(country), "USD")
+    iso = _iso2(country)
+    if iso in _LOCAL:
+        return _LOCAL[iso]
+    cur = _COUNTRY_CURRENCY.get(iso)
+    if cur:
+        try:
+            from shared import fx_rates
+            if fx_rates.has_rate(cur):
+                return cur
+        except Exception:  # noqa: BLE001
+            pass
+    return "USD"
 
 
 def fallback_rate(currency: str) -> float | None:
+    try:
+        from shared import fx_rates
+        row = fx_rates.cached(currency)
+        if row:
+            return float(row["rate"])
+    except Exception:  # noqa: BLE001
+        pass
     if currency == "INR":
         try:
             from agents.negotiation_agent.config import settings
@@ -51,7 +77,12 @@ async def usd_rate(currency: str) -> float | None:
             return float(await get_usd_inr_rate())
         except Exception:  # noqa: BLE001
             return fallback_rate(currency)
-    return None
+    try:
+        from shared import fx_rates
+        row = await fx_rates.usable(currency)
+        return float(row["rate"]) if row else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 async def rate_info(currency: str = "INR") -> dict[str, Any]:
@@ -64,8 +95,18 @@ async def rate_info(currency: str = "INR") -> dict[str, Any]:
             live = await fetch_usd_inr_rate()
         except Exception:  # noqa: BLE001
             live = None
-    rate = float(live) if live else fallback_rate(currency)
-    return {"currency": currency, "rate": rate, "source": "live" if live else ("fallback" if rate else "none")}
+    if live:
+        return {"currency": currency, "rate": float(live), "source": "live"}
+    try:
+        from shared import fx_rates
+        row = await fx_rates.usable(currency)
+        if row:
+            return {"currency": currency, "rate": float(row["rate"]), "source": "reference",
+                    "reference": row.get("source"), "as_of": row.get("as_of")}
+    except Exception:  # noqa: BLE001
+        pass
+    rate = fallback_rate(currency)
+    return {"currency": currency, "rate": rate, "source": "fallback" if rate else "none"}
 
 
 def money(usd: Any, currency: str = "USD", rate: float | None = None, *, decimals: int = 2) -> str:

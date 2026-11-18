@@ -25,6 +25,8 @@ Events → entries
   FX on a payout (gain)  Dr supplier_payable      Cr fx_gain_loss     INR at PO rate − USD paid
   FX on a payout (loss)  Dr fx_gain_loss          Cr supplier_payable the opposite
                          (only when the PO rate and the payout's bank rate are recorded — fx_book.py)
+  escrow interest (ours) Dr portless_cash          Cr interest_income  credited by the provider / bank
+  escrow interest (buyer's) Dr portless_cash       Cr buyer_deposits   owed back to the buyer (escrow_interest.py)
 
 Every entry balances by construction; ``balanced`` additionally checks the
 trial balance and that the escrow_trust balance equals the ledger's
@@ -50,6 +52,7 @@ ACCOUNTS: dict[str, str] = {
     "trade_costs": "Freight, inspection, insurance, customs and documents (expense)",
     "service_payables": "Payable to freight, inspection, insurance and customs providers (liability)",
     "fx_gain_loss": "Exchange gain (credit) / loss (debit) on supplier payouts",
+    "interest_income": "Interest on funds held in escrow",
 }
 
 _COST_LABELS = {
@@ -120,7 +123,8 @@ def _fee_share(hold: Any, gross: float) -> float:
 
 def journal_from(hold: Any, ledger: Any, *, po_issued_at: datetime | None = None,
                  now: datetime | None = None, fx: dict[str, Any] | None = None,
-                 chargebacks: list[dict[str, Any]] | None = None) -> DealJournal:
+                 chargebacks: list[dict[str, Any]] | None = None,
+                 interest: list[dict[str, Any]] | None = None) -> DealJournal:
     """Pure builder (unit-testable): hold = EscrowHoldRecord, ledger = DealLedger."""
     from datetime import timezone
     now = now or datetime.now(timezone.utc)
@@ -171,6 +175,17 @@ def journal_from(hold: Any, ledger: Any, *, po_issued_at: datetime | None = None
     for c in chargebacks or []:
         b.add(None, f"supplier_chargeback:{c.get('kind')}", "supplier_payable", "trade_costs", c.get("amount_usd"),
               ref=c.get("ref"), memo=f"Charged to the supplier: {c.get('reason')}")
+
+    for i in interest or []:
+        credit = "interest_income" if i.get("belongs_to") == "portless" else "buyer_deposits"
+        at = None
+        try:
+            at = datetime.fromisoformat(str(i.get("at")))
+        except Exception:  # noqa: BLE001
+            at = None
+        b.add(at, f"escrow_interest:{i.get('interest_id')}", "portless_cash", credit, i.get("amount_usd"),
+              ref=i.get("ref"), memo=f"Interest on escrow funds {i.get('period') or ''}".strip()
+              + ("" if credit == "interest_income" else " — owed to the buyer"))
 
     # PortLess's own costs of moving and protecting the goods, as incurred.
     basis = getattr(ledger, "portless_costs_basis", None) or {}
@@ -235,9 +250,10 @@ async def build_journal(deal_id: str) -> DealJournal:
         po_at = getattr(po, "issued_at", None) if po else None
     except Exception:  # noqa: BLE001
         po_at = None
-    from shared.orchestration import chargebacks, fx_book
+    from shared.orchestration import chargebacks, escrow_interest, fx_book
     return journal_from(hold, ledger, po_issued_at=po_at, fx=await fx_book.rates(deal_id),
-                        chargebacks=await chargebacks.listed(deal_id))
+                        chargebacks=await chargebacks.listed(deal_id),
+                        interest=await escrow_interest.listed(deal_id))
 
 
 def journal_csv(journal: DealJournal) -> str:
