@@ -601,6 +601,9 @@ class TestLifecycle:
             await module.init_repository()
         assert isinstance(module.get_repository(), getattr(module, mongo))
         await module.close_repository()
+        client.close.assert_not_called()  # the shared client outlives one repository
+        from shared import mongo as shared_mongo
+        shared_mongo.close_all()  # app shutdown
         client.close.assert_called_once()
         assert module._motor_client is None
 
@@ -642,6 +645,9 @@ class TestAuthLifecycle:
         assert isinstance(auth.get_repository(), auth.MongoUserRepository)
         assert isinstance(auth.get_org_repository(), auth.MongoOrganizationRepository)
         await auth.close_repository()
+        client.close.assert_not_called()  # the shared client outlives one repository
+        from shared import mongo as shared_mongo
+        shared_mongo.close_all()  # app shutdown
         client.close.assert_called_once()
 
     async def test_unreachable_falls_back(self, monkeypatch):
@@ -731,6 +737,9 @@ class TestTradeLifecycle:
             repo = await trade.init_repository()
         assert isinstance(repo, trade.MongoOpportunityRepository)
         await trade.close_repository()
+        client.close.assert_not_called()  # the shared client outlives one repository
+        from shared import mongo as shared_mongo
+        shared_mongo.close_all()  # app shutdown
         client.close.assert_called_once()
         assert trade._repository is None
 

@@ -25,6 +25,7 @@ from .schemas import (
 )
 from .service import DealNotFoundError, InvalidTransitionError
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/deals", tags=["deals"])
 
 

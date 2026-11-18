@@ -132,8 +132,8 @@ async def init_repository() -> None:
         _repository = InMemoryHitlApprovalRepository()
         return
     try:
-        import motor.motor_asyncio
-        client = motor.motor_asyncio.AsyncIOMotorClient(uri, serverSelectionTimeoutMS=5_000)
+        from shared.mongo import get_client  # one pool per process (B-10)
+        client = get_client(uri, serverSelectionTimeoutMS=5_000)
         await client.admin.command("ping")
         _motor_client = client
         col = client[settings.hitl_approval_mongo_db_name][settings.hitl_approval_collection]
@@ -148,7 +148,7 @@ async def init_repository() -> None:
 async def close_repository() -> None:
     global _motor_client
     if _motor_client is not None:
-        _motor_client.close()
+        pass  # shared client: closed once at shutdown by shared.mongo.close_all()
         _motor_client = None
 
 

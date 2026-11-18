@@ -223,6 +223,10 @@ class LLMClient:
             "LLM via gateway: caller=%s category=%s model=%s tokens=%s finish=%s",
             gateway_caller, r.category, r.model, r.total_tokens, r.finish_reason,
         )
+        if not (r.content or "").strip():
+            # Seen on long prompts: a 200 with nothing in it. Treated as a failed call so the
+            # caller degrades (template draft, resolver escalates) and nothing blank is cached.
+            raise RuntimeError(f"blank reply from the gateway (model={r.model}, finish={r.finish_reason})")
         return LLMResponse(
             content=r.content,
             model=r.model,

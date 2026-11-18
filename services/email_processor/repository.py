@@ -64,8 +64,8 @@ class InMemoryEmailProcessorRepository:
 
 class MongoEmailProcessorRepository:
     def __init__(self, uri: str, db_name: str, collection: str) -> None:
-        import motor.motor_asyncio as motor  # type: ignore[import]
-        client: Any = motor.AsyncIOMotorClient(uri)
+        from shared.mongo import get_client  # one pool per process (B-10)
+        client: Any = get_client(uri)
         self._col = client[db_name][collection]
 
     async def _ensure_indexes(self) -> None:

@@ -24,7 +24,6 @@ Two concrete implementations satisfy the same ``DealRepository`` Protocol:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from .config import settings
@@ -240,9 +239,8 @@ async def init_repository() -> None:
         return
 
     try:
-        import motor.motor_asyncio
-
-        client = motor.motor_asyncio.AsyncIOMotorClient(
+        from shared.mongo import get_client  # one pool per process (B-10)
+        client = get_client(
             uri,
             serverSelectionTimeoutMS=5_000,
         )
@@ -270,7 +268,7 @@ async def close_repository() -> None:
     """Release the Motor client.  Called at application shutdown."""
     global _motor_client
     if _motor_client is not None:
-        _motor_client.close()
+        pass  # shared client: closed once at shutdown by shared.mongo.close_all()
         _motor_client = None
         logger.info("Deals MongoDB client closed")
 

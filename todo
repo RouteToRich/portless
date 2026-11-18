@@ -19,21 +19,21 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-18)
 
-**469 open · 116 done** (20 % done).
+**458 open · 127 done** (22 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
 | Where things stand | 1 | 0 |
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
-| P0 — before the first real trade | 87 | 13 |
-| P1 — before more than a few deals a month | 269 | 98 |
-| P2 — improvements | 33 | 5 |
+| P0 — before the first real trade | 85 | 15 |
+| P1 — before more than a few deals a month | 262 | 105 |
+| P2 — improvements | 31 | 7 |
 | Apify actors (outside this repo) | 18 | 0 |
 | Decisions needed | 21 | 0 |
-| **Total** | **469** | **116** |
+| **Total** | **458** | **127** |
 
-Open items by owner: Eng 185 · Apify 18 · Ops 27 · Legal 29 · Biz 43 · QA 32 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 174 · Apify 18 · Ops 27 · Legal 29 · Biz 43 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
 
@@ -42,7 +42,7 @@ Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when thi
 ## Where things stand today
 
 - [ ] **P0 (Eng/Ops)** Production readiness gate (`ENV_PROFILE=production`, `GET /health/readiness`): **12 fail, 5 warn, 19 ok**. Production refuses to boot until every fail is fixed — section 1 lists each one.
-- Backend tests: 5188 passed, 1 skipped, 0 warnings (2026-11-18, about 1 minute). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
+- Backend tests: 5222 passed, 1 skipped, 0 warnings (2026-11-18, about 1 minute). Coverage 95.46 % line + branch (measured 2026-11-09, before the latest features — re-measure). Unit tests in Gherkin per module: 2978 scenarios (`docs/testing/unit/`, regenerate with `scripts/gen_unit_gherkin.py`).
 - End-to-end automation: TC-E2E-000 / UC-15 (scan opportunity → PAID on every simulator) passes 56/56 checks; UC-01 passes 35/35. UC-02 … UC-14 were not re-run after the latest changes.
 - Gherkin catalogue: 589 cases. **81 are browser-only and nothing drives the console. 34 backend cases still have unautomated steps — 24 of them P0.** 95 production-risk cases (TC-RSK, 52 P0) were added on 2026-11-13 and none is automated yet; 32 new browser cases (TC-WEB) are in `docs/testing/BROWSER_SCENARIOS.md` (section 6).
 - UI repo: type-check and build pass; **no tests of any kind, no CI**. Browser cases written: TC-WEB-001 … TC-WEB-051 (`docs/testing/BROWSER_SCENARIOS.md`), none automated.
@@ -227,8 +227,8 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Biz/Ops/QA)** One pilot trade end to end with real money in a small lot, known counterparties, every gate L0, a person watching each step; write down every manual intervention and fix it before the next deal.
 
 ### 6.8 Test infrastructure — Quality assurance gaps
-- [ ] **(Eng)** CI for the backend: `pytest -q` (≈10 min) on every push and pull request, block merges to `main` on failure; re-measure coverage.
-- [ ] **(Eng)** CI for the UI: `npm run lint` and `npm run build` on every push.
+- [x] **(Eng)** CI for the backend: `pytest -q` (≈10 min) on every push and pull request, block merges to `main` on failure; re-measure coverage. — done 2026-11-18: `.github/workflows/ci.yml` — ruff errors only, Gherkin check, `pytest -q` on every push and pull request (≈2 min). Still to do on GitHub: branch protection on main requiring the `tests` job; coverage re-measure (separate item).
+- [x] **(Eng)** CI for the UI: `npm run lint` and `npm run build` on every push. — done 2026-11-18: `portless-ui/.github/workflows/ci.yml` — `npm ci`, `npm run lint` (tsc), `npm run build`. Branch protection to require `build` is a GitHub setting.
 
 ### 6.9 Unit tests — Quality assurance gaps
 - [ ] **(Eng)** Keep the backend unit suite green on every change (4574 passed, 1 skipped on 2026-11-12) and re-measure coverage — 95.46 % line + branch was measured on 2026-11-09, before the latest features.
@@ -381,7 +381,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ### 4 Money safety and financial controls
 - [x] **(Eng)** Export the double-entry journal to the accounting system (Tally / Zoho Books / your CA's format) — CSV exists (`/escrow-guard/journals`); add account codes agreed with the CA. — done 2026-11-18: `?format=tally` / `?format=zoho` on `/escrow-guard/deals/{id}/journal` and `/journals` (one debit and one credit row per entry; ledger names from `JOURNAL_LEDGER_<ACCOUNT>`). Confirm the layouts with the CA's software on a real import.
-- [ ] **(Eng)** FX: record the rate at each receipt and payout and post FX gain / loss to the journal (today amounts are USD only).
+- [x] **(Eng)** FX: record the rate at each receipt and payout and post FX gain / loss to the journal (today amounts are USD only). — done 2026-11-18: `shared/orchestration/fx_book.py` + `POST/GET /escrow-guard/deals/{id}/fx` (staff: PO rate, payout and receipt bank rates); the journal posts the gain / loss of each INR payout against the PO rate to `fx_gain_loss`; deal page card.
 - [x] **(Eng)** Fees: reconcile the escrow provider fee, payout fee and bank charges per deal against the fee % assumed in the cost sheet; alert when actual > assumed. — done 2026-11-18: `shared/orchestration/fee_check.py` — staff record actual fees from statements (`POST /escrow-guard/deals/{id}/fees`: escrow / payout / bank); compared with the % priced in (cost sheet / `PAYOUT_FEE_PCT`; an unassumed fee is over at any amount); `GET …/fees`, `GET /escrow-guard/fees/over`, digest line "FEES ABOVE THE PRICE".
 - [ ] **(Biz)** Kill Switch drill: pause, confirm every money path refuses, resume — monthly.
 - [x] **(Eng)** Alert when realised margin on a closed deal is below the margin floor (cost sheet estimate vs actual costs). — done 2026-11-18: when every tranche is released and the supplier is paid in full, a realised margin below the deal's margin floor (else `DEALMAKER_PO_MARGIN_FLOOR_PCT`) raises `deal.exception` `PAID:margin_below_floor` (category MARGIN_BREACH) once, with the estimate, net received, supplier paid and PortLess's costs; mid-deal figures are never judged.
@@ -390,7 +390,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
 - [x] **(Eng)** Facility address: the watcher reminds the supplier about the goods-ready date, but there is no reminder for a missing facility address (`facility_address_request` is sent once). Add a reminder and a stall exception. — done 2026-11-18: while the inspection waits for the address the deal watcher sends `facility_address_reminder` every `DEAL_FACILITY_ADDRESS_REMINDER_AFTER_HOURS` (48) from the request (max `DEAL_REMINDER_MAX`), then raises `PO_ISSUED:facility_address_missing`; the "please confirm the PO" reminder is no longer sent for a PO already acknowledged; an address that arrived without a booking is booked by the sweep.
 - [ ] **(Eng/QA)** Standby supplier switch (UC-13 / UC-14): a standby supplier from a scan has only a town, so its inspection now waits for an address — re-run both journeys and confirm the request goes to the new supplier.
-- [ ] **(Eng)** Cross-prospect offers: the match board pairs a buyer with supplier offers from other deals of the same HS code, including old ones. Confirm `MATCH_OFFER_VALIDITY_DAYS` expiry is enough, and never propose an offer from a CANCELLED / failed deal without a fresh price.
+- [x] **(Eng)** Cross-prospect offers: the match board pairs a buyer with supplier offers from other deals of the same HS code, including old ones. Confirm `MATCH_OFFER_VALIDITY_DAYS` expiry is enough, and never propose an offer from a CANCELLED / failed deal without a fresh price. — done 2026-11-18: the match board never takes an offer from a CANCELLED / REFUNDED / PAID / failed deal (already), and now also skips the supplier of a QC_FAILED / DISPUTE deal, offers whose check failed, quotes whose reconfirmation lapsed and do-not-contact suppliers.
 - [ ] **(Eng)** Negotiation drafts still sometimes say things like "As soon as we have the inspector selected, we will send the proforma invoice" — review a sample of real drafts each week (stage wording, missing-information order).
 
 ### 5.2 Steps that are still manual or stubbed — Workflow gaps found end to end
@@ -455,7 +455,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 6.8 Test infrastructure — Quality assurance gaps
 - [ ] **(Eng)** Nightly: catalogue run + LLM journeys on the automation database, results posted to Telegram.
 - [ ] **(Eng)** The LLM-played counterparties are not deterministic: keep the retry, and record transcripts so a failing journey can be replayed.
-- [ ] **(Eng)** CI runs `python scripts/gen_unit_gherkin.py --check` so a test without a Gherkin scenario (or a stale feature file) fails the build.
+- [x] **(Eng)** CI runs `python scripts/gen_unit_gherkin.py --check` so a test without a Gherkin scenario (or a stale feature file) fails the build. — done 2026-11-18: a step of `.github/workflows/ci.yml`.
 - [x] **(Eng)** The test run writes to the tracked file `data/llm_gateway_tracking.txt` (it is modified after every run) — done 2026-11-18: `tests/conftest.py` sets `LLM_TRACKING_FILE_PATH` to `<temp>/portless-tests/llm_gateway_tracking.txt`; `tests/llm_gateway/test_config.py::test_the_suite_never_writes_the_tracked_log` guards it (a full run leaves the repository file byte-for-byte unchanged).
 
 ### 6.9 Unit tests — Quality assurance gaps
@@ -467,7 +467,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 6.10 Integration tests — Quality assurance gaps
 - [ ] **(Eng)** Real NATS JetStream in CI: durable consumers survive a restart, redelivery with backoff after a handler failure, dead-letter `deal.exception` after `NATS_MAX_DELIVER`, poison messages terminated.
 - [ ] **(Eng)** E-mail integration against a local test mail server (e.g. GreenMail / MailHog): SMTP send, IMAP poll, threading by In-Reply-To / References, `[NEG:]` / `[RFQ:]` / `[BUY:]` tokens, attachments, non-ASCII bodies, HTML-only mails.
-- [ ] **(Eng)** LLM gateway contract test: sign-in with the service account, token refresh on 401, timeout, blank and malformed replies, and the template fallback when it is down.
+- [x] **(Eng)** LLM gateway contract test: sign-in with the service account, token refresh on 401, timeout, blank and malformed replies, and the template fallback when it is down. — done 2026-11-18: `tests/llm_gateway/test_remote.py` — sign-in, token reuse, renewal after the TTL, one retry on 401 (not two), refused sign-in, timeout / network error, non-JSON / missing content / blank reply → `LLMExhaustedException`, a blank reply never cached, the negotiation draft falls back to its template. A blank 200 is now a failed call (`client._send`).
 - [ ] **(Eng)** Google Drive integration on a test folder: upload, overwrite, folder per deal, and the local-disk fallback when Drive refuses.
 - [ ] **(Eng)** auth-service integration on staging: real `GET /auth/me`, revoked token, another application's token refused, cache expiry.
 - [ ] **(Eng)** Microservice mode: run the services standalone and drive one deal through their HTTP clients (`client.py`) — the monolith calls `service.py` in process, so the HTTP path is barely exercised.
@@ -486,7 +486,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 
 ### 6.13 Static checks and test hygiene — Quality assurance gaps
 - [ ] **(Eng)** Security scans in CI: `bandit` for Python, `pip-audit` and `npm audit` for dependencies, secret scanning on every push.
-- [ ] **(Eng)** Pre-commit hooks (ruff, formatting, secret scan) so problems are caught before a push.
+- [x] **(Eng)** Pre-commit hooks (ruff, formatting, secret scan) so problems are caught before a push. — done 2026-11-18: `.pre-commit-config.yaml` (YAML / JSON / merge markers / large files / private keys, ruff errors only, refuse `.env` / `*.creds` / the LLM tracking file via `scripts/precommit_forbidden.py`, source hygiene test); run `pre-commit install` once per clone.
 - [ ] **(QA)** Test data management: an anonymised, production-like data set for staging; `tests/factories.py` extended for every new record type; no test may depend on the order of others.
 - [ ] **(QA/Ops)** User acceptance testing with the trade desk before go-live and before each release that changes a gate, an e-mail or a document; exploratory test session on each new feature.
 - [x] **(Eng)** Control-character check: a backspace character inside a regex made a committed assertion in `tests/test_trade_documents.py` impossible to fail (found and fixed 2026-11-17) — done 2026-11-18 as `tests/test_source_hygiene.py`, run with every `pytest` (services, shared, agents, tests, scripts, app.py, CLAUDE.md, todo: only tab / newline / CR allowed); it becomes the CI check once CI exists (6.8).
@@ -875,8 +875,8 @@ Both:
 - [ ] **(Biz) P1** **Five money and risk switches are built but left off, waiting for a decision** — Decide each switch with a recommended setting (verified-only outreach / RFQ on once Apify screening is live; cheapest escrow when both providers are live; clean-up at 60 days) and set it in the deployed environment. Why: each switch either saves fees or keeps unverified counterparties out of the money path. Evidence: OUTREACH_VERIFIED_ONLY, RFQ_VERIFIED_ONLY (outreach.py, continuations.py), ESCROW_PROVIDER_BY_COST (escrow_guard/service.py), PROSPECT_CLEANUP_ENABLED (prospect_cleanup.py), SUPPLY_FIRST / manual suppliers without a buyer-side check — all default off or permissive. (review-board B-08 2026-11-18)
 - [x] **(Eng) P1** **The public rate limit trusts X-Forwarded-For, so it can be bypassed** — Use the address the trusted proxy appended (the last hop, or a TRUSTED_PROXY_HOPS setting) and fall back to request.client; never the caller-supplied first value. Why: the anonymous money doors stay protected against brute force and floods. Evidence: shared/auth/middleware.py:90 — client = first value of X-Forwarded-For, which any caller can set. (review-board B-09 2026-11-18) — done 2026-11-18: `rate_limit.client_address` uses `TRUSTED_PROXY_HOPS` (default 0 = the TCP peer; N = the Nth entry from the right of X-Forwarded-For); a rotated header no longer gets past the limit.
 - [x] **(Eng) P1** **Each module opens its own Mongo client and connection pool** — One shared client per process (shared/mongo.py get_client()), every module takes its collection from it. Why: a smaller Atlas tier carries the load and the backend does not fall over under a scan. Evidence: 29 modules call motor AsyncIOMotorClient(settings.mongo_uri) (e.g. shared/audit_log.py, heartbeat.py, leader_lock.py, fee_check.py, outcomes.py, pricebook.py). (review-board B-10 2026-11-18) — done 2026-11-18: `shared/mongo.py` (one client per URI, closed at shutdown) used by the 11 shared modules (audit log, heartbeat, leader lock, catalogue, autonomy policy, compliance, fees, market check, outcomes, supplier commitment, price book); the Kill Switch keeps its own client for its timeout. Service repositories: follow-up item below.
-- [ ] **(Eng) P2** **Service repositories still open their own Mongo clients** — Move the service repositories (`services/*/repository.py`, `init_repository()`) onto `shared.mongo.get_client`, keeping each test's mongomock client isolated and closing only at app shutdown. Why: one connection pool per instance instead of one per service. Evidence: `grep -rn AsyncIOMotorClient services/` after B-10. (review-board B-10 part 2 2026-11-18)
-- [ ] **(Eng) P1** **New back-office features have no console screen** — Audit log + verify on System Health, watchers status there too, a fees form and list on the deal's Payments tab and Money & Margin, price alerts on the radar, clean-up preview on Prospects, Tally / Zoho download buttons. Why: the controls that protect margin are used every day instead of forgotten. Evidence: no calls in ../portless-ui/src/api/endpoints.ts for GET /hitl-approval/audit(/verify), POST/GET /escrow-guard/deals/{id}/fees and /fees/over, GET /health/watchers, GET /deals/price-alerts, GET/POST /deals/prospects/cleanup, the journal ?format=tally|zoho. (review-board B-11 2026-11-18)
+- [x] **(Eng) P2** **Service repositories still open their own Mongo clients** — Move the service repositories (`services/*/repository.py`, `init_repository()`) onto `shared.mongo.get_client`, keeping each test's mongomock client isolated and closing only at app shutdown. Why: one connection pool per instance instead of one per service. Evidence: `grep -rn AsyncIOMotorClient services/` after B-10. (review-board B-10 part 2 2026-11-18) — done 2026-11-18: every service repository, the directory, the negotiation stores and the cache take `shared.mongo.get_client`; `close_repository` only drops its reference, `shared.mongo.close_all()` closes the pool at shutdown; tests start with no cached client (conftest). Only the Kill Switch, the automation store and the LLM tracker pool keep their own (tested).
+- [x] **(Eng) P1** **New back-office features have no console screen** — Audit log + verify on System Health, watchers status there too, a fees form and list on the deal's Payments tab and Money & Margin, price alerts on the radar, clean-up preview on Prospects, Tally / Zoho download buttons. Why: the controls that protect margin are used every day instead of forgotten. Evidence: no calls in ../portless-ui/src/api/endpoints.ts for GET /hitl-approval/audit(/verify), POST/GET /escrow-guard/deals/{id}/fees and /fees/over, GET /health/watchers, GET /deals/price-alerts, GET/POST /deals/prospects/cleanup, the journal ?format=tally|zoho. (review-board B-11 2026-11-18) — done 2026-11-18: System Health: watchers + audit log with "Verify chain"; deal Payments tab (staff): actual fees form + lines, exchange rates, journal downloads CSV / Tally / Zoho; Money & Margin: fees above the price + all-journals downloads; Radar: supplier price moves; Prospects: idle prospects with "Close idle prospects" (`portless-ui/src/api/backoffice.ts`, `components/backoffice/BackOfficeCards.tsx`).
 
 ---
 
@@ -971,8 +971,8 @@ Both:
 
 ### 22.2 Review-board findings (2026-11-18) — P2
 - [x] **(Eng) P2** **Supplier e-mails have no unsubscribe and no clear opt-out** — Add the signed unsubscribe link (supplier role) to RFQ, reconfirmation and best-and-final e-mails, honoured as supplier do-not-contact. Why: fewer spam reports against the domain that carries every quote request. Evidence: shared/orchestration/unsubscribe.py is used by outreach.draft only; services/sourcing/service.py rfq_email_body, quote_reconfirm.body and best_and_final.body carry none. (review-board B-12 2026-11-18) — done 2026-11-18: RFQ, reconfirmation and best-and-final e-mails end with `unsubscribe.supplier_opt_out_line` (signed link `d=supplier&c=<address>`); the POST sets supplier do-not-contact on the directory (a record is created for an unknown address), which `contact_guard` honours.
-- [ ] **(Eng) P2** **Directory-wide scans on every request will not scale** — Indexed lookups (gstin, domain, phone, hs_codes) in the Mongo directory and an index map per import; cache the annotated directory view per minute. Why: the directory can grow to the size that finds more buyers without slowing the desk. Evidence: 16 places read the whole directory (limit=100_000 / 5000): manual_suppliers.find_duplicate per added row, dedupe.duplicates, supply_first.buyers_for, offer_checks._directory_record, supplier_commitment._manual_standbys, outreach._directory_view (with relationships.annotate). (review-board B-13 2026-11-18)
-- [ ] **(Eng) P2** **Decisions are typed into browser prompt boxes** — One small reason dialog component (reason, optional date / market, the consequence spelled out) used everywhere. Why: faster, better-documented decisions on the go. Evidence: window.prompt in Prospects.tsx (park / drop / retry), BuyersSuppliers.tsx (bulk), CompanyViews.tsx (do-not-contact, start a prospect), ScreeningReviewCard.tsx (clear / fail) — 9 places. (review-board B-14 2026-11-18)
+- [x] **(Eng) P2** **Directory-wide scans on every request will not scale** — Indexed lookups (gstin, domain, phone, hs_codes) in the Mongo directory and an index map per import; cache the annotated directory view per minute. Why: the directory can grow to the size that finds more buyers without slowing the desk. Evidence: 16 places read the whole directory (limit=100_000 / 5000): manual_suppliers.find_duplicate per added row, dedupe.duplicates, supply_first.buyers_for, offer_checks._directory_record, supplier_commitment._manual_standbys, outreach._directory_view (with relationships.annotate). (review-board B-13 2026-11-18) — done 2026-11-18: the Mongo directory serves the whole-directory read from a per-process copy for `DIRECTORY_CACHE_SECONDS` (30), dropped on every write; indexes on role + gstin / email / phone / website / do_not_contact. The in-memory cost of relationships.annotate stays (separate P2 item on computed views).
+- [x] **(Eng) P2** **Decisions are typed into browser prompt boxes** — One small reason dialog component (reason, optional date / market, the consequence spelled out) used everywhere. Why: faster, better-documented decisions on the go. Evidence: window.prompt in Prospects.tsx (park / drop / retry), BuyersSuppliers.tsx (bulk), CompanyViews.tsx (do-not-contact, start a prospect), ScreeningReviewCard.tsx (clear / fail) — 9 places. (review-board B-14 2026-11-18) — done 2026-11-18: `portless-ui/src/components/ReasonDialog.tsx` — one dialog (`askReason`) with the consequence spelled out, the reason and any extra fields (days, market, quantity, deal id); all 9 `window.prompt` uses replaced.
 
 ---
 

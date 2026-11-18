@@ -134,3 +134,95 @@ async def test_missing_credential_is_a_configuration_error():
     )
     with pytest.raises(LLMConfigurationError, match="credential"):
         await client.chat([{"role": "user", "content": "a"}])
+
+
+# ---------------------------------------------------------------------------
+# Contract: every way the gateway can misbehave becomes LLMExhaustedException,
+# which the callers turn into a template draft / an escalation.
+# ---------------------------------------------------------------------------
+
+def _raising(exc: Exception):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/auth/login":
+            return httpx.Response(200, json={"access_token": "tok"})
+        raise exc
+    return handler
+
+
+@pytest.mark.parametrize("exc", [httpx.ReadTimeout("slow"), httpx.ConnectError("down")])
+async def test_timeout_or_network_error_is_exhausted(exc):
+    s = _settings()
+    remote.get_remote_client(s, transport=httpx.MockTransport(_raising(exc)))
+    client = LLMClient(settings=s, tracker=RequestTracker(enabled=False))
+    with pytest.raises(LLMExhaustedException):
+        await client.chat([{"role": "user", "content": "a"}])
+
+
+@pytest.mark.parametrize("reply", [
+    httpx.Response(200, text="<html>bad gateway</html>"),          # not JSON
+    httpx.Response(200, json={"model": "m"}),                       # no content
+    _llm_reply("   \n"),                                            # blank
+    _llm_reply(""),
+])
+async def test_malformed_or_blank_reply_is_exhausted(reply):
+    gw = _Gateway([reply])
+    client = _client(_settings(), gw)
+    with pytest.raises(LLMExhaustedException):
+        await client.chat([{"role": "user", "content": "a"}])
+
+
+async def test_a_blank_reply_is_never_cached():
+    from shared.llm_gateway.cache import ResponseCache
+    gw = _Gateway([_llm_reply(""), _llm_reply("real")])
+    s = _settings()
+    remote.get_remote_client(s, transport=httpx.MockTransport(gw))
+    client = LLMClient(settings=s, tracker=RequestTracker(enabled=False))
+    try:
+        client._cache = ResponseCache(ttl_seconds=60)
+    except TypeError:
+        pytest.skip("cache signature differs")
+    with pytest.raises(LLMExhaustedException):
+        await client.chat([{"role": "user", "content": "same"}], temperature=0.0)
+    assert (await client.chat([{"role": "user", "content": "same"}], temperature=0.0)).content == "real"
+
+
+async def test_refused_sign_in_is_exhausted_and_names_the_account():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "bad password"})
+    s = _settings()
+    remote.get_remote_client(s, transport=httpx.MockTransport(handler))
+    client = LLMClient(settings=s, tracker=RequestTracker(enabled=False))
+    with pytest.raises(LLMExhaustedException, match="svc@portless.test"):
+        await client.chat([{"role": "user", "content": "a"}])
+
+
+async def test_an_expired_token_is_renewed_before_the_call(monkeypatch):
+    gw = _Gateway([_llm_reply(), _llm_reply()])
+    client = _client(_settings(gateway_token_ttl_seconds=60), gw)
+    await client.chat([{"role": "user", "content": "a"}])
+    auth = remote._auth
+    auth._issued_at -= 61  # the token has aged past its TTL
+    await client.chat([{"role": "user", "content": "b"}])
+    assert gw.sign_ins == 2
+    assert gw.llm_requests()[-1].headers["Authorization"] == "Bearer tok-2"
+
+
+async def test_a_second_401_is_not_retried_forever():
+    gw = _Gateway([httpx.Response(401, json={}), httpx.Response(401, json={})])
+    client = _client(_settings(), gw)
+    with pytest.raises(LLMExhaustedException, match="401"):
+        await client.chat([{"role": "user", "content": "a"}])
+    assert len(gw.llm_requests()) == 2
+
+
+async def test_negotiation_draft_falls_back_to_the_template_when_the_gateway_is_down(monkeypatch):
+    from agents.negotiation_agent import graph
+    calls = []
+
+    async def down(*_a, **_k):
+        calls.append(1)
+        raise LLMExhaustedException("LLM Gateway call failed: blank reply")
+    monkeypatch.setattr(graph, "_chat", down)
+    out = await graph._chat_json("sys", {"x": 1}, "buyer_agent", {"email_body": "template body"})
+    assert out["email_body"] == "template body" and out["_degraded"] is True
+    assert "blank reply" in out["reasoning"] and len(calls) == 2

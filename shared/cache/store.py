@@ -173,8 +173,8 @@ async def init_cache() -> InMemoryCacheBackend | MongoCacheBackend:
         return _backend
 
     try:
-        from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore[import]
-        _motor_client = AsyncIOMotorClient(
+        from shared.mongo import get_client  # one pool per process (B-10)
+        _motor_client = get_client(
             uri,
             serverSelectionTimeoutMS=5_000,
             connectTimeoutMS=5_000,
@@ -207,7 +207,7 @@ async def close_cache() -> None:
     """Close the Motor client and reset the singleton (no-op for in-memory)."""
     global _backend, _motor_client
     if _motor_client is not None:
-        _motor_client.close()  # type: ignore[union-attr]
+        pass  # shared client: closed once at shutdown by shared.mongo.close_all()
         _motor_client = None
         logger.info("Cache: MongoDB connection closed")
     _backend = None

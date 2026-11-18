@@ -118,6 +118,11 @@ try:
 except Exception:  # noqa: BLE001 — no .env, no python-dotenv: nothing to neutralise
     pass
 
+# Load .env now, once (shared.config calls load_dotenv on import). Imported lazily inside a
+# test instead, it would refill a provider variable that test had just deleted with the
+# .env placeholder — the escrow journey failed that way when its file ran on its own.
+import shared.config  # noqa: E402,F401
+
 # The pre-trade market check searches the web; the suite never goes online.
 # tests/test_trade_costs.py exercises it with a mocked search.
 os.environ["MARKET_CHECK_ENABLED"] = "false"
@@ -138,3 +143,16 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         for name in markers_for(item.path):
             item.add_marker(getattr(pytest.mark, name))
+
+
+# One Mongo client per process (shared/mongo.py) would carry a test's mongomock data into
+# the next test that patches the same client class; every test starts with no cached client.
+import pytest as _pytest  # noqa: E402
+
+
+@_pytest.fixture(autouse=True)
+def _fresh_shared_mongo_clients():
+    from shared import mongo
+    mongo._clients.clear()
+    yield
+    mongo._clients.clear()

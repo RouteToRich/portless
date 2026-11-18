@@ -759,6 +759,9 @@ class TestCacheFacade:
         with patch.object(cache.cache_settings.__class__, "resolved_uri", return_value="mongodb://x"), patch("motor.motor_asyncio.AsyncIOMotorClient", return_value=client):
             assert isinstance(await cache.init_cache(), cache.MongoCacheBackend)
         await cache.close_cache()
+        client.close.assert_not_called()  # the shared client outlives one repository
+        from shared import mongo as shared_mongo
+        shared_mongo.close_all()  # app shutdown
         client.close.assert_called_once()
         assert cache._backend is None
 

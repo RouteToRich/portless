@@ -379,6 +379,34 @@ async def api_fees_over(user: AuthUser = Depends(require_portless)) -> list[dict
     return await fee_check.over_all()
 
 
+class FxRateRecord(BaseModel):
+    kind: Literal["po", "payout", "receipt"]
+    rate_inr_per_usd: float = Field(gt=0)
+    ref: str | None = Field(default=None, max_length=120)
+    """Payout id (kind payout) or tranche id (kind receipt)."""
+    note: str | None = Field(default=None, max_length=300)
+    """Bank advice reference."""
+
+
+@router.post("/deals/{deal_id}/fx", response_model=dict)
+async def api_record_fx(deal_id: str, body: FxRateRecord, user: AuthUser = Depends(require_portless)) -> dict:
+    """Record an exchange rate actually used (PO pricing, payout or receipt bank rate) — staff."""
+    from shared.orchestration import fx_book
+    try:
+        await fx_book.record(deal_id, body.kind, body.rate_inr_per_usd, ref=body.ref, note=body.note,
+                             by=user.email or user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await fx_book.summary(deal_id)
+
+
+@router.get("/deals/{deal_id}/fx", response_model=dict)
+async def api_fx_summary(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    """Rates on file and the exchange gain / loss per completed supplier payout."""
+    from shared.orchestration import fx_book
+    return await fx_book.summary(deal_id)
+
+
 @router.get("/ledgers", response_model=list[DealLedger])
 async def api_list_ledgers() -> list[DealLedger]:
     """Every escrow's ledger, newest first — the Money & Margin escrow view."""

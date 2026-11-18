@@ -1444,6 +1444,9 @@ class TestRepositoryLifecycle:
             await repo_mod.init_repository()
         assert isinstance(get_repository(), MongoEscrowGuardRepository)
         await repo_mod.close_repository()
+        client.close.assert_not_called()  # the shared client outlives one repository
+        from shared import mongo as shared_mongo
+        shared_mongo.close_all()  # app shutdown
         client.close.assert_called_once()
         assert repo_mod._motor_client is None
         await repo_mod.close_repository()

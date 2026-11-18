@@ -324,3 +324,35 @@ class TestQuoteBecomesOffer:
         assert offer.gst_verified is True and offer.verification_failed is False
         moved.assert_not_awaited()  # the match board decides now
         assert (await pricebook.observations("290543", "supplier"))[0].price_usd_per_mt == 640.0
+
+
+# ---------------------------------------------------------------------------
+class TestCrossProspectOffers:
+    """Offers from other prospects of the same HS code: only live, clean ones."""
+
+    @pytest.mark.asyncio
+    async def test_only_live_clean_offers_cross_over(self, deals_repo, monkeypatch):
+        from services.deals.schemas import Party
+        from shared.orchestration import contact_guard
+        monkeypatch.setattr(contact_guard, "blocked_supplier_keys", AsyncMock(return_value={"d:stop.in"}))
+        here = _deal(deal_id="DEAL-HERE")
+        await deals_repo.save(here)
+        await deals_repo.save(_deal(deal_id="DEAL-LIVE", offers=[
+            _offer("good", origin_deal_id=None), _offer("checkfail", origin_deal_id=None, verification_failed=True),
+            _offer("lapsed", origin_deal_id=None, reconfirm_status="expired"),
+            _offer("stop", origin_deal_id=None, email="sales@stop.in")]))
+        await deals_repo.save(_deal(deal_id="DEAL-QC", winning_supplier_id="qcbad",
+                                    offers=[_offer("qcbad", origin_deal_id=None), _offer("bystander", origin_deal_id=None)],
+                                    parties=[Party(party_id="qcbad", role="supplier", legal_name="QC Bad", country="IN")]
+                                    ).model_copy(update={"status": DealStatus.QC_FAILED}))
+        await deals_repo.save(_deal(deal_id="DEAL-DEAD", offers=[_offer("dead", origin_deal_id=None)]
+                                    ).model_copy(update={"status": DealStatus.CANCELLED}))
+        got = {o.supplier_id: o for o in await mm.offers_for(here)}
+        assert set(got) == {"good", "bystander"}
+        assert got["good"].origin_deal_id == "DEAL-LIVE"
+
+    @pytest.mark.asyncio
+    async def test_own_expired_reconfirmation_is_dropped_too(self, deals_repo):
+        here = _deal(deal_id="DEAL-HERE", offers=[_offer("a", reconfirm_status="expired"), _offer("b")])
+        await deals_repo.save(here)
+        assert [o.supplier_id for o in await mm.offers_for(here)] == ["b"]

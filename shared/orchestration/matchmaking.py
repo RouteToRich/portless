@@ -447,6 +447,15 @@ async def _costs(deal: Any) -> tuple[float | None, str | None, float]:
     return freight, basis, incentive_pct
 
 
+def _deal_supplier_ids(deal: Any) -> set[str]:
+    """The supplier ids a deal is committed to (party, winner)."""
+    ids = {getattr(deal, "winning_supplier_id", None)}
+    for p in getattr(deal, "parties", None) or []:
+        if (getattr(getattr(p, "role", None), "value", getattr(p, "role", None)) or "").lower() == "supplier":
+            ids.add(getattr(p, "party_id", None))
+    return {i for i in ids if i}
+
+
 async def offers_for(deal: Any) -> list[Any]:
     """This prospect's offers plus still-valid offers for the same HS code that came
     in on other live prospects (a supplier that quoted glycerine for Spain can
@@ -461,12 +470,26 @@ async def offers_for(deal: Any) -> list[Any]:
             status = getattr(other.status, "value", other.status)
             if status in ("CANCELLED", "REFUNDED", "PAID", "NEGOTIATION_FAILED"):
                 continue
-            pool.extend(o.model_copy(update={"origin_deal_id": o.origin_deal_id or other.deal_id})
-                        for o in other.supplier_offers)
+            # the supplier that failed QC / is in dispute on its own deal is offered nowhere else
+            failed = _deal_supplier_ids(other) if status in ("QC_FAILED", "DISPUTE") else set()
+            for o in other.supplier_offers:
+                if getattr(o, "verification_failed", False) or o.supplier_id in failed:
+                    continue  # a failed check / failed supplier is only shown on its own prospect
+                pool.append(o.model_copy(update={"origin_deal_id": o.origin_deal_id or other.deal_id}))
     except Exception as exc:  # noqa: BLE001
         logger.debug("Matchmaking: cross-prospect offers unavailable for %s: %s", deal.deal_id, exc)
+    blocked: set[str] = set()
+    if any(getattr(o, "origin_deal_id", None) not in (None, deal.deal_id) for o in pool):
+        from shared.orchestration.contact_guard import blocked_supplier_keys
+        blocked = await blocked_supplier_keys()
     best: dict[str, Any] = {}
     for o in pool:
+        if getattr(o, "reconfirm_status", None) == "expired":
+            continue  # the supplier never reconfirmed before expiry: no live price
+        if blocked and getattr(o, "origin_deal_id", None) not in (None, deal.deal_id):
+            from shared.orchestration.contact_guard import supplier_blocked
+            if await supplier_blocked(getattr(o, "email", None), keys=blocked):
+                continue
         received = _aware(getattr(o, "received_at", None))
         validity = getattr(o, "validity_days", None) or offer_validity_days()
         if received and received + timedelta(days=validity) < now:

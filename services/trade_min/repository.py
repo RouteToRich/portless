@@ -219,8 +219,8 @@ async def init_repository() -> InMemoryFallbackRepository | MongoOpportunityRepo
         return _repository
 
     try:
-        from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore[import]
-        _motor_client = AsyncIOMotorClient(
+        from shared.mongo import get_client  # one pool per process (B-10)
+        _motor_client = get_client(
             mongo_uri,
             serverSelectionTimeoutMS=5_000,
             connectTimeoutMS=5_000,
@@ -279,7 +279,7 @@ async def close_repository() -> None:
     """Close the Motor connection (no-op for in-memory repository)."""
     global _repository, _motor_client
     if _motor_client is not None:
-        _motor_client.close()  # type: ignore[union-attr]
+        pass  # shared client: closed once at shutdown by shared.mongo.close_all()
         _motor_client = None
         logger.info("Trade-Min MongoDB connection closed")
     _repository = None

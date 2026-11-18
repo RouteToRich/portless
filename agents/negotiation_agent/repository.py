@@ -95,9 +95,9 @@ class MongoNegotiationRepository:
     """Async MongoDB backend using Motor."""
 
     def __init__(self, uri: str, db_name: str, sessions_col: str, rounds_col: str) -> None:
-        import motor.motor_asyncio as motor  # type: ignore[import]
 
-        client: Any = motor.AsyncIOMotorClient(uri)
+        from shared.mongo import get_client  # one pool per process (B-10)
+        client: Any = get_client(uri)
         db = client[db_name]
         self._sessions = db[sessions_col]
         self._rounds = db[rounds_col]

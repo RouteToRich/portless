@@ -1,0 +1,39 @@
+# Backend CI: every push and pull request. Branch protection on main should require "tests".
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The suite never touches a real database, gateway or provider (tests/conftest.py pins
+      # these too); set here so nothing in the runner's environment can leak in.
+      MONGO_URI: ""
+      LLM_GATEWAY_URL: ""
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install
+        run: pip install -r requirements-dev.txt
+      - name: Ruff (errors only — syntax, undefined names)
+        run: ruff check . --select E9,F63,F7,F82 --output-format=github
+      - name: Every test has a Gherkin scenario
+        run: python scripts/gen_unit_gherkin.py --check
+      - name: Tests
+        run: pytest -q -p no:cacheprovider

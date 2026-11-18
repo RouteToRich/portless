@@ -41,3 +41,18 @@ def test_shared_modules_no_longer_open_their_own_client():
         text = (root / f).read_text(encoding="utf-8")
         assert not re.search(r"AsyncIOMotorClient\(", text), f
         assert "get_client(settings.mongo_uri)" in text, f
+
+
+def test_service_repositories_take_the_shared_client_too():
+    """B-10 part 2: only the Kill Switch (its own timeout), the automation store (its own database,
+    another process) and the LLM tracker pool (its own close) still build a client."""
+    root = pathlib.Path(__file__).resolve().parents[1]
+    allowed = {"shared/mongo.py", "shared/orchestration/kill_switch.py", "services/automation/store.py",
+               "shared/llm_gateway/mongo_connection.py"}
+    found = []
+    for folder in ("services", "agents", "shared"):
+        for path in (root / folder).rglob("*.py"):
+            rel = path.relative_to(root).as_posix()
+            if rel not in allowed and re.search(r"AsyncIOMotorClient\(", path.read_text(encoding="utf-8")):
+                found.append(rel)
+    assert found == []

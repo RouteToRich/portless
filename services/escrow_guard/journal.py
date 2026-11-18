@@ -21,6 +21,9 @@ Events → entries
                          Dr buyer_deposits        Cr sales_revenue    gross
   refund                 Dr buyer_deposits        Cr escrow_trust     refunded
   supplier payout done   Dr supplier_payable      Cr portless_cash    amount
+  FX on a payout (gain)  Dr supplier_payable      Cr fx_gain_loss     INR at PO rate − USD paid
+  FX on a payout (loss)  Dr fx_gain_loss          Cr supplier_payable the opposite
+                         (only when the PO rate and the payout's bank rate are recorded — fx_book.py)
 
 Every entry balances by construction; ``balanced`` additionally checks the
 trial balance and that the escrow_trust balance equals the ledger's
@@ -45,6 +48,7 @@ ACCOUNTS: dict[str, str] = {
     "supplier_payable": "Supplier payable (liability)",
     "trade_costs": "Freight, inspection, insurance, customs and documents (expense)",
     "service_payables": "Payable to freight, inspection, insurance and customs providers (liability)",
+    "fx_gain_loss": "Exchange gain (credit) / loss (debit) on supplier payouts",
 }
 
 _COST_LABELS = {
@@ -114,7 +118,7 @@ def _fee_share(hold: Any, gross: float) -> float:
 
 
 def journal_from(hold: Any, ledger: Any, *, po_issued_at: datetime | None = None,
-                 now: datetime | None = None) -> DealJournal:
+                 now: datetime | None = None, fx: dict[str, Any] | None = None) -> DealJournal:
     """Pure builder (unit-testable): hold = EscrowHoldRecord, ledger = DealLedger."""
     from datetime import timezone
     now = now or datetime.now(timezone.utc)
@@ -170,6 +174,17 @@ def journal_from(hold: Any, ledger: Any, *, po_issued_at: datetime | None = None
             continue
         b.add(p.completed_at or p.created_at, f"supplier_payout:{p.kind}", "supplier_payable", "portless_cash",
               p.amount, ref=p.ext_ref or p.payout_id, memo=f"Payout {p.payout_id} to {p.payee_id}")
+        if fx:
+            from shared.orchestration.fx_book import gain_loss
+            rate = (fx.get("payout") or {}).get(p.payout_id)
+            diff = gain_loss(p.amount, rate, fx.get("po"))
+            memo = f"INR {p.amount * rate:,.2f} at {rate} (PO rate {fx.get('po')})" if rate else None
+            if diff > 0:
+                b.add(p.completed_at or p.created_at, f"fx_gain:{p.payout_id}", "supplier_payable", "fx_gain_loss",
+                      diff, ref=p.payout_id, memo=f"Exchange gain — {memo}")
+            elif diff < 0:
+                b.add(p.completed_at or p.created_at, f"fx_loss:{p.payout_id}", "fx_gain_loss", "supplier_payable",
+                      -diff, ref=p.payout_id, memo=f"Exchange loss — {memo}")
 
     balances: dict[str, float] = {k: 0.0 for k in ACCOUNTS}
     debits = credits = 0.0
@@ -211,7 +226,8 @@ async def build_journal(deal_id: str) -> DealJournal:
         po_at = getattr(po, "issued_at", None) if po else None
     except Exception:  # noqa: BLE001
         po_at = None
-    return journal_from(hold, ledger, po_issued_at=po_at)
+    from shared.orchestration import fx_book
+    return journal_from(hold, ledger, po_issued_at=po_at, fx=await fx_book.rates(deal_id))
 
 
 def journal_csv(journal: DealJournal) -> str:

@@ -160,11 +160,30 @@ class InMemoryDirectory:
         self._store.clear()
 
 
+def _cache_seconds() -> float:
+    import os
+    try:
+        return max(0.0, float(os.getenv("DIRECTORY_CACHE_SECONDS", "30")))
+    except ValueError:
+        return 30.0
+
+
 class MongoDirectory:
+    """Mongo store. The whole-directory read (``list(role)`` with no filter) that a dozen
+    callers make per request — do-not-contact guard, duplicates, supply-first, offer checks,
+    standby suppliers, outreach view — is served from a per-process copy for
+    ``DIRECTORY_CACHE_SECONDS`` (30; 0 = off) and dropped on every write in this process.
+    Another instance's write is seen within that window (review board B-13)."""
+
     def __init__(self, collection: Any) -> None:
         self._col = collection
+        self._cache: dict[str, tuple[float, int, list[CounterpartyRecord]]] = {}
+
+    def invalidate(self) -> None:
+        self._cache.clear()
 
     async def upsert(self, rec: CounterpartyRecord) -> CounterpartyRecord:
+        self.invalidate()
         doc = await self._col.find_one({"_id": rec.id})
         old = None
         if doc:
@@ -190,6 +209,7 @@ class MongoDirectory:
             return None
 
     async def set_contact_preference(self, record_id: str, fields: dict[str, Any]) -> CounterpartyRecord | None:
+        self.invalidate()
         doc = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in fields.items()}
         res = await self._col.update_one({"_id": record_id}, {"$set": doc})
         if not getattr(res, "matched_count", 1):
@@ -197,6 +217,7 @@ class MongoDirectory:
         return await self.get(record_id)
 
     async def set_validation(self, rec: CounterpartyRecord) -> None:
+        self.invalidate()
         await self._col.update_one(
             {"_id": rec.id},
             {"$set": {"validation": rec.validation.model_dump(mode="json") if rec.validation else None}},
@@ -205,6 +226,22 @@ class MongoDirectory:
     async def list(self, role: str, *, hs_code: str | None = None, market: str | None = None,
                    q: str | None = None, country: str | None = None,
                    limit: int = 200, validation: str | None = None) -> list[CounterpartyRecord]:
+        import time
+        whole = not any((hs_code, market, q, country, validation))
+        ttl = _cache_seconds()
+        if whole and ttl:
+            hit = self._cache.get(role)
+            if hit and hit[0] > time.monotonic() and (hit[1] >= limit or len(hit[2]) < hit[1]):
+                return [r.model_copy() for r in hit[2][:limit]]
+        rows = await self._query(role, hs_code=hs_code, market=market, q=q, country=country, limit=limit,
+                                 validation=validation)
+        if whole and ttl:
+            self._cache[role] = (time.monotonic() + ttl, limit, rows)
+            return [r.model_copy() for r in rows]
+        return rows
+
+    async def _query(self, role: str, *, hs_code: str | None, market: str | None, q: str | None,
+                     country: str | None, limit: int, validation: str | None) -> list[CounterpartyRecord]:
         query: dict[str, Any] = {"role": role}
         if validation == "unverified":
             query["$and"] = [{"$or": [{"validation": None}, {"validation.status": "unverified"}]}]
@@ -229,14 +266,17 @@ class MongoDirectory:
         return rows
 
     async def replace(self, rec: CounterpartyRecord) -> None:
+        self.invalidate()
         out = rec.model_dump(mode="json")
         out["_id"] = rec.id
         await self._col.replace_one({"_id": rec.id}, out, upsert=True)
 
     async def delete(self, record_id: str) -> None:
+        self.invalidate()
         await self._col.delete_one({"_id": record_id})
 
     async def clear(self) -> None:
+        self.invalidate()
         await self._col.delete_many({})
 
 
@@ -269,11 +309,14 @@ async def get_directory() -> InMemoryDirectory | MongoDirectory:
         _directory = InMemoryDirectory()
         return _directory
     try:
-        from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore[import]
-        client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=5_000, connectTimeoutMS=5_000)
+        from shared.mongo import get_client  # one pool per process (B-10)
+        client = get_client(uri, serverSelectionTimeoutMS=5_000, connectTimeoutMS=5_000)
         col = client[settings.trade_mongo_db_name][settings.trade_counterparties_collection]
         await col.create_index([("role", 1), ("last_seen_at", -1)], name="role_last_seen", background=True)
         await col.create_index("hs_codes", name="hs_codes", background=True)
+        # point lookups: duplicate check (GSTIN / e-mail / phone / website), do-not-contact guard
+        for field in ("gstin", "email", "phone", "website", "do_not_contact"):
+            await col.create_index([("role", 1), (field, 1)], name=f"role_{field}", background=True)
         _directory = MongoDirectory(col)
     except Exception as exc:  # noqa: BLE001
         logger.error("Directory: MongoDB unavailable (%s) — buyers/suppliers kept in memory", exc)
