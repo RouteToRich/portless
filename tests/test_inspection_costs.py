@@ -103,3 +103,37 @@ def test_container_plan_picks_the_cheapest_mix_and_suggests_a_fill(monkeypatch):
     sheet = _sheet(None)  # 25 MT lot
     assert sheet.container_plan["fill_suggestion_mt"] == 15.0
     assert any("15 MT more" in w for w in sheet.warnings)
+
+
+def test_fx_buffer_only_for_an_inr_supplier(monkeypatch):
+    """todo: FX margin — a buffer on the price when the supplier is paid in rupees."""
+    monkeypatch.delenv("FX_BUFFER_PCT", raising=False)
+    usd = trade_costs.build(quantity_mt=25.0, market="AE", freight_usd_per_mt=None, freight_is_quote=False,
+                            qc_usd_per_mt=None, qc_is_quote=False, supplier_address=None, supplier_currency="USD")
+    inr = trade_costs.build(quantity_mt=25.0, market="AE", freight_usd_per_mt=None, freight_is_quote=False,
+                            qc_usd_per_mt=None, qc_is_quote=False, supplier_address=None, supplier_currency="INR")
+    assert not [ln for ln in usd.lines if ln.key == "fx_buffer"]
+    (fx,) = [ln for ln in inr.lines if ln.key == "fx_buffer"]
+    assert fx.pct_of_price == 0.5 and inr.pct_of_price == pytest.approx(usd.pct_of_price + 0.5)
+
+
+def test_confirmed_export_incentives_lower_the_price_needed():
+    """todo: export incentives as income."""
+    base = trade_costs.build(quantity_mt=25.0, market="AE", freight_usd_per_mt=None, freight_is_quote=False,
+                             qc_usd_per_mt=None, qc_is_quote=False, supplier_address=None)
+    inc = trade_costs.build(quantity_mt=25.0, market="AE", freight_usd_per_mt=None, freight_is_quote=False,
+                            qc_usd_per_mt=None, qc_is_quote=False, supplier_address=None, incentive_pct=2.0)
+    (line,) = [ln for ln in inc.lines if ln.key == "export_incentive"]
+    assert line.pct_of_price == pytest.approx(-1.8)
+    assert trade_costs.min_buyer_price(inc, 800.0, 8.0) < trade_costs.min_buyer_price(base, 800.0, 8.0)
+
+
+async def test_incentive_pct_needs_confirmed_eligibility(monkeypatch):
+    from agents.negotiation_agent import service as ns
+    from services.trade_min import incentives
+    from types import SimpleNamespace
+
+    async def entry(hs):
+        return SimpleNamespace(eligible_confirmed=hs == "1006", rodtep_pct=1.5, drawback_pct=0.5)
+    monkeypatch.setattr(incentives, "entry_for", entry)
+    assert await ns._incentive_pct("1006") == 2.0 and await ns._incentive_pct("0904") == 0.0

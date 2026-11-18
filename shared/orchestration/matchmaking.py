@@ -362,7 +362,7 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
     fr = landed.freight_usd_per_mt if landed else (freight_usd_per_mt if freight_usd_per_mt is not None else lc.freight_per_mt(market))
     insp = landed.inspection_usd_per_mt if landed else lc.inspection_usd_per_shipment() / qty
     tg = negotiation_targets(bp.value, sp.value, freight=fr, inspection=insp, fee_ins_pct=fee_ins,
-                             incentive_pct=incentive_pct, floor_pct=floor_pct, target_pct=max(target_margin_pct(learned, getattr(deal, "market", None)), floor_pct))
+                             incentive_pct=incentive_pct, floor_pct=floor_pct, target_pct=max(target_margin_pct(learned, getattr(deal, "market", None)) - key_buyer_discount(b_hist), floor_pct))
     cut = None
     if sp.value and tg["max_supplier"] is not None:
         cut = round(max(0.0, sp.value - tg["max_supplier"]), 2)
@@ -616,6 +616,27 @@ def quote_too_short(pair: Any) -> bool:
     """Under 2 days left on the supplier quote: reconfirm it before quoting the buyer."""
     left = getattr(pair, "quote_expires_in_days", None)
     return left is not None and int(left) < 2
+
+
+def buyer_tier(history: dict[str, Any] | None) -> str:
+    """``key`` (≥ ``KEY_BUYER_MIN_SIGNED`` signed deals, 2), ``repeat`` (1), ``new``."""
+    signed = int((history or {}).get("signed") or 0)
+    try:
+        key_min = max(1, int(os.getenv("KEY_BUYER_MIN_SIGNED", "2")))
+    except ValueError:
+        key_min = 2
+    return "key" if signed >= key_min else "repeat" if signed >= 1 else "new"
+
+
+def key_buyer_discount(history: dict[str, Any] | None) -> float:
+    """Target-margin points given back to a key buyer (``KEY_BUYER_MARGIN_DISCOUNT_PTS``, 1):
+    their reorders cost no outreach and close faster — never below the floor (the caller clamps)."""
+    if buyer_tier(history) != "key":
+        return 0.0
+    try:
+        return max(0.0, float(os.getenv("KEY_BUYER_MARGIN_DISCOUNT_PTS", "1")))
+    except ValueError:
+        return 1.0
 
 
 def _supplier_line(pair: Any) -> str:

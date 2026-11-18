@@ -77,9 +77,28 @@ class TestGateway:
         import json
         assert json.loads(http.requests[0].content) == {"hs_codes": ["1520"], "target_markets": ["ES"]}
 
-    async def test_webhook_ingest_is_not_built(self):
-        with pytest.raises(NotImplementedError):
-            await gw.ingest_webhook("stripe", MagicMock())
+    async def test_webhook_is_forwarded_untouched_to_the_owning_route(self):
+        """todo: finish the standalone gateway — raw body, signature header and query string reach
+        the owning service's signed route; its answer (here a refused signature) comes back."""
+        seen = []
+
+        def handler(req):
+            seen.append(req)
+            return httpx.Response(401, json={"detail": "signature invalid"})
+
+        class _Req:
+            headers = {"content-type": "application/json", "signature": "abc", "host": "gw", "content-length": "9"}
+            query_params = {"token": "t1"}
+
+            async def body(self):
+                return b'{"id":1}'
+        code, body, ctype = await gw.ingest_webhook("tazapay", _Req(), transport=httpx.MockTransport(handler))
+        assert code == 401 and b"signature invalid" in body and ctype.startswith("application/json")
+        req = seen[0]
+        assert req.url.path == "/escrow-guard/webhooks/tazapay" and req.url.params["token"] == "t1"
+        assert req.content == b'{"id":1}' and req.headers["signature"] == "abc" and req.headers.get("host") != "gw"
+        with pytest.raises(gw.UnknownWebhookProvider):
+            await gw.ingest_webhook("unknown-bank", _Req())
 
 
 class TestQcProviderHttp:

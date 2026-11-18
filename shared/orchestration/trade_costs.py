@@ -223,6 +223,8 @@ def build(
     packing_in_supplier_price: bool = False,
     inspection_types: list[str] | None = None,
     hs_code: str | None = None,
+    supplier_currency: str | None = None,
+    incentive_pct: float = 0.0,
 ) -> CostSheet:
     """The deal's cost sheet from what is known now (quotes where they exist)."""
     from shared.orchestration import landed_cost
@@ -327,6 +329,25 @@ def build(
         lines.append(CostLine(key="value_added_services", label="Service charge on value-added services",
                               usd_per_mt=round(vas_cost * markup / 100.0, 2), source="setting",
                               note=f"{markup:g} % on special packing / extra inspections — a margin, not a cost"))
+
+    # 4c. FX buffer (todo: FX margin): a supplier paid in rupees is owed a fixed INR amount while
+    # the buyer pays USD; the rupee can move between the PO and the payout. ``FX_BUFFER_PCT``
+    # (0.5) of the price covers it — a buffer like the contingency, never booked as a cost.
+    if (supplier_currency or "").upper() == "INR":
+        fx_pct = _f("FX_BUFFER_PCT", 0.5)
+        if fx_pct > 0:
+            lines.append(CostLine(key="fx_buffer", label="Exchange-rate buffer (supplier paid in INR)",
+                                  pct_of_price=fx_pct, source="setting",
+                                  note="the rupee can move between the PO and the supplier payout"))
+
+    # 4d. Export incentives as income (todo): RoDTEP + duty drawback the CA confirmed for the
+    # product (``incentives.entry_for(...).eligible_confirmed``) come back as a credit on the FOB
+    # value — a negative line, approximated on the price × ``INCENTIVE_FOB_SHARE`` (0.9).
+    if incentive_pct and incentive_pct > 0:
+        share = _f("INCENTIVE_FOB_SHARE", 0.9)
+        lines.append(CostLine(key="export_incentive", label="Export incentives (RoDTEP / drawback) — income",
+                              pct_of_price=-round(float(incentive_pct) * share, 4), source="setting",
+                              note=f"{incentive_pct:g} % of FOB, credited after shipment (eligibility confirmed)"))
 
     # 5. Costs that scale with the price.
     lines.append(CostLine(key="marine_insurance", label="Marine cargo insurance (CIF)",

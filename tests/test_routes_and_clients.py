@@ -719,7 +719,6 @@ class TestGatewayRoutes:
         ("GET", "/approvals", "list_approvals", None),
         ("POST", "/approvals/A1/resolve", "resolve_approval", {"decision": "APPROVE"}),
         ("GET", "/exceptions/E1", "get_exception", None),
-        ("POST", "/webhooks/stripe", "ingest_webhook", None),
     ])
     def test_delegates(self, method, url, target, body):
         mock = AsyncMock(return_value={"status": "ok"})
@@ -731,6 +730,15 @@ class TestGatewayRoutes:
     def test_readiness(self):
         with patch("shared.readiness.evaluate", return_value={"ready": True}):
             assert _api(gateway_router).get("/health/readiness").json() == {"ready": True}
+
+    def test_webhook_answer_passes_through_and_unknown_provider_is_404(self):
+        mock = AsyncMock(return_value=(202, b'{"status":"ok"}', "application/json"))
+        with patch.object(gateway_router.service, "ingest_webhook", new=mock):
+            r = _api(gateway_router).post("/webhooks/stripe", content=b"{}")
+        assert r.status_code == 202 and r.json() == {"status": "ok"}
+        boom = AsyncMock(side_effect=gateway_router.service.UnknownWebhookProvider("x"))
+        with patch.object(gateway_router.service, "ingest_webhook", new=boom):
+            assert _api(gateway_router).post("/webhooks/x", content=b"{}").status_code == 404
 
 
 # ---------------------------------------------------------------------------

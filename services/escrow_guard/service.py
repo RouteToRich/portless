@@ -2051,7 +2051,7 @@ async def _portless_costs(deal_id: str, principal: float, *, fees_estimated: flo
             incurred.update({"inland_transport", "origin_handling"})
         phases = max(1, int(sheet.get("inspection_phases") or 1))
         for key, usd in per_line.items():
-            if key in ("escrow_fee", "contingency") or key not in incurred:
+            if key in ("escrow_fee", "contingency", "fx_buffer", "value_added_services", "export_incentive") or key not in incurred:
                 continue
             if key in fees:
                 costs[key], basis[key] = round(fees[key], 2), "actual"

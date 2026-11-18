@@ -64,12 +64,49 @@ def status(now: float | None = None) -> dict[str, Any]:
     return {"window_minutes": int(window // 60), "rows": sorted(rows, key=lambda r: -r["failed"]), "alerts": alerts}
 
 
-async def check_and_alert(*, now: float | None = None, send=None) -> list[str]:
+async def business_alerts(now: Any = None) -> list[str]:
+    """Deal-level things waiting too long: a money gate pending over ``MONEY_GATE_ALERT_HOURS``
+    (24) — a supplier or the buyer is waiting for money — and more than
+    ``OPEN_EXCEPTIONS_ALERT`` (10) exceptions open or escalated. Never raises."""
+    from datetime import datetime, timezone
+    now_dt = now or datetime.now(timezone.utc)
+    out: list[str] = []
+    try:
+        from services.hitl_approval.repository import get_repository as hitl_repo  # type: ignore[import]
+        from services.hitl_approval.service import is_money_action  # type: ignore[import]
+        limit_h = _num("MONEY_GATE_ALERT_HOURS", 24)
+        old = []
+        for g in await hitl_repo().list_by_status("PENDING"):
+            created = g.created_at if g.created_at.tzinfo else g.created_at.replace(tzinfo=timezone.utc)
+            hours = (now_dt - created).total_seconds() / 3600
+            if is_money_action(g.action) and hours >= limit_h:
+                old.append((hours, g))
+        if old:
+            hours, g = max(old, key=lambda x: x[0])
+            out.append(f"MONEY GATES WAITING: {len(old)} money gate(s) pending over {limit_h:g} h — oldest {g.action} "
+                       f"on {g.deal_id}, {hours:.0f} h (Approvals inbox)")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("FailureMonitor: gates unreadable: %s", exc)
+    try:
+        from services.exception_resolver.repository import get_repository as exc_repo  # type: ignore[import]
+        rows = await exc_repo().list_all(limit=1000)
+        open_rows = [r for r in rows if str(getattr(r.status, "value", r.status)) in ("OPEN", "ESCALATED", "UNRESOLVABLE")]
+        if len(open_rows) > _num("OPEN_EXCEPTIONS_ALERT", 10):
+            out.append(f"EXCEPTIONS PILING UP: {len(open_rows)} open or escalated (Exceptions page)")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("FailureMonitor: exceptions unreadable: %s", exc)
+    return out
+
+
+async def check_and_alert(*, now: float | None = None, send=None, business: list[str] | None = None) -> list[str]:
     now = now if now is not None else time.monotonic()
     repeat = _num("FAILURE_ALERT_REPEAT_MINUTES", 60) * 60
     fresh = []
-    for a in status(now)["alerts"]:
-        key = a.split(" — ")[0]
+    extra = business if business is not None else await business_alerts()
+    for a in status(now)["alerts"] + extra:
+        key = a.split(" — ")[0]  # e.g. "LLM CALLS FAILING: buyer_agent"
+        if a.startswith(("MONEY GATES WAITING", "EXCEPTIONS PILING UP")):
+            key = a.split(":")[0]  # the count changes; one alert per kind per period
         if now - _last_alert.get(key, -1e12) < repeat:
             continue
         _last_alert[key] = now

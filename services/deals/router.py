@@ -577,6 +577,15 @@ async def deal_run_costs(deal_id: str, user: AuthUser = Depends(require_portless
     return await deal_costs.summary(deal_id)
 
 
+@router.get("/{deal_id}/containers")
+async def deal_containers(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """The cheapest container mix for the deal's lot and lane (per-size lane quotes, the
+    product's stowage factor) and how full it travels."""
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import container_choice
+    return await container_choice.choose(deal.market, deal.hs_code, float(deal.quantity_mt or 20.0))
+
+
 @router.get("/{deal_id}/cost-sheet")
 async def deal_cost_sheet(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
     """Every PortLess cost between the supplier and the buyer's port, with its

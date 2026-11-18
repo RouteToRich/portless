@@ -405,3 +405,16 @@ class TestCorridorMargin:
     def test_too_few_answers_change_nothing(self):
         from shared.orchestration.outcomes import corridor_margins
         assert corridor_margins(self._offers("ES", 3, 0), "290543")["ES"]["adjust_pts"] == 0.0
+
+
+class TestBuyerTier:
+    """Target margin per buyer tier (todo: margin by corridor and buyer)."""
+
+    def test_tiers_and_discount(self, monkeypatch):
+        monkeypatch.delenv("KEY_BUYER_MIN_SIGNED", raising=False)
+        monkeypatch.delenv("KEY_BUYER_MARGIN_DISCOUNT_PTS", raising=False)
+        assert mm.buyer_tier(None) == "new" and mm.buyer_tier({"signed": 1}) == "repeat"
+        assert mm.buyer_tier({"signed": 3}) == "key"
+        assert mm.key_buyer_discount({"signed": 3}) == 1.0 and mm.key_buyer_discount({"signed": 1}) == 0.0
+        monkeypatch.setenv("KEY_BUYER_MARGIN_DISCOUNT_PTS", "2.5")
+        assert mm.key_buyer_discount({"signed": 2}) == 2.5

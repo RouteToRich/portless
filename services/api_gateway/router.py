@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from . import service
 from .schemas import CreateDealRequest, DealResponse
@@ -79,9 +79,11 @@ async def get_exception(exception_id: str) -> Any:
 
 
 @router.post("/webhooks/{provider}")
-async def ingest_webhook(provider: str, request: Request) -> dict[str, str]:
-    """Single webhook ingress point (idempotency + signature verification).
-
-    TODO: verify signature, dedupe on idempotency key, route to the owning service.
-    """
-    return await service.ingest_webhook(provider, request)
+async def ingest_webhook(provider: str, request: Request) -> Response:
+    """Single webhook ingress point: forwarded untouched to the owning service's signed,
+    replay-safe webhook route; its answer (incl. a refused signature) is returned as is."""
+    try:
+        code, body, content_type = await service.ingest_webhook(provider, request)
+    except service.UnknownWebhookProvider:
+        raise HTTPException(status_code=404, detail=f"no webhook route for provider {provider!r}")
+    return Response(content=body, status_code=code, media_type=content_type)

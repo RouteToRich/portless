@@ -280,6 +280,12 @@ def evaluate() -> dict[str, Any]:
         ok_detail="at least one live demand source configured",
         fail_detail="no Comtrade / Census key and no Apify token — scans find no demand data, so no opportunities",
     ))
+    from shared import field_crypto
+    checks.append(_check(
+        "field_encryption", "security", "Sensitive fields encrypted at rest", field_crypto.configured(), warn_only=True,
+        ok_detail="supplier bank details are stored AES-256-GCM encrypted",
+        fail_detail="FIELD_ENCRYPTION_KEY unset (or not 32 bytes base64) — supplier bank details are stored in clear",
+    ))
     checks.append(_check(
         "auto_flow_off", "automation", "Dev auto-flow off", not _flag("AUTO_FLOW_ENABLED"),
         ok_detail="production legs run on the event bus only",

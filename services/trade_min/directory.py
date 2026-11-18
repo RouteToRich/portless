@@ -193,7 +193,7 @@ class MongoDirectory:
             except Exception:  # noqa: BLE001 - a malformed old row is replaced
                 old = None
         merged = _merge(old, rec)
-        out = merged.model_dump(mode="json")
+        out = merged.model_dump(mode="json", context={"store": True})
         out["_id"] = merged.id
         await self._col.replace_one({"_id": merged.id}, out, upsert=True)
         return merged
@@ -267,7 +267,7 @@ class MongoDirectory:
 
     async def replace(self, rec: CounterpartyRecord) -> None:
         self.invalidate()
-        out = rec.model_dump(mode="json")
+        out = rec.model_dump(mode="json", context={"store": True})
         out["_id"] = rec.id
         await self._col.replace_one({"_id": rec.id}, out, upsert=True)
 
@@ -402,7 +402,7 @@ async def clean_existing() -> int:
                 continue
             cleaned = clean_record(rec)
             if cleaned is not rec:
-                out = cleaned.model_dump(mode="json")
+                out = cleaned.model_dump(mode="json", context={"store": True})
                 out["_id"] = doc_id
                 await directory._col.replace_one({"_id": doc_id}, out)
                 changed += 1

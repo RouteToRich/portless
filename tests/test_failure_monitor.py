@@ -41,11 +41,11 @@ async def test_each_alert_once_per_hour():
         sent.append(m)
     for i in range(6):
         fm.record("webhook", "Stripe", False, now=100.0 + i)
-    assert len(await fm.check_and_alert(now=110.0, send=send)) == 1
-    assert await fm.check_and_alert(now=200.0, send=send) == []
+    assert len(await fm.check_and_alert(now=110.0, send=send, business=[])) == 1
+    assert await fm.check_and_alert(now=200.0, send=send, business=[]) == []
     for i in range(6):
         fm.record("webhook", "Stripe", False, now=110.0 + 3600 + i)
-    assert len(await fm.check_and_alert(now=120.0 + 3600, send=send)) == 1 and len(sent) == 2
+    assert len(await fm.check_and_alert(now=120.0 + 3600, send=send, business=[])) == 1 and len(sent) == 2
 
 
 async def test_signature_check_and_llm_client_feed_it(monkeypatch):
@@ -58,3 +58,35 @@ async def test_signature_check_and_llm_client_feed_it(monkeypatch):
             return False
     assert await signature_valid(TazapayConnector(), {}, b"{}") is False
     assert fm.status()["rows"][0] == {"kind": "webhook", "key": "Tazapay", "total": 1, "failed": 1, "failure_pct": 100.0}
+
+
+async def test_money_gate_waiting_and_exceptions_piling_up(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+    now = datetime.now(UTC)
+    gates = [SimpleNamespace(action="RELEASE_SUPPLIER_PAYOUT", deal_id="D1", created_at=now - timedelta(hours=30)),
+             SimpleNamespace(action="SEND_NEGOTIATION_EMAIL", deal_id="D2", created_at=now - timedelta(hours=50)),
+             SimpleNamespace(action="RELEASE_ESCROW_TRANCHE", deal_id="D3", created_at=now - timedelta(hours=2))]
+
+    class _Hitl:
+        async def list_by_status(self, status):
+            return gates
+
+    class _Exc:
+        async def list_all(self, limit=0):
+            return [SimpleNamespace(status="OPEN") for _ in range(12)]
+    monkeypatch.setattr("services.hitl_approval.repository.get_repository", lambda: _Hitl())
+    monkeypatch.setattr("services.exception_resolver.repository.get_repository", lambda: _Exc())
+    alerts = await fm.business_alerts(now)
+    assert alerts[0].startswith("MONEY GATES WAITING: 1 money gate") and "D1" in alerts[0]
+    assert alerts[1] == "EXCEPTIONS PILING UP: 12 open or escalated (Exceptions page)"
+
+
+async def test_business_alert_once_per_period_even_when_the_count_changes():
+    sent = []
+
+    async def send(m):
+        sent.append(m)
+    await fm.check_and_alert(now=10.0, send=send, business=["EXCEPTIONS PILING UP: 12 open or escalated (Exceptions page)"])
+    await fm.check_and_alert(now=20.0, send=send, business=["EXCEPTIONS PILING UP: 13 open or escalated (Exceptions page)"])
+    assert len(sent) == 1

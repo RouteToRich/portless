@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 from .pair_match import PairMatch
 
@@ -248,6 +248,9 @@ class SellerCandidate(BaseModel):
 CounterpartyRole = Literal["buyer", "supplier"]
 
 
+_BANK_FIELDS = ("bank_name", "bank_ifsc", "bank_account_last4")
+
+
 class ManualSupplierFacts(BaseModel):
     """What staff entered about a supplier added by hand (manual_suppliers.py)."""
     contact_person: str | None = None
@@ -345,7 +348,24 @@ class CounterpartyRecord(BaseModel):
     dnc_reason: str | None = None
     dnc_at: datetime | None = None
     manual: dict[str, Any] | None = None
-    """Facts staff entered for a supplier added by hand (``ManualSupplierFacts``)."""
+    """Facts staff entered for a supplier added by hand (``ManualSupplierFacts``). Its bank
+    details are encrypted at rest (shared/field_crypto.py, ``FIELD_ENCRYPTION_KEY``): written
+    encrypted when the directory stores the record (context ``{"store": True}``), read back plain."""
+
+    @field_validator("manual", mode="before")
+    @classmethod
+    def _decrypt_bank(cls, v: Any) -> Any:
+        if isinstance(v, dict):
+            from shared.field_crypto import decrypt
+            return {k: (decrypt(x) if k in _BANK_FIELDS and isinstance(x, str) else x) for k, x in v.items()}
+        return v
+
+    @field_serializer("manual")
+    def _encrypt_bank(self, v: dict[str, Any] | None, info: Any) -> dict[str, Any] | None:
+        if v and info.context and info.context.get("store"):
+            from shared.field_crypto import encrypt
+            return {k: (encrypt(x) if k in _BANK_FIELDS and isinstance(x, str) else x) for k, x in v.items()}
+        return v
     merged_from: list[str] = Field(default_factory=list)
     """Directory ids folded into this record by a staff merge (dedupe.py)."""
     aliases: list[str] = Field(default_factory=list)

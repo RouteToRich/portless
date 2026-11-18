@@ -144,7 +144,8 @@ async def put_incentive(hs_code: str, body: IncentiveUpdate, user=Depends(_staff
 
 class LaneUpdate(BaseModel):
     market: str = Field(min_length=2, max_length=2)
-    container_type: Literal["dry", "reefer"] = "dry"
+    container_type: Literal["dry", "dry40", "hc40", "reefer", "reefer40"] = "dry"
+    """dry / reefer = a 20' box; dry40 = 40' dry, hc40 = 40' high cube, reefer40 = 40' reefer."""
     usd_per_container: float = Field(gt=0)
     container_mt: float = Field(default=20.0, gt=0)
     note: str | None = None

@@ -51,6 +51,9 @@ class ProductLine(BaseModel):
     margin per container and default lot use it (else 20 MT)."""
     container_type: str | None = None
     """``dry`` (default) or ``reefer`` (fresh produce) — reefer freight is dearer."""
+    m3_per_mt: float | None = None
+    """Stowage factor (m³ one tonne takes when packed): decides whether a 40' HC carries more
+    than a 40' dry or the cargo is weight-limited (shared/orchestration/container_choice.py)."""
     import_requirements: dict[str, list[str]] = Field(default_factory=dict)
     """What the destination needs before the goods arrive, per ISO-2 market or ``*`` for
     every market: e.g. ``{"US": ["FDA food-facility registration", "FDA prior notice"],

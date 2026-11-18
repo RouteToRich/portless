@@ -45,8 +45,8 @@ make up    # docker compose up --build
 make down
 
 # Tests
-pytest -q                                 # full suite (5302 pass, 1 skip, ~1 min)
-pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 85% line + branch, 92% without services/automation (2026-11-18)
+pytest -q                                 # full suite (5333 pass, 1 skip, ~1 min)
+pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 86% line + branch, 92% without services/automation (2026-11-18)
 pytest tests/test_health.py -q            # smoke: every service boots + /health 200
 pytest -m smoke -q                        # markers by file (tests/markers.py): smoke · money · unit · integration · slow · regression
 pytest -m "unit and not slow" -q          # the quick inner loop
@@ -117,6 +117,10 @@ pytest tests/test_automation_directory_copy.py # live directory copied into port
 pytest tests/test_nightly_automation.py  # nightly run summary + exit code
 pytest tests/test_production_never_sandbox.py # sandbox settings fail production readiness
 pytest tests/test_deals_router_routes.py # the thin deals routes answer and map errors
+pytest tests/test_container_choice.py    # cheapest 20'/40'/HC mix per tonne from lane quotes and stowage factor
+pytest tests/test_field_crypto.py        # supplier bank details AES-GCM encrypted at rest, read back plain
+pytest tests/test_ui_api_contract.py     # every console API path exists in the backend (needs ../portless-ui)
+pytest tests/test_continuations_gaps.py tests/test_outreach_gaps.py # legs and reply paths without a test before
 pytest tests/test_true_claims.py         # e-mails say 'verified' / name the inspector only when true; banned phrases
 pytest tests/test_directory_cache.py     # whole-directory read cached per process, dropped on every write
 pytest tests/test_ci_config.py           # CI workflow gates, ruff errors-only clean, pre-commit refuses secrets
@@ -325,7 +329,7 @@ On the monolith a provider webhook (`/escrow-guard/webhooks/*`, `/shield-link/{q
 
 3. **Telegram push** (`shared/telegram.py`) â€” when `HITL_TELEGRAM_BOT_TOKEN` + `HITL_TELEGRAM_CHAT_ID` are set, every gate that waits for a human (`approval_created` with status PENDING) and every countersign request (`approval_countersign_needed`) is pushed with amount, summary and deep link. Auto-approved gates are not pushed.
 
-**Compliance officers** (`shared/auth/roles.py`, `AUTH_COMPLIANCE_OFFICER_EMAILS`): approve compliance gates, confirm HS policy, clear holds and possible sanctions matches; `/identity/me` returns `roles`. **Failure alerts** (`shared/failure_monitor.py`): LLM failure rate per caller and refused webhook signatures page Telegram (`GET /health/failures`). **JSON logs**: `LOG_FORMAT=json`. **Money approvers:** with `AUTH_MONEY_APPROVER_EMAILS` set, only those staff may APPROVE a money-moving gate (others may REJECT; 403 otherwise), and money requests re-check the token when older than `AUTH_MONEY_INTROSPECTION_CACHE_SECONDS` (5). **Provider reconciliation** (`shared/orchestration/provider_reconciliation.py`): once a day the escrow watcher reads every open escrow and payout from its provider and raises `RECONCILIATION:*` exceptions for differences (`GET /escrow-guard/reconciliation/providers`). **Reorders** (`shared/orchestration/reorders.py`): `POST /deals/{id}/reorder`, `GET /deals/reorders/due`, digest. **Corridor margin**: the board's target margin moves ±`CORRIDOR_MARGIN_STEP_PTS` with indicative-offer acceptance per HS × market. **VAS**: `VAS_MARKUP_PCT` service charge on special packing / extra inspections.
+**Cost sheet extras**: `fx_buffer` (`FX_BUFFER_PCT`, INR supplier), `export_incentive` (confirmed RoDTEP / drawback, income), `container_choice` (`shared/orchestration/container_choice.py`, `GET /deals/{id}/containers`); key buyers get `KEY_BUYER_MARGIN_DISCOUNT_PTS` off the target. **Field encryption**: `FIELD_ENCRYPTION_KEY` (bank details). **Alerts** also for money gates pending > `MONEY_GATE_ALERT_HOURS` and exceptions > `OPEN_EXCEPTIONS_ALERT`. The standalone gateway forwards `/webhooks/{provider}` to the owning signed route. **Compliance officers** (`shared/auth/roles.py`, `AUTH_COMPLIANCE_OFFICER_EMAILS`): approve compliance gates, confirm HS policy, clear holds and possible sanctions matches; `/identity/me` returns `roles`. **Failure alerts** (`shared/failure_monitor.py`): LLM failure rate per caller and refused webhook signatures page Telegram (`GET /health/failures`). **JSON logs**: `LOG_FORMAT=json`. **Money approvers:** with `AUTH_MONEY_APPROVER_EMAILS` set, only those staff may APPROVE a money-moving gate (others may REJECT; 403 otherwise), and money requests re-check the token when older than `AUTH_MONEY_INTROSPECTION_CACHE_SECONDS` (5). **Provider reconciliation** (`shared/orchestration/provider_reconciliation.py`): once a day the escrow watcher reads every open escrow and payout from its provider and raises `RECONCILIATION:*` exceptions for differences (`GET /escrow-guard/reconciliation/providers`). **Reorders** (`shared/orchestration/reorders.py`): `POST /deals/{id}/reorder`, `GET /deals/reorders/due`, digest. **Corridor margin**: the board's target margin moves ±`CORRIDOR_MARGIN_STEP_PTS` with indicative-offer acceptance per HS × market. **VAS**: `VAS_MARKUP_PCT` service charge on special packing / extra inspections.
 
 **Four-eyes:** a money-moving gate (`RELEASE_ESCROW_TRANCHE`, `RELEASE_SUPPLIER_PAYOUT`, `CONFIRM_BUYER_ACCEPTANCE`) whose `financial_impact_usd` is at or above `FOUR_EYES_THRESHOLD_USD` is created with `required_approvals=2`, is never auto-approved (L2/L3 drop to L0, risk flag `four_eyes_required`), and resolves only when two **different** operators APPROVE (`approvals` lists the signatures; the same operator twice â†’ 409). The approver is the signed-in caller and `resolved_by` in the body is ignored; a standalone service checks the bearer token itself and refuses a two-approver gate without a proven identity (401). One REJECT closes it.
 
