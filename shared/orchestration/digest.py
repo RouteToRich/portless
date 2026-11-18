@@ -169,6 +169,13 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         out["warnings"].append(f"money unavailable: {exc}")
 
+    # ── Background watchers still beating? ─────────────────────────────────
+    try:
+        from shared import heartbeat
+        out["watchers"] = await heartbeat.status(now)
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"watcher heartbeats unavailable: {exc}")
+
     # ── Apify spend ────────────────────────────────────────────────────────
     try:
         from shared.connectors.apify import max_runs_per_day, runs_today
@@ -286,6 +293,10 @@ def render_digest_text(d: dict[str, Any]) -> str:
         if isinstance(apify.get("max_runs_per_day"), int) and apify["max_runs_per_day"] > 0 \
                 and apify.get("runs_today", 0) >= 0.9 * apify["max_runs_per_day"]:
             lines.append("  ! the daily run budget is nearly used — checks and scans stop when it is reached")
+    wa = d.get("watchers") or {}
+    if wa.get("stale"):
+        lines.append("! WATCHERS NOT RUNNING: " + ", ".join(wa["stale"])
+                     + " — reminders, auto-releases or timeouts may be waiting")
     for w in d.get("warnings") or []:
         lines.append(f"! {w}")
     return "\n".join(lines)

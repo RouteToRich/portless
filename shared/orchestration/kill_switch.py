@@ -151,6 +151,8 @@ async def _set(paused: bool, by: str, reason: str) -> dict[str, Any]:
     _history = (_history + [entry])[-_HISTORY_MAX:]
     _refreshed_at = time.monotonic()
     logger.critical("KillSwitch: platform %s by %s — %s", "PAUSED" if paused else "RESUMED", by, reason)
+    from shared import audit_log
+    await audit_log.record("kill_switch." + ("pause" if paused else "resume"), by, "platform", {"reason": reason})
     return await status()
 
 

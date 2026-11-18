@@ -110,6 +110,8 @@ def _verification(**overrides) -> VerificationResult:
         business_age_years=5.0,
         udyam_registered=True,
         annual_shipment_count=0,
+        gst_status="active",
+        iec_status="active",
         verified_at=datetime.now(timezone.utc),
     )
     defaults.update(overrides)
@@ -497,3 +499,44 @@ def test_list_quotes_filters_by_deal():
     q1 = run(list_quotes(deal_id="DEAL-Q1"))
     assert len(q1) == 1
     assert q1[0].deal_id == "DEAL-Q1"
+
+
+
+# --- an unanswered registry is not a pass ------------------------------------------------- #
+
+@pytest.mark.parametrize("answer,status", [
+    ({"status": "ACTIVE"}, "active"), ({"status": "CANCELLED"}, "inactive"), ({"status": "SUSPENDED"}, "inactive"),
+    ({"status": "UNKNOWN"}, "unchecked"), ({"stub": True}, "unchecked"), (None, "unchecked"), ({}, "unchecked"),
+])
+def test_registry_status(answer, status):
+    from services.sourcing.service import registry_status
+    assert registry_status(answer) == status
+
+
+def test_unanswered_registries_are_unchecked_but_keep_the_provisional_pass(monkeypatch):
+    from services.sourcing import service as svc
+    monkeypatch.setattr(svc, "_safe_call", AsyncMock(return_value=None))  # no API_SETU_KEY / timeout
+    v = run(svc._verify_supplier("SUP-1", "32ABCDE1234F1Z5", "0512345678", None, None))
+    assert (v.gst_status, v.iec_status) == ("unchecked", "unchecked")
+    assert v.gst_verified and v.iec_active and not svc.registry_checked(v)
+    v = run(svc._verify_supplier("SUP-1", None, None, None, None))
+    assert (v.gst_status, v.iec_status) == ("missing", "missing")
+
+
+def test_an_unchecked_source_quote_is_not_verified_and_does_not_auto_source(_repo, monkeypatch):
+    monkeypatch.setenv("MATCHMAKING_ENABLED", "false")
+    transition, emit = AsyncMock(), AsyncMock()
+    with (
+        patch("services.sourcing.service._verify_supplier",
+              AsyncMock(return_value=_verification(gst_status="unchecked", iec_status="unchecked"))),
+        patch("services.sourcing.service._fetch_deal", AsyncMock(return_value=_matching_deal())),
+        patch("services.sourcing.service._rescore", AsyncMock(return_value=_source_rescore())),
+        patch("services.sourcing.service._update_deal_financials", AsyncMock()),
+        patch("services.sourcing.service._transition_to_negotiating", transition),
+        patch("services.sourcing.service._emit_event", emit),
+    ):
+        quote = run(receive_quote(_quote_request()))
+    assert quote.status == "RECEIVED" and quote.re_scored_decision == "SOURCE"
+    transition.assert_not_awaited()
+    payload = next(c.kwargs.get("payload") or c.args[2] for c in emit.await_args_list)
+    assert payload["gst_checked"] is False and payload["gst_status"] == "unchecked"

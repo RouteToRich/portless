@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -571,6 +571,65 @@ async def list_buyers(
                                                country=country, limit=limit,
                                                validation=validation_status)
     return _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort, order=order)
+
+
+@router.post("/suppliers/import", response_model=dict)
+async def import_suppliers(request: Request, dry_run: bool = Query(default=True), check: bool = Query(default=True),
+                           user=Depends(_staff())) -> dict:
+    """CSV of local suppliers (body = the CSV text). Dry run (default) reports what would be
+    accepted, duplicated or refused, without saving or running paid checks."""
+    from services.trade_min import manual_suppliers as ms
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    text = (await request.body()).decode("utf-8", errors="replace")
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="empty CSV")
+    return await ms.import_csv(text, who, dry_run=dry_run, check=check)
+
+
+@router.post("/suppliers", response_model=CounterpartyRecord, status_code=status.HTTP_201_CREATED)
+async def add_supplier(body: dict, force: bool = Query(default=False), user=Depends(_staff())) -> CounterpartyRecord:
+    """Add a local supplier by hand; the same checks as a scanned supplier run at once."""
+    from pydantic import ValidationError
+
+    from services.trade_min import manual_suppliers as ms
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    try:
+        data = ms.ManualSupplierIn(**body)
+        return await ms.add(data, who, force=force)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors(include_url=False, include_context=False)) from exc
+    except ms.DuplicateSupplier as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"message": str(exc), "existing_id": exc.existing_id}) from exc
+
+
+@router.put("/suppliers/{record_id:path}", response_model=CounterpartyRecord)
+async def edit_supplier(record_id: str, body: dict, user=Depends(_staff())) -> CounterpartyRecord:
+    from pydantic import ValidationError
+
+    from services.trade_min import manual_suppliers as ms
+    who = getattr(user, "email", None) or getattr(user, "user_id", "staff")
+    try:
+        rec = await ms.edit(record_id, ms.ManualSupplierIn(**body), who)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors(include_url=False, include_context=False)) from exc
+    except ms.DuplicateSupplier as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"message": str(exc), "existing_id": exc.existing_id}) from exc
+    if rec is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such supplier")
+    return rec
+
+
+@router.delete("/suppliers/{record_id:path}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_supplier(record_id: str, user=Depends(_staff())) -> None:
+    from services.trade_min import manual_suppliers as ms
+    try:
+        ok = await ms.delete(record_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such supplier")
 
 
 @router.get("/suppliers", response_model=list[CounterpartyRecord])

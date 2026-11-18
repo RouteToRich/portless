@@ -294,7 +294,7 @@ class TestQuoteBecomesOffer:
         monkeypatch.setattr("services.sourcing.service.get_repository", lambda: InMemorySourcingRepository())
         monkeypatch.setattr(sourcing, "_emit_event", AsyncMock())
         monkeypatch.setattr(sourcing, "_verify_supplier", AsyncMock(return_value=VerificationResult(
-            supplier_id="s1", verified_at=NOW, raw={"gstn": {}, "dgft_iec": {}})))
+            supplier_id="s1", verified_at=NOW, gst_status="active", iec_status="active", raw={"gstn": {}, "dgft_iec": {}})))
         monkeypatch.setattr(sourcing, "_rescore", AsyncMock(return_value={"match_id": "M", "composite_score": 90,
                                                                          "decision": "SOURCE"}))
         moved = AsyncMock()

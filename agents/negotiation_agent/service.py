@@ -2138,6 +2138,8 @@ async def run_stale_watcher() -> None:
             if not await leader_lock.acquire("negotiation_stale_watcher", ttl_seconds=interval * 3):
                 continue
             await sweep_stale_negotiations()
+            from shared import heartbeat
+            await heartbeat.beat("negotiation_stale_watcher", interval)
         except asyncio.CancelledError:
             logger.info("StaleWatcher: stopped")
             return

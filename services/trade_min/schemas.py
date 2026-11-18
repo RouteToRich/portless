@@ -248,6 +248,29 @@ class SellerCandidate(BaseModel):
 CounterpartyRole = Literal["buyer", "supplier"]
 
 
+class ManualSupplierFacts(BaseModel):
+    """What staff entered about a supplier added by hand (manual_suppliers.py)."""
+    contact_person: str | None = None
+    whatsapp: str | None = None
+    udyam: str | None = None
+    fssai: str | None = None
+    apeda: str | None = None
+    grades: list[str] = Field(default_factory=list)
+    capacity_mt_per_month: float | None = None
+    moq_mt: float | None = None
+    usual_price: float | None = None
+    price_currency: str = "USD"
+    price_basis: str = "FOB"
+    port_of_loading: str | None = None
+    port_km: float | None = None
+    bank_name: str | None = None
+    bank_ifsc: str | None = None
+    bank_account_last4: str | None = None
+    """Only the last 4 digits: the full account number is entered on the payout rail."""
+    added_by: str | None = None
+    edited_by: str | None = None
+
+
 class CompanyNote(BaseModel):
     """A staff note on a company (a call, a meeting), optionally with a follow-up date."""
     note_id: str
@@ -319,6 +342,8 @@ class CounterpartyRecord(BaseModel):
     promises it) or staff set it. Survives every scan; outreach skips it in every prospect."""
     dnc_reason: str | None = None
     dnc_at: datetime | None = None
+    manual: dict[str, Any] | None = None
+    """Facts staff entered for a supplier added by hand (``ManualSupplierFacts``)."""
     merged_from: list[str] = Field(default_factory=list)
     """Directory ids folded into this record by a staff merge (dedupe.py)."""
     aliases: list[str] = Field(default_factory=list)

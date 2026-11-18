@@ -89,13 +89,15 @@ def _merge_raw(old: CounterpartyRecord | None, new: CounterpartyRecord) -> Count
     if old is None:
         return new
     data = old.model_dump()
+    manual = old.source == "manual"
     for field in ("name", "country", "email", "phone", "website", "address", "contact_url",
                   "fit_score", "fit_reason", "gstin", "iec", "estimated_fob_price_usd"):
         value = getattr(new, field)
-        if value not in (None, ""):
+        # A supplier staff added by hand keeps what staff entered; a scan only fills gaps.
+        if value not in (None, "") and not (manual and data.get(field) not in (None, "")):
             data[field] = value
     data.update(
-        source=new.source,
+        source=old.source if manual else new.source,
         sources=_union(old.sources, new.sources),
         hs_codes=_union(old.hs_codes, new.hs_codes),
         markets=_union(old.markets, new.markets),

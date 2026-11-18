@@ -93,5 +93,7 @@ async def drop(deal_id: str, reason: str, by: str) -> Any:
     except Exception as exc:  # noqa: BLE001 - the drop still happens; a stale gate stays visible
         logger.warning("Prospect %s: pending gates not withdrawn: %s", deal_id, exc)
     updated = await update_status(deal_id, UpdateStatusRequest(target_status=DealStatus.CANCELLED, reason=text))
+    from shared import audit_log
+    await audit_log.record("prospect.dropped", by, deal_id, {"reason": reason})
     logger.warning("Prospect %s dropped by %s — %s", deal_id, by, reason)
     return updated

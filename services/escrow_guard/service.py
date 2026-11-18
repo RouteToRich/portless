@@ -1769,6 +1769,8 @@ async def run_inspection_watcher() -> None:
             await check_inspection_windows()
             await poll_open_escrows()
             await check_reconciliation()
+            from shared import heartbeat
+            await heartbeat.beat("escrow_watcher", interval)
         except asyncio.CancelledError:
             logger.info("EscrowGuard: escrow watcher stopped")
             break
@@ -2256,6 +2258,10 @@ async def confirm_release_by_staff(escrow_id: str, tranche_id: str, *, provider_
     }})
     await repo.save_hold(noted)
     updated = await confirm_tranche_release(escrow_id, tranche_id, source="staff", provider_ref=provider_ref)
+    from shared import audit_log
+    await audit_log.record("escrow.release_relayed_by_staff", confirmed_by, hold.deal_id,
+                           {"escrow_id": escrow_id, "tranche_id": tranche_id, "provider_ref": provider_ref,
+                            "reason": reason})
     return EscrowResponse.from_record(updated)
 
 

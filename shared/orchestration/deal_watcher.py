@@ -489,6 +489,8 @@ async def run_deal_watcher() -> None:
             if not await leader_lock.acquire("deal_watcher", ttl_seconds=interval_seconds() * 3):
                 continue  # another instance runs the sweep
             await sweep_stalled_deals()
+            from shared import heartbeat
+            await heartbeat.beat("deal_watcher", interval_seconds())
         except asyncio.CancelledError:
             logger.info("DealWatcher: stopped")
             return

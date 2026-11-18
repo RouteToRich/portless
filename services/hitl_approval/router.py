@@ -215,7 +215,14 @@ async def api_resolve_approval(
     """
     approver_proven = await _apply_signed_in_approver(req, request)
     try:
-        return await resolve_approval(approval_id, req, approver_proven=approver_proven)
+        resolved = await resolve_approval(approval_id, req, approver_proven=approver_proven)
+        from shared import audit_log
+        await audit_log.record(f"approval.{str(getattr(req.decision, 'value', req.decision)).lower()}",
+                               req.resolved_by, approval_id,
+                               {"action": resolved.action, "deal_id": resolved.deal_id, "status": resolved.status,
+                                "financial_impact_usd": resolved.financial_impact_usd,
+                                "note": req.note})
+        return resolved
     except ApproverNotProvenError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc))
     except ApprovalNotFoundError as exc:
@@ -224,6 +231,25 @@ async def api_resolve_approval(
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
     except (SameApproverError, ComplianceBlockedError) as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Audit log (hash-chained, shared/audit_log.py)
+# ---------------------------------------------------------------------------
+
+@router.get("/audit", response_model=list[dict])
+async def api_audit_log(limit: int = 200, subject: str | None = None,
+                        user=Depends(require_portless)) -> list[dict]:
+    """Staff decisions that move money or override a control, newest first."""
+    from shared import audit_log
+    return await audit_log.entries(limit=min(max(limit, 1), 1000), subject=subject)
+
+
+@router.get("/audit/verify", response_model=dict)
+async def api_audit_verify(user=Depends(require_portless)) -> dict:
+    """Recompute the hash chain: ``ok`` or the first entry that was changed or removed."""
+    from shared import audit_log
+    return await audit_log.verify()
 
 
 # ---------------------------------------------------------------------------

@@ -129,7 +129,7 @@ class TestRfq:
             deal_id="P1", hs_code="090422", quantity_mt=20,
             suppliers=[SupplierRef(supplier_id="S1", email="sales@mill.in", source="other"),
                        SupplierRef(supplier_id="S2", email="ex@mill2.in", source="other")]))
-        later = NOW + timedelta(minutes=6)
+        later = datetime.now(UTC) + timedelta(minutes=6)  # measured now: a module-level NOW drifts in a long run
         send.side_effect = [SimpleNamespace(outcome="sent", message_id="<m1>"), OSError("still down")]
         counts = await sourcing.svc.retry_failed_email_sends("P1", now=later)
         assert counts == {"retried": 2, "delivered": 1, "gave_up": 0}

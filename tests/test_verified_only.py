@@ -55,3 +55,20 @@ async def test_rfq_verified_only(monkeypatch):
     assert {c["supplier_id"] for c in await continuations._rfq_candidates(deal)} == {"S1", "S2"}
     monkeypatch.setenv("RFQ_VERIFIED_ONLY", "true")
     assert [c["supplier_id"] for c in await continuations._rfq_candidates(deal)] == ["S1"]
+
+
+async def test_hand_added_suppliers_join_the_rfq(monkeypatch):
+    from services.deals.schemas import MatchResult, SupplierOffer
+    from shared.domain.models import Party
+    from tests.factories import make
+    monkeypatch.setattr(continuations, "_rank_for_rfq", AsyncMock(side_effect=lambda d, c: c))
+    deal = _deal(results=[make(MatchResult, supplier_id="S1", company_name="One", decision="SOURCE", composite_score=80)])
+    deal = deal.model_copy(update={
+        "parties": [Party(role="supplier", party_id="S9", legal_name="Party Mill", country="IN", email="p@mill.in")],
+        "supplier_offers": [
+            SupplierOffer(offer_id="O1", supplier_id="D1", company_name="Directory Mill", email="d@mill.in"),
+            SupplierOffer(offer_id="O2", supplier_id="Q1", company_name="Quoted Mill", email="q@mill.in", fob_price_usd_per_mt=700.0),
+            SupplierOffer(offer_id="O3", supplier_id="N1", company_name="No Mail"),
+        ]})
+    ids = [c["supplier_id"] for c in await continuations._rfq_candidates(deal)]
+    assert ids == ["S1", "S9", "D1"]  # the quoted one and the one without an address are not asked

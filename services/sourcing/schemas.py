@@ -86,6 +86,11 @@ class VerificationResult(BaseModel):
     """True if Udyam registration confirmed as active."""
     annual_shipment_count: int = 0
     """Placeholder — resolved by shipping manifest data in a future phase."""
+    gst_status: Literal["active", "inactive", "unchecked", "missing"] = "unchecked"
+    """What the GSTN registry actually said: ``unchecked`` when it did not answer (no
+    API_SETU_KEY, timeout, wrong path, UNKNOWN) — ``gst_verified`` then stays a
+    provisional pass for the Match Engine gatekeeper, never a verification."""
+    iec_status: Literal["active", "inactive", "unchecked", "missing"] = "unchecked"
     verified_at: datetime
     raw: dict[str, Any] = Field(default_factory=dict)
     """Raw responses from each connector, keyed by connector name."""

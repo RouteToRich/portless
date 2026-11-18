@@ -525,6 +525,9 @@ async def extend_pi(pi_id: str, req: ExtendPiRequest, by: str) -> PiResponse:
     })
     await repo.save_pi(updated)
     logger.info("DealMaker: PI %s extended to %s by %s", pi_id, expires_at.date(), by)
+    from shared import audit_log
+    await audit_log.record("pi.extended", by, pi.deal_id, {"pi_id": pi_id, "reason": getattr(req, "reason", None),
+                                                          "expires_at": str(getattr(updated, "expires_at", ""))})
     return PiResponse.from_record(updated)
 
 

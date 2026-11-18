@@ -206,6 +206,45 @@ def _net_margin_pct(session: Any, buyer_price: float, supplier_price: float) -> 
     return (buyer_price - supplier_price - costs) / buyer_price * 100.0 if buyer_price else -100.0
 
 
+def _fob_equivalent(price_usd: float, basis: str | None, port_km: float | None) -> float:
+    """An ex-works price plus the road to the port (same settings as the cost sheet), so a
+    standby's margin is judged on the same footing as an FOB quote."""
+    if (basis or "FOB").upper() not in ("EXW", "EX-WORKS", "EX WORKS", "FCA"):
+        return price_usd
+    from shared.orchestration.trade_costs import _f
+    km = port_km if port_km is not None else _f("TRADE_COST_INLAND_DEFAULT_KM", 600.0)
+    rate = _f("NEGOTIATION_FALLBACK_USD_INR_RATE", 96.0)
+    inland = (km * _f("TRADE_COST_INLAND_INR_PER_TONNE_KM", 3.5) + _f("TRADE_COST_INLAND_HANDLING_INR_PER_MT", 250.0)) / rate
+    return round(price_usd + inland, 2)
+
+
+async def _manual_standbys(deal: Any, known: set[str]) -> list[dict[str, Any]]:
+    """Suppliers staff added to the directory by hand for this product, with a usual price,
+    an e-mail and no failed check — standby candidates too (after the deal's own)."""
+    try:
+        from services.trade_min import directory  # type: ignore[import]
+        store = await directory.get_directory()
+        rows = await store.list("supplier", limit=100_000)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("SupplierCommitment: directory unavailable: %s", exc)
+        return []
+    hs = str(getattr(deal, "hs_code", "") or "")
+    out = []
+    for r in rows:
+        if r.source != "manual" or r.id in known or not r.email or r.do_not_contact:
+            continue
+        if r.validation is not None and r.validation.status == "failed":
+            continue
+        if not r.estimated_fob_price_usd or not any(hs.startswith(c[:6]) or c.startswith(hs[:6]) for c in r.hs_codes):
+            continue
+        manual = r.manual or {}
+        out.append({"supplier_id": r.id, "company_name": r.name, "email": r.email, "score": 0.0,
+                    "price": _fob_equivalent(float(r.estimated_fob_price_usd), manual.get("price_basis"),
+                                             manual.get("port_km")),
+                    "source": "directory_manual"})
+    return sorted(out, key=lambda r: r["price"])
+
+
 async def standby_suppliers(deal: Any) -> list[dict[str, Any]]:
     """Every other supplier with a price on this deal, best first: Match Engine
     SOURCE results by score, then received quotes. One row per supplier."""
@@ -223,6 +262,8 @@ async def standby_suppliers(deal: Any) -> list[dict[str, Any]]:
                                               "price": float(o.fob_price_usd_per_mt), "email": None, "score": 0.0})
         row["email"] = row["email"] or o.email
         row["company_name"] = row["company_name"] or o.company_name
+    for row in await _manual_standbys(deal, set(rows)):
+        rows.setdefault(row["supplier_id"], row)
     out = list(rows.values())
     for row in out:
         if not row["email"]:

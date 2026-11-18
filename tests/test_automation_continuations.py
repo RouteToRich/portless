@@ -182,9 +182,25 @@ class TestQuoteReceived:
         with patch("services.hitl_approval.service.create_approval", new=gate):
             await c.on_quote_received(DomainEvent(
                 topic=EventTopic.QUOTE_RECEIVED, deal_id="DEAL-1",
-                payload={"supplier_id": "SUP-1", "re_scored_decision": "SOURCE"},
+                payload={"supplier_id": "SUP-1", "re_scored_decision": "SOURCE",
+                         "gst_checked": True, "iec_checked": True},
             ))
         gate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unchecked_source_quote_goes_to_a_person(self):
+        gate = AsyncMock()
+        with (
+            patch("services.deals.service.get_deal", new=AsyncMock(return_value=_deal())),
+            patch("services.hitl_approval.service.create_approval", new=gate),
+        ):
+            await c.on_quote_received(DomainEvent(
+                topic=EventTopic.QUOTE_RECEIVED, deal_id="DEAL-1",
+                payload={"supplier_id": "SUP-1", "re_scored_decision": "SOURCE", "unit_price_usd": 700.0,
+                         "gst_verified": True, "iec_active": True, "gst_checked": False, "iec_checked": False},
+            ))
+        req = gate.await_args.args[0]
+        assert req.autonomy_level == "L0" and "registry_unchecked" in req.risk_flags
 
     @pytest.mark.asyncio
     async def test_discarded_quote_proposes_supplier(self):

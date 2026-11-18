@@ -414,6 +414,27 @@ def _find_pattern(text: str, pattern: str, group: int = 0) -> str | None:
 # Verification helpers
 # ---------------------------------------------------------------------------
 
+_INACTIVE = {"CANCELLED", "SUSPENDED", "SURRENDERED", "INACTIVE", "CANCELED", "DEACTIVATED", "BLOCKED"}
+
+
+def registry_status(result: dict | None) -> str:
+    """``active`` / ``inactive`` from a registry answer; ``unchecked`` for no answer, a stub
+    or an UNKNOWN status — never a pass and never a failure."""
+    if not result or result.get("stub"):
+        return "unchecked"
+    status = str(result.get("status") or "").upper()
+    if status == "ACTIVE":
+        return "active"
+    if status in _INACTIVE:
+        return "inactive"
+    return "unchecked"
+
+
+def registry_checked(v: VerificationResult | None) -> bool:
+    """Both GSTIN and IEC were answered by their registries (active or inactive)."""
+    return bool(v) and v.gst_status in ("active", "inactive") and v.iec_status in ("active", "inactive")
+
+
 async def _verify_supplier(
     supplier_id: str,
     gstin: str | None,
@@ -461,11 +482,12 @@ async def _verify_supplier(
     age_years = 0.0
     udyam_registered = False
 
-    if "gstn" in results:
-        gst_verified = results["gstn"].get("status", "").upper() == "ACTIVE"
-
-    if "dgft_iec" in results:
-        iec_active = results["dgft_iec"].get("status", "").upper() == "ACTIVE"
+    gst_status = registry_status(results.get("gstn")) if gstin else "missing"
+    iec_status = registry_status(results.get("dgft_iec")) if iec else "missing"
+    # A registry that did not answer keeps the provisional pass (gatekeeper) but is recorded
+    # as unchecked; only a real INACTIVE / CANCELLED answer fails.
+    gst_verified = gst_status != "inactive"
+    iec_active = iec_status != "inactive"
 
     if "dgft_denied" in results:
         dgft_denied = bool(results["dgft_denied"].get("on_denied_list", False))
@@ -484,6 +506,8 @@ async def _verify_supplier(
         business_age_years=age_years,
         udyam_registered=udyam_registered,
         annual_shipment_count=0,
+        gst_status=gst_status,
+        iec_status=iec_status,
         verified_at=now,
         raw=results,
     )
@@ -578,8 +602,8 @@ async def _record_offer(payload: QuoteIntakeRequest, quote: QuoteRecord,
 
         failed = bool(verification and (not verification.gst_verified or not verification.iec_active
                                         or getattr(verification, "dgft_denied", False)))
-        gst_checked = bool(verification and "gstn" in verification.raw)
-        iec_checked = bool(verification and "dgft_iec" in verification.raw)
+        gst_checked = bool(verification and verification.gst_status in ("active", "inactive"))
+        iec_checked = bool(verification and verification.iec_status in ("active", "inactive"))
         email = payload.supplier_email
         if not email:
             try:
@@ -838,7 +862,9 @@ async def receive_quote(payload: QuoteIntakeRequest) -> QuoteRecord:
         re_scored_match_id=re_scored_match_id,
         re_scored_cms=re_scored_cms,
         re_scored_decision=re_scored_decision,
-        status="VERIFIED" if verification else "RECEIVED",
+        # VERIFIED only when both registries answered and passed — never on a provisional pass.
+        status="VERIFIED" if (registry_checked(verification) and verification.gst_verified
+                              and verification.iec_active) else "RECEIVED",
         received_at=now,
         updated_at=now,
     )
@@ -854,7 +880,9 @@ async def receive_quote(payload: QuoteIntakeRequest) -> QuoteRecord:
 
     from shared.orchestration import matchmaking
     if (re_scored_decision == "SOURCE" and deal and deal.get("status") == "MATCHING"
-            and not matchmaking.enabled()):
+            and not matchmaking.enabled() and registry_checked(verification)):
+        # An unchecked registry never auto-sources: the CONFIRM_SUPPLIER_SELECTION gate
+        # (forced L0, flag registry_unchecked) decides instead.
         await _set_supplier_party(payload)
         await _transition_to_negotiating(payload.deal_id)
 
@@ -873,8 +901,10 @@ async def receive_quote(payload: QuoteIntakeRequest) -> QuoteRecord:
             "iec_active": verification.iec_active if verification else None,
             # Whether the registry checks actually ran (the booleans above
             # default to True when a check is skipped).
-            "gst_checked": bool(verification and "gstn" in verification.raw),
-            "iec_checked": bool(verification and "dgft_iec" in verification.raw),
+            "gst_checked": bool(verification and verification.gst_status in ("active", "inactive")),
+            "iec_checked": bool(verification and verification.iec_status in ("active", "inactive")),
+            "gst_status": verification.gst_status if verification else "unchecked",
+            "iec_status": verification.iec_status if verification else "unchecked",
             "company_name": payload.company_name,
         },
     )

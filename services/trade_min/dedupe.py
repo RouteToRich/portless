@@ -139,5 +139,7 @@ async def merge(role: str, keep_id: str, merge_ids: list[str], by: str) -> Count
     await store.replace(merged)
     for o in others:
         await store.delete(o.id)
+    from shared import audit_log
+    await audit_log.record("directory.merge", by, keep_id, {"merged": [o.id for o in others]})
     logger.warning("Directory merge by %s: %s ← %s", by, keep_id, [o.id for o in others])
     return merged

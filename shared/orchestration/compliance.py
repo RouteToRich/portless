@@ -689,6 +689,9 @@ async def clear_block(
     ))
     await save_record(rec)
     logger.warning("Compliance: deal %s hold %s cleared by %s: %s", deal_id, code, by, reason)
+    from shared import audit_log
+    await audit_log.record("compliance.hold_cleared", by, deal_id,
+                           {"code": code, "reason": reason, "evidence_ref": evidence_ref})
     return rec
 
 

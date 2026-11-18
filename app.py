@@ -406,6 +406,12 @@ def create_app() -> FastAPI:
         from shared.readiness import evaluate
         return evaluate()
 
+    @app.get("/health/watchers", tags=["meta"])
+    async def watchers() -> dict:
+        """Last beat of every background watcher; ``stale`` when none came for 3 × its interval."""
+        from shared import heartbeat
+        return await heartbeat.status()
+
     @app.get("/health/downstream", tags=["meta"])
     async def downstream() -> dict[str, str]:
         """In the monolith every module is in-process: report each router's

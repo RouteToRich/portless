@@ -893,6 +893,9 @@ async def post_supplier_offer(
     """Operator adds / replaces a supplier's offer (e.g. a quote received by phone)."""
     deal = await _org_deal(deal_id, user)
     offer = offer.model_copy(update={"source": offer.source or "operator"})
+    # The same check as a scanned supplier (reused when fresh), then the board is re-scored.
+    from shared.orchestration import offer_checks
+    offer = await offer_checks.check_offer(offer)
     updated = await service.upsert_supplier_offer(deal_id, offer)
     if offer.fob_price_usd_per_mt:
         from shared import pricebook
@@ -901,7 +904,12 @@ async def post_supplier_offer(
             price_usd_per_mt=offer.fob_price_usd_per_mt, grade=offer.grade, deal_id=deal_id,
             counterparty_id=offer.supplier_id, note="entered by operator",
         ))
-    return updated
+    try:
+        from shared.orchestration import matchmaking
+        await matchmaking.evaluate(deal_id)
+    except Exception as exc:  # noqa: BLE001 - the offer is saved; Re-score on the board retries
+        logger.warning("Deal %s: board not re-scored after the operator offer: %s", deal_id, exc)
+    return await service.get_deal(deal_id)
 
 
 @router.post("/{deal_id}/match/evaluate", response_model=dict)

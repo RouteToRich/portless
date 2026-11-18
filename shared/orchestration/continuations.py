@@ -549,7 +549,7 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
                 out = sellers
         except Exception as exc:  # noqa: BLE001
             logger.warning("Continuation[RFQ]: match seed lookup failed for %s: %s", deal.deal_id, exc)
-    out = [c for c in out if c.get("supplier_id")]
+    out = [c for c in out if c.get("supplier_id")] + _hand_added_suppliers(deal, out)
     if rfq_verified_only():
         skipped = [c["supplier_id"] for c in out if c.get("verification") != "verified"]
         if skipped:
@@ -557,6 +557,32 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
                         deal.deal_id, len(skipped))
         out = [c for c in out if c.get("verification") == "verified"]
     return (await _rank_for_rfq(deal, out))[:_RFQ_MAX_SUPPLIERS]
+
+
+def _hand_added_suppliers(deal, already: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Suppliers a person put on the deal — its supplier party and offers still waiting for a
+    price (added from the directory or by staff) — so a hand-made deal never parks without an
+    RFQ. Not those already on the shortlist; never one that already quoted."""
+    seen_ids = {c.get("supplier_id") for c in already}
+    seen_mail = {(c.get("email") or "").lower() for c in already if c.get("email")}
+    out: list[dict[str, Any]] = []
+
+    def add(supplier_id: str | None, name: str | None, email: str | None, verification: str | None) -> None:
+        if not supplier_id or not email or supplier_id in seen_ids or email.lower() in seen_mail:
+            return
+        seen_ids.add(supplier_id)
+        seen_mail.add(email.lower())
+        out.append({"supplier_id": supplier_id, "company_name": name or supplier_id, "source": "other",
+                    "contact_id": None, "fob_price_usd": None, "email": email, "verification": verification})
+
+    for p in getattr(deal, "parties", None) or []:
+        if str(getattr(getattr(p, "role", ""), "value", getattr(p, "role", ""))).lower() == "supplier":
+            add(getattr(p, "party_id", None) or getattr(p, "legal_name", None), p.legal_name, getattr(p, "email", None),
+                "verified" if getattr(p, "verification_status", None) == "scan_verified" else None)
+    for o in getattr(deal, "supplier_offers", None) or []:
+        if getattr(o, "fob_price_usd_per_mt", None) is None:
+            add(o.supplier_id, o.company_name, o.email, "failed" if o.verification_failed else None)
+    return out
 
 
 def rfq_verified_only() -> bool:
@@ -768,8 +794,9 @@ async def on_quote_received(event: DomainEvent) -> None:
         if await _get_deal_in_status(deal_id, "MATCHING", "QUOTE_RECEIVED→MATCH") is not None:
             await _best_effort("QUOTE_RECEIVED→MATCH", deal_id, matchmaking.evaluate(deal_id))
         return
-    if payload.get("re_scored_decision") == "SOURCE":
-        return  # receive_quote transitioned the deal itself
+    if (payload.get("re_scored_decision") == "SOURCE"
+            and payload.get("gst_checked") is True and payload.get("iec_checked") is True):
+        return  # receive_quote transitioned the deal itself (registries answered)
     deal = await _get_deal_in_status(deal_id, "MATCHING", "QUOTE_RECEIVED→SELECT")
     if deal is None:
         return
@@ -782,8 +809,13 @@ async def on_quote_received(event: DomainEvent) -> None:
             flags.append("gst_not_verified")
         if payload.get("iec_active") is False:
             flags.append("iec_inactive")
+        unchecked = not (payload.get("gst_checked") is True and payload.get("iec_checked") is True)
+        if unchecked:
+            flags.append("registry_unchecked")
         if payload.get("re_scored_decision") is None:
             flags.append("unscored_quote")
+        elif payload.get("re_scored_decision") == "SOURCE":
+            flags.append("source_pending_registry_check")
         else:
             flags.append("match_engine_discard")
         price = payload.get("unit_price_usd")
@@ -808,7 +840,8 @@ async def on_quote_received(event: DomainEvent) -> None:
         auto_source = verified and in_corridor and not hard and _auto_source_enabled()
         if auto_source:
             flags.append("auto_sourced_verified_in_corridor")
-        level = "L0" if hard else ("L2" if auto_source else None)
+        # An unanswered GSTN / DGFT registry is not a pass: a person confirms the supplier.
+        level = "L0" if (hard or unchecked) else ("L2" if auto_source else None)
         await _create_gate(
             deal_id, "CONFIRM_SUPPLIER_SELECTION",
             summary=(

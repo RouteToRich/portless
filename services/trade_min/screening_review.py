@@ -84,6 +84,9 @@ async def resolve(record_id: str, decision: Decision, reason: str, by: str) -> C
         "validation": updated_v.model_dump(mode="json"),
         "screening_reviews": [r.model_dump(mode="json") for r in reviews],
     })
+    from shared import audit_log
+    await audit_log.record(f"screening.{decision}", by, record_id,
+                           {"company": rec.name, "reason": review.reason, "previous": review.previous_sanctions})
     logger.warning("ScreeningReview: %s %s (%s) %s by %s — %s", rec.role, rec.name, record_id,
                    "CLEARED" if decision == "clear" else "FAILED", by, review.reason)
     return saved
