@@ -83,6 +83,7 @@ def _render_pi(*, pi_id: str, deal_id: str, deal: Any, buyer_name: str, buyer_ad
         "pi_id": pi_id, "deal_id": deal_id, "buyer_name": buyer_name, "buyer_address": buyer_address,
         "buyer_country": buyer.get("country") or "", "buyer_vat_number": buyer_vat_number or "",
         "hs_code": deal.hs_code, "product_description": product_description, "quantity_mt": quantity_mt,
+        "destination_documents": _destination_documents(deal),
         "agreed_price": agreed_price, "currency": currency, "total_value": total_value, "incoterm": incoterm,
         "port_of_destination": port_of_destination, "port_of_loading": getattr(deal, "port_of_loading", "") or "",
         "payment_terms": payment_terms, "validity_days": validity_days, "issued_at": issued_at,
@@ -857,12 +858,26 @@ _HS_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+def _destination_documents(deal: Any) -> list[str]:
+    """What the buyer's country asks for (country profile): listed on the PI so the buyer knows what
+    it gets (the CEPA / ECTA certificate of origin, attested invoice …)."""
+    try:
+        from shared import country_profiles
+        return country_profiles.documents(getattr(deal, "market", None))
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _hs_description(hs_code: str, deal: Any = None) -> str:
     """The product name, with the agreed specification when one was stated (variety, size,
     packing …) — the same words the buyer and the supplier agreed to."""
     from shared.documents.facts import product_name
     name = product_name(hs_code)
     if deal is not None:
+        from shared.orchestration import samples
+        ref = samples.approved_ref(deal)
+        if ref:
+            name = f"{name} ({ref})"
         try:
             from shared.product_spec import spec_text
             spec = spec_text(deal)

@@ -40,7 +40,47 @@ for _r, _ccs in {
     for _cc in _ccs.split():
         _REGION_OF[_cc] = _r
 
-INCOTERMS = ("EXW", "FOB", "FCA", "CFR", "CIF", "CPT", "CIP", "DAP", "DDP")
+INCOTERMS = ("EXW", "FCA", "FAS", "FOB", "CFR", "CIF", "CPT", "CIP", "DAP", "DPU", "DDP")
+"""The eleven Incoterms® 2020 rules."""
+D_TERMS = ("DAP", "DPU", "DDP")
+NO_LOADING = ("FAS", "FCA")
+"""The seller does not load the vessel (FAS: alongside; FCA: handed to the carrier)."""
+
+
+def term(incoterm: str | None) -> str:
+    """The exact Incoterms® 2020 rule (``C&F`` / ``CNF`` → CFR; unknown → CIF)."""
+    inc = (incoterm or "CIF").upper().strip()
+    if inc in ("CNF", "C&F"):
+        return "CFR"
+    return inc if inc in INCOTERMS else "CIF"
+
+
+def ddp_refused(incoterm: str | None) -> bool:
+    """DDP makes PortLess the importer of record abroad (duty, VAT, import licence) — never offered;
+    the negotiation holds it at L0 (``ddp_requested``) and proposes DAP or CIF."""
+    return term(incoterm) == "DDP"
+
+
+def loading_usd_per_mt() -> float:
+    """TRADE_COST_LOADING_USD_PER_MT (4): vessel loading the seller does not pay under FAS / FCA."""
+    return _f("TRADE_COST_LOADING_USD_PER_MT", 4.0)
+
+
+def destination_usd_per_mt(incoterm: str | None, quantity_mt: float | None = None,
+                           container_mt: float | None = None) -> dict[str, float]:
+    """Costs at destination PortLess carries under a D-term: destination terminal handling
+    (``TRADE_COST_DTHC_USD_PER_CONTAINER`` 250), on-carriage to the named place
+    (``TRADE_COST_DEST_HAULAGE_USD_PER_MT`` 12) and, for DPU only, unloading there
+    (``TRADE_COST_DEST_UNLOADING_USD_PER_MT`` 5). Zero for every other rule."""
+    inc = term(incoterm)
+    if inc not in D_TERMS:
+        return {}
+    per_box = container_mt if container_mt and container_mt > 0 else 25.0
+    out = {"dthc": _f("TRADE_COST_DTHC_USD_PER_CONTAINER", 250.0) / per_box,
+           "destination_haulage": _f("TRADE_COST_DEST_HAULAGE_USD_PER_MT", 12.0)}
+    if inc == "DPU":
+        out["unloading"] = _f("TRADE_COST_DEST_UNLOADING_USD_PER_MT", 5.0)
+    return {k: round(v, 2) for k, v in out.items()}
 
 
 def _f(name: str, default: float) -> float:
@@ -91,6 +131,12 @@ class LandedCost(BaseModel):
     escrow_fee_pct: float
     margin_floor_pct: float
     incoterm: str
+    destination_usd_per_mt: float = 0.0
+    """D-terms only: destination handling, on-carriage and (DPU) unloading."""
+    loading_saved_usd_per_mt: float = 0.0
+    """FAS / FCA: vessel loading the seller does not pay."""
+    term: str = ""
+    """The exact Incoterms® 2020 rule asked for (``incoterm`` is its pricing group)."""
     cost_usd_per_mt: float
     """What PortLess pays per MT before its own margin (insurance and fee on the minimum offer included)."""
     min_offer_usd_per_mt: float
@@ -101,9 +147,9 @@ def _norm_incoterm(incoterm: str | None) -> str:
     inc = (incoterm or "CIF").upper().strip()
     if inc in ("CNF", "C&F", "CFR"):
         return "CFR"
-    if inc in ("FOB", "FCA", "EXW"):
+    if inc in ("FOB", "FCA", "FAS", "EXW"):
         return "FOB"
-    return "CIF"  # CIF / CIP / CPT / DAP / DDP priced from CIF (duty is the buyer's concern here)
+    return "CIF"  # CIF / CIP / CPT / DAP / DPU / DDP priced from CIF (+ destination costs for D-terms)
 
 
 def landed(fob: float, market: str | None, quantity_mt: float | None = None, *,
@@ -117,14 +163,18 @@ def landed(fob: float, market: str | None, quantity_mt: float | None = None, *,
     ins = insurance_pct() if inc == "CIF" else 0.0
     fee = escrow_fee_pct()
     margin = default_margin_floor_pct() if margin_floor_pct is None else margin_floor_pct
-    base = fob + freight + inspection
+    exact = term(incoterm)
+    dest = sum(destination_usd_per_mt(exact, qty).values())
+    saved = loading_usd_per_mt() if exact in NO_LOADING else 0.0
+    base = fob + freight + inspection + dest - saved
     denom = 1.0 - (fee + ins + margin) / 100.0
     min_offer = base / denom if denom > 0 else float("inf")
     cost = base + min_offer * (fee + ins) / 100.0
     return LandedCost(
         fob_usd_per_mt=round(fob, 2), freight_usd_per_mt=round(freight, 2),
         inspection_usd_per_mt=round(inspection, 2), insurance_pct=ins, escrow_fee_pct=fee,
-        margin_floor_pct=margin, incoterm=inc, cost_usd_per_mt=round(cost, 2),
+        margin_floor_pct=margin, incoterm=inc, term=exact, destination_usd_per_mt=round(dest, 2),
+        loading_saved_usd_per_mt=round(saved, 2), cost_usd_per_mt=round(cost, 2),
         min_offer_usd_per_mt=round(min_offer, 2),
     )
 

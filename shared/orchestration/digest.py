@@ -187,6 +187,8 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
     try:
         from shared.orchestration import fee_check
         out["fees_over"] = await fee_check.over_all()
+        from shared.orchestration import incentive_credits
+        out["incentives_short"] = await incentive_credits.short_all()
     except Exception as exc:  # noqa: BLE001
         out["warnings"].append(f"fee check unavailable: {exc}")
 
@@ -208,6 +210,23 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
             pass
     except Exception:  # noqa: BLE001
         pass
+
+    # ── Regulatory: registrations lapsing, HS codes to re-confirm, new notices ──
+    try:
+        from shared import registrations
+        out["registrations_due"] = await registrations.expiring()
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"registrations unavailable: {exc}")
+    try:
+        from shared.orchestration import compliance
+        out["hs_policy_due"] = await compliance.hs_policy_due()
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"HS policy list unavailable: {exc}")
+    try:
+        from shared.orchestration import regulatory_watch
+        out["regulatory_hits"] = await regulatory_watch.recent_hits(now)
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"regulatory watch unavailable: {exc}")
     return out
 
 
@@ -340,10 +359,28 @@ def render_digest_text(d: dict[str, Any]) -> str:
             lines.append("  per actor: " + ", ".join(
                 f"{name.lower()} {int(v.get('runs') or 0)} run(s) {float(v.get('usd') or 0):.2f} USD"
                 for name, v in per_actor[:6]))
+    regs = d.get("registrations_due") or []
+    if regs:
+        lines.append("REGISTRATIONS: " + ", ".join(
+            f"{r['kind']} {'LAPSED' if r['status'] == 'expired' else 'lapses in ' + str(r.get('days_left')) + ' d'}"
+            f" ({r.get('expires_on')})" for r in regs[:6]))
+    hs_due = d.get("hs_policy_due") or []
+    if hs_due:
+        lines.append(f"HS CODES TO RE-CONFIRM ({len(hs_due)}): " + ", ".join(
+            f"{h['hs_code']} ({h['reason']})" for h in hs_due[:6]))
+    hits = d.get("regulatory_hits") or []
+    if hits:
+        lines.append(f"REGULATORY NOTICES ({len(hits)}): " + "; ".join(
+            f"{h.get('source')}: {h.get('title', '')[:80]} → {', '.join(h.get('hs_codes') or h.get('products') or [])}"
+            for h in hits[:5]))
     fo = d.get("fees_over") or []
     if fo:
         lines.append(f"FEES ABOVE THE PRICE ({len(fo)} deal(s)): " + ", ".join(
             f"{r['deal_id']} +{r['over_usd']:,.0f} USD ({'/'.join(r['kinds'])})" for r in fo[:6]))
+    inc = d.get("incentives_short") or []
+    if inc:
+        lines.append(f"RODTEP / DRAWBACK SHORT ({len(inc)} deal(s)): " + ", ".join(
+            f"{r['deal_id']} credited {r['credited_usd']:,.0f} of {r['counted_usd']:,.0f} USD" for r in inc[:6]))
     wa = d.get("watchers") or {}
     if wa.get("stale"):
         lines.append("! WATCHERS NOT RUNNING: " + ", ".join(wa["stale"])

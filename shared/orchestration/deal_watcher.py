@@ -439,6 +439,24 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     except Exception as exc:  # noqa: BLE001
         logger.error("DealWatcher: prospect clean-up failed: %s", exc)
 
+    # DGFT / CBIC notices read once a day and matched to the catalogue (regulatory_watch.py),
+    # and the country-risk feed applied (country_profiles.py).
+    try:
+        from shared.orchestration import regulatory_watch
+        res = await regulatory_watch.daily(now)
+        if res and res.get("hits"):
+            counts["regulatory_hits"] = len(res["hits"])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: regulatory watch failed: %s", exc)
+    try:
+        from shared import country_profiles
+        if os.getenv("COUNTRY_RISK_FEED_URL", "").strip() and now.hour == 2 and now.minute < 10:
+            res = await country_profiles.refresh_from_feed()
+            if res.get("changed"):
+                counts["country_risk_changed"] = len(res["changed"])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: country risk feed failed: %s", exc)
+
     # Buyers near their usual next order: a priced repeat offer behind its gate (reorder_agent.py).
     try:
         from shared.orchestration import reorder_agent

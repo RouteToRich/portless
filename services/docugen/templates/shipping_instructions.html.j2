@@ -23,7 +23,7 @@
   {{ m.kv([("Place of receipt", place_of_receipt), ("Port of loading", port_of_loading), ("Port of discharge", port_of_destination),
            ("Place of delivery", port_of_destination)]) }}
   {{ m.kv([("Vessel / voyage", (vessel ~ (" / " ~ voyage if voyage else "")) if vessel else "As booked"), ("Service", "FCL / FCL, CY / CY"),
-           ("Incoterms® 2020", incoterm ~ " " ~ (port_of_destination or ""))]) }}
+           ("Delivery terms", incoterm_named(incoterm, port_of_destination))]) }}
 </div>
 
 <h2>Cargo</h2>

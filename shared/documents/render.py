@@ -19,6 +19,20 @@ _CURRENCY_WORDS = {"USD": ("US Dollars", "Cents"), "EUR": ("Euros", "Cents"), "I
                    "GBP": ("Pounds Sterling", "Pence"), "AED": ("UAE Dirhams", "Fils")}
 
 
+
+def incoterm_named(incoterm: str | None, place: str | None, fallback: str = "named place to be confirmed") -> str:
+    """"CIF Jebel Ali, Incoterms® 2020" — the rule, the named place and the version, as every
+    contract should print it (an incoterm without version and place is ambiguous)."""
+    rule = (incoterm or "").upper().strip() or "FOB"
+    return f"{rule} {(place or '').strip() or fallback}, Incoterms® 2020"
+
+
+def icc_clause(incoterm: str | None) -> str | None:
+    """Cover the seller buys: Institute Cargo Clauses (C) — the minimum — under CIF, (A) — all risks,
+    as Incoterms® 2020 requires — under CIP; ``None`` when the seller does not insure."""
+    rule = (incoterm or "").upper().strip()
+    return {"CIF": "Institute Cargo Clauses (C)", "CIP": "Institute Cargo Clauses (A)"}.get(rule)
+
 def _below_thousand(n: int) -> str:
     words = []
     if n >= 100:
@@ -97,6 +111,7 @@ def environment(service_templates: Path | str | None = None) -> Environment:
     env = Environment(loader=ChoiceLoader(loaders), autoescape=select_autoescape(["html", "j2"]),
                       trim_blocks=True, lstrip_blocks=True)
     env.filters.update(money=money, qty=qty, date=fmt_date, pct=pct, words=amount_words)
+    env.globals.update(incoterm_named=incoterm_named, icc_clause=icc_clause)
     return env
 
 

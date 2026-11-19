@@ -105,6 +105,93 @@ async def put_hs_policy(hs_code: str, body: HsPolicyUpdate, user: AuthUser = Dep
     return (await compliance.set_hs_policy(entry)).model_dump(mode="json")
 
 
+def _officer(user: AuthUser, what: str) -> None:
+    from shared.auth.roles import RoleRequired, require_compliance_officer
+    try:
+        require_compliance_officer(user, what)
+    except RoleRequired as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+@router.get("/compliance/hs-policy-due")
+async def hs_policy_due(user: AuthUser = Depends(require_portless)) -> dict:
+    """HS codes to re-confirm: marked by the regulatory watch, or confirmed longer ago than
+    ``HS_POLICY_MAX_AGE_DAYS``."""
+    from shared.orchestration import compliance
+    return {"due": await compliance.hs_policy_due(),
+            "max_age_days": compliance.hs_policy_max_age_days()}
+
+
+@router.get("/compliance/countries")
+async def list_countries(user: AuthUser = Depends(require_portless)) -> dict:
+    """Every country profile (seed + stored) with its tier."""
+    from shared import country_profiles
+    return {"countries": [p.model_dump(mode="json") for p in country_profiles.all_profiles()]}
+
+
+@router.get("/compliance/countries/{iso2}")
+async def get_country(iso2: str, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared import country_profiles
+    p = country_profiles.get(iso2)
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"no country profile for {iso2.upper()}")
+    return p.model_dump(mode="json")
+
+
+class CountryUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    source: str | None = None
+    """Where the facts come from (FATF list, ECGC rating page …) — kept per field."""
+
+
+@router.put("/compliance/countries/{iso2}")
+async def put_country(iso2: str, body: CountryUpdate, user: AuthUser = Depends(require_portless)) -> dict:
+    """Fill in or change a country profile (compliance officer, audited). A tier change re-checks
+    open deals in that country."""
+    _officer(user, "Changing a country profile")
+    if len(iso2.strip()) != 2:
+        raise HTTPException(status_code=422, detail="iso2 must be a two-letter country code")
+    fields = {k: v for k, v in body.model_dump().items() if k != "source" and v is not None}
+    if not fields:
+        raise HTTPException(status_code=422, detail="nothing to change")
+    from shared import country_profiles
+    try:
+        return await country_profiles.put(iso2, fields, by=getattr(user, "email", None) or "staff", source=body.source)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/compliance/registrations")
+async def list_registrations(user: AuthUser = Depends(require_portless)) -> dict:
+    """PortLess's own registrations (IEC, LUT, RCMCs, FSSAI …) with expiry and what is due."""
+    from shared import registrations
+    held = await registrations.held()
+    return {"held": held, "expiring": await registrations.expiring(), "kinds": list(registrations.KINDS)}
+
+
+class RegistrationUpdate(BaseModel):
+    number: str = Field(min_length=1)
+    expires_on: str | None = None
+
+
+@router.put("/compliance/registrations/{kind}")
+async def put_registration(kind: str, body: RegistrationUpdate, user: AuthUser = Depends(require_portless)) -> dict:
+    """Record a registration with its number and expiry (compliance officer, audited)."""
+    _officer(user, "Recording a registration")
+    from shared import registrations
+    try:
+        return await registrations.record(kind, body.number, body.expires_on, by=getattr(user, "email", None) or "staff")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/incentive-credits/short")
+async def incentive_credits_short(user: AuthUser = Depends(require_portless)) -> dict:
+    """Deals whose RoDTEP / drawback credited is below what was counted as income."""
+    from shared.orchestration import incentive_credits
+    return {"short": await incentive_credits.short_all()}
+
+
 async def _org_deal(deal_id: str, user: AuthUser) -> DealRecord:
     """Fetch a deal and enforce that the caller's organization is a party to
     it — owner org, buyer org, or seller org (else 404). Portless platform
@@ -1373,3 +1460,139 @@ async def get_match_scores(
         key=lambda mr: mr.composite_score,
         reverse=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Samples before the first order, and the buyer's import permits (staff).
+# ---------------------------------------------------------------------------
+
+class SampleRequest(BaseModel):
+    note: str | None = None
+    buyer: str | None = None
+    """Candidate id when several buyers are courted."""
+
+
+class SampleCourier(BaseModel):
+    courier: str
+    awb: str = Field(min_length=1)
+    cost_usd: float | None = None
+
+
+class SampleVerdict(BaseModel):
+    verdict: str
+    """approved · rejected"""
+    note: str | None = None
+
+
+def _staff_name(user: AuthUser) -> str:
+    return getattr(user, "email", None) or getattr(user, "user_id", None) or "staff"
+
+
+@router.get("/{deal_id}/samples")
+async def list_samples(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    deal = await _org_deal(deal_id, user)
+    return {"samples": deal.samples, "approved_sample_ref": deal.approved_sample_ref}
+
+
+@router.post("/{deal_id}/samples")
+async def request_sample(deal_id: str, body: SampleRequest, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import samples
+    try:
+        row = await samples.request(deal_id, by=_staff_name(user), note=body.note, buyer=body.buyer)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "sample.requested", deal_id, sample_id=row["sample_id"])
+    return row
+
+
+@router.post("/{deal_id}/samples/{sample_id}/courier")
+async def sample_courier(deal_id: str, sample_id: str, body: SampleCourier,
+                         user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import samples
+    try:
+        row = await samples.record_courier(deal_id, sample_id, courier=body.courier, awb=body.awb,
+                                           cost_usd=body.cost_usd, by=_staff_name(user))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "sample.shipped", deal_id, sample_id=sample_id, awb=row["awb"])
+    return row
+
+
+@router.post("/{deal_id}/samples/{sample_id}/verdict")
+async def sample_verdict(deal_id: str, sample_id: str, body: SampleVerdict,
+                         user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import samples
+    try:
+        row = await samples.record_verdict(deal_id, sample_id, verdict=body.verdict, note=body.note,
+                                           by=_staff_name(user))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "sample.verdict", deal_id, sample_id=sample_id, verdict=row["status"])
+    return row
+
+
+class BuyerPermit(BaseModel):
+    name: str = Field(min_length=2)
+    """As the catalogue names it after ``buyer:`` (e.g. "SFDA importer registration")."""
+    number: str = Field(min_length=1)
+    valid_until: str | None = None
+
+
+@router.put("/{deal_id}/buyer-permits")
+async def put_buyer_permit(deal_id: str, body: BuyerPermit, user: AuthUser = Depends(require_portless)) -> dict:
+    """Record an import permit the buyer holds (number + validity) — the PI waits for the ones its
+    product × market needs."""
+    deal = await _org_deal(deal_id, user)
+    if body.valid_until:
+        try:
+            datetime.fromisoformat(body.valid_until)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="valid_until must be an ISO date") from exc
+    permits = dict(deal.buyer_permits or {})
+    permits[body.name.strip()] = {"number": body.number.strip(), "valid_until": body.valid_until,
+                                  "recorded_by": _staff_name(user)}
+    from services.deals.repository import get_repository
+    await get_repository().set_fields(deal_id, {"buyer_permits": permits})
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "buyer_permit.recorded", deal_id, permit=body.name.strip())
+    from shared.orchestration import compliance
+    missing = [f.data.get("missing") for f in compliance.check_buyer_permits(deal.model_copy(update={"buyer_permits": permits}))]
+    return {"buyer_permits": permits, "still_missing": (missing[0] if missing else [])}
+
+
+class IncentiveCredit(BaseModel):
+    shipping_bill: str = Field(min_length=1)
+    kind: str
+    """rodtep · drawback"""
+    amount_usd: float
+    credited_on: str | None = None
+
+
+@router.post("/{deal_id}/incentive-credits")
+async def record_incentive_credit(deal_id: str, body: IncentiveCredit, user: AuthUser = Depends(require_portless)) -> dict:
+    """Record a RoDTEP scrip / drawback credit from the ICEGATE ledger (staff, audited) and compare."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import incentive_credits
+    try:
+        row = await incentive_credits.record(deal_id, shipping_bill=body.shipping_bill, kind=body.kind,
+                                             amount_usd=body.amount_usd, credited_on=body.credited_on,
+                                             by=_staff_name(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "incentive.credited", deal_id, shipping_bill=row["shipping_bill"], amount_usd=row["amount_usd"])
+    return await incentive_credits.check(deal_id)
+
+
+@router.get("/{deal_id}/incentive-credits")
+async def incentive_credit_check(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    await _org_deal(deal_id, user)
+    from shared.orchestration import incentive_credits
+    return await incentive_credits.check(deal_id)

@@ -6,7 +6,7 @@
 {% block facts %}
   {{ m.fact("Invoice date", doc_date | date) }}
   {{ m.fact("Proforma Invoice", pi_id, mono=True) }}
-  {{ m.fact("Incoterms® 2020", incoterm ~ " " ~ (port_of_destination or "")) }}
+  {{ m.fact("Delivery terms", incoterm_named(incoterm, port_of_destination)) }}
   {{ m.fact("Country of origin", "India") }}
 {% endblock %}
 {% block content %}

@@ -173,6 +173,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("FX reference rates not loaded (USD / INR fallback applies): %s", exc)
 
+    # ── Country profiles + PortLess registrations into their sync caches ──
+    try:
+        from shared import country_profiles as _country_profiles, registrations as _registrations
+        await _country_profiles.load()
+        await _registrations.held()
+    except Exception as exc:
+        logger.error("Country profiles / registrations not loaded (seed and settings apply): %s", exc)
+
     # ── Autonomy policy: per-action L0–L3 overrides (Mongo-persisted) ─────
     try:
         from shared.orchestration.autonomy_policy import load_policy

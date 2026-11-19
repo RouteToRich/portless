@@ -32,6 +32,7 @@
   <li>Institute Cargo Clauses {{ cover_clauses }}, warehouse to warehouse</li>
   <li>Institute War and Strikes Clauses (Cargo)</li>
   <li>Sum insured {{ sum_insured | money(currency) }} — 110% of the {{ incoterm }} invoice value</li>
+  {% if icc_clause(incoterm) %}<li>Cover: {{ icc_clause(incoterm) }} (Incoterms® 2020 {{ incoterm }} minimum)</li>{% endif %}
   <li>Claims payable at destination in {{ currency }}</li>
 </ul>
 

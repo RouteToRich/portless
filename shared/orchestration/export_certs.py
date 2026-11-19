@@ -31,7 +31,37 @@ KINDS = {
     "certificate_of_origin": "Certificate of origin (authorised body)",
     "fumigation": "Fumigation certificate",
     "health": "Health / quality certificate",
+    "preferential_coo": "Preferential certificate of origin under the trade agreement",
+    "attestation": "Invoice / certificate of origin attested (chamber or embassy)",
+    "consular_invoice": "Consular invoice",
 }
+
+
+def country_kinds(market: str | None) -> list[str]:
+    """What the destination asks of the exporter (country profile, todo 24): the trade agreement's
+    certificate of origin form, attestation / legalisation, a consular invoice. Documents the
+    importer files itself (e.g. FDA prior notice) are listed for the buyer, never required here."""
+    if not market:
+        return []
+    try:
+        from shared import country_profiles
+        p = country_profiles.get(market)
+    except Exception:  # noqa: BLE001
+        p = None
+    if p is None:
+        return []
+    out: list[str] = []
+    if p.coo_form:
+        out.append("preferential_coo")
+    for doc in p.documents:
+        d = doc.lower()
+        if "importer" in d:
+            continue
+        if ("attest" in d or "legalis" in d or "legaliz" in d) and "attestation" not in out:
+            out.append("attestation")
+        if "consular invoice" in d and "consular_invoice" not in out:
+            out.append("consular_invoice")
+    return out
 _BASMATI = ("10063020", "10063021", "10063029")
 _memory: list[dict[str, Any]] = []
 
@@ -40,9 +70,10 @@ def enabled() -> bool:
     return os.getenv("EXPORT_CERTS_REQUIRED", "true").strip().lower() in ("1", "true", "yes", "on")
 
 
-def required(hs_code: str | None) -> list[str]:
+def required(hs_code: str | None, market: str | None = None) -> list[str]:
     hs = "".join(ch for ch in (hs_code or "") if ch.isdigit())
     out = ["certificate_of_origin"]
+    out += [k for k in country_kinds(market) if k not in out]
     if hs[:2] and 6 <= int(hs[:2]) <= 14:
         out.append("phytosanitary")
     if hs.startswith(_BASMATI) or hs[:8] in _BASMATI:
@@ -98,7 +129,7 @@ async def recorded(deal_id: str) -> list[dict[str, Any]]:
 
 
 async def status(deal: Any) -> dict[str, Any]:
-    need = required(getattr(deal, "hs_code", None))
+    need = required(getattr(deal, "hs_code", None), getattr(deal, "market", None))
     have = {r["kind"]: r for r in await recorded(deal.deal_id)}
     return {"deal_id": deal.deal_id, "required": [{"kind": k, "label": KINDS[k], "certificate": have.get(k)} for k in need],
             "missing": [k for k in need if k not in have], "enforced": enabled()}

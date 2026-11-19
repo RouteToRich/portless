@@ -34,12 +34,19 @@ def _iso2(country: Any) -> str:
     return _NAMES.get(c, c[:2] if len(c) == 2 else c)
 
 
+def _profile_currency(iso: str) -> str | None:
+    """The country profile's currency (todo 24) for a country the built-in table does not know."""
+    from shared import country_profiles
+    p = country_profiles.get(iso)
+    return p.currency if p is not None and p.currency and p.convertible else None
+
+
 def party_currency(country: Any) -> str:
     """The currency to write to a party of this country in: its own where a rate exists, else USD."""
     iso = _iso2(country)
     if iso in _LOCAL:
         return _LOCAL[iso]
-    cur = _COUNTRY_CURRENCY.get(iso)
+    cur = _COUNTRY_CURRENCY.get(iso) or _profile_currency(iso)
     if cur:
         try:
             from shared import fx_rates

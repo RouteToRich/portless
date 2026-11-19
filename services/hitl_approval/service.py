@@ -138,14 +138,16 @@ def is_money_action(action: str) -> bool:
     return action in ("RELEASE_ESCROW_TRANCHE", "RELEASE_SUPPLIER_PAYOUT", "CONFIRM_BUYER_ACCEPTANCE", "REFUND_ESCROW")
 
 
-def may_approve(action: str, approver: str | None) -> bool:
+def may_approve(action: str, approver: str | None, risk_flags: list[str] | None = None) -> bool:
     """Money gates need a money approver, compliance gates a compliance officer (when their
-    lists are set — shared/auth/roles.py); every other gate any staff member."""
+    lists are set — shared/auth/roles.py); every other gate any staff member. A gate flagged
+    ``money_approver_required`` (a review-tier market before the PI) needs a money approver too."""
     from shared.auth import roles
     if action in roles.COMPLIANCE_ACTIONS and not roles.is_compliance_officer(approver):
         return False
     allowed = money_approvers()
-    if not allowed or not is_money_action(action):
+    needs_money = is_money_action(action) or "money_approver_required" in (risk_flags or [])
+    if not allowed or not needs_money:
         return True
     return bool(approver) and approver.strip().lower() in allowed
 
@@ -420,7 +422,7 @@ async def resolve_approval(
 
     # Refused before any signature is taken, so the gate stays open for a retry.
     from shared.orchestration import compliance, kill_switch
-    if req.decision == "APPROVE" and not may_approve(record.action, req.resolved_by):
+    if req.decision == "APPROVE" and not may_approve(record.action, req.resolved_by, record.risk_flags):
         raise NotMoneyApprover(approval_id, record.action, req.resolved_by)
     if req.decision == "APPROVE":
         await kill_switch.assert_running(f"Approving {record.action}")

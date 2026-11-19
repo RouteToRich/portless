@@ -1603,6 +1603,13 @@ async def _scan_one(
                       else policy.get("message")) or "export policy forbids it"
             scan_reports.record(hs_code, market, "dropped", f"export policy: {reason}")
             return None
+        # Spend only on safe markets (todo 24): a blocked or review market by its country profile
+        # gets no paid run — the scan reports why.
+        from shared import country_profiles
+        tier = country_profiles.tier(market)
+        if tier in ("blocked", "review") and os.getenv("SCAN_REVIEW_MARKETS", "false").strip().lower() not in ("1", "true", "yes", "on"):
+            scan_reports.record(hs_code, market, "dropped", f"{tier} market (country profile) — no paid search")
+            return None
         phase1 = await _phase1_historical_demand(hs_code, market, config)
         phase2 = await _phase2_live_signals(hs_code, market, phase1, config)
         if not phase1.source or not phase1.price_gap_measured:

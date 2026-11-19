@@ -6,7 +6,7 @@
 {% block facts %}
   {{ m.fact("Order date", issued_at | date) }}
   {{ m.fact("Ready for loading by", delivery_deadline | date) }}
-  {{ m.fact("Terms", incoterm ~ " " ~ (port_of_loading or "")) }}
+  {{ m.fact("Terms", incoterm_named(incoterm, port_of_loading, "Indian seaport")) }}
   {{ m.fact("Deal reference", deal_id, mono=True) }}
 {% endblock %}
 {% block content %}
@@ -42,7 +42,7 @@
   <li><strong>Acknowledgement.</strong> Please acknowledge this order in writing. The inspection is booked once it is acknowledged.</li>
   <li><strong>Inspection and loading.</strong> An independent inspector checks quality, quantity and packing, supervises the stuffing and seals the container. The goods may not leave your premises before the inspection has passed.</li>
   <li><strong>Packing and marks.</strong> Export-worthy new packing, marked as instructed by the purchaser. No supplier name, price or invoice is to be placed in or on the packages.</li>
-  <li><strong>Delivery.</strong> {{ incoterm }} {{ port_of_loading or "Indian seaport" }}, goods ready for loading by {{ delivery_deadline | date }}. Delay must be notified as soon as it is known.</li>
+  <li><strong>Delivery.</strong> {{ incoterm_named(incoterm, port_of_loading, "Indian seaport") }}, goods ready for loading by {{ delivery_deadline | date }}. Delay must be notified as soon as it is known.</li>
   <li><strong>Documents from the supplier.</strong> GST tax invoice to the purchaser (export supply), quality certificate / certificate of analysis, and any phytosanitary or fumigation certificate the goods require.</li>
   <li><strong>Confidentiality.</strong> The purchaser's customer and sale price are confidential. Direct contact with the purchaser's customer about this or future orders is not permitted.</li>
   <li><strong>Rejection.</strong> Goods failing the inspection are rejected; the supplier replaces them or the order is cancelled and released funds are returned.</li>

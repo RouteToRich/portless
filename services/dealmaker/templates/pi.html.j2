@@ -6,7 +6,7 @@
 {% block facts %}
   {{ m.fact("Issue date", issued_at | date) }}
   {{ m.fact("Valid until", expires_at | date) }}
-  {{ m.fact("Incoterms® 2020", incoterm ~ " " ~ (port_of_destination or "")) }}
+  {{ m.fact("Delivery terms", incoterm_named(incoterm, port_of_destination, "port to be confirmed by the buyer")) }}
   {{ m.fact("Deal reference", deal_id, mono=True) }}
 {% endblock %}
 {% block content %}
@@ -45,8 +45,8 @@
            ("Country of origin", "India"),
            ("Partial shipment", "Not allowed"), ("Transhipment", "Allowed")]) }}
   {{ m.kv([("Inspection", (qc_provider | upper if qc_provider else "Independent inspection agency") ~ " — quality, quantity, packing, supervised loading and container sealing"),
-           ("Insurance", "Marine cargo insurance for 110% of the invoice value" if incoterm in ("CIF", "CIP") else "Buyer's responsibility"),
-           ("Documents", "Commercial invoice, packing list, bill of lading, certificate of origin, inspection certificate" ~ (", insurance certificate" if incoterm in ("CIF", "CIP") else ""))]) }}
+           ("Insurance", ("Marine cargo insurance for 110% of the invoice value, " ~ icc_clause(incoterm)) if icc_clause(incoterm) else "Buyer's responsibility"),
+           ("Documents", "Commercial invoice, packing list, bill of lading, certificate of origin, inspection certificate" ~ (", insurance certificate" if incoterm in ("CIF", "CIP") else "") ~ (("; for " ~ (buyer_country or "your country") ~ ": " ~ (destination_documents | join("; "))) if destination_documents else ""))]) }}
 </div>
 
 <div class="notice warn">

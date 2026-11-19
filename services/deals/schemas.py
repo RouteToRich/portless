@@ -280,6 +280,13 @@ class DealRecord(BaseModel):
     """The park ends by itself at this time; None = until unparked by hand."""
     parked_reason: str | None = None
     parked_by: str | None = None
+    samples: list[dict[str, Any]] = Field(default_factory=list)
+    """Samples before the first order (shared/orchestration/samples.py): request → courier → verdict."""
+    approved_sample_ref: str | None = None
+    """The approved sample — the quality reference in the PI / PO and the QC booking."""
+    buyer_permits: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """Import permits the buyer holds (name → number, valid until, who recorded it); the PI waits for
+    the ones the catalogue marks ``buyer:`` (compliance ``buyer_import_permit_missing``)."""
     radar_estimate: dict[str, Any] | None = None
     """The Opportunity Radar's numbers when the prospect was started (trade_min
     profit block: buyer / supplier price and basis, lot, margin, chance of

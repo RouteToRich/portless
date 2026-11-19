@@ -311,7 +311,7 @@ async def test_proposed_market_from_worldwide_buyers_and_accept():
                                 website=f"https://sa{i}.sa", last_outcome=directory.WORLDWIDE_OUTCOME))
     await store.upsert(_rec(id="buyer:sa9", name="Exporter", country="SA", email="x@sa9.sa", flags=["role_suspect"]))
     rows = await markets.proposed_markets()
-    assert rows == [{"product_id": "onion", "hs_code": "070310", "product": "Onion", "market": "SA", "buyers": 3,
+    assert rows == [{"product_id": "onion", "hs_code": "070310", "product": "Onion", "market": "SA", "tier": "preferred", "buyers": 3,
                      "verified": 0, "worldwide": 3, "examples": ["Riyadh Foods 0", "Riyadh Foods 1", "Riyadh Foods 2"]}]
     out = await markets.accept_market("onion", "sa", by="ops@x")
     assert out["markets"] == ["AE", "SA"] and await markets.proposed_markets() == []

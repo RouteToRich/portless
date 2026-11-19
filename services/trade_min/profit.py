@@ -327,6 +327,12 @@ async def compute(opp: EnrichedOpportunity, config: TradeMinConfig = DEFAULT_CON
     best = opp.best_match_score
     p = config.p_close_floor + config.p_close_span * ((best if best is not None else 25.0) / 100.0)
     basis = [f"best pair score {best:.0f}" if best is not None else "no pair score yet (assumed 25)"]
+    from shared import country_profiles
+    tier = country_profiles.tier(opp.market)
+    tier_factor = {"preferred": 1.1, "standard": 1.0, "review": 0.7, "blocked": 0.0}[tier]
+    if tier_factor != 1.0:
+        p *= tier_factor
+        basis.append(f"{tier} market (×{tier_factor:g})")
     top = opp.buyer_signals[:5]
     if top:
         verified = sum(1 for b in top if b.validation is not None and b.validation.status == "verified")

@@ -73,8 +73,14 @@ def plan_rows(corridors: list[tuple[str, str]], opportunities: list[Any], last_r
                      "expected_profit_usd": profit, "cost_usd": round(cost, 2),
                      "profit_per_usd": round(profit / cost, 1) if profit else None,
                      "opportunity_id": getattr(opp, "opportunity_id", None)})
+    from shared import country_profiles
+    tier_rank = {"preferred": 0, "standard": 1, "review": 2, "blocked": 3}
+    for r in rows:
+        r["tier"] = country_profiles.tier(r["market"])
+        if r["tier"] == "blocked" and r["action"] != "skip":
+            r["action"], r["reason"] = "skip", "blocked market (country profile)"
     order = {"rescan": 0, "scan": 1, "skip": 2}
-    rows.sort(key=lambda r: (order[r["action"]], -(r["profit_per_usd"] or 0)))
+    rows.sort(key=lambda r: (order[r["action"]], tier_rank[r["tier"]], -(r["profit_per_usd"] or 0)))
     spent = 0.0
     for r in rows:
         if r["action"] == "skip":

@@ -50,7 +50,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -245,6 +245,9 @@ class HsPolicyEntry(BaseModel):
     licence_ref: str | None = None
     confirmed_by: str | None = None
     confirmed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    needs_reconfirm: bool = False
+    """Set by the regulatory watch when a DGFT / CBIC notice names this code."""
+    change_note: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +392,55 @@ def _name_core(name: Any) -> set[str]:
 # Individual checks
 # ---------------------------------------------------------------------------
 
+def hs_policy_max_age_days() -> int:
+    """HS_POLICY_MAX_AGE_DAYS (30): a confirmation older than this counts as unverified — DGFT bans
+    or restricts goods at short notice (onion, non-basmati rice, wheat, sugar)."""
+    try:
+        return max(1, int(os.getenv("HS_POLICY_MAX_AGE_DAYS", "30")))
+    except ValueError:
+        return 30
+
+
+def _stale(entry: HsPolicyEntry, now: datetime | None = None) -> bool:
+    at = entry.confirmed_at if entry.confirmed_at.tzinfo else entry.confirmed_at.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - at > timedelta(days=hs_policy_max_age_days())
+
+
+async def hs_policy_due() -> list[dict[str, Any]]:
+    """Confirmed codes due for re-confirmation (stale or named by a new notice): digest and radar."""
+    rows: list[HsPolicyEntry] = list(_mem_policy.values())
+    col = _collection(_HS_POLICY)
+    if col is not None:
+        try:
+            rows = [HsPolicyEntry(**d) async for d in col.find({}, {"_id": 0})]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Compliance: HS policy list unreadable: %s", exc)
+    return [{"hs_code": e.hs_code, "status": e.status, "confirmed_at": e.confirmed_at.isoformat(),
+             "reason": "named by a new notice" if e.needs_reconfirm else "older than the re-confirmation period"}
+            for e in rows if e.needs_reconfirm or _stale(e)]
+
+
+async def mark_reconfirm(hs_code: str, note: str) -> bool:
+    """The regulatory watch saw a notice naming this code: its confirmation must be renewed."""
+    hs = _hs(hs_code)
+    entry = None
+    for code in dict.fromkeys((hs, hs[:6], hs[:4])):  # an 8-digit notice re-opens the 6-digit confirmation
+        entry = await get_hs_policy(code) if len(code) >= 4 else None
+        if entry is not None:
+            break
+    if entry is None:
+        return False
+    entry = entry.model_copy(update={"needs_reconfirm": True, "change_note": note[:300]})
+    _mem_policy[entry.hs_code] = entry
+    col = _collection(_HS_POLICY)
+    if col is not None:
+        try:
+            await col.replace_one({"hs_code": entry.hs_code}, entry.model_dump(mode="python"), upsert=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Compliance: re-confirm flag not stored for %s: %s", hs_code, exc)
+    return True
+
+
 async def hs_policy_status(hs_code: str) -> tuple[str, str]:
     """(status, note) — operator confirmation first, then the seed, else ``unverified``."""
     hs = _hs(hs_code)
@@ -401,6 +453,12 @@ async def hs_policy_status(hs_code: str) -> tuple[str, str]:
                 if confirmed:
                     break
     if confirmed is not None:
+        if confirmed.needs_reconfirm:
+            return "unverified", (f"a new DGFT / CBIC notice names this code — re-confirm the export policy"
+                                  + (f" ({confirmed.change_note})" if confirmed.change_note else ""))
+        if _stale(confirmed):
+            return "unverified", (f"confirmed {confirmed.status} on {confirmed.confirmed_at:%Y-%m-%d}, more than "
+                                  f"{hs_policy_max_age_days()} days ago — re-confirm against the current DGFT schedule")
         return confirmed.status, (confirmed.note or f"confirmed by {confirmed.confirmed_by or 'operator'}")
     for n in range(len(hs), 1, -1):
         hit = HS_POLICY_SEED.get(hs[:n])
@@ -443,7 +501,60 @@ def check_destination(country: Any) -> Finding | None:
         return Finding(code="destination_high_risk", severity="review",
                        message=f"destination {cc} is sanctioned / high-risk — check end use and payment route",
                        data={"country": cc})
+    from shared import country_profiles
+    tier = country_profiles.tier(cc)
+    if tier == "blocked":
+        return Finding(code="destination_blocked_tier", severity="block",
+                       message=f"destination {cc} is a blocked market in its country profile", data={"country": cc})
+    if tier == "review":
+        return Finding(code="destination_review_tier", severity="review",
+                       message=f"destination {cc} is a review market — a compliance officer and a money approver "
+                               "decide", data={"country": cc, "money_approver_required": True})
     return None
+
+
+def registrations_required() -> bool:
+    """REGISTRATIONS_REQUIRED (default on; pinned off in tests / catalogue): the product's own
+    registrations and a current IEC / LUT before the PI."""
+    return os.getenv("REGISTRATIONS_REQUIRED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+async def check_registrations(deal) -> list[Finding]:
+    """PortLess's registrations this product needs (commodity board, FSSAI) and the IEC / LUT:
+    missing or lapsed → block; lapsing within the warning window → info."""
+    if not registrations_required():
+        return []
+    from shared import registrations
+    out = []
+    for r in await registrations.check_for(deal.hs_code):
+        if r["status"] == "missing":
+            out.append(Finding(code=f"registration_missing_{r['kind']}", severity="block",
+                               message=f"{r['label']} is not recorded — record it before the PI", data=r))
+        elif r["status"] == "expired":
+            out.append(Finding(code=f"registration_expired_{r['kind']}", severity="block",
+                               message=f"{r['label']} {r.get('number')} lapsed on {r.get('expires_on')}", data=r))
+        elif r["status"] == "expiring":
+            out.append(Finding(code=f"registration_expiring_{r['kind']}", severity="info",
+                               message=f"{r['label']} lapses in {r.get('days_left')} day(s)", data=r))
+    return out
+
+
+def check_buyer_permits(deal) -> list[Finding]:
+    """Import permits the buyer itself must hold (catalogue ``import_requirements`` entries that
+    start with ``buyer:``): the PI waits until the permit number is recorded on the deal."""
+    try:
+        from shared import catalogue
+        needs = [r.split(":", 1)[1].strip() for r in catalogue.import_requirements_for(deal.hs_code, getattr(deal, "market", "") or "")
+                 if r.lower().startswith("buyer:")]
+    except Exception:  # noqa: BLE001
+        needs = []
+    have = {k.lower() for k in (getattr(deal, "buyer_permits", None) or {})}
+    missing = [n for n in needs if n.lower() not in have]
+    if not missing:
+        return []
+    return [Finding(code="buyer_import_permit_missing", severity="review",
+                    message="the buyer must hold: " + "; ".join(missing) + " — record its number and validity before the PI",
+                    data={"missing": missing})]
 
 
 def check_party_countries(deal) -> list[Finding]:
@@ -631,6 +742,8 @@ async def check_trade(
             findings.append(rel)
         findings += await check_supplier_record(deal)
         findings += await check_prices(deal, buyer_price=buyer_price, supplier_price=supplier_price)
+        findings += await check_registrations(deal)
+        findings += check_buyer_permits(deal)
     rec = await get_record(deal.deal_id)
     for f in findings:  # what an operator already accepted is not asked again
         if f.severity == "review" and f.code in rec.cleared_holds:
@@ -653,7 +766,7 @@ def _trade_holds(holds: list[str]) -> set[str]:
 
 
 _BLOCK_CODES = frozenset({
-    "loading_not_verified", "seal_mismatch", "shipment_hs_mismatch", "supplier_dgft_denied",
+    "loading_not_verified", "seal_mismatch", "shipment_hs_mismatch", "supplier_dgft_denied", "destination_blocked_tier",
     *(f"hs_{status}" for status, severity in _STATUS_SEVERITY.items() if severity == "block"),
 })
 

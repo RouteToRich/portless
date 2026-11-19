@@ -140,7 +140,8 @@ class TestProfit:
         assert p.landed_cost_usd_per_mt == landed.cost_usd_per_mt
         assert p.margin_usd_per_mt == round(3000.0 - landed.cost_usd_per_mt, 2)
         assert p.margin_per_container_usd == round(p.margin_usd_per_mt * CONFIG.container_mt, 2)
-        expected_p = CONFIG.p_close_floor + CONFIG.p_close_span * 0.70  # 1/1 buyers verified → ×1.0
+        # 1/1 buyers verified → ×1.0; DE is a preferred market in its country profile → ×1.1
+        expected_p = (CONFIG.p_close_floor + CONFIG.p_close_span * 0.70) * 1.1
         assert p.p_close == round(expected_p, 3)
         assert p.expected_profit_usd == round(p.margin_usd_per_mt * CONFIG.default_lot_mt * p.p_close, 2)
         assert p.meets_floor and pf.NO_SUPPLIER_PRICE not in flags and p.estimated

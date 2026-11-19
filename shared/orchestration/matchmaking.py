@@ -118,6 +118,9 @@ class PairScore(BaseModel):
     timing_fit: float
     probability: float
     """Chance of closing — calibrated against past outcomes once enough are resolved."""
+    partial_supply_mt: float | None = None
+    """With ``DEAL_COMPOSITION_ENABLED``: the supplier can deliver only this much of the buyer's
+    quantity in time — kept as a partial leg (flag ``partial_supply``), the rest asked elsewhere."""
     probability_raw: float | None = None
     calibrated: bool = False
     buyer_history: dict[str, Any] | None = None
@@ -195,6 +198,14 @@ def grade_fit(buyer_grade: str | None, supplier_grade: str | None) -> tuple[floa
 
 
 def _region_transit(market: str | None) -> int:
+    """Transit days: the country profile's main port (todo 24), else the region's estimate."""
+    try:
+        from shared import country_profiles
+        days = country_profiles.transit_days(market)
+        if days:
+            return int(days)
+    except Exception:  # noqa: BLE001
+        pass
     return _TRANSIT_DAYS.get(lc._REGION_OF.get((market or "").upper(), ""), 25)
 
 
@@ -252,8 +263,18 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
         blockers.append(f"buyer wants {qty:g} MT, supplier minimum is {moq:g} MT")
     window = getattr(req, "delivery_by_days", None) if req else None
     capacity = getattr(offer, "capacity_mt_per_month", None)
+    partial_mt = None
     if capacity and window and qty > capacity * max(1.0, window / 30.0):
-        blockers.append(f"supplier makes {capacity:g} MT/month — cannot deliver {qty:g} MT in {window} days")
+        can = round(capacity * max(1.0, window / 30.0), 2)
+        from shared.orchestration.outreach import composition_enabled
+        if composition_enabled():
+            # Partial quantity is not a reason to drop a supplier (todo 13.2): keep it for what it
+            # can deliver; the sourcing agent asks the others for the rest.
+            partial_mt = can
+            missing.append(f"partial_supply: supplier can deliver ~{can:g} of {qty:g} MT in {window} days — "
+                           "ask its maximum quantity and ready date, the rest from another supplier")
+        else:
+            blockers.append(f"supplier makes {capacity:g} MT/month — cannot deliver {qty:g} MT in {window} days")
 
     spec, grade_block, grade_missing = grade_fit(getattr(req, "grade", None) if req else None,
                                                  getattr(offer, "grade", None))
@@ -425,6 +446,7 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
         supplier_name=getattr(offer, "company_name", "") or offer.supplier_id,
         origin_deal_id=getattr(offer, "origin_deal_id", None),
         quantity_mt=qty, feasible=feasible, blockers=blockers, missing=list(dict.fromkeys(missing)),
+        partial_supply_mt=partial_mt,
         buyer_price=bp, supplier_price=sp, landed=landed, margin_usd_per_mt=margin, margin_pct=margin_pct,
         p_margin=p_margin, spec_fit=round(spec, 3), engagement=round(engagement, 3), reliability=reliability,
         supplier_verified=(gst is True and iec is True), timing_fit=timing, probability=probability, probability_raw=raw, calibrated=calibrated,

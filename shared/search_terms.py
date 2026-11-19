@@ -47,7 +47,17 @@ def enabled() -> bool:
 
 
 def language_of(country: str | None) -> str | None:
-    return LANGUAGE.get((country or "").strip().upper()[:2])
+    """The built-in table, else the country profile's language (never English — no extra line)."""
+    cc = (country or "").strip().upper()[:2]
+    if cc in LANGUAGE:
+        return LANGUAGE[cc]
+    try:
+        from shared import country_profiles
+        p = country_profiles.get(cc)
+        lang = (p.language or "").lower()[:2] if p is not None else ""
+        return lang if lang and lang != "en" else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def local_name(hs_code: str | None, lang: str) -> str | None:

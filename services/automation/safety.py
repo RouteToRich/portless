@@ -111,6 +111,7 @@ def worker_env(use_mongo: bool = True, *, live_apify: bool = False, view: bool =
         "NEGOTIATION_MARKET_SEARCH_ENABLED": "false",
         "FOUR_EYES_THRESHOLD_USD": "",
         "PORTLESS_ENTITY_NAME": "PortLess QA Exports",
+        "PORTLESS_ADDRESS": "QA desk, Chennai, India (automation)",  # CAN-SPAM: US introductions carry an address
         # QC, freight, customs, escrow and payouts answer from stubs — the same
         # code as the live workflow, switched by INTEGRATION_MODE
         # (shared/integration_mode.py). QIMA / SGS / BV go further, to the

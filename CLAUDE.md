@@ -45,7 +45,7 @@ make up    # docker compose up --build
 make down
 
 # Tests
-pytest -q                                 # full suite (5488 pass, 1 skip, ~2 min)
+pytest -q                                 # full suite (5766 pass, 1 skip, ~2 min)
 pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 92.0% line + branch without services/automation; money modules + safety.py + 2026-11-19 modules at 100% (2026-11-19)
 pytest tests/test_health.py -q            # smoke: every service boots + /health 200
 pytest -m smoke -q                        # markers by file (tests/markers.py): smoke · money · unit · integration · slow · regression
@@ -147,6 +147,7 @@ pytest tests/test_cost_meter.py          # platform running costs per day (LLM /
 pytest tests/test_idempotency_audit.py   # concurrent approvals → one decision; webhook ×10 → booked once; double release
 pytest tests/test_apify_usage.py         # Apify run / USD budget in Mongo per day, result cache, tracking pause after source_refused, qualifier "unchecked", VAT/LEI to screening, retired slots
 pytest tests/test_supplier_ops_batch.py  # supplier relays + evidence, onboarding docs + bank check before first payout, container plan, freight per box type / LCL, agreed spec in PI/PO/notes, exact-product export policy, site facts + certificates, Census anchor, CN8, company-led opportunities, price discovery, reorder agent, document check, claim options, outreach A/B, DPDP erase / retention
+pytest tests/test_country_markets.py     # country profiles + tiers (scan / radar / outreach / exposure / money approver), PortLess registrations + expiry, regulatory watch, Incoterms® 2020 pricing (FAS / DPU / D-term costs, DDP held) + wording + ICC clause, samples, buyer import permits, country documents, RoDTEP credits, partial supply, question agent
 pytest tests/test_product_spec_batch.py  # product spec template + facts per company (source / date / precedence, replies, deals, staff), ask what is missing, spec conflicts block a pair, volume line / band / lot, source merge rule, found-by, proposed / supplier markets, people, sourcing agent, scan plan, scorecard, mandi prior, quality rules, freight index + compare, inspection options, env parity
 pytest tests/test_scan_data_batch.py     # CIN age, directory role clean-up + note scrub, reply quantity in containers / bags, HMRC + Comext, registration duplicates, source yield, RFQ widening, harvest calendar, QIMA inspection-day poll
 pytest tests/test_journey_replay.py      # LLM journey counterparty replies recorded and replayed (--replay-run)
@@ -610,6 +611,11 @@ WORLDWIDE_MARKET_MIN_BUYERS (3) / SOURCE_DISAGREE_PCT (25) / SCAN_PLAN_* / SCORE
 SUPPLIER_BANK_VERIFICATION_REQUIRED (true; pinned off in tests / catalogue) / RELAY_EVIDENCE_REQUIRED (false) / REORDER_AGENT_ENABLED (true; off in tests) / PRICE_DISCOVERY_ALL_BUYERS (true)
 COMPANY_LED_MIN_BUYERS (3) / COMPANY_LED_MIN_SUPPLIERS (2) / OUTREACH_AB_MIN_SENDS (20) / CLAIM_DISCOUNT_MAX_PCT (10) / PERSONAL_DATA_RETENTION_DAYS (730) / RECORD_RETENTION_YEARS (8)
 # Ops docs: docs/operations/RUNBOOKS.md, DISASTER_RECOVERY.md, OPERATOR_GUIDE.md, SECRETS.md, DATA_RETENTION.md; env parity: python scripts/env_parity.py dev=.env production=prod.env
+COUNTRY_PROFILE_REQUIRED (true) / COUNTRY_RISK_FEED_URL / EXPOSURE_MAX_COUNTRY_USD / EXPOSURE_MAX_STANDARD_COUNTRY_USD / WORLDWIDE_MARKET_STANDARD_EXTRA (2) / SCAN_REVIEW_MARKETS (false)   # country profiles (shared/country_profiles.py, GET/PUT /deals/compliance/countries)
+REGISTRATIONS_REQUIRED (true) / PORTLESS_REGISTRATIONS (kind:number:expiry,…) / REGISTRATION_WARN_DAYS (30) / HS_POLICY_MAX_AGE_DAYS (30)   # shared/registrations.py, GET/PUT /deals/compliance/registrations
+REGULATORY_WATCH_ENABLED (true) / REGULATORY_WATCH_URLS / REGULATORY_DENIED_LIST_URL   # DGFT / CBIC notices daily (shared/orchestration/regulatory_watch.py)
+TRADE_COST_DTHC_USD_PER_CONTAINER (250) / TRADE_COST_DEST_HAULAGE_USD_PER_MT (12) / TRADE_COST_DEST_UNLOADING_USD_PER_MT (5) / TRADE_COST_LOADING_USD_PER_MT (4)   # D-terms / FAS-FCA in landed_cost
+QUESTION_AGENT_ENABLED (true; off in tests) / INCENTIVE_CREDIT_TOLERANCE_PCT (5) / DEAL_COMPOSITION_ENABLED (false) / COMPOSITION_MAX_BUYERS (3)   # question agent, RoDTEP credits, partial supply
 QC_POLL_MINUTES_INSPECTION_DAY (15) / QC_INSPECTION_DAY_POLL_DAYS_AFTER (2)   # QIMA poll on the inspection day; HARVEST_MONTHS_<COMMODITY> overrides the crop calendar
 ENRICHMENT_ON_DEAL_CREATED   # default true â€” contact finder + sanctions screening at deal.created
 TRADE_MIN_VALIDATION_ENABLED / TRADE_MIN_VALIDATION_TOP_N (5) / TRADE_MIN_VALIDATION_MAX_AGE_DAYS (30)   # scan-time buyer / supplier check (radar "Verified only"); readiness `counterparty_validation` fails in production when off or without APIFY_TOKEN

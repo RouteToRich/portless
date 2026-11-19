@@ -1351,7 +1351,9 @@ async def pi_after_compliance(
                 },
                 idempotency_key=f"auto-compliance-{deal_id}-{'-'.join(codes)}"[:200],
                 autonomy_level="L0",
-                risk_flags=[f"compliance:{c}" for c in codes],
+                risk_flags=[f"compliance:{c}" for c in codes]
+                + (["money_approver_required"] if any((f.data or {}).get("money_approver_required")
+                                                      for f in check.reviews) else []),
                 deal=deal,
             )
             logger.info("Continuation: CONFIRM_TRADE_COMPLIANCE gate for deal %s (%s)", deal_id, codes)
@@ -1661,6 +1663,9 @@ async def on_escrow_funded(event: DomainEvent) -> None:
         # must come from the buyer (a finding holds the PO gate at L0).
         await _best_effort("ESCROW_FUNDED→PAYER", deal_id,
                            compliance.check_payer(deal, await _payer_facts(deal_id, event.payload or {})))
+        # A ban can land between the PI and the shipment: the trade check runs again before the
+        # PO; its holds put the PO gate at L0 (HS policy re-confirmation, registrations, tier).
+        await _best_effort("ESCROW_FUNDED→TRADE_RECHECK", deal_id, compliance.check_trade(deal, stage="before_po"))
     try:
         supplier_ask, quantity_mt = await _negotiation_numbers(deal_id, deal)
         if not supplier_ask:

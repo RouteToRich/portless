@@ -259,6 +259,7 @@ class TestHolds:
     @pytest.mark.asyncio
     async def test_payer_hold_forces_po_gate_to_l0_and_approve_accepts(self, monkeypatch):
         monkeypatch.setenv("AUTONOMY_ISSUE_PO", "L2")
+        await _confirm_free()  # confirmed before the PI in the real flow; the PO re-check reads it
         deal = _deal("ESCROW_FUNDED")
         gate = AsyncMock()
         with (
@@ -285,6 +286,7 @@ class TestHolds:
     ])
     async def test_status_echo_uses_the_payer_on_the_stored_webhook(self, payer, expected):
         """The Deals status echo reaches the handler first and carries no payer."""
+        await _confirm_free()
         hold = SimpleNamespace(provider_payload={"funded_event": {"payer_name": payer}})
         escrow = AsyncMock()
         escrow.get_hold_by_deal = AsyncMock(return_value=hold)

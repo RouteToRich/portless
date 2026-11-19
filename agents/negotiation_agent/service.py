@@ -528,7 +528,18 @@ def draft_risk_flags(body: str, degraded: bool = False) -> list[str]:
         flags.append("premature_funds_claim")
     if stage_order_errors(body):
         flags.append("stage_order_wrong")
+    if mentions_ddp(body):
+        flags.append("ddp_requested")
     return flags
+
+
+_DDP = re.compile(r"\b(?:DDP|delivered duty paid)\b", re.IGNORECASE)
+
+
+def mentions_ddp(body: str | None) -> bool:
+    """The draft talks about DDP — PortLess never sells DDP (it would be importer of record abroad,
+    paying duty and VAT there); a person checks the e-mail offers DAP or CIF instead."""
+    return bool(_DDP.search(body or ""))
 
 
 def _resolve_gate_level(action: str) -> str:
@@ -547,6 +558,7 @@ _FORCE_L0_FLAGS = (
     "degraded_llm_fallback", "unresolved_placeholders", "price_out_of_band",
     "counterparty_leak", "no_real_address", "premature_funds_claim", "false_target_claim",
     "unverified_market_claim", "internal_terms", "market_check_avoid", "stage_order_wrong",
+    "ddp_requested",
 )
 
 
@@ -621,6 +633,8 @@ async def _create_and_gate_email(
     )
     await get_email_repository().save(record)
     safety_flags, leaks = await _draft_safety(session, party, to_address, body)
+    if str(getattr(session, "logistics_incoterm", "") or "").upper() == "DDP" and "ddp_requested" not in safety_flags:
+        safety_flags = [*safety_flags, "ddp_requested"]
 
     try:
         from services.hitl_approval.service import create_approval  # type: ignore[import]
@@ -636,6 +650,9 @@ async def _create_and_gate_email(
             quality_note = f"⛔ No real address for the {party} ({to_address}) — set the contact first. "
         elif "premature_funds_claim" in flags:
             quality_note = "⚠ Says escrow money is already there; nothing is funded yet — edit before sending. "
+        elif "ddp_requested" in flags:
+            quality_note = ("⚠ DDP asked for or mentioned — PortLess does not sell DDP (importer of record abroad); "
+                            "offer DAP or CIF instead. ")
         elif "stage_order_wrong" in flags:
             quality_note = ("⚠ Puts the order steps in the wrong order (" + "; ".join(stage_order_errors(body))
                             + ") — edit before sending. ")

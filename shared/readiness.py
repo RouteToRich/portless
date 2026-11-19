@@ -476,6 +476,26 @@ def evaluate() -> dict[str, Any]:
         fail_detail="PORTLESS_CONTRACT_LAW is not set — the sales contract is issued as DRAFT",
     ))
 
+    from shared import registrations
+    have = registrations.cached()
+    states = registrations.assess(list(have), have)
+    lapsed = [r for r in states if r["status"] == "expired"]
+    soon = [r for r in states if r["status"] == "expiring"]
+    unrecorded = [k for k in registrations.ALWAYS if k not in have]
+    checks.append(_check(
+        "registrations_valid", "documents", "PortLess registrations current (IEC, LUT, RCMC, FSSAI)", not lapsed,
+        warn_only=not prod,
+        ok_detail=("all recorded registrations current" + (f"; lapsing soon: {', '.join(r['kind'] for r in soon)}" if soon else "")),
+        fail_detail="lapsed: " + ", ".join(f"{r['kind']} ({r.get('expires_on')})" for r in lapsed)
+                    + " — a lapsed IEC / LUT / required RCMC blocks a new PI",
+    ))
+    checks.append(_check(
+        "registrations_recorded", "documents", "IEC and LUT recorded with their expiry", not unrecorded, warn_only=True,
+        ok_detail="IEC and current-year LUT recorded",
+        fail_detail="not recorded: " + ", ".join(unrecorded) + " — PUT /deals/compliance/registrations "
+                    "(or PORTLESS_REGISTRATIONS)",
+    ))
+
     failures = [c for c in checks if c["status"] == "fail"]
     warnings = [c for c in checks if c["status"] == "warn"]
     return {

@@ -24,7 +24,22 @@ logger = logging.getLogger(__name__)
 
 _OPEN = ("PI_SENT", "PI_ACCEPTED", "ESCROW_PENDING", "ESCROW_FUNDED", "PO_ISSUED", "SUPPLIER_DISPATCH_READY",
          "QC_PASSED", "IN_TRANSIT", "CLEARED", "DISPUTE")
-LIMITS = ("deal", "buyer", "supplier", "daily", "escrow")
+LIMITS = ("deal", "buyer", "supplier", "daily", "escrow", "country")
+
+
+def country_limit(country: str | None) -> float | None:
+    """EXPOSURE_MAX_COUNTRY_USD, or the lower EXPOSURE_MAX_STANDARD_COUNTRY_USD for a market whose
+    profile is not ``preferred`` (one country's ban, strike or currency crisis hits less of the book)."""
+    base = limit("country")
+    try:
+        from shared import country_profiles
+        if country and country_profiles.tier(country) != "preferred":
+            lower = limit("standard_country")
+            if lower is not None:
+                return min(lower, base) if base is not None else lower
+    except Exception:  # noqa: BLE001
+        pass
+    return base
 
 
 def limit(name: str) -> float | None:
@@ -64,9 +79,12 @@ def breaches(deal: Any, amount: float, deals: list[Any], escrow_held: float, now
     today = now.date()
     totals["daily"] = amount + sum(_value(d) for d in others if _status(d) in _OPEN and getattr(d, "updated_at", None)
                                    and d.updated_at.date() == today and _status(d) == "PI_SENT")
+    country = str(getattr(deal, "market", "") or "").upper()
+    totals["country"] = amount + sum(_value(d) for d in others if _status(d) in _OPEN
+                                     and str(getattr(d, "market", "") or "").upper() == country)
     out = []
     for name in LIMITS:
-        cap = limit(name)
+        cap = country_limit(country) if name == "country" else limit(name)
         if cap is not None and totals[name] > cap:
             out.append({"limit": name, "cap_usd": cap, "would_be_usd": round(totals[name], 2)})
     return out
@@ -74,7 +92,7 @@ def breaches(deal: Any, amount: float, deals: list[Any], escrow_held: float, now
 
 async def check(deal: Any, amount: float) -> list[dict[str, Any]]:
     """Breaches for this PI, unless a person already accepted the exposure. Never raises."""
-    if getattr(deal, "exposure_accepted_by", None) or not any(limit(n) for n in LIMITS):
+    if getattr(deal, "exposure_accepted_by", None) or not (any(limit(n) for n in LIMITS) or limit("standard_country")):
         return []
     try:
         from services.deals.repository import get_repository  # type: ignore[import]

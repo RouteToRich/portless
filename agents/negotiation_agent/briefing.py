@@ -145,6 +145,8 @@ def buyer_missing(facts: dict[str, Any], *, qc_selected: bool, quantity_known: b
         out.append(f"which inspection agency they trust ({', '.join(names[:-1])} or {names[-1]})")
     if not facts.get("certifications_required"):
         out.append("documents and certificates required at destination")
+    for permit in facts.get("permits_needed") or []:
+        out.append(f"your {permit}: its number and validity (needed before the proforma invoice)")
     at = 1 if facts.get("quantity_to_confirm") else 0  # the exact product next, after a quantity to confirm
     out[at:at] = [q for q in (facts.get("spec_questions") or []) if q not in out]
     return out[:_MAX_MISSING]
@@ -163,6 +165,11 @@ async def buyer_brief(session: Any, history: str = "", inbound: str = "") -> dic
         qs = spec_questions(getattr(deal, "hs_code", "") or "", dict(getattr(req, "spec", None) or {}) if req else None)
         if qs:
             facts["spec_questions"] = qs
+    if deal is not None:
+        from shared.orchestration import compliance as _compliance
+        permits = [f for f in _compliance.check_buyer_permits(deal) if f.code == "buyer_import_permit_missing"]
+        if permits:
+            facts["permits_needed"] = permits[0].data.get("missing") or []
     from shared.orchestration import packing as _packing
     agreed_packing = _packing.describe(getattr(session, "packing", None))
     if agreed_packing:

@@ -372,8 +372,13 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
     from shared.orchestration import matchmaking
     # With the match board, an interested buyer does not close the funnel — more
     # interested buyers mean a better pair; it closes when a match is confirmed.
-    closing = ("selected",) if matchmaking.enabled() else ("interested", "selected")
+    keep_going = matchmaking.enabled() or composition_enabled()
+    closing = ("selected",) if keep_going else ("interested", "selected")
     if not cands or any(_status(c) in closing for c in cands):
+        return 0
+    if keep_going and sum(1 for c in cands if _status(c) == "interested") >= composition_max_buyers():
+        logger.info("Outreach: deal %s has %d interested buyers (COMPOSITION_MAX_BUYERS) — no new introductions",
+                    deal.deal_id, composition_max_buyers())
         return 0
     active = [c for c in cands if _status(c) in ("contacted", "followed_up")]
     slots = max(0, (limit if limit is not None else parallel()) - len(active))
@@ -388,13 +393,19 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
     # "Reply 'not interested' and we will not write again" holds across prospects:
     # a company on the do-not-contact list, or that declined in any prospect, is skipped.
     blocked, suspect = await _blocked(), await _suspect()
-    if blocked or suspect:
+    if pending:
         from services.deals.service import update_buyer_candidate  # type: ignore[import]
         keep = []
         for c in pending:
             reason = ("skipped: on the do-not-contact list (declined before or set by staff)" if _is_blocked(c, blocked)
                       else "skipped: looks like an Indian exporter, not an importer (role_suspect)"
                       if _is_blocked(c, suspect) else None)
+            if reason is None:
+                verdict, why = country_refusal(deal, c)
+                if verdict == "wait":
+                    logger.info("Outreach: %s waits for deal %s — %s", c.candidate_id, deal.deal_id, why)
+                    continue
+                reason = why
             if reason:
                 await update_buyer_candidate(deal.deal_id, c.candidate_id, {
                     "status": "declined", "replied_at": datetime.now(timezone.utc), "reply_preview": reason,
@@ -418,6 +429,48 @@ async def start_outreach(deal: Any, *, limit: int | None = None) -> int:
     if sent:
         logger.info("Outreach: %d introduction(s) gated for deal %s", sent, deal.deal_id)
     return sent
+
+
+def composition_enabled() -> bool:
+    return os.getenv("DEAL_COMPOSITION_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def composition_max_buyers() -> int:
+    """COMPOSITION_MAX_BUYERS (3): interested buyers a prospect collects before it stops introducing
+    itself to new ones — more than one buyer to compose for, not an endless funnel."""
+    try:
+        return max(1, int(os.getenv("COMPOSITION_MAX_BUYERS", "3")))
+    except ValueError:
+        return 3
+
+
+def profile_required() -> bool:
+    """COUNTRY_PROFILE_REQUIRED (default on; pinned off in tests): no introduction to a market
+    whose country profile is not filled in."""
+    return os.getenv("COUNTRY_PROFILE_REQUIRED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def country_refusal(deal: Any, cand: Any) -> tuple[str | None, str | None]:
+    """Country rules before a cold introduction (todo 24): ``(None, None)`` = go; ``("wait", why)`` =
+    not now (profile missing, postal address not set); ``("refuse", why)`` = never (blocked market, no
+    escrow provider serves the buyer, cold e-mail needs consent there)."""
+    from shared import country_profiles
+    country = (getattr(cand, "country", None) or getattr(deal, "market", None) or "").upper()[:2]
+    if not country:
+        return None, None
+    if profile_required() and not country_profiles.known(country):
+        return "wait", f"no country profile for {country} yet — PUT /deals/compliance/countries/{country}"
+    profile = country_profiles.get(country)
+    if profile is not None and profile.tier == "blocked":
+        return "refuse", f"skipped: {country} is a blocked market"
+    if not country_profiles.escrow_serves(country):
+        return "refuse", f"skipped: no enabled escrow provider accepts a buyer in {country} — it could not fund the escrow"
+    rule = profile.email_rule if profile else "opt_out"
+    if rule == "consent_required":
+        return "refuse", f"skipped: a cold e-mail needs the buyer's prior consent in {country} (e.g. Canada's CASL)"
+    if rule == "postal_address" and not os.getenv("PORTLESS_ADDRESS", "").strip():
+        return "wait", f"{country} requires our postal address in every commercial e-mail — set PORTLESS_ADDRESS"
+    return None, None
 
 
 async def _blocked() -> set[str]:
@@ -633,6 +686,9 @@ async def handle_reply(deal_id: str, candidate_id: str | None, from_address: str
     from agents.negotiation_agent.email_history import record_deal_email  # type: ignore[import]
     await record_deal_email(deal_id=deal_id, direction="inbound", party="buyer", to_address=_entity(), from_address=from_address,
                             subject=f"Reply from {cand.legal_name}", body=body, kind="outreach_reply")
+    if verdict != "declined":
+        from shared.orchestration import samples
+        await samples.capture_from_reply(deal_id, body, buyer=cand.candidate_id)
     from shared.orchestration import matchmaking
     if matchmaking.enabled():
         # Prospect matching: the reply fills the buyer's requirement and the match

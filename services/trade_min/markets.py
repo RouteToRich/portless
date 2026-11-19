@@ -28,6 +28,15 @@ def min_buyers() -> int:
         return 3
 
 
+def _standard_extra() -> int:
+    """WORLDWIDE_MARKET_STANDARD_EXTRA (2): a ``standard`` market needs this many more buyers than a
+    ``preferred`` one before it is proposed; ``review`` / ``blocked`` markets are never proposed."""
+    try:
+        return max(0, int(os.getenv("WORLDWIDE_MARKET_STANDARD_EXTRA", "2")))
+    except ValueError:
+        return 2
+
+
 def contactable(rec: CounterpartyRecord) -> bool:
     if rec.do_not_contact or not rec.email or "role_suspect" in (rec.flags or []):
         return False
@@ -66,10 +75,13 @@ async def proposed_markets() -> list[dict[str, Any]]:
             row["worldwide"] += int(b.last_outcome == directory.WORLDWIDE_OUTCOME)
             if len(row["examples"]) < 3:
                 row["examples"].append(b.name)
+        from shared import country_profiles
         for country, row in counts.items():
-            if row["buyers"] >= min_buyers():
+            tier = country_profiles.tier(country)
+            need = {"preferred": min_buyers(), "standard": min_buyers() + _standard_extra()}.get(tier)
+            if need is not None and row["buyers"] >= need:
                 out.append({"product_id": line.product_id, "hs_code": line.hs_code, "product": line.name,
-                            "market": country, **row})
+                            "market": country, "tier": tier, **row})
     return sorted(out, key=lambda r: (-r["verified"], -r["buyers"]))
 
 

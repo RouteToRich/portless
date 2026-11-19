@@ -82,7 +82,11 @@ os.environ["NEGOTIATION_PACKING_REQUIRED"] = "false"
 # The first supplier payout waits for a person when its bank account was never verified
 # (services/trade_min/supplier_onboarding.py); tests/test_supplier_ops_batch.py turns it on.
 os.environ["SUPPLIER_BANK_VERIFICATION_REQUIRED"] = "false"
-os.environ["REORDER_AGENT_ENABLED"] = "false"  # tests/test_supplier_ops_batch.py runs it on its own
+os.environ["REORDER_AGENT_ENABLED"] = "false"
+os.environ["REGISTRATIONS_REQUIRED"] = "false"  # PortLess registrations before the PI: tests/test_country_markets.py
+os.environ["COUNTRY_PROFILE_REQUIRED"] = "false"  # outreach waits for a country profile: tests/test_country_markets.py
+os.environ["REGULATORY_WATCH_ENABLED"] = "false"  # no DGFT / CBIC fetch from the suite: tests/test_country_markets.py
+os.environ["QUESTION_AGENT_ENABLED"] = "false"  # questions answered from deal facts: tests/test_country_markets.py
 # QC, freight, customs, escrow and payout connectors answer from stubs only in
 # INTEGRATION_MODE=sandbox (shared/integration_mode.py); live mode always calls
 # the provider. The suite runs in sandbox; tests of the live HTTP paths set

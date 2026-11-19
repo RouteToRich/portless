@@ -430,8 +430,11 @@ async def _book_qc(req: QcBookingRequest, *, reinspection: bool = False,
         inspection = qc_schedule.inspection_date_for(req.goods_ready_date)
     from shared.orchestration import trade_brief
     brief = await trade_brief.brief(req.deal_id)
+    from shared.orchestration import samples as _samples
+    sample_ref = _samples.approved_ref(deal) if deal is not None else None
     note = trade_brief.note({**brief, "inspection_types": [phase]}, "inspector",
-                            extra=f"{inspection_plan.label(phase)}: {inspection_plan.META[phase]['when']}")
+                            extra=f"{inspection_plan.label(phase)}: {inspection_plan.META[phase]['when']}"
+                            + (f"; quality {sample_ref}" if sample_ref else ""))
     hs_code = req.hs_code or getattr(deal, "hs_code", "")
     supplier = _supplier_facts(deal)
     connector = get_qc_connector(provider)

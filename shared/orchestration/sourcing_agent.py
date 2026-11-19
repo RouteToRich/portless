@@ -45,14 +45,40 @@ def _aware(dt: Any) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def supply_short(deal: Any) -> float:
+    """MT the interested buyers want beyond what the quoting suppliers can supply (0 when covered or
+    unknown). Only counted with ``DEAL_COMPOSITION_ENABLED`` — partial suppliers are kept then."""
+    from shared.orchestration.outreach import composition_enabled
+    if not composition_enabled():
+        return 0.0
+    want = 0.0
+    for c in getattr(deal, "buyer_candidates", None) or []:
+        if _status(c) in ("interested", "selected"):
+            req = getattr(c, "requirement", None)
+            want += float(getattr(req, "quantity_mt", None) or getattr(c, "quantity_mt", None) or 0)
+    if not want:
+        return 0.0
+    have = 0.0
+    for o in getattr(deal, "supplier_offers", None) or []:
+        if not getattr(o, "fob_price_usd_per_mt", None) or getattr(o, "verification_failed", False):
+            continue
+        cap = getattr(o, "capacity_mt_per_month", None) or getattr(o, "max_quantity_mt", None)
+        if not cap:
+            return 0.0  # a quote without a stated capacity may cover it all — ask it first
+        have += float(cap)
+    return round(max(0.0, want - have), 2) if have else 0.0
+
+
 def stalled(deal: Any, now: datetime) -> bool:
-    """An interested buyer, no quoted supplier price, and a stall period since the last move."""
+    """An interested buyer, no quoted supplier price (or, with composition on, quotes that cover only
+    part of the buyers' quantity), and a stall period since the last move."""
     if _status(deal) != "MATCHING":
         return False
     if not any(_status(c) in ("interested", "selected") for c in getattr(deal, "buyer_candidates", None) or []):
         return False
-    if any(getattr(o, "fob_price_usd_per_mt", None) and getattr(o, "price_basis", "quoted") == "quoted"
-           and not getattr(o, "verification_failed", False) for o in getattr(deal, "supplier_offers", None) or []):
+    if supply_short(deal) <= 0 and any(
+            getattr(o, "fob_price_usd_per_mt", None) and getattr(o, "price_basis", "quoted") == "quoted"
+            and not getattr(o, "verification_failed", False) for o in getattr(deal, "supplier_offers", None) or []):
         return False
     from shared.orchestration.prospect_desk import stall_days
     since = _aware(getattr(deal, "sourcing_widened_at", None)) or _aware(getattr(deal, "created_at", None))

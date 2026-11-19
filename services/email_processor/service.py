@@ -390,6 +390,22 @@ async def _process_inbound(
         price = await _price_of_bare_acceptance(mapping.negotiation_id, mapping.party, raw.body_text)
 
     if price is None:
+        # A question the deal's facts answer (payment steps, certificates, packing …) gets a
+        # drafted answer behind SEND_NEGOTIATION_EMAIL instead of waiting for a person.
+        from shared.orchestration import question_agent
+        email_id = await question_agent.answer(mapping.negotiation_id, mapping.party, raw.from_address,
+                                               raw.subject, raw.body_text or "")
+        if email_id:
+            record = record.model_copy(update={
+                "status": InboundEmailStatus.PROCESSED, "processed_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            })
+            await repo.save(record)
+            return ProcessingResult(
+                inbound_id=inbound_id, status=InboundEmailStatus.PROCESSED,
+                negotiation_id=mapping.negotiation_id,
+                message=f"Question answered from the deal facts — draft {email_id} waits at its gate.",
+            )
         record = record.model_copy(update={
             "status": InboundEmailStatus.NEEDS_OPERATOR,
             "updated_at": datetime.now(timezone.utc),
