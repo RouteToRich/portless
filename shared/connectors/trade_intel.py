@@ -952,7 +952,7 @@ class CensusTradeConnector(Connector):
         time_str = request.get("time") or f"{ref.year}-{ref.month:02d}"
 
         params = {
-            "get": "CTY_CODE,CTY_NAME,GEN_VAL_MO,GEN_CIF_MO,I_COMMODITY",
+            "get": "CTY_CODE,CTY_NAME,GEN_VAL_MO,GEN_CIF_MO,GEN_QY1_MO,UNIT_QY1,I_COMMODITY",
             "I_COMMODITY": hs6,
             "COMM_LVL": "HS6",
             "time": time_str,
@@ -970,9 +970,24 @@ class CensusTradeConnector(Connector):
         header = rows[0]
         idx = {name: i for i, name in enumerate(header)}
         records = []
+        totals = {"all": [0.0, 0.0], "IN": [0.0, 0.0]}  # [customs value USD, kg]
         for r in rows[1:]:
             fob = _safe_float(r[idx["GEN_VAL_MO"]]) if "GEN_VAL_MO" in idx else None
             cif = _safe_float(r[idx["GEN_CIF_MO"]]) if "GEN_CIF_MO" in idx else None
+            qty = _safe_float(r[idx["GEN_QY1_MO"]]) if "GEN_QY1_MO" in idx else None
+            unit = str(r[idx["UNIT_QY1"]]).upper() if "UNIT_QY1" in idx else ""
+            kg = qty if unit in ("KG", "KGM") else (qty * 1000.0 if qty and unit in ("T", "MT", "TNE") else None)
+            name = str(r[idx["CTY_NAME"]]) if "CTY_NAME" in idx else ""
+            code = str(r[idx["CTY_CODE"]]) if "CTY_CODE" in idx else ""
+            is_total = name.upper().startswith("TOTAL") or code in ("-", "0000", "")
+            if fob and kg:
+                if is_total:
+                    totals["all"] = [fob, kg]
+                else:
+                    totals.setdefault("partners", [0.0, 0.0])
+                    totals["partners"] = [totals["partners"][0] + fob, totals["partners"][1] + kg]
+                    if code == "5330" or name.upper() == "INDIA":
+                        totals["IN"] = [totals["IN"][0] + fob, totals["IN"][1] + kg]
             records.append({
                 "reporter_iso3": "USA",
                 "reporter_name": "United States",
@@ -984,11 +999,24 @@ class CensusTradeConnector(Connector):
                 "cif_value_usd": cif,
                 "primary_value_usd": cif or fob,
             })
+        if not totals["all"][1] and totals.get("partners"):  # no total row: the partners' sum
+            totals["all"] = totals["partners"]
+        all_v, all_kg = totals["all"]
+        in_v, in_kg = totals["IN"]
         return {
             "records": records,
             "total_records": len(records),
             "hs_code": hs6,
             "period": time_str,
+            # Monthly unit values (customs value per MT) — the US buyer anchor when fresher than
+            # Comtrade (todo 17.1); the same keys as the UK HMRC / Eurostat connectors.
+            "source": "census",
+            "data_period": time_str,
+            "months": [time_str],
+            "quantity_mt": round(all_kg / 1000.0, 3) if all_kg else None,
+            "unit_value_usd_per_mt": round(all_v / (all_kg / 1000.0), 2) if all_kg else None,
+            "india_quantity_mt": round(in_kg / 1000.0, 3) if in_kg else None,
+            "india_unit_value_usd_per_mt": round(in_v / (in_kg / 1000.0), 2) if in_kg else None,
         }
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:

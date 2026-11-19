@@ -131,13 +131,15 @@ async def _run(args: argparse.Namespace, guard: NetworkGuard) -> int:
             # the real flow with both on.
             commitment_env = {k: os.environ.get(k) for k in ("SUPPLIER_CONFIRMATION_REQUIRED", "PO_ACK_REQUIRED",
                                                              "QC_READINESS_DATE_REQUIRED", "NEGOTIATION_PACKING_REQUIRED",
-                                                             "QC_FACILITY_ADDRESS_REQUIRED")}
+                                                             "QC_FACILITY_ADDRESS_REQUIRED",
+                                                             "SUPPLIER_BANK_VERIFICATION_REQUIRED")}
             if cases:
                 os.environ["SUPPLIER_CONFIRMATION_REQUIRED"] = "false"
                 os.environ["PO_ACK_REQUIRED"] = "false"
                 os.environ["QC_READINESS_DATE_REQUIRED"] = "false"
                 os.environ["QC_FACILITY_ADDRESS_REQUIRED"] = "false"
                 os.environ["NEGOTIATION_PACKING_REQUIRED"] = "false"
+                os.environ["SUPPLIER_BANK_VERIFICATION_REQUIRED"] = "false"
             linked: list[tuple[Any, str]] = []  # (case, journey id): a Gherkin case played by an LLM journey
             for case in cases:
                 journey_id = next((tag.split(":", 1)[1] for tag in case.tags if tag.startswith("@journey:")), None)

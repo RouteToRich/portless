@@ -382,7 +382,8 @@ async def _phase1_historical_demand(
         }),
         # National statistics (UK HMRC / Eurostat Comext): monthly value AND weight, so a
         # market with a Comtrade value but no quantity still gets a unit price (todo 17.1).
-        _safe_quote(national_name, {"hs_code": hs_code, "market": market, "months": 12})
+        _safe_quote(national_name, {"hs_code": hs_code, "market": market, "months": 12,
+                                    "hs8_codes": _hs8_for(hs_code)})
         if national_name else _noop(),
     )
 
@@ -399,6 +400,9 @@ async def _phase1_historical_demand(
             connector_data[cname] = r
 
     national = national_r if (national_r and national_r.get("quantity_mt")) else None
+    if national is None and census_r and census_r.get("unit_value_usd_per_mt") and census_r.get("quantity_mt"):
+        # US Census monthly value and weight: the same merge rule as the national sources
+        national = {**census_r, "source": "census"}
     if national is not None:
         # recent monthly imports with a quantity = live demand even when Comtrade has nothing
         active_weights["national"] = _P1_WEIGHTS["national"]
@@ -496,10 +500,20 @@ FOUND_BY = ("market_statistics", "national_statistics", "directory", "buyer_enqu
             "worldwide_search")
 
 
+def _hs8_for(hs_code: str) -> list[str]:
+    """The catalogue line's 8-digit codes for this product (empty when none are recorded)."""
+    try:
+        from shared import catalogue
+        line = catalogue.line_for(hs_code)
+        return list(line.hs8_codes) if line is not None else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def found_by_for(benchmark_source: str | None) -> str:
     """The radar's source chip for a scanned opportunity."""
     src = str(benchmark_source or "")
-    return "national_statistics" if src.startswith(("uk_hmrc", "eurostat_comext")) else "market_statistics"
+    return "national_statistics" if src.startswith(("uk_hmrc", "eurostat_comext", "census")) else "market_statistics"
 
 
 def count_found_by(opps: list[Any]) -> dict[str, int]:

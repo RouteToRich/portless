@@ -1941,7 +1941,7 @@ async def _qc_tranche_and_freight(deal, payload: dict[str, Any], loading=None) -
         await _create_gate(
             deal_id, "BOOK_FREIGHT",
             summary=f"QC passed — book freight for deal {deal_id}{seal_text}"
-                    + (f" — cheapest quote {chosen} USD {quotes.get('chosen_rate_usd'):,.0f}/box" if chosen else ""),
+                    + (f" — cheapest quote {chosen} USD {quotes.get('chosen_rate_usd'):,.0f} for the lot" if chosen else ""),
             financial_impact_usd=None,
             callback_payload={"deal_id": deal_id, "incoterm": "FOB",
                               "origin_port": origin_port,
@@ -2299,6 +2299,14 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
     # The holdback, not the escrow's released funds, is what limits this payout.
     held_back = partial and retained > 0 and available >= owed - retained - paid - pending - 0.01
     reason = f"${retained:,.2f} held back until the buyer accepts the goods" if held_back else "capped at funds released from escrow"
+    bank_flags: list[str] = []
+    if kind == "supplier_payout":
+        try:  # first payout: the supplier's bank account checked against a cheque / bank letter?
+            from services.trade_min import supplier_onboarding  # type: ignore[import]
+            if supplier_onboarding.verification_required() and await supplier_onboarding.bank_verified_for_deal(deal) is not True:
+                bank_flags = ["bank_not_verified"]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Continuation[%s]: bank check unavailable for %s: %s", stage, deal_id, exc)
     await _create_gate(
         deal_id, "RELEASE_SUPPLIER_PAYOUT",
         summary=(
@@ -2319,10 +2327,11 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
         },
         idempotency_key=key,
         deal=deal,
-        conditions_ok=reconciled,
-        risk_flags=["money_movement"] + (
+        conditions_ok=reconciled and not bank_flags,
+        risk_flags=["money_movement"] + bank_flags + (
             ["supplier_retention_held"] if held_back else ["partial_payout_capped_by_escrow"] if partial else []
         ),
+        **({"autonomy_level": "L0"} if bank_flags else {}),
     )
     return True
 

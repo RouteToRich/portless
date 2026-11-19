@@ -134,6 +134,10 @@ HS_POLICY_SEED: dict[str, tuple[str, str]] = {
     "0201": ("restricted", "bovine meat — beef prohibited, buffalo meat needs APEDA"),
     "0202": ("restricted", "frozen bovine meat — beef prohibited, buffalo meat needs APEDA"),
     "0703": ("restricted", "onions — export restrictions / MEP notified from time to time"),
+    "07031010": ("restricted", "fresh onions — export bans and minimum export prices notified from time to time"),
+    "0712": ("unverified", "dried vegetables (incl. dehydrated onion) — usually free; confirm the current notification"),
+    "10063020": ("restricted", "basmati rice — free, but an APEDA RCAC contract registration is needed; MEP notified at times"),
+    "10063090": ("restricted", "non-basmati rice — export prohibitions / duty / MEP notified from time to time"),
     "1001": ("restricted", "wheat — export restricted by DGFT notification"),
     "1006": ("restricted", "rice — non-basmati export restrictions / duty notified from time to time"),
     "1101": ("restricted", "wheat flour — export restricted by DGFT notification"),
@@ -405,10 +409,27 @@ async def hs_policy_status(hs_code: str) -> tuple[str, str]:
     return "unverified", "export policy for this HS code not confirmed against ITC-HS Schedule 2 / SCOMET"
 
 
+def exact_product(hs_code: str) -> tuple[str, str | None]:
+    """The exact code to check (todo 15.3 "export policy per exact product"): the catalogue
+    line's single 8-digit ITC-HS code when it has one, else the code given; and the line's form
+    (fresh / dried / processed), which changes the policy for many agri goods."""
+    try:
+        from shared import catalogue
+        line = catalogue.line_for(hs_code)
+        if line is not None:
+            codes = [c for c in (line.hs8_codes or []) if c[:6] == _hs(hs_code)[:6]]
+            return (codes[0] if len(codes) == 1 else _hs(hs_code)), (line.form or None)
+    except Exception:  # noqa: BLE001
+        pass
+    return _hs(hs_code), None
+
+
 async def check_hs(hs_code: str) -> Finding:
-    status, note = await hs_policy_status(hs_code)
+    exact, form = exact_product(hs_code)
+    status, note = await hs_policy_status(exact)
+    label = f"HS {exact}" + (f" ({form})" if form else "")
     return Finding(code=f"hs_{status}", severity=_STATUS_SEVERITY.get(status, "review"),
-                   message=f"HS {_hs(hs_code)}: {note}", data={"hs_code": _hs(hs_code), "status": status})
+                   message=f"{label}: {note}", data={"hs_code": exact, "status": status, "form": form})
 
 
 def check_destination(country: Any) -> Finding | None:

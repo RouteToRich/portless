@@ -69,6 +69,11 @@ async def brief(deal_id: str) -> dict[str, Any]:
         from services.deals.repository import get_repository as deals_repo  # type: ignore[import]
         deal = await deals_repo().get(deal_id)
         if deal is not None:
+            try:
+                from shared.product_spec import spec_text
+                out["spec"] = spec_text(deal) or None
+            except Exception:  # noqa: BLE001
+                pass
             out.update({
                 "hs_code": deal.hs_code, "market": getattr(deal, "market", None),
                 "quantity_mt": getattr(deal, "quantity_mt", None),
@@ -136,6 +141,8 @@ def note(b: dict[str, Any], audience: str, extra: str = "") -> str:
     if audience in ("inspector", "escrow") and b.get("inspection_types"):
         parts.append("inspection " + "/".join(b["inspection_types"])
                      + (f" by {str(b.get('inspection_agency')).upper()}" if b.get("inspection_agency") else ""))
+    if audience in ("inspector", "carrier") and b.get("spec"):
+        parts.append(f"specification: {b['spec']}")
     if audience == "inspector" and b.get("quality_requirements"):
         parts.append("check against destination rules: " + "; ".join(b["quality_requirements"][:6]))
     if audience == "carrier":

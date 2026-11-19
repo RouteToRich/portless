@@ -418,6 +418,12 @@ class CounterpartyRecord(BaseModel):
     volume_source: str | None = None
     order_size_band: str | None = None
     """``small`` / ``medium`` / ``large`` estimated from company signals — never an offer quantity."""
+    documents: list[dict[str, Any]] = Field(default_factory=list)
+    """Suppliers: onboarding papers (GST certificate, cancelled cheque, FSSAI …) — supplier_onboarding.py."""
+    bank_verified_at: str | None = None
+    bank_verified_by: str | None = None
+    bank_verified_doc: str | None = None
+    bank_verified_note: str | None = None
     """Staff notes and follow-up reminders (company_notes.py), newest last."""
     contacts_refreshed_at: datetime | None = None
     """Last contact-finder refresh when the company entered a prospect (contact_refresh.py)."""

@@ -369,7 +369,7 @@ async def issue_pi(req: IssuePiRequest) -> PiResponse:
     buyer_name = req.buyer_name or _party_name(deal, "buyer") or "Buyer"
     buyer_address = req.buyer_address or _party_address(deal, "buyer") or ""
     buyer_vat_number = req.buyer_vat_number or _party_vat(deal, "buyer")
-    product_description = req.product_description or _hs_description(deal.hs_code)
+    product_description = req.product_description or _hs_description(deal.hs_code, deal)
 
     now = datetime.now(timezone.utc)
     pi_id = _new_pi_id()
@@ -505,7 +505,7 @@ async def extend_pi(pi_id: str, req: ExtendPiRequest, by: str) -> PiResponse:
     expires_at = now + timedelta(days=req.validity_days)
     html = _render_pi(
         pi_id=pi.pi_id, deal_id=pi.deal_id, deal=deal, buyer_name=pi.buyer_name, buyer_address=pi.buyer_address,
-        buyer_vat_number=pi.buyer_vat_number, product_description=_hs_description(deal.hs_code),
+        buyer_vat_number=pi.buyer_vat_number, product_description=_hs_description(deal.hs_code, deal),
         quantity_mt=pi.quantity_mt, agreed_price=pi.agreed_price, currency=pi.currency,
         total_value=pi.total_value, incoterm=pi.incoterm, port_of_destination=pi.port_of_destination,
         payment_terms=pi.payment_terms, validity_days=req.validity_days, issued_at=pi.issued_at,
@@ -625,7 +625,7 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
     supplier_address = req.supplier_address or _party_address(deal, "supplier") or ""
     supplier_gstin = req.supplier_gstin or _party_gstin(deal)
     supplier_iec = req.supplier_iec or _party_iec(deal)
-    product_description = req.product_description or _hs_description(deal.hs_code)
+    product_description = req.product_description or _hs_description(deal.hs_code, deal)
     # PortLess is the purchaser on the PO: the supplier never sees the overseas buyer.
     buyer_name = settings.portless_entity_name
 
@@ -857,6 +857,17 @@ _HS_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def _hs_description(hs_code: str) -> str:
+def _hs_description(hs_code: str, deal: Any = None) -> str:
+    """The product name, with the agreed specification when one was stated (variety, size,
+    packing …) — the same words the buyer and the supplier agreed to."""
     from shared.documents.facts import product_name
-    return product_name(hs_code)
+    name = product_name(hs_code)
+    if deal is not None:
+        try:
+            from shared.product_spec import spec_text
+            spec = spec_text(deal)
+            if spec:
+                return f"{name} — {spec}"
+        except Exception:  # noqa: BLE001
+            pass
+    return name

@@ -698,6 +698,7 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
             "destination_unlocode": trade_brief.unlocode(destination),
             "container_type": _iso_equipment(req.container_type),
             "container_numbers": req.container_numbers,
+            **_box_plan(req, hs_code, quantity),
             "hs_code": hs_code,
             "commodity": brief.get("product"),
             "quantity_mt": quantity,
@@ -755,6 +756,30 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
 
 _ISO_EQUIPMENT = {"20GP": "22GP", "20DV": "22GP", "20": "22GP", "40GP": "42GP", "40DV": "42GP", "40": "42GP",
                   "40HC": "45G1", "40HQ": "45G1", "20RF": "22R1", "40RF": "45R1"}
+
+
+def _box_plan(req: Any, hs_code: str | None, quantity: float) -> dict[str, Any]:
+    """How many boxes to book (todo 13.5: a container plan, not a fixed 25 MT per box): the
+    stuffed containers when loading was recorded, else the cost sheet's plan for the lot with the
+    product's MT per 20' (catalogue). The equipment follows the plan unless the request names one."""
+    if req.container_numbers:
+        return {"containers": len(req.container_numbers)}
+    if not quantity:
+        return {}
+    from shared.orchestration.trade_costs import container_plan
+    try:
+        from shared import catalogue
+        mt20, kind = catalogue.container_for(hs_code or "")
+    except Exception:  # noqa: BLE001
+        mt20, kind = None, None
+    plan = container_plan(float(quantity), mt20)
+    n20, n40 = int(plan["containers_20"]), int(plan["containers_40"])
+    out: dict[str, Any] = {"containers": max(1, n20 + n40), "container_plan": plan}
+    if not req.container_type:
+        reefer = (kind or "").lower() == "reefer"
+        size = "40" if n40 >= n20 else "20"
+        out["container_type"] = _iso_equipment(f"{size}{'RF' if reefer else ('HC' if size == '40' else 'GP')}")
+    return out
 
 
 def _iso_equipment(container_type: str | None) -> str:

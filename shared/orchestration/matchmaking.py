@@ -71,6 +71,12 @@ def min_probability() -> float:
         return 0.45
 
 
+def price_discovery_all_buyers() -> bool:
+    """PRICE_DISCOVERY_ALL_BUYERS (default on): with a firm match proposed, the other interested
+    buyers still receive their own indicative range, and the best reaction can win."""
+    return os.getenv("PRICE_DISCOVERY_ALL_BUYERS", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
 def offer_validity_days() -> int:
     try:
         return int(os.getenv("MATCH_OFFER_VALIDITY_DAYS", "30"))
@@ -898,13 +904,24 @@ async def evaluate(deal_id: str) -> dict[str, Any]:
     board = await build_board(deal)
     out: dict[str, Any] = {"pairs": len(board.pairs), "gates": []}
     confirmable = [p for p in board.pairs if p.feasible and p.firm and p.probability >= min_probability()]
-    if confirmable:
-        gid = await propose_match(deal, confirmable[0])
-        out["gates"].append({"action": CONFIRM_ACTION, "approval_id": gid, "candidate_id": confirmable[0].candidate_id,
-                             "offer_id": confirmable[0].offer_id})
-        return out
-    offers = {o["offer_id"]: o for o in board.offers}
     done: set[str] = set()
+    if confirmable:
+        # The board is sorted by expected value: the first firm pair sells to the buyer who pays
+        # most for the risk. The best pair of a different buyer travels with it as the runner-up.
+        best = confirmable[0]
+        runner = next((p for p in confirmable[1:] if p.candidate_id != best.candidate_id), None)
+        gid = await propose_match(deal, best)
+        out["gates"].append({"action": CONFIRM_ACTION, "approval_id": gid, "candidate_id": best.candidate_id,
+                             "offer_id": best.offer_id})
+        if runner is not None:
+            out["runner_up"] = {"candidate_id": runner.candidate_id, "offer_id": runner.offer_id,
+                                "expected_value_usd": runner.expected_value_usd}
+        if not price_discovery_all_buyers():
+            return out
+        # Price discovery across buyers (todo 19.1): the other interested buyers still get their
+        # own indicative range, so a better reaction can win before the match is confirmed.
+        done.add(best.candidate_id)
+    offers = {o["offer_id"]: o for o in board.offers}
     for p in board.pairs:
         if p.candidate_id in done or not p.feasible or p.firm or p.supplier_price.basis != "quoted":
             continue

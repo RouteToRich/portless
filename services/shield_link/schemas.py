@@ -292,6 +292,8 @@ class QcReadinessRequest(BaseModel):
     produced_pct: float | None = Field(default=None, ge=0, le=100)
     packed_pct: float | None = Field(default=None, ge=0, le=100)
     note: str | None = None
+    evidence: dict[str, Any] | None = None
+    """How the date was heard (relay_evidence.Evidence: call note, WhatsApp, photo)."""
 
 
 class QcRescheduleRequest(BaseModel):

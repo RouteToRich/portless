@@ -105,6 +105,17 @@ def summarise(rows: list[dict[str, Any]], *, source: str, market: str, hs_code: 
     }
 
 
+def _cn8_codes(request: dict[str, Any], hs: str) -> list[str]:
+    """8-digit codes of the exact product (catalogue ``hs8_codes``, passed as ``hs8_codes``):
+    the national sources speak CN8, so a price is per grade, not per 6-digit mix (todo 17.1)."""
+    out = []
+    for c in request.get("hs8_codes") or []:
+        d = "".join(ch for ch in str(c) if ch.isdigit())
+        if len(d) >= 8 and d[:6] == hs[:6]:
+            out.append(d[:8])
+    return list(dict.fromkeys(out))
+
+
 def _empty(source: str, market: str, hs_code: str, **extra: Any) -> dict[str, Any]:
     return {"source": source, "market": market, "hs_code": hs_code, "records": 0, "months": [],
             "value_usd": None, "quantity_mt": None, "unit_value_usd_per_mt": None,
@@ -136,11 +147,14 @@ class UkHmrcTradeConnector(Connector):
         months = _months(int(request.get("months") or 12))
         if not enabled():
             return _empty(self.name, market, hs, disabled=True)
-        lo = int(hs.ljust(8, "0"))
-        hi = int(hs.ljust(8, "9"))
+        cn8 = _cn8_codes(request, hs)
         start, end = months[0].replace("-", ""), months[-1].replace("-", "")
+        if cn8:
+            code_filter = "(" + " or ".join(f"CommodityId eq {int(c)}" for c in cn8) + ")"
+        else:
+            code_filter = f"CommodityId ge {int(hs.ljust(8, '0'))} and CommodityId le {int(hs.ljust(8, '9'))}"
         params = {
-            "$filter": (f"CommodityId ge {lo} and CommodityId le {hi} and MonthId ge {start} and MonthId le {end} "
+            "$filter": (f"{code_filter} and MonthId ge {start} and MonthId le {end} "
                         "and (FlowTypeId eq 1 or FlowTypeId eq 3)"),
             "$select": "MonthId,CountryId,Value,NetMass",
             "$expand": "Country($select=CountryCodeAlpha)",
@@ -165,7 +179,9 @@ class UkHmrcTradeConnector(Connector):
         except Exception as exc:  # noqa: BLE001 - a statistics outage never breaks a scan
             logger.warning("UK HMRC: query failed for %s: %s", hs, exc)
             return _empty(self.name, market, hs, error=str(exc))
-        return summarise(rows, source=self.name, market=market, hs_code=hs, currency="GBP", months=months)
+        out = summarise(rows, source=self.name, market=market, hs_code=hs, currency="GBP", months=months)
+        out["cn8_codes"] = cn8
+        return out
 
     async def book(self, request: dict[str, Any]) -> dict[str, Any]:
         return {"status": "not_supported"}
@@ -206,8 +222,10 @@ class EurostatComextConnector(Connector):
         months = _months(int(request.get("months") or 12))
         if not enabled():
             return _empty(self.name, market, hs, disabled=True)
+        cn8 = _cn8_codes(request, hs)
         params: list[tuple[str, str]] = [
-            ("reporter", market), ("partner", "IN"), ("partner", "EXT_EU27_2020"), ("product", hs),
+            ("reporter", market), ("partner", "IN"), ("partner", "EXT_EU27_2020"),
+            *[("product", c) for c in (cn8 or [hs])],
             ("flow", "1"), ("freq", "M"), ("indicators", "VALUE_IN_EUROS"), ("indicators", "QUANTITY_IN_100KG"),
             *[("time", m) for m in months],
         ]
@@ -228,6 +246,7 @@ class EurostatComextConnector(Connector):
         out.update({k: in_sum[k.replace("india_", "", 1)] for k in
                     ("india_value_usd", "india_quantity_mt", "india_unit_value_usd_per_mt")})
         out["records"] = len(rows)
+        out["cn8_codes"] = cn8
         return out
 
     @staticmethod

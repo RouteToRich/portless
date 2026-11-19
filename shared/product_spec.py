@@ -238,3 +238,41 @@ def from_supplier_offer(offer: Any) -> dict[str, Any]:
             "port_of_loading": g("port_of_loading"), "certificates": g("certifications") or None,
             "lead_time_days": g("lead_time_days"), "payment_terms": g("payment_terms"),
             **(getattr(offer, "spec", None) or {})}
+
+
+# ── The agreed specification of a deal (todo 15.3 "carried into the deal") ──────────────
+
+def agreed_spec(deal: Any) -> dict[str, Any]:
+    """What the buyer asked for and the supplier supplies, from the confirmed pair: the buyer's
+    requirement spec (and grade), narrowed to the supplier's value where both name one. Empty
+    when nothing was stated — the documents then keep the HS description alone."""
+    sel = getattr(deal, "selected_pair", None) or {}
+    cand = next((c for c in getattr(deal, "buyer_candidates", None) or []
+                 if getattr(c, "candidate_id", None) == sel.get("candidate_id")), None)
+    if cand is None:
+        cand = next((c for c in getattr(deal, "buyer_candidates", None) or []
+                     if str(getattr(c, "status", "")) == "selected"), None)
+    offer = next((o for o in getattr(deal, "supplier_offers", None) or []
+                  if getattr(o, "offer_id", None) == sel.get("offer_id")), None)
+    req = getattr(cand, "requirement", None) if cand is not None else None
+    out: dict[str, Any] = {}
+    if req is not None and getattr(req, "grade", None):
+        out["grade"] = req.grade
+    out.update(dict(getattr(req, "spec", None) or {}) if req is not None else {})
+    for k, v in (getattr(offer, "spec", None) or {}).items():
+        if k not in out:
+            continue
+        have = v if isinstance(v, list) else [v]
+        want = out[k] if isinstance(out[k], list) else [out[k]]
+        both = [w for w in want if w in have]
+        if both:
+            out[k] = both[0] if len(both) == 1 else both
+    return out
+
+
+def spec_text(deal: Any) -> str:
+    """"red · 55 mm+ · 25 kg mesh" for documents and booking notes ("" when nothing agreed)."""
+    parts = []
+    for v in agreed_spec(deal).values():
+        parts.append(", ".join(map(str, v)) if isinstance(v, list) else str(v))
+    return " · ".join(p for p in parts if p)

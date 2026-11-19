@@ -213,7 +213,8 @@ def _spec_questions(deal: Any, cand: Any) -> str:
     return "  6. For the exact product: " + "; ".join(qs) + "\n"
 
 
-def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | None = None) -> tuple[str, str]:
+def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | None = None,
+          variant: str | None = None) -> tuple[str, str]:
     """The buyer's first e-mail from PortLess — written to earn a reply.
 
     Structure: why we are writing to *them* (actor pitch angle, or the product
@@ -252,6 +253,9 @@ def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | No
         f"I am reaching out because your company imports {product}, and we would like to offer you a "
         "reliable, low-risk way to buy it directly from verified manufacturers in India."
     )
+    if (variant or getattr(cand, "outreach_variant", None)) == "b":
+        from shared.orchestration.outreach_ab import opener_b
+        opener = opener_b(product)
     if market_line:
         opener = f"{opener}\n\n{market_line}"
     body = (
@@ -287,7 +291,14 @@ async def _gate(deal: Any, cand: Any, *, followup: bool) -> str | None:
     from services.hitl_approval.service import create_approval  # type: ignore[import]
     from shared.orchestration.autonomy_policy import resolve_gate
 
-    subject, body = draft(deal, cand, followup=followup,
+    variant = None
+    if not followup:
+        from services.deals.service import update_buyer_candidate  # type: ignore[import]
+        from shared.orchestration import outreach_ab
+        variant = await outreach_ab.variant_for(deal, cand)
+        if getattr(cand, "outreach_variant", None) != variant:
+            await update_buyer_candidate(deal.deal_id, cand.candidate_id, {"outreach_variant": variant})
+    subject, body = draft(deal, cand, followup=followup, variant=variant,
                           market_line=None if followup else await market_fact(deal))
     spec = resolve_gate(ACTION, deal)
     kind = "followup" if followup else "intro"

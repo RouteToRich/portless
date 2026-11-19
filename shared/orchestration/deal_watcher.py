@@ -439,6 +439,15 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     except Exception as exc:  # noqa: BLE001
         logger.error("DealWatcher: prospect clean-up failed: %s", exc)
 
+    # Buyers near their usual next order: a priced repeat offer behind its gate (reorder_agent.py).
+    try:
+        from shared.orchestration import reorder_agent
+        res = await reorder_agent.sweep(now)
+        if res.get("offered"):
+            counts["reorders_offered"] = res["offered"]
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: reorder agent failed: %s", exc)
+
     # Interested buyer, no supplier quote after the stall period: widen the RFQ (sourcing_agent.py).
     try:
         from shared.orchestration import sourcing_agent

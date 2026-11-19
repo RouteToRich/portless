@@ -79,14 +79,77 @@ async def _one(provider: str, request: dict[str, Any]) -> dict[str, Any]:
         return {"provider": provider, "rate_usd": None, "error": str(exc)[:200]}
 
 
+LCL_MAX_MT = 15.0
+
+
+def _equipment(hs_code: str | None) -> tuple[list[dict[str, Any]], float | None]:
+    """The box types to ask for (dry or reefer, per the catalogue) and the stowage factor."""
+    from shared.orchestration.container_choice import EQUIPMENT
+    kind, m3 = "dry", None
+    try:
+        from shared import catalogue
+        line = catalogue.line_for(hs_code or "")
+        if line is not None:
+            kind = (line.container_type or "dry").lower()
+            m3 = getattr(line, "m3_per_mt", None)
+    except Exception:  # noqa: BLE001
+        pass
+    return EQUIPMENT.get(kind, EQUIPMENT["dry"]), m3
+
+
+def cheapest_plan(quotes: list[dict[str, Any]], quantity_mt: float, m3_per_mt: float | None,
+                  max_transit: int | None = None) -> dict[str, Any] | None:
+    """Pure: per provider, the cheapest mix of the quoted box types for the lot (container_choice
+    .plan_mix, payload / volume limits by box) or its LCL price; the cheapest provider plan wins.
+    Cost per tonne decides — a 40' HC beats two 20' only when the cargo fills it."""
+    from shared.orchestration.container_choice import EQUIPMENT, plan_mix, tonnes_per_box
+    specs = {o["code"]: o for opts in EQUIPMENT.values() for o in opts}
+    by_provider: dict[str, list[dict[str, Any]]] = {}
+    for q in quotes:
+        if q.get("rate_usd") and not q.get("stub") and not q.get("error") and \
+                (max_transit is None or q.get("transit_days") is None or q["transit_days"] <= max_transit):
+            by_provider.setdefault(q["provider"], []).append(q)
+    best: dict[str, Any] | None = None
+    for provider, rows in by_provider.items():
+        lcl = next((r for r in rows if r.get("equipment") == "LCL"), None)
+        options = [{"code": r["equipment"], "tonnes": tonnes_per_box(specs[r["equipment"]], m3_per_mt),
+                    "usd": r["rate_usd"]} for r in rows if r.get("equipment") in specs]
+        plan = plan_mix(quantity_mt, options) if options else None
+        cand = None
+        if plan and plan.get("usd"):
+            cand = {"provider": provider, "boxes": plan["boxes"], "usd": plan["usd"], "usd_per_mt": plan["usd_per_mt"],
+                    "fill_pct": plan["fill_pct"]}
+        if lcl and (cand is None or lcl["rate_usd"] < cand["usd"]):
+            cand = {"provider": provider, "boxes": {"LCL": 1}, "usd": lcl["rate_usd"],
+                    "usd_per_mt": round(lcl["rate_usd"] / quantity_mt, 2) if quantity_mt else None, "fill_pct": 100.0}
+        if cand and (best is None or cand["usd"] < best["usd"]):
+            best = cand
+    return best
+
+
 async def compare(*, origin: str | None, destination: str | None, market: str | None, hs_code: str | None,
                   container_type: str = "40HC", quantity_mt: float | None = None) -> dict[str, Any]:
     if not enabled():
         return {"enabled": False, "quotes": [], "chosen": None}
     names = providers()
-    request = {"origin_port": origin or "", "destination_port": destination or "", "hs_code": hs_code or "",
-               "container_type": container_type, "cargo_weight_mt": quantity_mt}
-    quotes = list(await asyncio.gather(*(_one(p, request) for p in names))) if names else []
+    base = {"origin_port": origin or "", "destination_port": destination or "", "hs_code": hs_code or "",
+            "cargo_weight_mt": quantity_mt}
+    request = {**base, "container_type": container_type}
+    jobs: list[tuple[str, str, dict[str, Any]]] = []
+    equipment, m3_per_mt = _equipment(hs_code)
+    if quantity_mt:  # one quote per box type (and LCL for a small lot) → cheapest per tonne
+        for p in names:
+            for opt in equipment:
+                jobs.append((p, opt["code"], {**base, "container_type": opt["code"]}))
+            if quantity_mt <= LCL_MAX_MT:
+                jobs.append((p, "LCL", {**base, "container_type": "LCL", "load_type": "LCL",
+                                        "volume_cbm": round(quantity_mt * (m3_per_mt or 1.5), 2)}))
+    else:
+        jobs = [(p, container_type, request) for p in names]
+    results = await asyncio.gather(*(_one(p, req) for p, _, req in jobs)) if jobs else []
+    quotes = []
+    for (p, equip, _), q in zip(jobs, results):
+        quotes.append({**q, "equipment": equip})
     try:
         max_transit = int(os.getenv("FREIGHT_MAX_TRANSIT_DAYS", "") or 0) or None
     except ValueError:
@@ -97,8 +160,9 @@ async def compare(*, origin: str | None, destination: str | None, market: str | 
         for q in quotes:
             if q.get("rate_usd"):
                 q["lane_check"] = await freight_lanes.check_quote(market, q["rate_usd"], kind)
-    chosen = choose(quotes, max_transit)
+    plan = cheapest_plan(quotes, float(quantity_mt), m3_per_mt, max_transit) if quantity_mt else None
+    chosen = None if plan else choose(quotes, max_transit)
     return {"enabled": True, "providers": names, "quotes": quotes,
-            "chosen": chosen["provider"] if chosen else None,
-            "chosen_rate_usd": chosen["rate_usd"] if chosen else None,
-            "max_transit_days": max_transit}
+            "chosen": plan["provider"] if plan else (chosen["provider"] if chosen else None),
+            "chosen_rate_usd": (plan["usd"] if plan else (chosen["rate_usd"] if chosen else None)),
+            "plan": plan, "max_transit_days": max_transit}

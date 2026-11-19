@@ -125,6 +125,8 @@ class SupplierOffer(BaseModel):
     """Road distance mill → port, for an EXW price."""
     spec: dict[str, Any] = Field(default_factory=dict)
     """Catalogue template attributes the supplier supplies (variety, sizes, packing …)."""
+    relay_evidence: dict[str, Any] | None = None
+    """A quote relayed by staff (phone / WhatsApp): its evidence (relay_evidence.Evidence)."""
     moq_mt: float | None = None
     capacity_mt_per_month: float | None = None
     lead_time_days: int | None = None
@@ -168,6 +170,8 @@ class BuyerCandidate(BaseModel):
     validation_status: str | None = None
     """Scan-time check of this buyer (``verified`` / ``unverified``; ``failed`` ones are never candidates)."""
     status: Literal["pending", "contacted", "followed_up", "interested", "declined", "no_reply", "selected"] = "pending"
+    outreach_variant: str | None = None
+    """Introduction angle (``a`` / ``b``) — outreach_ab.py counts replies per variant."""
     contacted_at: datetime | None = None
     followed_up_at: datetime | None = None
     replied_at: datetime | None = None
@@ -267,6 +271,8 @@ class DealRecord(BaseModel):
     est_margin_pct: float | None = None
     realized_margin_pct: float | None = None
     # ── Prospect parked (prospect_actions.park): no reminders, record kept ──
+    reorder_offered_at: datetime | None = None
+    """When the reorder agent last offered this buyer a repeat (reorder_agent.py)."""
     sourcing_widened_at: datetime | None = None
     """When the supplier sourcing agent last widened a stalled RFQ (sourcing_agent.py)."""
     parked_at: datetime | None = None
@@ -371,6 +377,9 @@ class UpdatePartyRequest(BaseModel):
     /deals/{id}/parties/{role}). Only provided fields change; an operator-set
     contact is marked ``contact_source="operator"`` and is never overwritten by
     a later actor run."""
+
+    evidence: dict[str, Any] | None = None
+    """How the change was heard (relay_evidence.Evidence) — kept in the audit log, not on the party."""
 
     legal_name: str | None = None
     country: str | None = None

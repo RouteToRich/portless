@@ -91,6 +91,48 @@ async def catalogue_accept_market(body: AcceptMarket, user=Depends(_staff())) ->
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+class SupplierDocument(BaseModel):
+    kind: str
+    filename: str = Field(min_length=1)
+    content_b64: str | None = None
+    url: str | None = None
+    mime_type: str = "application/pdf"
+    number: str | None = None
+    valid_until: str | None = None
+    note: str | None = None
+
+
+@router.post("/suppliers/{record_id:path}/documents")
+async def add_supplier_document(record_id: str, body: SupplierDocument, user=Depends(_staff())) -> dict:
+    """Attach an onboarding paper (GST certificate, cancelled cheque, bank letter, FSSAI, APEDA …)."""
+    from . import supplier_onboarding
+    try:
+        return await supplier_onboarding.add_document(record_id, by=getattr(user, "email", None) or "staff",
+                                                      **body.model_dump())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class BankVerified(BaseModel):
+    doc_id: str
+    note: str | None = None
+
+
+@router.post("/suppliers/{record_id:path}/bank-verified")
+async def supplier_bank_verified(record_id: str, body: BankVerified, user=Depends(_staff())) -> dict:
+    """A person checked the bank account against the cancelled cheque / bank letter on file."""
+    from . import supplier_onboarding
+    try:
+        return await supplier_onboarding.verify_bank(record_id, doc_id=body.doc_id, note=body.note,
+                                                     by=getattr(user, "email", None) or "staff")
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/suppliers/{record_id:path}/markets")
 async def supplier_markets(record_id: str) -> dict:
     """Every market whose directory buyers want this supplier's products (supplier-led
@@ -341,6 +383,37 @@ async def clean_directory(user=Depends(_staff())) -> dict:
     changed = await directory.clean_existing()
     roles = await directory.clean_roles()
     return {"changed": changed, **roles, "notes_scrubbed": await directory.scrub_notes()}
+
+
+@router.get("/personal-data/retention")
+async def personal_data_retention_preview() -> dict:
+    """Directory companies whose personal contact data the retention sweep would remove
+    (never contacted, in no prospect or deal, not seen for PERSONAL_DATA_RETENTION_DAYS)."""
+    from . import personal_data
+    rows = await personal_data.retention_candidates()
+    return {"count": len(rows), "ids": [r.id for r in rows[:200]], "retention_days": personal_data.personal_retention_days()}
+
+
+@router.post("/personal-data/retention")
+async def personal_data_retention_run(user=Depends(_staff())) -> dict:
+    from . import personal_data
+    return await personal_data.run_retention(by=getattr(user, "email", None) or "staff")
+
+
+class EraseRequest(BaseModel):
+    reason: str = Field(min_length=5)
+
+
+@router.post("/{role}/{record_id:path}/erase")
+async def erase_personal_data(role: str, record_id: str, body: EraseRequest, user=Depends(_staff())) -> dict:
+    """Erase a person's contact data on request (DPDP): contacts removed, company do-not-contact;
+    signed deals keep what their statutory records need until the retention date."""
+    from . import personal_data
+    r = _role_of(role)
+    try:
+        return await personal_data.erase(r, record_id, by=getattr(user, "email", None) or "staff", reason=body.reason)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/{role}/{record_id:path}/products")
@@ -893,6 +966,21 @@ async def list_opportunities(
     if found_by:
         rows = [o for o in rows if (getattr(o, "found_by", None) or "market_statistics") == found_by]
     return rows
+
+
+@router.get("/opportunities/company-led")
+async def company_led_preview() -> list[dict]:
+    """Product × market groups where the directory alone supports an opportunity (checked,
+    contactable buyers + reachable Indian suppliers), even without a measured Comtrade gap."""
+    from . import company_led
+    return await company_led.preview()
+
+
+@router.post("/opportunities/company-led")
+async def company_led_create(user=Depends(_staff())) -> dict:
+    """Create those opportunities (found_by=directory); corridors already listed are skipped."""
+    from . import company_led
+    return await company_led.create()
 
 
 @router.get("/opportunities/found-by")

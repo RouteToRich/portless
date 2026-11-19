@@ -388,9 +388,18 @@ def _buyer_record(b: BuyerSignal, hs_code: str, market: str, outcome: str,
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=b.validation,
         flags=list(b.flags or []), vat_number=b.vat_number, lei=b.lei, legal_name=b.legal_name,
         annual_volume_mt=b.annual_volume_mt, shipments_12m=b.shipments_12m, people=list(b.people or []),
+        product_facts=_site_facts(hs_code, b.fit_reason, b.website),
         volume_source=b.source if (b.annual_volume_mt or b.shipments_12m) else None,
         order_size_band=_band(b),
     )
+
+
+def _site_facts(hs_code: str, text: str | None, website: str | None) -> dict[str, Any]:
+    from .site_facts import product_facts_json
+    try:
+        return product_facts_json(hs_code, text, ref=website)
+    except Exception:  # noqa: BLE001 - facts never block recording
+        return {}
 
 
 def _band(b: BuyerSignal) -> str | None:
@@ -414,6 +423,7 @@ def _supplier_record(s: SellerCandidate, hs_code: str, market: str, outcome: str
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=s.validation,
         flags=list(s.flags or []), vat_number=s.vat_number, cin=s.cin, udyam=s.udyam, people=list(s.people or []),
+        product_facts=_site_facts(hs_code, s.fit_reason, s.website),
         incorporation_year=s.incorporation_year,
     )
 

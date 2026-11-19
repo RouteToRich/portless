@@ -146,6 +146,7 @@ pytest tests/test_search_terms.py        # buyer search line in the market's lan
 pytest tests/test_cost_meter.py          # platform running costs per day (LLM / Apify / Tavily / fixed), GET /health/costs
 pytest tests/test_idempotency_audit.py   # concurrent approvals → one decision; webhook ×10 → booked once; double release
 pytest tests/test_apify_usage.py         # Apify run / USD budget in Mongo per day, result cache, tracking pause after source_refused, qualifier "unchecked", VAT/LEI to screening, retired slots
+pytest tests/test_supplier_ops_batch.py  # supplier relays + evidence, onboarding docs + bank check before first payout, container plan, freight per box type / LCL, agreed spec in PI/PO/notes, exact-product export policy, site facts + certificates, Census anchor, CN8, company-led opportunities, price discovery, reorder agent, document check, claim options, outreach A/B, DPDP erase / retention
 pytest tests/test_product_spec_batch.py  # product spec template + facts per company (source / date / precedence, replies, deals, staff), ask what is missing, spec conflicts block a pair, volume line / band / lot, source merge rule, found-by, proposed / supplier markets, people, sourcing agent, scan plan, scorecard, mandi prior, quality rules, freight index + compare, inspection options, env parity
 pytest tests/test_scan_data_batch.py     # CIN age, directory role clean-up + note scrub, reply quantity in containers / bags, HMRC + Comext, registration duplicates, source yield, RFQ widening, harvest calendar, QIMA inspection-day poll
 pytest tests/test_journey_replay.py      # LLM journey counterparty replies recorded and replayed (--replay-run)
@@ -606,7 +607,9 @@ NATIONAL_TRADE_SOURCES_ENABLED (true)   # UK HMRC + Eurostat Comext in Phase 1 (
 SOURCING_AGENT_ENABLED (true) / SOURCING_AGENT_MAX_NEW (3)   # stalled RFQ widened to directory suppliers (shared/orchestration/sourcing_agent.py)
 FREIGHT_COMPARE_QUOTES (true) / FREIGHT_COMPARE_PROVIDERS / FREIGHT_MAX_TRANSIT_DAYS   # cheapest freight quote proposed at BOOK_FREIGHT; LANE_QUOTE_DEVIATION_PCT (20) lane index
 WORLDWIDE_MARKET_MIN_BUYERS (3) / SOURCE_DISAGREE_PCT (25) / SCAN_PLAN_* / SCORECARD_MIN_DECISIONS (30) / INSPECTION_PSI_ONLY_MAX_MT (100)
-# Ops docs: docs/operations/RUNBOOKS.md, DISASTER_RECOVERY.md; env parity: python scripts/env_parity.py dev=.env production=prod.env
+SUPPLIER_BANK_VERIFICATION_REQUIRED (true; pinned off in tests / catalogue) / RELAY_EVIDENCE_REQUIRED (false) / REORDER_AGENT_ENABLED (true; off in tests) / PRICE_DISCOVERY_ALL_BUYERS (true)
+COMPANY_LED_MIN_BUYERS (3) / COMPANY_LED_MIN_SUPPLIERS (2) / OUTREACH_AB_MIN_SENDS (20) / CLAIM_DISCOUNT_MAX_PCT (10) / PERSONAL_DATA_RETENTION_DAYS (730) / RECORD_RETENTION_YEARS (8)
+# Ops docs: docs/operations/RUNBOOKS.md, DISASTER_RECOVERY.md, OPERATOR_GUIDE.md, SECRETS.md, DATA_RETENTION.md; env parity: python scripts/env_parity.py dev=.env production=prod.env
 QC_POLL_MINUTES_INSPECTION_DAY (15) / QC_INSPECTION_DAY_POLL_DAYS_AFTER (2)   # QIMA poll on the inspection day; HARVEST_MONTHS_<COMMODITY> overrides the crop calendar
 ENRICHMENT_ON_DEAL_CREATED   # default true â€” contact finder + sanctions screening at deal.created
 TRADE_MIN_VALIDATION_ENABLED / TRADE_MIN_VALIDATION_TOP_N (5) / TRADE_MIN_VALIDATION_MAX_AGE_DAYS (30)   # scan-time buyer / supplier check (radar "Verified only"); readiness `counterparty_validation` fails in production when off or without APIFY_TOKEN

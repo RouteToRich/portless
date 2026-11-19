@@ -258,6 +258,15 @@ def score_of(r: CounterpartyRecord, rel: dict[str, Any], track: dict[str, Any] |
     if evidence or r.cin or r.lei:
         pts += 5
         basis.append("company register evidence (+5)")
+    # Certificates the supplier shows (its site, its papers): supplier trust (todo 13.6).
+    if r.role == "supplier":
+        certs = {c for pf in (r.product_facts or {}).values()
+                 for c in ((((pf or {}).get("facts") or {}).get("certificates") or {}).get("value") or [])}
+        certs |= {d.get("kind") for d in (r.documents or []) if d.get("kind") in ("fssai", "apeda_rcmc", "iso", "organic")}
+        if certs:
+            bonus = min(6, 2 * len(certs))
+            pts += bonus
+            basis.append(f"{len(certs)} certificate(s) (+{bonus})")
     bad_flags = {"role_suspect", "product_mismatch"} & set(r.flags or [])
     if bad_flags:
         pts -= 30

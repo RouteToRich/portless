@@ -79,6 +79,10 @@ os.environ["QC_FACILITY_ADDRESS_REQUIRED"] = "false"  # the suites book QC witho
 # The negotiation also waits for the buyer's packing requirements before an
 # agreement (shared/orchestration/packing.py); tests/test_packing.py turns it on.
 os.environ["NEGOTIATION_PACKING_REQUIRED"] = "false"
+# The first supplier payout waits for a person when its bank account was never verified
+# (services/trade_min/supplier_onboarding.py); tests/test_supplier_ops_batch.py turns it on.
+os.environ["SUPPLIER_BANK_VERIFICATION_REQUIRED"] = "false"
+os.environ["REORDER_AGENT_ENABLED"] = "false"  # tests/test_supplier_ops_batch.py runs it on its own
 # QC, freight, customs, escrow and payout connectors answer from stubs only in
 # INTEGRATION_MODE=sandbox (shared/integration_mode.py); live mode always calls
 # the provider. The suite runs in sandbox; tests of the live HTTP paths set

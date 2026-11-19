@@ -23,6 +23,8 @@ from .schemas import (
     UpdatePartyRequest,
     UpdateStatusRequest,
 )
+from shared.orchestration.relay_evidence import Evidence as RelayEvidence
+
 from .service import DealNotFoundError, InvalidTransitionError
 
 logger = logging.getLogger(__name__)
@@ -235,6 +237,48 @@ async def funnel(days: int = Query(default=90, ge=1, le=730), user: AuthUser = D
     return await f.build(days, org_id=require_org_scope(user))
 
 
+@router.get("/{deal_id}/claim-options", response_model=dict)
+async def claim_options(deal_id: str, affected_share: float = Query(1.0, gt=0, le=1),
+                        supplier_at_fault: bool = True, user: AuthUser = Depends(require_portless)) -> dict:
+    """After a failed QC or a complaint: re-inspection, discount, replacement, partial refund,
+    cancel — each with its cost to PortLess and the supplier, cheapest first."""
+    from shared.orchestration import claims
+    try:
+        return await claims.claim_options(deal_id, affected_share=affected_share, supplier_at_fault=supplier_at_fault)
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class DocumentCheck(BaseModel):
+    kind: str
+    text: str = Field(min_length=1)
+    raise_on_mismatch: bool = True
+
+
+@router.post("/{deal_id}/documents/check", response_model=dict)
+async def check_document(deal_id: str, body: DocumentCheck, user: AuthUser = Depends(require_portless)) -> dict:
+    """Compare a document someone sent (certificate, invoice, packing list, draft B/L, report)
+    with the deal's facts; a mismatch on a money / customs document raises DOCUMENT_ERROR."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import document_check
+    try:
+        return await document_check.check(deal_id, body.kind, body.text, raise_on_mismatch=body.raise_on_mismatch)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/reorders/{deal_id}/offer", response_model=dict)
+async def reorder_offer(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    """Offer the buyer of a completed deal its repeat order now (priced by code, behind the gate)."""
+    from shared.orchestration import reorder_agent
+    try:
+        return await reorder_agent.offer_repeat(deal_id, by=user.email or user.user_id or "staff")
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/{deal_id}/sourcing/widen", response_model=dict)
 async def sourcing_widen(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
     """Ask more directory suppliers for a quote now (the sourcing agent's widening, by hand)."""
@@ -315,6 +359,14 @@ async def all_run_costs(user: AuthUser = Depends(require_portless)) -> list[dict
     """Run costs of every deal (LLM, Apify, operator decisions) — Money & Margin."""
     from shared import deal_costs
     return await deal_costs.all_summaries()
+
+
+@router.get("/outreach/variants", response_model=dict)
+async def outreach_variants(user: AuthUser = Depends(require_portless)) -> dict:
+    """Introductions sent and replies per opener variant, per product × market."""
+    from shared.orchestration import outreach_ab
+    deals = await service.get_repository().list_active(limit=2000)
+    return {"min_sends": outreach_ab.min_sends(), "corridors": outreach_ab.stats(deals)}
 
 
 @router.get("/reorders/due", response_model=list[dict])
@@ -547,10 +599,11 @@ async def update_party(
     """
     await _org_deal(deal_id, user)
     try:
-        updates = payload.model_dump(exclude_none=True)
+        updates = payload.model_dump(exclude_none=True, exclude={"evidence"})
         deal = await service.update_party(deal_id, role, updates, source="operator")
         from shared.audit_log import staff_relay
-        await staff_relay(user, f"party.{role}_updated", deal_id, fields=sorted(updates))
+        await staff_relay(user, f"party.{role}_updated", deal_id, fields=sorted(updates),
+                          evidence=payload.evidence)
         if role.lower() == "supplier" and updates.get("address"):
             # An inspection waiting for the facility address is booked now.
             from shared.orchestration import supplier_commitment
@@ -904,6 +957,8 @@ class OperatorNote(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     reason: str = Field(min_length=10, description="What the supplier said, how and when")
+    evidence: RelayEvidence | None = None
+    """Call note, WhatsApp screenshot, photo of the signed PO (relay_evidence.py)."""
 
 
 @router.get("/{deal_id}/supplier-commitment")
@@ -916,6 +971,28 @@ async def supplier_commitment_status(deal_id: str, user: AuthUser = Depends(get_
     return rec.model_dump(mode="json") if rec else {"deal_id": deal_id, "status": "none"}
 
 
+def _require_evidence(evidence: RelayEvidence | None) -> None:
+    from shared.orchestration import relay_evidence
+    try:
+        relay_evidence.check(evidence)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _stamp(evidence: RelayEvidence | None) -> dict | None:
+    from shared.orchestration import relay_evidence
+    return relay_evidence.stamp(evidence)
+
+
+@router.get("/{deal_id}/supplier-steps", response_model=dict)
+async def supplier_steps(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    """Each supplier-side step (quote, order confirmation, PO acknowledgement, goods-ready date,
+    facility address, bank details): done by e-mail or by a staff relay, with its evidence."""
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import relay_evidence
+    return await relay_evidence.supplier_steps(deal)
+
+
 @router.post("/{deal_id}/supplier-commitment/confirm")
 async def supplier_commitment_confirm(
     deal_id: str, body: OperatorNote, user: AuthUser = Depends(require_portless),
@@ -923,6 +1000,7 @@ async def supplier_commitment_confirm(
     """The supplier confirmed outside e-mail (phone, WhatsApp): open the
     CONFIRM_SUPPLIER_ORDER approval exactly as an e-mailed confirmation does."""
     await _org_deal(deal_id, user)
+    _require_evidence(body.evidence)
     from shared.orchestration import supplier_commitment
     rec = await supplier_commitment.get(deal_id)
     if rec is None or rec.status != "requested" or rec.current is None:
@@ -930,7 +1008,7 @@ async def supplier_commitment_confirm(
     await supplier_commitment._gate_confirmation(rec, f"operator:{user.email or user.user_id}", body.reason)
     from shared.audit_log import staff_relay
     await staff_relay(user, "supplier.order_confirmation_relayed", deal_id, supplier_id=rec.current.supplier_id,
-                      reason=body.reason)
+                      reason=body.reason, evidence=_stamp(body.evidence))
     return {"deal_id": deal_id, "status": "approval_requested", "supplier_id": rec.current.supplier_id}
 
 
@@ -945,7 +1023,8 @@ async def supplier_commitment_next(
         deal_id, "declined", note=f"{user.email or user.user_id}: {body.reason}",
     )
     from shared.audit_log import staff_relay
-    await staff_relay(user, "supplier.skipped_to_next", deal_id, outcome=outcome, reason=body.reason)
+    await staff_relay(user, "supplier.skipped_to_next", deal_id, outcome=outcome, reason=body.reason,
+                      evidence=_stamp(body.evidence))
     return {"deal_id": deal_id, "status": outcome}
 
 
@@ -955,12 +1034,13 @@ async def supplier_commitment_po_ack(
 ) -> dict:
     """The supplier acknowledged the PO outside e-mail: record it and book the inspection."""
     deal = await _org_deal(deal_id, user)
+    _require_evidence(body.evidence)
     if (getattr(deal.status, "value", deal.status)) != "PO_ISSUED":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="deal is not at PO_ISSUED")
     from shared.orchestration import supplier_commitment
     tpo = await supplier_commitment.acknowledge_po(deal_id, by=f"{user.email or user.user_id}: {body.reason}")
     from shared.audit_log import staff_relay
-    await staff_relay(user, "supplier.po_ack_relayed", deal_id, reason=body.reason)
+    await staff_relay(user, "supplier.po_ack_relayed", deal_id, reason=body.reason, evidence=_stamp(body.evidence))
     return {"deal_id": deal_id, "status": "acknowledged", "qc_order": getattr(tpo, "tpo_id", None)}
 
 
@@ -1184,6 +1264,10 @@ async def post_supplier_offer(
     """Operator adds / replaces a supplier's offer (e.g. a quote received by phone)."""
     deal = await _org_deal(deal_id, user)
     offer = offer.model_copy(update={"source": offer.source or "operator"})
+    if offer.source == "operator" or offer.relay_evidence:
+        from shared.audit_log import staff_relay
+        await staff_relay(user, "supplier.quote_relayed", deal_id, supplier_id=offer.supplier_id,
+                          fob_price_usd_per_mt=offer.fob_price_usd_per_mt, evidence=offer.relay_evidence)
     # The same check as a scanned supplier (reused when fresh), then the board is re-scored.
     from shared.orchestration import offer_checks
     offer = await offer_checks.check_offer(offer)

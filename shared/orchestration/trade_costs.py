@@ -253,7 +253,14 @@ def build(
         paid_by="PortLess" if ex_works else "supplier (inside FOB)",
         source="estimate", note=where + (f"; est. USD {inland:,.2f}/MT" if not ex_works else ""),
     ))
-    containers = max(1, round(qty / 25.0 + 0.49))
+    # Boxes from the container plan (product's MT per 20', 40' load factor), not a fixed 25 MT.
+    try:
+        from shared import catalogue
+        _mt20 = catalogue.container_for(hs_code)[0] if hs_code else None
+    except Exception:  # noqa: BLE001
+        _mt20 = None
+    _plan = container_plan(qty, _mt20)
+    containers = max(1, int(_plan["containers_20"]) + int(_plan["containers_40"]))
     origin_handling = _f("TRADE_COST_ORIGIN_HANDLING_USD_PER_CONTAINER", 180.0) * containers / qty
     lines.append(CostLine(
         key="origin_handling", label="Origin terminal handling and container stuffing",
