@@ -503,6 +503,10 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
         ("refusals", "shared.orchestration.refusals", "daily"),
         ("registration_checks", "shared.orchestration.registration_checks", "monthly"),
         ("demand_leads", "shared.orchestration.demand_leads", "daily"),
+        ("india_exports", "services.trade_min.india_exports", "monthly"),
+        ("directory_sources", "services.trade_min.directory_sources", "weekly"),
+        ("freight_procurement", "shared.orchestration.freight_procurement", "sweep"),
+        ("country_feeds", "shared.country_feeds", "daily"),
     )
     import importlib
     for label, module, fn in data_jobs:

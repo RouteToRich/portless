@@ -164,6 +164,37 @@ class MissionImportBody(BaseModel):
     rows: list[dict] | None = None
 
 
+class ForwarderBody(BaseModel):
+    forwarder_id: str | None = None
+    name: str
+    email: str
+    lanes: list[str] = Field(default_factory=list)
+    phone: str | None = None
+
+
+@router.get("/freight/forwarders")
+async def freight_forwarders(market: str | None = None, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import freight_procurement
+    return {"forwarders": await freight_procurement.forwarders(market)}
+
+
+@router.put("/freight/forwarders")
+async def put_freight_forwarder(body: ForwarderBody, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import freight_procurement
+    try:
+        return await freight_procurement.put_forwarder(body.model_dump(), by=_staff_name(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/compliance/country-feeds/run")
+async def run_country_feeds(user: AuthUser = Depends(require_portless)) -> dict:
+    """Read the sanctions / FATF / OECD feeds now: blocked applies at once, the rest are suggestions."""
+    _officer(user, "run the country risk feeds")
+    from shared import country_feeds
+    return await country_feeds.run()
+
+
 @router.get("/cha/agents")
 async def cha_agents(user: AuthUser = Depends(require_portless)) -> dict:
     from shared.orchestration import cha
@@ -1787,6 +1818,43 @@ class LoiBody(BaseModel):
     spec: str | None = None
     reference: str | None = None
     candidate_id: str | None = None
+
+
+class FreightRequestBody(BaseModel):
+    ready_date: str | None = None
+    port_of_loading: str | None = None
+    port_of_discharge: str | None = None
+
+
+@router.get("/{deal_id}/freight/quotes")
+async def deal_freight_quotes(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import freight_procurement
+    deal = await _org_deal(deal_id, user)
+    rfq = deal.freight_rfq or {}
+    return {**rfq, "best": freight_procurement.best(rfq)}
+
+
+@router.post("/{deal_id}/freight/request")
+async def deal_freight_request(deal_id: str, body: FreightRequestBody, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import freight_procurement
+    await _org_deal(deal_id, user)
+    try:
+        return await freight_procurement.request_quotes(deal_id, by=_staff_name(user), ready_date=body.ready_date,
+                                                        pol=body.port_of_loading, pod=body.port_of_discharge)
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{deal_id}/freight/counter")
+async def deal_freight_counter(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import freight_procurement
+    await _org_deal(deal_id, user)
+    try:
+        return await freight_procurement.counter(deal_id, by=_staff_name(user))
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/{deal_id}/cha")

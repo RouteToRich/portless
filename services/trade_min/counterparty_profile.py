@@ -177,6 +177,14 @@ def next_actions(rec: CounterpartyRecord, rows: list[dict], open_prospects: list
     return acts
 
 
+def _potential(rec: Any) -> dict[str, Any] | None:
+    try:
+        from .directory_sources import potential
+        return potential(rec)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def profile(role: str, record_id: str) -> dict[str, Any]:
     rec = await _record(role, record_id)
     rec = (await directory.with_open_opportunities([rec]))[0]
@@ -189,7 +197,8 @@ async def profile(role: str, record_id: str) -> dict[str, Any]:
         "company": rec.model_dump(mode="json"),
         "volume": {"line": volume_line(rec.annual_volume_mt, rec.shipments_12m, rec.volume_source),
                    "order_mt": order_mt(rec.annual_volume_mt, rec.shipments_12m),
-                   "band": rec.order_size_band, "band_is_estimate": bool(rec.order_size_band)},
+                   "band": rec.order_size_band, "band_is_estimate": bool(rec.order_size_band),
+                   "potential": _potential(rec)},
         "engagements": rows,
         "correspondence": await correspondence(rec, sorted(engaged)),
         "timeline": events[:50],

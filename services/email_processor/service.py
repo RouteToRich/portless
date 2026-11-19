@@ -549,13 +549,17 @@ async def _third_party_thread(record: InboundEmailRecord, raw: InboundRawEmail) 
     """Replies that are not a buyer / supplier negotiation: the customs broker on ``[CHA:<deal>]``
     (cha.py), an Indian mission on ``[MISSION:<id>]`` and buyer enquiries from Trade Connect / the
     Indian Business Portal (gov_leads.py). None when the e-mail is none of them."""
-    from shared.orchestration import cha, gov_leads
+    from shared.orchestration import cha, freight_procurement, gov_leads
     handled: dict | None = None
     deal_id = cha.parse_token(raw.subject)
+    frt_deal = freight_procurement.parse_token(raw.subject)
     try:
         if deal_id:
             handled = {"kind": "cha", "deal_id": deal_id,
                        **(await cha.handle_reply(deal_id, raw.from_address, raw.body_text))}
+        elif frt_deal:
+            handled = {"kind": "freight_quote", "deal_id": frt_deal,
+                       **(await freight_procurement.handle_reply(frt_deal, raw.from_address, raw.body_text))}
         elif (rid := gov_leads.parse_token(raw.subject)):
             handled = {"kind": "mission", **(await gov_leads.handle_mission_reply(rid, raw.from_address, raw.body_text))}
         else:

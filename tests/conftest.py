@@ -94,6 +94,11 @@ os.environ["DESTINATION_RULES_ENABLED"] = "false"
 os.environ["REFUSALS_ENABLED"] = "false"
 os.environ["REGISTRATION_CHECKS_ENABLED"] = "false"
 os.environ["DEMAND_LEADS_ENABLED"] = "false"
+os.environ["INDIA_EXPORTS_ENABLED"] = "false"
+os.environ["DIRECTORY_SOURCES_ENABLED"] = "false"
+os.environ["FREIGHT_PROCUREMENT_ENABLED"] = "false"
+os.environ["COUNTRY_FEEDS_ENABLED"] = "false"
+os.environ["RADAR_PROFIT_GATE"] = "false"  # the scan pipeline tests expect the gap gate: tests/test_radar_sources_batch.py
 os.environ["CHA_HANDOFF_ENABLED"] = "false"  # CHA pack at QC_PASSED: tests/test_trade_ops_batch.py
 # QC, freight, customs, escrow and payout connectors answer from stubs only in
 # INTEGRATION_MODE=sandbox (shared/integration_mode.py); live mode always calls

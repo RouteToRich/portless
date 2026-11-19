@@ -95,6 +95,7 @@ def _merge_raw(old: CounterpartyRecord | None, new: CounterpartyRecord) -> Count
                   "vat_number", "lei", "legal_name", "cin", "udyam", "incorporation_year",
                   "annual_volume_mt", "shipments_12m", "volume_source", "order_size_band",
                   "stated_quantity_mt", "stated_quantity_source", "stated_at", "product_range", "legal_notice",
+                  "last_import_date", "typical_shipment_mt", "frequency_days",
                   "linkedin_company_url"):
         value = getattr(new, field)
         # A supplier staff added by hand keeps what staff entered; a scan only fills gaps.

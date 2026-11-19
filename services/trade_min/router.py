@@ -765,6 +765,24 @@ async def post_screening_review(role: Literal["buyers", "suppliers"], record_id:
     return (await relationships.annotate([rec]))[0]
 
 
+@router.get("/india-exports", response_model=dict)
+async def india_export_stats(hs_code: str, market: str, fob: float | None = None) -> dict:
+    """India's own exports of the product to the market (A.1): last 12 months, trend, supplier check."""
+    from . import india_exports
+    return {"latest": india_exports.latest(hs_code, market),
+            "supplier_check": india_exports.supplier_check(hs_code, market, fob) if fob else None}
+
+
+@router.post("/directory/sources/run", response_model=dict)
+async def run_directory_source(connector: str, hs_code: str, market: str | None = None,
+                               user=Depends(_staff())) -> dict:
+    """Run one list actor now (paid once built) and put its companies into the directory."""
+    from . import directory_sources
+    if connector not in directory_sources.LIST_CONNECTORS:
+        raise HTTPException(status_code=422, detail=f"connector must be one of {', '.join(directory_sources.LIST_CONNECTORS)}")
+    return await directory_sources.run(connector, hs_code, market)
+
+
 @router.get("/buyers", response_model=list[CounterpartyRecord])
 async def list_buyers(
     hs_code: str | None = Query(default=None),
@@ -778,12 +796,15 @@ async def list_buyers(
     sort: str = Query(default="recent", description="score, recent, added, activity, stage, name, country, fit, price, seen"),
     order: Literal["asc", "desc"] | None = Query(default=None, description="Default per sort (score desc, name asc …)"),
     limit: int = Query(default=200, ge=1, le=1000),
+    attr: list[str] | None = Query(default=None, description="Product attribute filter, e.g. variety:red, packing:25 kg (with hs_code: that product)"),
 ) -> list[CounterpartyRecord]:
     """Every buyer a scan found, in any country — with or without an opportunity
     or deal — newest first, merged per company across scans."""
     rows = await directory.list_counterparties("buyer", hs_code=hs_code, market=market, q=q,
                                                country=country, limit=limit,
                                                validation=validation_status)
+    from . import product_facts
+    rows = product_facts.annotate(rows, product=hs_code, attrs=product_facts.attr_filter(attr))
     return _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort, order=order)
 
 
@@ -881,12 +902,15 @@ async def list_suppliers(
     sort: str = Query(default="recent", description="score, recent, added, activity, stage, name, country, fit, price, seen"),
     order: Literal["asc", "desc"] | None = Query(default=None, description="Default per sort (score desc, name asc …)"),
     limit: int = Query(default=200, ge=1, le=1000),
+    attr: list[str] | None = Query(default=None, description="Product attribute filter, e.g. variety:red, packing:25 kg (with hs_code: that product)"),
 ) -> list[CounterpartyRecord]:
     """Every supplier a scan found, in any country (``country=IN`` → India only) —
     with or without an opportunity or deal — newest first, merged per company."""
     rows = await directory.list_counterparties("supplier", hs_code=hs_code, market=market, q=q,
                                                country=country, limit=limit,
                                                validation=validation_status)
+    from . import product_facts
+    rows = product_facts.annotate(rows, product=hs_code, attrs=product_facts.attr_filter(attr))
     return _book(await relationships.annotate(rows), stage=stage, contactable=contactable, sort=sort, order=order)
 
 

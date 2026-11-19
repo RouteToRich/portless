@@ -187,6 +187,58 @@ async def staff_edit(role: str, record_id: str, hs_code: str, values: dict[str, 
     return await view(role, record_id)
 
 
+def spec_lines(rec: Any) -> list[dict[str, Any]]:
+    """Pure-ish: per product of a record, its one-line summary and completeness (Buyers & Suppliers rows)."""
+    from shared import catalogue
+    out = []
+    for code in list(dict.fromkeys([*(rec.product_facts or {}).keys()])):
+        facts = facts_of(rec, code)
+        if facts is None or not facts.facts:
+            continue
+        line = catalogue.line_for(code)
+        comp = product_spec.completeness(line, facts, rec.role)
+        out.append({"hs_code": code, "line": product_spec.summary_line(facts, line), "known": comp.get("known"),
+                    "total": comp.get("total"), "missing": comp.get("missing") or []})
+    return out
+
+
+def attr_filter(raw: list[str] | None) -> dict[str, str]:
+    """Pure: ``["variety:red", "packing:25 kg"]`` → ``{"variety": "red", "packing": "25 kg"}``."""
+    out = {}
+    for item in raw or []:
+        key, _, value = str(item).partition(":")
+        if key.strip() and value.strip():
+            out[key.strip().lower()] = value.strip().lower()
+    return out
+
+
+def matches(rec: Any, hs_code: str | None, attrs: dict[str, str]) -> bool:
+    """Does any product (or the given one) of the record carry every attribute value asked for?"""
+    codes = [hs6(hs_code)] if hs_code else list((rec.product_facts or {}).keys())
+    for code in codes:
+        facts = facts_of(rec, code)
+        if facts is None:
+            continue
+        have = {k.lower(): str(f.value).lower() for k, f in facts.facts.items()}
+        if all(v in have.get(k, "") for k, v in attrs.items()):
+            return True
+    return False
+
+
+def annotate(rows: list[Any], *, product: str | None = None, attrs: dict[str, str] | None = None) -> list[Any]:
+    """Fill ``spec_lines`` and keep only the rows matching the product / attribute filters."""
+    out = []
+    for r in rows:
+        if attrs and not matches(r, product, attrs):
+            continue
+        try:
+            r.spec_lines = spec_lines(r)
+        except Exception:  # noqa: BLE001
+            r.spec_lines = []
+        out.append(r)
+    return out
+
+
 async def view(role: str, record_id: str) -> dict[str, Any]:
     store = await directory.get_directory()
     rec = await store.get(record_id)

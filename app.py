@@ -186,6 +186,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from shared.orchestration import destination_rules as _dest, refusals as _refusals
         await _dest.load()
         await _refusals.load()
+        from services.trade_min import india_exports as _india_exports
+        await _india_exports.load()
     except Exception as exc:
         logger.error("Destination requirements / refusals not loaded: %s", exc)
 

@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 Side = Literal["supplier", "buyer"]
-Kind = Literal["supplier_quote", "supplier_offer", "supplier_agreed",
+Kind = Literal["supplier_quote", "supplier_offer", "supplier_agreed", "supplier_listed",
                "buyer_target", "buyer_counter", "buyer_accepted", "buyer_agreed", "indicative_offer"]
 
 _COLLECTION = "price_observations"
@@ -193,6 +193,8 @@ def estimate_from(
             w *= _OTHER_GRADE_WEIGHT
         if o.kind in ("buyer_agreed", "supplier_agreed", "buyer_accepted"):
             w *= 1.5  # a price someone actually committed to
+        elif o.kind == "supplier_listed":
+            w *= 0.5  # a marketplace list price: weaker than a quote
         points.append((o.price_usd_per_mt, w))
         n += 1
     if prior and prior > 0:

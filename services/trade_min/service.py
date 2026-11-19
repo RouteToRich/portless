@@ -422,6 +422,8 @@ async def _phase1_historical_demand(
             "Phase 1: no live demand data for %s×%s (%d/%d sources) — no opportunity",
             hs_code, market, result.active_connectors, config.phase1_min_connectors,
         )
+        from . import india_exports
+        india_exports.apply_to_phase1(result, hs_code, market, now)  # mirror data still gives an India price
         return result
 
     # Normalise weights among responding connectors
@@ -490,6 +492,11 @@ async def _phase1_historical_demand(
             result.market_avg_usd_per_mt = nat["unit_value_usd_per_mt"]
         if not result.india_to_market_usd_per_mt and nat.get("india_unit_value_usd_per_mt"):
             result.india_to_market_usd_per_mt = nat["india_unit_value_usd_per_mt"]
+
+    # India's own export statistics (A.1): the fresher India price, flags, and mirror data when the
+    # market's own figures are missing or older than two years (india_exports.py).
+    from . import india_exports
+    india_exports.apply_to_phase1(result, hs_code, market, now)
 
     result.demand_index = round(sum(s for _, s in scores), 2)
     result.source = scores[0][0] if scores else ""
@@ -1395,24 +1402,25 @@ async def _phase5_assemble_and_persist(
     tariff: TariffData,
     sellers: list[SellerCandidate],
     config: TradeMinConfig,
+    gate: dict | None = None,
 ) -> EnrichedOpportunity | None:
     now = datetime.now(timezone.utc)
 
     net_price_gap, freight_pct = _net_gap(phase1, tariff, market)
     gap_suspect = ranking.is_suspect_gap(phase1.gross_price_gap_pct, config)
 
-    if net_price_gap < config.tariff_hard_discard_floor:
+    if net_price_gap < config.tariff_hard_discard_floor and gate is None:
         logger.info(
             "Hard discard %s×%s: net_price_gap=%.2f%% < floor=%.2f%%",
             hs_code, market, net_price_gap, config.tariff_hard_discard_floor,
         )
         return None
 
-    tariff_viable = net_price_gap >= config.tariff_marginal_floor
+    tariff_viable = net_price_gap >= config.tariff_marginal_floor or gate is not None
     status: str = "ACTIVE" if tariff_viable else "MARGINAL"
 
     arb_rank = ranking.arbitrage_rank(phase1.demand_index, net_price_gap, config, gap_suspect=gap_suspect)
-    if arb_rank < config.min_arbitrage_rank and status == "ACTIVE":
+    if arb_rank < config.min_arbitrage_rank and status == "ACTIVE" and gate is None:
         return None
 
     urgency = _determine_urgency(phase1, phase2)
@@ -1433,7 +1441,7 @@ async def _phase5_assemble_and_persist(
         demand_signals=phase1.demand_signals + phase2.demand_signals,
         demand_index=phase1.demand_index,
         price_gap_pct=phase1.gross_price_gap_pct,
-        source=phase1.source,  # type: ignore[arg-type]
+        source=(phase1.source or (gate or {}).get("source") or "apify_company_search"),  # type: ignore[arg-type]
         price_benchmark_usd_per_mt=phase1.price_benchmark_usd_per_mt,
         price_benchmark_source=phase1.price_benchmark_source,
         found_by=found_by_for(phase1.price_benchmark_source),
@@ -1470,6 +1478,10 @@ async def _phase5_assemble_and_persist(
     container_mt, container_type = profit._container(opp, config)
     await freight_lanes.refresh(market, hs_code, container_type, container_mt)
     await profit.attach(opp, config)
+    if gate is not None:
+        opp.flags = list(dict.fromkeys([*opp.flags, *gate["flags"]]))
+        opp.profit_gate = {k: gate[k] for k in ("buyer_price", "buyer_basis", "supplier_price", "supplier_basis",
+                                                "landed_cost", "margin_pct", "floor_pct")}
     from shared.connectors import apify as _apify
     meter = _apify._COST_METER.get()
     if meter is not None:
@@ -1659,10 +1671,26 @@ async def _scan_one(
             return None
         phase1 = await _phase1_historical_demand(hs_code, market, config)
         phase2 = await _phase2_live_signals(hs_code, market, phase1, config)
-        if not phase1.source or not phase1.price_gap_measured:
+        gate: dict | None = None
+        sellers: list[SellerCandidate] | None = None
+        if profit_gate_enabled():
+            # Profit gate (todo 18.1): the market statistics are one input, not the gate. A corridor
+            # stays when a real buyer price and a real supplier price clear the margin floor after
+            # the landed costs; a missing price on either side still means no opportunity.
+            sellers = await _phase4_seller_discovery(hs_code, config)
+            buyers = phase1.buyer_signals + phase2.buyer_signals
+            gate = await _profit_gate(hs_code, market, phase1, buyers, sellers)
+            if not gate["clears"] and (not phase1.source or not phase1.price_gap_measured):
+                outcome = f"no opportunity: {gate['reason']}"
+                await directory.record_scan(hs_code, market, buyers, sellers, outcome=outcome)
+                scan_reports.record(hs_code, market, "dropped", gate["reason"])
+                return None
+            if not gate["clears"]:
+                gate = None  # the measured gap decides, as before
+        if gate is None and (not phase1.source or not phase1.price_gap_measured):
             # No live demand data, or no measured price gap: no opportunity (never
             # simulated numbers) — the buyers / suppliers found are still kept.
-            sellers = await _phase4_seller_discovery(hs_code, config)
+            sellers = sellers if sellers is not None else await _phase4_seller_discovery(hs_code, config)
             outcome = ("no opportunity: no live demand data for this product and market"
                        if not phase1.source else
                        "no opportunity: no measured price gap for this product and market")
@@ -1678,9 +1706,9 @@ async def _scan_one(
         # Suppliers are searched even when the tariff gate will drop the corridor:
         # the buyer / supplier directory keeps every counterparty found (the
         # supplier search is per product and cached for a week, so this is cheap).
-        sellers = await _phase4_seller_discovery(hs_code, config)
+        sellers = sellers if sellers is not None else await _phase4_seller_discovery(hs_code, config)
         buyers = phase1.buyer_signals + phase2.buyer_signals
-        if net_gap < config.tariff_hard_discard_floor:
+        if net_gap < config.tariff_hard_discard_floor and gate is None:
             outcome = (f"no opportunity: net price gap {net_gap:.1f}% after duty and freight is below "
                        f"the {config.tariff_hard_discard_floor:.0f}% floor")
             await directory.record_scan(hs_code, market, buyers, sellers, outcome=outcome)
@@ -1695,7 +1723,7 @@ async def _scan_one(
         # objects, so the opportunity and the directory both carry the result.
         await validation.validate_scan(buyers, sellers)
         opp = await _phase5_assemble_and_persist(
-            hs_code, market, phase1, phase2, tariff, sellers, config
+            hs_code, market, phase1, phase2, tariff, sellers, config, gate=gate
         )
         await directory.record_scan(
             hs_code, market, buyers, sellers,
@@ -1719,6 +1747,68 @@ async def _scan_one(
         logger.exception("Unhandled error in _scan_one(%s×%s): %s", hs_code, market, exc)
         scan_reports.record(hs_code, market, "error", f"scan failed: {exc}")
         return None
+
+
+def profit_gate_enabled() -> bool:
+    return os.getenv("RADAR_PROFIT_GATE", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+_SOURCES = {"comtrade", "census", "uk_hmrc", "eurostat_comext", "alibaba_rfq", "eu_ted", "indiamart", "tradeindia",
+            "apify_export_markets", "apify_company_search", "apify_india_suppliers", "apify_us_importers"}
+
+
+async def _profit_gate(hs_code: str, market: str, phase1: _Phase1Result, buyers: list[BuyerSignal],
+                       sellers: list[SellerCandidate]) -> dict:
+    """Buyer price (a buyer's own price → the price book → the market benchmark) − supplier price (a
+    supplier's own price → the price book) − landed costs, against the margin floor. Never invents a
+    price: a side with none is named in ``missing``."""
+    from shared import pricebook
+    from shared.orchestration import landed_cost as lc
+    bp, b_basis = None, None
+    own = [b.unit_price_usd for b in buyers if b.unit_price_usd and (b.price_unit or "USD/MT").upper() == "USD/MT"]
+    if own:
+        bp, b_basis = max(own), "buyer's own price"
+    if bp is None:
+        try:
+            est = await pricebook.estimate(hs_code, "buyer", market=market)
+            if est.median:
+                bp, b_basis = est.median, "price book (buyer side)"
+        except Exception:  # noqa: BLE001
+            pass
+    if bp is None and phase1.price_benchmark_usd_per_mt:
+        bp, b_basis = phase1.price_benchmark_usd_per_mt, "market unit value"
+    sp, s_basis = None, None
+    quoted = [s.estimated_fob_price_usd for s in sellers if s.estimated_fob_price_usd and (s.price_unit or "USD/MT").upper() == "USD/MT"]
+    if quoted:
+        sp, s_basis = min(quoted), "supplier's listed price"
+    if sp is None:
+        try:
+            est = await pricebook.estimate(hs_code, "supplier", market=market)
+            if est.median:
+                sp, s_basis = est.median, "price book (supplier side)"
+        except Exception:  # noqa: BLE001
+            pass
+    floor = lc.default_margin_floor_pct()
+    missing = [side for side, v in (("buyer price", bp), ("supplier price", sp)) if v is None]
+    out = {"clears": False, "buyer_price": bp, "buyer_basis": b_basis, "supplier_price": sp, "supplier_basis": s_basis,
+           "landed_cost": None, "margin_pct": None, "floor_pct": floor, "missing": missing, "flags": [],
+           "source": next((b.source for b in buyers if b.source in _SOURCES), None)}
+    if missing:
+        out["reason"] = f"no {' and no '.join(missing)} from any source (nothing is estimated without one)"
+        return out
+    landed = lc.landed(float(sp), market, None, incoterm="CIF", margin_floor_pct=0.0).cost_usd_per_mt
+    margin = round((bp - landed) / bp * 100.0, 2)
+    out.update(landed_cost=round(landed, 2), margin_pct=margin, clears=margin >= floor)
+    if not out["clears"]:
+        out["reason"] = (f"buyer {bp:,.0f} ({b_basis}) vs landed {landed:,.0f} USD/MT ({s_basis}) is a {margin:.1f}% "
+                         f"margin, under the {floor:.0f}% floor")
+        return out
+    if not phase1.source:
+        out["flags"].append("no_market_statistics")
+    elif not phase1.price_gap_measured:
+        out["flags"].append("price_check_needed")
+    out["reason"] = f"margin {margin:.1f}% after landed costs clears the {floor:.0f}% floor"
+    return out
 
 
 def _count_by_status(items: list) -> dict[str, int]:

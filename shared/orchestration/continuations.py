@@ -1959,6 +1959,8 @@ async def _qc_tranche_and_freight(deal, payload: dict[str, Any], loading=None) -
         except Exception as exc:  # noqa: BLE001
             logger.debug("Continuation: freight quotes unavailable for %s: %s", deal_id, exc)
         chosen = quotes.get("chosen")
+        from shared.orchestration import freight_procurement
+        emailed = await freight_procurement.for_gate(deal_id, quotes.get("chosen_rate_usd"))
         await _create_gate(
             deal_id, "BOOK_FREIGHT",
             summary=f"QC passed — book freight for deal {deal_id}{seal_text}"
@@ -1970,8 +1972,10 @@ async def _qc_tranche_and_freight(deal, payload: dict[str, Any], loading=None) -
                               **({"provider": chosen, "freight_quotes": quotes.get("quotes")} if chosen else {}),
                               **({"destination_port": destination_port} if destination_port else {}),
                               **({"container_numbers": loading.container_numbers,
-                                  "seal_numbers": loading.seal_numbers} if loading else {})},
+                                  "seal_numbers": loading.seal_numbers} if loading else {}),
+                              **emailed},
             idempotency_key=f"auto-freight-gate-{deal_id}",
+            risk_flags=["email_quote_cheaper"] if emailed.get("email_quote_cheaper") else None,
             deal=deal,
         )
         logger.info("Continuation: BOOK_FREIGHT gate created for deal %s", deal_id)

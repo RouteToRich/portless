@@ -588,6 +588,8 @@ async def test_pending_connectors_run_once_built(monkeypatch):
             "apify_courier_tracking": [{"trackingNumber": "1"}], "apify_buy_leads": [{"board": "b"}],
             "apify_food_tenders": [{"buyer": "WFP"}]}
     for cls in am.PENDING_CONNECTORS:
+        if cls.name not in rows:
+            continue  # the later slots have their own test (test_radar_sources_batch.py)
         monkeypatch.setenv(f"APIFY_ACTOR_{cls.actor_key}_BUILT", "true")
         c = cls()
         monkeypatch.setattr(c, "run", AsyncMock(return_value=rows[cls.name]))

@@ -384,6 +384,9 @@ class CounterpartyRecord(BaseModel):
     opportunity_ids: list[str] = Field(default_factory=list)
     """Every opportunity a scan ever found it in — history; many have since expired,
     become a deal or been replaced by a newer scan."""
+    spec_lines: list[dict[str, Any]] | None = None
+    """Per product, the one-line requirement / offer and how complete it is (``{"hs_code", "line",
+    "known", "total", "missing"}``) — filled when the directory is listed, never stored."""
     open_opportunity_ids: list[str] | None = None
     """Those of ``opportunity_ids`` the Opportunity Radar lists now. Filled when the
     directory is read, never stored; ``None`` = could not be worked out."""
@@ -440,6 +443,11 @@ class CounterpartyRecord(BaseModel):
     """``small`` / ``medium`` / ``large`` estimated from company signals — never an offer quantity."""
     stated_quantity_mt: float | None = None
     """Buyers: a quantity the buyer itself stated in public demand (tender, buy request, enquiry)."""
+    last_import_date: str | None = None
+    """Buyers: last recorded import (import records, A.2)."""
+    typical_shipment_mt: float | None = None
+    frequency_days: int | None = None
+    """Buyers: median days between its imports (import records)."""
     stated_quantity_source: str | None = None
     stated_at: str | None = None
     product_range: dict[str, Any] | None = None
@@ -719,6 +727,9 @@ class EnrichedOpportunity(BaseModel):
 
     # ── Expected profit (profit.py) ───────────────────────────────────────
     profit: OpportunityProfit | None = None
+    profit_gate: dict[str, Any] | None = None
+    """Why a corridor without a measured market gap was kept (service._profit_gate): both prices with
+    their basis, landed cost, margin and floor."""
     flags: list[str] = Field(default_factory=list)
     """Opportunity-level warnings: price_check_needed, tariff_unverified, no_supplier_price …"""
     corridor_deals: list[dict[str, Any]] = Field(default_factory=list)

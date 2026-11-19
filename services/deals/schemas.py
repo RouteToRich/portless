@@ -295,6 +295,8 @@ class DealRecord(BaseModel):
     cha: dict[str, Any] = Field(default_factory=dict)
     """Customs broker hand-off (cha.py): agent, pack sent, checklist approval, Shipping Bill record,
     incentive declarations, the CHA's invoice."""
+    freight_rfq: dict[str, Any] = Field(default_factory=dict)
+    """Forwarder quotes by e-mail (freight_procurement.py): requests, quotes, counters."""
     loi: dict[str, Any] | None = None
     """The buyer's letter of intent (loi.py): reference, quantity, window, port, spec, source."""
     radar_estimate: dict[str, Any] | None = None

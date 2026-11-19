@@ -141,7 +141,7 @@ async def attach(lead: dict[str, Any]) -> list[str]:
 
 async def ingest(leads: list[dict[str, Any]]) -> dict[str, Any]:
     """Store, add to the directory, attach to prospects. Never raises."""
-    out = {"new": 0, "directory": 0, "attached": []}
+    out = {"new": 0, "directory": 0, "attached": [], "opportunities": []}
     for lead in leads:
         try:
             row, new = await store(lead)
@@ -151,6 +151,10 @@ async def ingest(leads: list[dict[str, Any]]) -> dict[str, Any]:
             if await to_directory(row) is not None:
                 out["directory"] += 1
             out["attached"] += await attach(row)
+            from services.trade_min import demand_opportunities  # type: ignore[import]
+            opp = await demand_opportunities.from_lead(row)
+            if opp:
+                out["opportunities"].append(opp)
         except Exception as exc:  # noqa: BLE001
             logger.warning("DemandLeads: lead not ingested: %s", exc)
     return out
@@ -179,7 +183,10 @@ async def daily(now: datetime | None = None) -> dict[str, Any] | None:
     if _last.get("day") == day:
         return None
     _last["day"] = day
-    return await run_actors()
+    out = await run_actors()
+    from services.trade_min import demand_opportunities  # type: ignore[import]
+    out["reorder_opportunities"] = await demand_opportunities.from_reorders(now)
+    return out
 
 
 async def recent(limit: int = 100) -> list[dict[str, Any]]:
