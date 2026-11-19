@@ -298,7 +298,8 @@ def _poll_due(tpo: ThirdPartyOrderRecord, now: datetime, force: bool) -> bool:
         return True
     from shared.orchestration import qc_schedule
     last = tpo.last_polled_at if tpo.last_polled_at.tzinfo else tpo.last_polled_at.replace(tzinfo=timezone.utc)
-    return now - last >= timedelta(minutes=qc_schedule.poll_minutes())
+    minutes = qc_schedule.poll_minutes_for(getattr(tpo, "inspection_date", None), now)
+    return now - last >= timedelta(minutes=minutes)
 
 
 async def poll_order(tpo: ThirdPartyOrderRecord, *, force: bool = False) -> dict[str, Any]:

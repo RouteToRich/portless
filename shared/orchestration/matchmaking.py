@@ -927,7 +927,19 @@ async def handle_buyer_reply(deal: Any, cand: Any, from_address: str, body: str,
         new_text = _new_reply_text(body) or body
     except Exception:  # noqa: BLE001
         new_text = body
-    fields = await extraction.extract_buyer(new_text, product=_product_label(deal))
+    container_mt = None
+    try:
+        from shared import catalogue
+        container_mt = catalogue.container_for(str(getattr(deal, "hs_code", "") or ""))[0]
+    except Exception:  # noqa: BLE001 - the default box size applies
+        pass
+    fields = await extraction.extract_buyer(new_text, product=_product_label(deal), container_mt=container_mt)
+    prior = getattr(cand, "requirement", None)
+    if (prior is not None and getattr(prior, "quantity_confirm", None) and not fields.get("quantity_mt")
+            and re.search(r"\b(?:yes|correct|confirm(?:ed)?|that'?s right|right)\b", new_text or "", re.IGNORECASE)):
+        fields["quantity_confirmed"] = True  # "yes, correct" to our echoed quantity
+    elif fields.get("quantity_confirm"):
+        fields["quantity_confirmed"] = False
     now = datetime.now(timezone.utc)
     cur = cand.requirement.model_dump() if getattr(cand, "requirement", None) else {}
     merged = {**cur, **{k: v for k, v in fields.items() if v not in (None, [], "")}}

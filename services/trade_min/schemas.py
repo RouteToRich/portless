@@ -26,7 +26,7 @@ from .pair_match import PairMatch
 OpportunityStatus = Literal["ACTIVE", "MARGINAL", "EXPIRED", "CONVERTED"]
 DataSource = Literal[
     # Free / active sources
-    "comtrade", "census", "wits_tariff",
+    "comtrade", "census", "wits_tariff", "uk_hmrc", "eurostat_comext",
     "alibaba_rfq", "gdelt_disruption", "eu_ted",
     "indiamart", "tradeindia",
     # PortLess-owned Apify actors (shared/connectors/apify.py)
@@ -128,6 +128,16 @@ class CounterpartyValidation(BaseModel):
     phone_e164: str | None = None
     whatsapp: str | None = None
     """``unknown`` / ``confirmed`` (staff answered on WhatsApp) / ``not_reachable``."""
+    lei: str | None = None
+    """Legal Entity Identifier the screening found (GLEIF)."""
+    lei_status: str | None = None
+    vat_number: str | None = None
+    vat_valid: bool | None = None
+    """EU VIES answer for ``vat_number`` (None = not checked)."""
+    company_age_years: int | None = None
+    """From the Indian CIN (year of incorporation) when known."""
+    existence: list[str] = Field(default_factory=list)
+    """Evidence the company exists beyond its website, for the badge: LEI, VIES, CIN, Udyam."""
     checked_at: datetime | None = None
 
 
@@ -176,6 +186,11 @@ class BuyerSignal(BaseModel):
     flags: list[str] = Field(default_factory=list)
     """Data-quality warnings (quality.py), e.g. ``role_suspect`` (looks like an
     Indian exporter, not an importer in the market)."""
+    vat_number: str | None = None
+    """VAT id from the company's own site (contact finder ``vatId``) — sent to the screening (EU VIES)."""
+    lei: str | None = None
+    legal_name: str | None = None
+    registration_number: str | None = None
 
 
 class TariffData(BaseModel):
@@ -248,6 +263,11 @@ class SellerCandidate(BaseModel):
     """``domain`` when the name could only be read from the website address."""
     flags: list[str] = Field(default_factory=list)
     """Data-quality warnings (quality.py), e.g. ``product_mismatch``."""
+    vat_number: str | None = None
+    cin: str | None = None
+    """Indian Corporate Identity Number read from the supplier's own site (MCA)."""
+    incorporation_year: int | None = None
+    """Year of incorporation encoded in the CIN."""
 
 
 CounterpartyRole = Literal["buyer", "supplier"]
@@ -327,6 +347,12 @@ class CounterpartyRecord(BaseModel):
     fit_reason: str | None = None
     gstin: str | None = None
     iec: str | None = None
+    vat_number: str | None = None
+    lei: str | None = None
+    legal_name: str | None = None
+    cin: str | None = None
+    udyam: str | None = None
+    incorporation_year: int | None = None
     estimated_fob_price_usd: float | None = None
     """Suppliers: USD/MT when the source states a price."""
     hs_codes: list[str] = Field(default_factory=list)

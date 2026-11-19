@@ -57,6 +57,11 @@ class _Subject:
     website: str | None = None
     gstin: str | None = None
     iec: str | None = None
+    vat_number: str | None = None
+    lei: str | None = None
+    legal_name: str | None = None
+    cin: str | None = None
+    udyam: str | None = None
     target: Any = None
     """The BuyerSignal / SellerCandidate / CounterpartyRecord the result is written to."""
     v: CounterpartyValidation = field(default_factory=CounterpartyValidation)
@@ -69,6 +74,14 @@ class _Subject:
 # ---------------------------------------------------------------------------
 # Verdict
 # ---------------------------------------------------------------------------
+
+def _min_company_age() -> float:
+    import os
+    try:
+        return float(os.getenv("COMPLIANCE_MIN_COMPANY_AGE_YEARS", "1") or 0)
+    except ValueError:
+        return 1.0
+
 
 def decide(v: CounterpartyValidation, *, role: str, country: str | None,
            has_phone: bool = False) -> CounterpartyValidation:
@@ -116,6 +129,12 @@ def decide(v: CounterpartyValidation, *, role: str, country: str | None,
                   and v.phone == "valid" and v.gst == "active" and v.iec != "inactive")
     if v.phone == "invalid" and v.email not in _CONTACTABLE:
         reasons.append("phone number is not a valid number either")
+    if v.vat_valid is False and v.vat_number:
+        reasons.append(f"VAT number {v.vat_number} is not valid in EU VIES")
+    min_age = _min_company_age()
+    if v.company_age_years is not None and min_age and v.company_age_years < min_age:
+        reasons.append(f"company incorporated {v.company_age_years} year(s) ago (CIN) — younger than "
+                       f"{min_age} year(s)")
     if failed:
         status = "failed"
     elif v.sanctions == "clear" and v.email in _CONTACTABLE:
@@ -170,7 +189,7 @@ async def _screen(subjects: list[_Subject]) -> None:
     if conn is None or not subjects:
         return
     try:
-        result = await conn.quote({"counterparties": [{"name": s.name, "country": s.country} for s in subjects]})
+        result = await conn.quote({"counterparties": [_screen_input(s) for s in subjects]})
     except Exception as exc:  # noqa: BLE001
         logger.warning("Validation: screening failed: %s", exc)
         return
@@ -185,6 +204,42 @@ async def _screen(subjects: list[_Subject]) -> None:
         s.v.sanctions = row.get("verdict") or "review"
         s.v.sanctions_reason = (row.get("reason") or "")[:300] or None
         s.v.evidence_url = row.get("evidence_url")
+        s.v.lei = row.get("lei") or s.lei
+        s.v.lei_status = row.get("lei_status")
+        if row.get("vat_number") or s.vat_number:
+            s.v.vat_number = row.get("vat_number") or s.vat_number
+            s.v.vat_valid = row.get("vat_valid")
+
+
+def _screen_input(s: _Subject) -> dict:
+    """What the screening gets: the name, plus every identifier the search already found
+    (VAT id → EU VIES, LEI → GLEIF, the legal name) — a name-only match is weaker."""
+    item: dict = {"name": s.name, "country": s.country}
+    for key, field_name in (("vat_number", "vat_number"), ("lei", "lei"), ("registration_number", "cin")):
+        value = getattr(s, field_name, None)
+        if value:
+            item[key] = value
+    return item
+
+
+def existence(v: CounterpartyValidation, s: _Subject | None = None, now: datetime | None = None) -> list[str]:
+    """Evidence the company exists beyond its website (badge): LEI, VIES, CIN, Udyam."""
+    out: list[str] = []
+    if v.lei:
+        out.append(f"LEI {v.lei}" + (f" ({v.lei_status})" if v.lei_status else ""))
+    if v.vat_number and v.vat_valid is True:
+        out.append(f"EU VAT {v.vat_number} valid (VIES)")
+    elif v.vat_number and v.vat_valid is False:
+        out.append(f"EU VAT {v.vat_number} NOT valid (VIES)")
+    if s is not None and s.cin:
+        from shared import indian_ids
+        year = indian_ids.incorporation_year(s.cin)
+        out.append(f"CIN {s.cin}" + (f" (incorporated {year})" if year else ""))
+    if s is not None and s.udyam:
+        out.append(f"Udyam {s.udyam}")
+    if v.gst == "active":
+        out.append("GST active")
+    return out
 
 
 async def _qualify(subjects: list[_Subject]) -> None:
@@ -267,6 +322,10 @@ async def _run(subjects: list[_Subject], now: datetime) -> None:
         s.v.phone, s.v.phone_e164 = pc["status"], pc["e164"]
         old = getattr(s.target, "validation", None)
         s.v.whatsapp = getattr(old, "whatsapp", None) or ("unknown" if pc["status"] == "valid" else None)
+        if s.cin:
+            from shared import indian_ids
+            s.v.company_age_years = indian_ids.company_age_years(s.cin, now)
+        s.v.existence = existence(s.v, s, now)
         s.target.validation = decide(s.v, role=s.role, country=s.country, has_phone=bool(s.phone))
 
 
@@ -276,13 +335,14 @@ async def _run(subjects: list[_Subject], now: datetime) -> None:
 
 def _buyer_subject(b: BuyerSignal) -> _Subject:
     return _Subject(role="buyer", name=b.buyer_name, country=b.buyer_country, email=b.email,
-                    email_status=b.email_status, phone=b.phone, website=b.website, target=b)
+                    email_status=b.email_status, phone=b.phone, website=b.website, target=b,
+                    vat_number=b.vat_number, lei=b.lei, legal_name=b.legal_name)
 
 
 def _seller_subject(s: SellerCandidate) -> _Subject:
     return _Subject(role="supplier", name=s.company_name, country=s.country, email=s.email,
                     email_status=s.email_status, phone=s.phone, website=s.website,
-                    gstin=s.gstin, iec=s.iec, target=s)
+                    gstin=s.gstin, iec=s.iec, target=s, vat_number=s.vat_number, cin=s.cin, udyam=s.udyam)
 
 
 def _rank(item: Any) -> tuple:
@@ -336,7 +396,9 @@ async def validate_record(rec: CounterpartyRecord) -> CounterpartyRecord:
     """Check one directory record now (staff, ``POST /trade-min/{buyers|suppliers}/{id}/validate``)."""
     subject = _Subject(role=rec.role, name=rec.name, country=rec.country, email=rec.email,
                        email_status=(rec.validation.email if rec.validation else None),
-                       phone=rec.phone, website=rec.website, gstin=rec.gstin, iec=rec.iec, target=rec)
+                       phone=rec.phone, website=rec.website, gstin=rec.gstin, iec=rec.iec, target=rec,
+                       vat_number=rec.vat_number, lei=rec.lei, legal_name=rec.legal_name, cin=rec.cin,
+                       udyam=rec.udyam)
     await _run([subject], datetime.now(timezone.utc))
     return rec
 

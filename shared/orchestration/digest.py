@@ -199,8 +199,8 @@ async def build_digest(now: datetime | None = None) -> dict[str, Any]:
 
     # ── Apify spend ────────────────────────────────────────────────────────
     try:
-        from shared.connectors.apify import max_runs_per_day, runs_today
-        out["apify"] = {"runs_today": runs_today(), "max_runs_per_day": max_runs_per_day()}
+        from shared.connectors.apify import usage_today
+        out["apify"] = await usage_today()
         try:
             from services.trade_min import validation  # type: ignore[import]
             out["apify"]["validation_runs_today"] = validation.runs_today()
@@ -329,6 +329,17 @@ def render_digest_text(d: dict[str, Any]) -> str:
         if isinstance(apify.get("max_runs_per_day"), int) and apify["max_runs_per_day"] > 0 \
                 and apify.get("runs_today", 0) >= 0.9 * apify["max_runs_per_day"]:
             lines.append("  ! the daily run budget is nearly used — checks and scans stop when it is reached")
+        usd_cap = float(apify.get("max_usd_per_day") or 0)
+        usd_now = float(apify.get("usd_today") or 0)
+        if usd_now or usd_cap:
+            lines.append(f"  spend {usd_now:.2f}" + (f" / {usd_cap:.2f}" if usd_cap else "") + " USD today")
+            if usd_cap and usd_now >= 0.9 * usd_cap:
+                lines.append("  ! the daily spend cap is nearly used — actor runs stop when it is reached")
+        per_actor = sorted((apify.get("by_actor") or {}).items(), key=lambda kv: -float(kv[1].get("usd") or 0))
+        if per_actor:
+            lines.append("  per actor: " + ", ".join(
+                f"{name.lower()} {int(v.get('runs') or 0)} run(s) {float(v.get('usd') or 0):.2f} USD"
+                for name, v in per_actor[:6]))
     fo = d.get("fees_over") or []
     if fo:
         lines.append(f"FEES ABOVE THE PRICE ({len(fo)} deal(s)): " + ", ".join(

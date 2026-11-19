@@ -75,35 +75,20 @@ _WAIT_CHUNK_SECONDS = 60  # Apify caps waitForFinish at 60s per poll (300s on ru
 
 _warned_no_token = False
 
-# ── Daily run budget (APIFY_MAX_RUNS_PER_DAY; 0 = unlimited) ──────────────
-# Every actor run costs money. A scan over a large catalogue, the enrichment
-# of every new deal and the carrier-tracking poll all start runs; the cap is a
-# process-wide circuit breaker so a mis-configured schedule cannot burn the
-# account in a night. Counted per UTC day in this process (reset at midnight).
-_runs_by_day: dict[str, int] = {}
+# ── Daily run / spend budget, result cache, tracking pause ────────────────
+# APIFY_MAX_RUNS_PER_DAY / APIFY_MAX_USD_PER_DAY counted per UTC day in Mongo
+# (platform_costs), a result cache per actor input and the carrier-tracking
+# pause after source_refused live in apify_usage (see its docstring).
+from . import apify_usage as _usage  # noqa: E402
+from .apify_usage import (  # noqa: E402,F401 - re-exported for callers and tests
+    _runs_by_day, max_runs_per_day, max_usd_per_day, run_budget_left, runs_today, usage_today, usd_today,
+)
+
 _warned_run_cap: str | None = None
 
 
-def max_runs_per_day() -> int:
-    return max(0, _int("APIFY_MAX_RUNS_PER_DAY", 0))
-
-
-def runs_today() -> int:
-    from datetime import datetime, timezone
-    return _runs_by_day.get(datetime.now(timezone.utc).date().isoformat(), 0)
-
-
-def run_budget_left() -> bool:
-    cap = max_runs_per_day()
-    return cap <= 0 or runs_today() < cap
-
-
-def _count_run() -> None:
-    from datetime import datetime, timezone
-    key = datetime.now(timezone.utc).date().isoformat()
-    for stale in [k for k in _runs_by_day if k != key]:
-        _runs_by_day.pop(stale, None)
-    _runs_by_day[key] = _runs_by_day.get(key, 0) + 1
+def _count_run(actor: str = "other") -> None:
+    _usage.count_run(actor)
 
 
 # ── Cost meter: what one scan / rescore of an opportunity spent ──────────
@@ -139,7 +124,7 @@ def _meter_run(run: dict[str, Any] | None) -> None:
 
 def reset_run_budget_for_tests() -> None:
     global _warned_run_cap
-    _runs_by_day.clear()
+    _usage.reset_for_tests()
     _warned_run_cap = None
 
 
@@ -343,6 +328,7 @@ class ApifyActorConnector(Connector):
             "ai_tier": self._enable_ai,
             "max_items": self._max_items,
             "external": self.external,
+            "cache": _usage.cache_stats(self.actor_key),
         }
 
     external = False
@@ -387,19 +373,30 @@ class ApifyActorConnector(Connector):
                 _warned_no_token = True
             return []
 
-        if not run_budget_left():
+        limit = min(self._max_items, max_items or self._max_items)
+        key = None
+        if _usage.caches(self.actor_key):
+            key = _usage.cache_key(self.actor_ref, actor_input, limit)
+            hit = await _usage.cache_get(key)
+            if hit is not None:
+                _usage.note_cache(self.actor_key, "hits")
+                self.last_run = {**(hit.get("run") or {}), "status": "SUCCEEDED", "cached": True,
+                                 "usageTotalUsd": 0.0}
+                logger.info("Apify: %s served from the result cache (%d row(s))", self.actor_ref,
+                            len(hit.get("rows") or []))
+                return [r for r in (hit.get("rows") or []) if isinstance(r, dict)]
+            _usage.note_cache(self.actor_key, "misses")
+
+        refusal = await _usage.reserve_run(self.actor_key)
+        if refusal:
             global _warned_run_cap
-            from datetime import datetime, timezone
-            today = datetime.now(timezone.utc).date().isoformat()
+            today = _usage.day_key()
             if _warned_run_cap != today:
-                logger.warning(
-                    "Apify: daily run budget exhausted (%d/%d runs today, APIFY_MAX_RUNS_PER_DAY) — "
-                    "actor %s skipped until tomorrow", runs_today(), max_runs_per_day(), self.actor_ref,
-                )
+                logger.warning("Apify: %s — actor %s skipped until tomorrow", refusal, self.actor_ref)
                 _warned_run_cap = today
+            self.last_run = {"status": "BUDGET_REFUSED", "statusMessage": refusal}
             return []
 
-        limit = min(self._max_items, max_items or self._max_items)
         first_wait = int(min(self._timeout, 300))
         params: dict[str, Any] = {"waitForFinish": first_wait}
         if self._memory_mbytes:
@@ -412,10 +409,10 @@ class ApifyActorConnector(Connector):
                 params=params, json=actor_input, headers=self._headers(),
             )
             if resp.status_code not in range(200, 300):
+                await _usage.release_run(self.actor_key)
                 raise ApifyError(
                     f"Apify run start failed for {self.actor_ref}: HTTP {resp.status_code} — {resp.text[:300]}"
                 )
-            _count_run()
             run = resp.json().get("data") or {}
             run_id = run.get("id")
             status = run.get("status")
@@ -445,6 +442,10 @@ class ApifyActorConnector(Connector):
 
             self.last_run = run
             _meter_run(run)
+            try:
+                await _usage.record_usd(self.actor_key, float(run.get("usageTotalUsd") or 0.0))
+            except (TypeError, ValueError):
+                pass
             if status == "FAILED":
                 raise ApifyError(f"Apify run {run_id} of {self.actor_ref} FAILED: {run.get('statusMessage')}")
 
@@ -462,7 +463,10 @@ class ApifyActorConnector(Connector):
             if not isinstance(rows, list):
                 return []
             logger.info("Apify: %s run %s → %d row(s) (status %s)", self.actor_ref, run_id, len(rows), status)
-            return [r for r in rows if isinstance(r, dict)]
+            rows = [r for r in rows if isinstance(r, dict)]
+            if key is not None and status == "SUCCEEDED":
+                await _usage.cache_put(self.actor_key, key, rows, run)
+            return rows
 
     last_run: dict[str, Any] | None = None
     """The last finished run of this connector instance (set by ``run``)."""
@@ -1512,9 +1516,22 @@ class ApifyEmailQualifierConnector(ApifyActorConnector):
                 "disposition": r.get("disposition"),
                 "reason": r.get("reason") or r.get("dispositionNote"),
             })
+        # The actor only delivers qualified rows, so a missing address failed the verifier —
+        # but only when the run finished on its own. A run that timed out / was aborted /
+        # failed, or whose dataset was cut at the row limit, says nothing about the rest:
+        # those addresses are ``unchecked`` (kept for outreach), never ``invalid``.
+        run = self.last_run
+        complete = run is None or (str(run.get("status") or "") == "SUCCEEDED" and len(rows) < len(emails)
+                                   and len(rows) < self._max_items) or len(seen) >= len(emails)
         for email in emails:
             if email not in seen:
-                out.append({"email": email, "status": "invalid", "score": 0, "reason": "not delivered by the verifier"})
+                if complete:
+                    out.append({"email": email, "status": "invalid", "score": 0,
+                                "reason": "not delivered by the verifier"})
+                else:
+                    out.append({"email": email, "status": "unchecked", "score": None,
+                                "reason": f"verifier run ended {(run or {}).get('status') or 'incomplete'} "
+                                          "before checking this address"})
         return {"emails": out, "total": len(out), "actor": self.actor_ref}
 
 
@@ -1647,6 +1664,12 @@ class ApifyCarrierTrackingConnector(ApifyActorConnector):
             "failOnSourceError": False,
             "enableAi": False,        # tracking is deterministic -- no scoring tier
         }
+        if self.configured and _usage.tracking_paused():
+            detail = ("carrier tracking paused for today after source_refused: "
+                      + (_usage.tracking_refused_detail() or "the carrier source refused the run")
+                      + " — tracking: staff milestones only")
+            return {"shipments": [], "total": 0, "actor": self.actor_ref, "source_refused": True,
+                    "paused": True, "detail": detail}
         rows = await self.run(actor_input, max_items=len(refs))
         if not rows and not self.configured:
             return self._empty()
@@ -1658,8 +1681,10 @@ class ApifyCarrierTrackingConnector(ApifyActorConnector):
                     detail = ("the Apify plan cannot run the public carrier Actors (MSC, Maersk ...) that "
                               "multi-carrier-tracking-ai calls -- upgrade the plan, take milestones from the "
                               "forwarder webhook, or record them by hand")
-                logger.warning("Apify carrier tracking: %s", detail)
+                logger.warning("Apify carrier tracking: %s — no more tracking runs today "
+                               "(APIFY_CARRIER_TRACKING_RETRY_REFUSED=true once the actor can run)", detail)
                 _note_tracking("source_refused", detail)
+                _usage.note_tracking_refused(detail)
                 return {"shipments": [], "total": 0, "actor": self.actor_ref,
                         "source_refused": True, "detail": detail}
         shipments: list[dict[str, Any]] = []
@@ -1702,11 +1727,16 @@ class ApifyCarrierTrackingConnector(ApifyActorConnector):
 # Registry helpers
 # ---------------------------------------------------------------------------
 
-APIFY_CONNECTORS: tuple[type[ApifyActorConnector], ...] = (
+# Retired slots (todo 23.1): registered nowhere and not listed on GET /trade-min/sources,
+# kept so their normalisers can be pointed at A.2 / A.16 / A.10 once those actors exist.
+DORMANT_CONNECTORS: tuple[type[ApifyActorConnector], ...] = (
     ApifyUsImporterConnector,
     ApifyAlibabaRfqConnector,
-    ApifyExportMarketConnector,
     ApifyIndiaSupplierConnector,
+)
+
+APIFY_CONNECTORS: tuple[type[ApifyActorConnector], ...] = (
+    ApifyExportMarketConnector,
     ApifyContactFinderConnector,
     ApifyCompanySearchConnector,
     ApifyCounterpartyCheckConnector,
@@ -1724,5 +1754,8 @@ def describe_actors() -> dict[str, Any]:
         "max_items": _int("APIFY_MAX_ITEMS", 25),
         "max_runs_per_day": max_runs_per_day(),
         "runs_today": runs_today(),
+        "max_usd_per_day": max_usd_per_day(),
+        "usd_today": usd_today(),
+        "cache_enabled": _usage.cache_enabled(),
         "actors": [cls().describe() for cls in APIFY_CONNECTORS],
     }

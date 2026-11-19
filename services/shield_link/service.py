@@ -929,6 +929,19 @@ async def record_loading(deal_id: str, req: LoadingRecordRequest) -> dict[str, A
             "loading": rec.loading.model_dump(mode="json") if rec.loading else None}
 
 
+TRACKING_STAFF_ONLY = "tracking: staff milestones only"
+
+
+async def _note_staff_milestones_only(deal_id: str) -> None:
+    """Say on the deal that the tracking actor cannot run, so milestones come from staff
+    (``POST /shield-link/freight/{ref}/milestone``) or the forwarder webhook. Never raises."""
+    try:
+        from services.deals.repository import get_repository as deals_repo  # type: ignore[import]
+        await deals_repo().set_fields(deal_id, {"freight_status_detail": TRACKING_STAFF_ONLY})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("ShieldLink: tracking note not written for %s: %s", deal_id, exc)
+
+
 async def poll_tracking(deal_id: str) -> dict[str, Any]:
     """Ask the carrier-tracking actor where the deal's container is and record
     the latest milestone. Returns ``{"status": ...}`` — ``no_booking`` /
@@ -961,8 +974,9 @@ async def poll_tracking(deal_id: str) -> dict[str, Any]:
     if result.get("stub"):
         return {"status": "stub", "deal_id": deal_id, "tpo_id": tpo.tpo_id}
     if result.get("source_refused"):
+        await _note_staff_milestones_only(deal_id)
         return {"status": "source_refused", "deal_id": deal_id, "tpo_id": tpo.tpo_id,
-                "detail": result.get("detail")}
+                "detail": result.get("detail"), "paused": bool(result.get("paused"))}
     shipment = next((s for s in result.get("shipments") or [] if s.get("milestone")), None)
     if shipment is None:
         return {"status": "no_event", "deal_id": deal_id, "tpo_id": tpo.tpo_id}

@@ -6,19 +6,17 @@ so adding a new integration is a one-line change here.
 from __future__ import annotations
 
 from .apify import (
-    ApifyAlibabaRfqConnector,
     ApifyCarrierTrackingConnector,
     ApifyCompanySearchConnector,
     ApifyContactFinderConnector,
     ApifyCounterpartyCheckConnector,
     ApifyEmailQualifierConnector,
     ApifyExportMarketConnector,
-    ApifyIndiaSupplierConnector,
-    ApifyUsImporterConnector,
 )
 from .base import Connector
 from .demand_signals import AlibabaRfqConnector, EuTedConnector, GdeltDisruptionConnector
 from .mandi import MandiPriceConnector
+from .national_trade import EurostatComextConnector, UkHmrcTradeConnector
 from .escrow import EscrowComConnector, TazapayEscrowConnector
 from .payments import PayoneerConnector, StripeTreasuryConnector
 from .regulatory import (
@@ -76,6 +74,11 @@ CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
     # US Census International Trade: FREE (key) high-resolution US import
     # statistics; augments Comtrade for the US market in Phase 1.
     CensusTradeConnector.name: CensusTradeConnector,
+
+    # National statistics with value AND kg per month (todo 17.1): UK HMRC OTS for GB,
+    # Eurostat Comext for EU markets — FREE, no key; Phase 1 next to Comtrade.
+    UkHmrcTradeConnector.name: UkHmrcTradeConnector,
+    EurostatComextConnector.name: EurostatComextConnector,
 
     # -------------------------------------------------------------------------
     # LEGACY / PAID — retired from the default pipeline, kept for future use.
@@ -240,21 +243,14 @@ CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
     # Empty result (never an exception) when APIFY_TOKEN is absent.
     # -------------------------------------------------------------------------
 
-    # us-importer-finder-ai: named US importers from customs records — the
-    # manifest-grade buyer list Volza / ImportGenius used to provide (Phase 2).
-    ApifyUsImporterConnector.name: ApifyUsImporterConnector,
-
-    # alibaba-rfq-leads-ai: live buying requests matched to PortLess's product
-    # lines — Level-3 intent with buyer country, quantity, target price (Phase 2).
-    ApifyAlibabaRfqConnector.name: ApifyAlibabaRfqConnector,
+    # us-importer-finder-ai / alibaba-rfq-leads-ai / india-supplier-finder-ai are
+    # retired (todo 23.1): never called — their data comes from Store Actors the
+    # plan cannot run, or the actor was never built. The classes stay in apify.py
+    # (DORMANT_CONNECTORS) to be pointed at A.2 / A.16 / A.10 once those exist.
 
     # export-market-finder-ai: UN Comtrade demand per market + the market's real
     # unit value per kg → the buyer price benchmark for the margin corridor (Phase 1).
     ApifyExportMarketConnector.name: ApifyExportMarketConnector,
-
-    # india-supplier-finder-ai: Indian manufacturers with price / MOQ / GSTIN /
-    # contact — the seller-side actor (Phase 4). Generate with /actor-pipeline.
-    ApifyIndiaSupplierConnector.name: ApifyIndiaSupplierConnector,
 
     # company-contact-finder-ai: company name → website, checked e-mail, phone,
     # VAT id (deal enrichment before the first outbound mail).

@@ -110,6 +110,7 @@ _EU_MARKETS = frozenset({
 _P1_WEIGHTS: dict[str, float] = {
     "comtrade": 0.70,
     "census":   0.30,
+    "national": 0.30,
     # PortLess's own export-market actor (UN Comtrade data + the market's real
     # unit value per kg) — see shared/connectors/apify.py.
     "apify_export_markets": 0.40,
@@ -354,7 +355,9 @@ async def _phase1_historical_demand(
     now = datetime.now(timezone.utc)
     prev_year = str(now.year - 1)
 
-    comtrade_r, census_r, markets_r = await asyncio.gather(
+    from shared.connectors import national_trade
+    national_name = national_trade.source_for(market) if national_trade.enabled() else None
+    comtrade_r, census_r, markets_r, national_r = await asyncio.gather(
         _safe_quote("comtrade", {
             "hs_code": hs_code,
             "period": prev_year,
@@ -375,6 +378,10 @@ async def _phase1_historical_demand(
             "exporter_country": "IN",
             "markets": [market],
         }),
+        # National statistics (UK HMRC / Eurostat Comext): monthly value AND weight, so a
+        # market with a Comtrade value but no quantity still gets a unit price (todo 17.1).
+        _safe_quote(national_name, {"hs_code": hs_code, "market": market, "months": 12})
+        if national_name else _noop(),
     )
 
     result = _Phase1Result()
@@ -388,6 +395,12 @@ async def _phase1_historical_demand(
         if r is not None and (r.get("records") or r.get("total_records")):
             active_weights[cname] = _P1_WEIGHTS[cname]
             connector_data[cname] = r
+
+    national = national_r if (national_r and national_r.get("quantity_mt")) else None
+    if national is not None:
+        # recent monthly imports with a quantity = live demand even when Comtrade has nothing
+        active_weights["national"] = _P1_WEIGHTS["national"]
+        connector_data["national"] = national
 
     market_row = _pick_market_row(markets_r, market)
     if market_row is not None:
@@ -441,6 +454,31 @@ async def _phase1_historical_demand(
         if gap:
             result.gross_price_gap_pct = gap
             result.price_gap_measured = True
+
+    if "national" in connector_data:
+        nat = connector_data["national"]
+        qty = float(nat.get("quantity_mt") or 0.0)
+        score = min(100.0, qty / 5000.0 * 100.0)  # 5,000 MT in 12 months = a full score
+        scores.append(("national", score * norm_weights["national"]))
+        result.demand_signals.append(DemandSignal(
+            source=nat["source"], signal_type="historical", urgency_tier=1, normalized_value=round(score, 2),
+            weight=norm_weights["national"],
+            raw_summary=(f"{qty:,.0f} MT imported in {len(nat.get('months') or [])} months "
+                         f"({nat['source']}, to {nat.get('data_period')})"),
+            fetched_at=now,
+        ))
+        # The fresher monthly unit value is the buyer anchor when the actor gave none.
+        if not result.price_benchmark_usd_per_mt:
+            anchor = nat.get("india_unit_value_usd_per_mt") or nat.get("unit_value_usd_per_mt")
+            if anchor:
+                result.price_benchmark_usd_per_mt = anchor
+                result.price_benchmark_source = (f"{nat['source']}:india" if nat.get("india_unit_value_usd_per_mt")
+                                                 else nat["source"])
+                result.data_period = result.data_period or nat.get("data_period")
+        if not result.market_avg_usd_per_mt and nat.get("unit_value_usd_per_mt"):
+            result.market_avg_usd_per_mt = nat["unit_value_usd_per_mt"]
+        if not result.india_to_market_usd_per_mt and nat.get("india_unit_value_usd_per_mt"):
+            result.india_to_market_usd_per_mt = nat["india_unit_value_usd_per_mt"]
 
     result.demand_index = round(sum(s for _, s in scores), 2)
     result.source = scores[0][0] if scores else ""
@@ -791,6 +829,8 @@ async def _phase2_live_signals(
                 pitch_angle=_pitch(c.get("first_line")),
                 hs_codes=[hs_code],
                 email_status=c.get("email_status"),
+                vat_number=(str(c.get("vat_id") or "").strip().upper() or None),
+                legal_name=c.get("legal_name"),
             ))
 
     if rfq_r is not None:
@@ -1038,6 +1078,8 @@ async def _phase4_seller_discovery(
                 "address": c.get("address"),
                 "fit_reason": c.get("summary") or c.get("page_title"),
                 "name_source": c.get("name_source"),
+                "vat_id": c.get("vat_id"),
+                "id_text": " ".join(str(c.get(k) or "") for k in ("vat_id", "summary", "address", "first_line")),
             }, "apify_company_search")
 
     if im_r is not None:
@@ -1077,6 +1119,7 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         mid_price: float | None = round((lo + hi) / 2.0, 4)
     else:
         mid_price = lo
+    ids = _indian_ids(s)
 
     return SellerCandidate(
         candidate_id=s.get("company_id") or f"{source}-{uuid4().hex[:8]}",
@@ -1093,9 +1136,9 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         email=s.get("email") or None,
         phone=s.get("phone") or None,
         website=s.get("website") or None,
-        gstin=s.get("gstin") or None,
+        gstin=s.get("gstin") or ids.pop("gstin", None),
         iec=s.get("iec") or None,
-        udyam=s.get("udyam") or None,
+        udyam=s.get("udyam") or ids.pop("udyam", None),
         export_shipments_12m=(int(s["export_shipments_12m"]) if s.get("export_shipments_12m") else None),
         fit_score=s.get("fit_score"),
         country=(s.get("country") or None) if "country" in s else "IN",
@@ -1104,7 +1147,34 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         address=s.get("address") or None,
         fit_reason=s.get("fit_reason") or None,
         name_source=s.get("name_source") or None,
+        **ids,
     )
+
+
+_GSTIN_RE = __import__("re").compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]$")
+
+
+def _indian_ids(s: dict) -> dict:
+    """GSTIN / VAT, CIN (year of incorporation) and Udyam a supplier publishes on its own
+    site (todo 12) — read from the row's text, never guessed."""
+    from shared import indian_ids
+    out: dict = {}
+    vat = str(s.get("vat_id") or "").strip().upper()
+    if vat and _GSTIN_RE.match(vat):
+        if not s.get("gstin"):
+            out["gstin"] = vat
+    elif vat:
+        out["vat_number"] = vat
+    text = s.get("id_text") or ""
+    cin = indian_ids.find_cin(text)
+    if cin:
+        out["cin"] = cin
+        out["incorporation_year"] = indian_ids.incorporation_year(cin)
+    if not s.get("udyam"):
+        udyam = indian_ids.find_udyam(text)
+        if udyam:
+            out["udyam"] = udyam
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1815,13 +1885,9 @@ def describe_sources() -> dict[str, Any]:
     def _mode(live: bool) -> str:
         return "live" if live else "stub"
 
-    # Actors the scan no longer calls: their data comes from third-party Store
-    # Actors the rich_minds plan cannot run, or the actor does not exist yet.
-    blocked = {
-        "apify_us_importers": "not used - needs an Apify plan that runs public Store Actors (ImportYeti scraper)",
-        "apify_alibaba_rfq": "not used - needs an Apify plan that runs public Store Actors (Alibaba RFQ scraper)",
-        "apify_india_suppliers": "not used - india-supplier-finder-ai is not built on the account",
-    }
+    # The retired actor slots (us-importer-finder-ai, alibaba-rfq-leads-ai,
+    # india-supplier-finder-ai) are not listed: the page shows only what can run.
+    blocked: dict[str, str] = {}
 
     def _actor(connector: str, role: str, label: str, detail: str) -> dict[str, Any]:
         a = actors.get(connector, {})
@@ -1835,12 +1901,21 @@ def describe_sources() -> dict[str, Any]:
             "mode": "stub" if note else _mode(bool(a.get("live"))),
             "detail": f"{detail} ({note})" if note else detail,
             "external": bool(a.get("external")),
+            "cache": a.get("cache"),
         }
 
     sources: list[dict[str, Any]] = [
         {"name": "comtrade", "label": "UN Comtrade", "role": "demand", "provider": "un_comtrade",
          "mode": _mode(bool(os.getenv("COMTRADE_SUBSCRIPTION_KEY"))),
          "detail": "Historical import volumes + CIF/FOB value ratio (Phase 1)."},
+        {"name": "uk_hmrc", "label": "UK HMRC trade statistics", "role": "demand", "provider": "uk_hmrc",
+         "mode": "open" if os.getenv("NATIONAL_TRADE_SOURCES_ENABLED", "true").lower() not in ("0", "false", "no", "off")
+         else "stub",
+         "detail": "UK monthly imports by CN8 with value and kg (Phase 1, market GB)."},
+        {"name": "eurostat_comext", "label": "Eurostat Comext", "role": "demand", "provider": "eurostat",
+         "mode": "open" if os.getenv("NATIONAL_TRADE_SOURCES_ENABLED", "true").lower() not in ("0", "false", "no", "off")
+         else "stub",
+         "detail": "EU monthly imports by product and partner with value and 100 kg (Phase 1, EU markets)."},
         {"name": "census", "label": "US Census trade", "role": "demand", "provider": "us_census",
          "mode": _mode(bool(os.getenv("CENSUS_API_KEY"))),
          "detail": "US import statistics (Phase 1, US market only)."},
@@ -1849,10 +1924,6 @@ def describe_sources() -> dict[str, Any]:
         _actor("apify_company_search", "buyers", "Buyer search (importers / distributors)",
                "Named importers and distributors per market from a web search, each with a checked "
                "e-mail / phone from its own site (Phase 2; also finds Indian suppliers in Phase 4)."),
-        _actor("apify_us_importers", "buyers", "US importers (customs records)",
-               "Named US buyers with shipments, website/phone, fit score (Phase 2, US market)."),
-        _actor("apify_alibaba_rfq", "buyers", "Alibaba buying requests",
-               "Live RFQs matched to PortLess product lines, buyer country + target price (Phase 2)."),
         {"name": "alibaba_rfq", "label": "Alibaba Open Platform RFQ", "role": "buyers", "provider": "alibaba_api",
          "mode": _mode(bool(os.getenv("ALIBABA_APP_KEY") and os.getenv("ALIBABA_APP_SECRET"))),
          "detail": "Official RFQ feed (Phase 2) - needs an Alibaba developer app."},
@@ -1862,8 +1933,6 @@ def describe_sources() -> dict[str, Any]:
          "mode": "open", "detail": "Supply disruptions in competitor origins (urgency tier 4)."},
         {"name": "wits_tariff", "label": "World Bank WITS tariffs", "role": "tariff", "provider": "wits",
          "mode": "open", "detail": "Applied import duty at HS-6 (Phase 3 tariff gate)."},
-        _actor("apify_india_suppliers", "sellers", "Indian suppliers (actor)",
-               "Indian manufacturers with price, MOQ, GSTIN and a reachable contact (Phase 4)."),
         {"name": "mandi_prices", "label": "Mandi prices (Agmarknet)", "role": "sellers", "provider": "data_gov_in",
          "mode": _mode(bool(os.getenv("DATA_GOV_IN_API_KEY", "").strip()
                             and not os.getenv("DATA_GOV_IN_API_KEY", "").startswith("your_"))),

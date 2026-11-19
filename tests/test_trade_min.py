@@ -116,13 +116,15 @@ def test_list_opportunities_reflects_previous_scan(client: TestClient) -> None:
 
 
 def test_get_opportunity_by_id(client: TestClient) -> None:
-    scan_body = client.post(
-        "/trade-min/scan",
-        json={"hs_codes": ["090422"], "target_markets": ["ES", "DE", "US", "AE", "GB"]},
-    ).json()
-    if not scan_body:
-        pytest.skip("No opportunities passed the rank filter for this pair")
-    opp_id = scan_body[0]["opportunity_id"]
+    # A scan builds no opportunity without live data (and the tests are offline), so this
+    # test used to skip every run. Store one the way a scan does and read it back by id.
+    from services.trade_min import repository as repo_mod
+    from services.trade_min.schemas import EnrichedOpportunity
+    from tests.factories import make
+    opp = make(EnrichedOpportunity, opportunity_id="OPP-TESTBYID01", hs_code="090422", market="ES")
+    repository.clear()  # forces the in-memory backend
+    repo_mod._repository._store[opp.opportunity_id] = opp  # noqa: SLF001
+    opp_id = opp.opportunity_id
     response = client.get(f"/trade-min/opportunities/{opp_id}")
     assert response.status_code == 200
     assert response.json()["opportunity_id"] == opp_id

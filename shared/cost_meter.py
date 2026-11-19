@@ -66,6 +66,16 @@ def add(*, now: datetime | None = None, **amounts: float) -> None:
         pass
 
 
+def add_memory_only(*, now: datetime | None = None, **amounts: float) -> None:
+    """Count in this process only: the caller wrote the same amounts to Mongo itself
+    (the Apify budget reserves runs atomically in the day document)."""
+    day = _today(now)
+    row = _memory.setdefault(day, {})
+    for k, v in amounts.items():
+        if k in FIELDS and v:
+            row[k] = round(row.get(k, 0.0) + float(v), 6)
+
+
 def tavily_search() -> None:
     add(tavily_searches=1, tavily_usd=_f("TAVILY_USD_PER_SEARCH", 0.008))
 
@@ -133,7 +143,7 @@ async def report(days: int = 30, now: datetime | None = None) -> dict[str, Any]:
     apify_budget = None
     try:
         from shared.connectors import apify
-        apify_budget = {"runs_today": apify.runs_today(), "max_runs_per_day": int(_f("APIFY_MAX_RUNS_PER_DAY", 0)) or None}
+        apify_budget = await apify.usage_today()
     except Exception:  # noqa: BLE001
         pass
     return {

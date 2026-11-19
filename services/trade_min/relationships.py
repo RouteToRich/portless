@@ -246,6 +246,18 @@ def score_of(r: CounterpartyRecord, rel: dict[str, Any], track: dict[str, Any] |
     if vs is not None and vs < 0:
         pts += 10
         basis.append(f"quote {abs(vs):.0f}% below the median (+10)")
+    # Found by more than one source (scan, directory list, staff, another actor): more likely
+    # real and active (todo 21.3 "one de-duplication across sources").
+    n_sources = len({s for s in (r.sources or []) if s})
+    if n_sources > 1:
+        bonus = min(9, 3 * (n_sources - 1))
+        pts += bonus
+        basis.append(f"found by {n_sources} sources (+{bonus})")
+    # Exists beyond its website: LEI, a valid EU VAT number, an Indian CIN / Udyam (badge).
+    evidence = [e for e in ((r.validation.existence if r.validation else None) or []) if "NOT valid" not in e]
+    if evidence or r.cin or r.lei:
+        pts += 5
+        basis.append("company register evidence (+5)")
     bad_flags = {"role_suspect", "product_mismatch"} & set(r.flags or [])
     if bad_flags:
         pts -= 30

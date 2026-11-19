@@ -62,6 +62,12 @@ class BuyerRequirement(BaseModel):
     """Grade / specification ("USP 99.7%", "refined", "ASTA 500 bold")."""
     packaging: str | None = None
     quantity_mt: float | None = None
+    quantity_stated: str | None = None
+    """How the buyer wrote it ("2 × 20'", "2,000 bags × 25 kg") when not in MT."""
+    quantity_unit: str | None = None
+    quantity_confirm: str | None = None
+    """The converted amount to echo back ("2 × 20' ≈ 40 MT — correct?") until the buyer confirms."""
+    quantity_confirmed: bool = False
     delivery_window: str | None = None
     """Free text as the buyer wrote it ("March", "within 6 weeks")."""
     delivery_by_days: int | None = None

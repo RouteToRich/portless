@@ -282,8 +282,35 @@ def _book(rows: list[CounterpartyRecord], *, stage: str | None, contactable: boo
 async def clean_directory(user=Depends(_staff())) -> dict:
     """Store the current clean-up on every directory record: names cut out of marketing
     sentences and split from run-together domains, usable e-mails, the company's own
-    country, and buyers that look like Indian exporters flagged ``role_suspect``."""
-    return {"changed": await directory.clean_existing()}
+    country, and buyers that look like Indian exporters flagged ``role_suspect``. Then the
+    role check: an Indian ``role_suspect`` "buyer" that makes the product becomes a supplier,
+    the rest stay out of outreach; and operator notes stored as a company's description are
+    dropped (``notes_scrubbed``)."""
+    changed = await directory.clean_existing()
+    roles = await directory.clean_roles()
+    return {"changed": changed, **roles, "notes_scrubbed": await directory.scrub_notes()}
+
+
+@router.post("/mandi/{hs_code}/backfill")
+async def mandi_backfill(hs_code: str, days: int = 90, user=Depends(_staff())) -> dict:
+    """Fill the mandi price history of the product's commodity from Agmarknet's historical
+    dataset, so the radar's trend works before a week of daily points exists."""
+    from shared.connectors.mandi import commodity_for
+    from . import mandi_history
+    commodity = commodity_for(hs_code)
+    if not commodity:
+        raise HTTPException(status_code=404, detail=f"no Agmarknet commodity for HS {hs_code}")
+    return await mandi_history.backfill(commodity, days=max(1, min(int(days), 365)))
+
+
+@router.get("/directory/yield")
+async def directory_yield(role: str | None = None, days: int = 90) -> dict:
+    """Per source: companies found, verified, contacted, replied, engaged, in a deal and traded,
+    with the Apify spend and the cost per verified / replied / traded company."""
+    from . import source_yield
+    if role not in (None, "buyer", "supplier"):
+        raise HTTPException(status_code=422, detail="role must be buyer or supplier")
+    return await source_yield.report(role, days)
 
 
 @router.get("/directory/summary")

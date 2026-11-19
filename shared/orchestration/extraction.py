@@ -109,6 +109,68 @@ def _quantity(text: str) -> float | None:
     return None
 
 
+# "2 x 20' containers", "3 × 40ft HC", "two FCL 40'"; "2000 bags of 25 kg", "1,000 x 50kg bags".
+_CONTAINERS_SIZED = re.compile(
+    r"\b([0-9]{1,3})\s*(?:x|×|nos?\.?)?\s*(20|40)\s*(?:'|’|′|ft\b|feet|foot|-?footers?)\s*"
+    r"(HC|high[- ]cube|reefers?|RF)?\s*(?:containers?|FCLs?|boxes|units)?", re.IGNORECASE)
+_BAGS = re.compile(
+    r"\b([0-9][0-9,]*)\s*(?:x|×)?\s*(?:(?:bags?|sacks?|cartons?)\s*(?:of|@|x|×)?\s*([0-9]+(?:\.[0-9]+)?)\s*kg"
+    r"|([0-9]+(?:\.[0-9]+)?)\s*kg\s*(?:bags?|sacks?|cartons?))", re.IGNORECASE)
+
+
+def quantity_detail(text: str, *, container_mt: float | None = None) -> dict[str, Any]:
+    """Quantity in MT plus how the buyer stated it (todo 15.4: a reply in containers, bags or
+    kg is converted and echoed back to confirm). ``container_mt`` = MT per 20' box for the
+    product (catalogue), else 20; a 40' carries ``CONTAINER_40_MT_FACTOR`` (1.1) times that.
+    Returns ``{}`` when no quantity is found; ``quantity_confirm`` only for a converted amount."""
+    import os
+    t = text or ""
+    per20 = float(container_mt or 20.0)
+    try:
+        per40 = per20 * float(os.getenv("CONTAINER_40_MT_FACTOR", "1.1") or 1.1)
+    except ValueError:
+        per40 = per20 * 1.1
+    m = _CONTAINERS_SIZED.search(t)
+    if m and not _MOQ.search(t[max(0, m.start() - 25):m.end()]):
+        n, size = int(m.group(1)), m.group(2)
+        if 1 <= n <= 500:
+            mt = round(n * (per40 if size == "40" else per20), 1)
+            kind = (" HC" if (m.group(3) or "").upper().startswith(("HC", "HIGH")) else
+                    " reefer" if (m.group(3) or "").lower().startswith(("reefer", "rf")) else "")
+            stated = f"{n} × {size}'{kind}"
+            return {"quantity_mt": mt, "quantity_stated": stated, "quantity_unit": f"container_{size}",
+                    "quantity_confirm": f"{stated} ≈ {mt:,.0f} MT — correct?"}
+    b = _BAGS.search(t)
+    if b and not _MOQ.search(t[max(0, b.start() - 25):b.end()]):
+        count = _num(b.group(1))
+        size = _num(b.group(2) or b.group(3) or "")
+        if count and size and 0.1 <= count * size / 1000.0 <= 100000:
+            mt = round(count * size / 1000.0, 2)
+            stated = f"{count:,.0f} bags × {size:g} kg"
+            return {"quantity_mt": mt, "quantity_stated": stated, "quantity_unit": "bags",
+                    "quantity_confirm": f"{stated} = {mt:,.1f} MT — correct?"}
+    for q in _QTY.finditer(t):
+        if _MOQ.search(t[max(0, q.start() - 25):q.end()]):
+            continue
+        unit = (q.group(2) or "").lower()
+        raw = _num(q.group(1))
+        if unit.startswith(("container", "fcl", "x")):
+            mt = round((raw or 0) * per20, 1)
+            stated = f"{raw:g} container(s)"
+            if 0.1 <= mt <= 100000:
+                return {"quantity_mt": mt, "quantity_stated": stated, "quantity_unit": "container_20",
+                        "quantity_confirm": f"{stated} — 20' boxes, ≈ {mt:,.0f} MT — correct?"}
+        elif unit.startswith(("kg", "kilo")):
+            mt = _to_mt(raw, unit)
+            if mt and 0.1 <= mt <= 100000:
+                return {"quantity_mt": mt, "quantity_stated": f"{raw:,.0f} kg", "quantity_unit": "kg"}
+        else:
+            mt = raw
+            if mt and 0.1 <= mt <= 100000:
+                return {"quantity_mt": mt, "quantity_stated": f"{mt:g} MT", "quantity_unit": "mt"}
+    return {}
+
+
 def _grade(text: str) -> str | None:
     m = _GRADE.search(text)
     if m:
@@ -136,7 +198,7 @@ def parse_destination_port(text: str | None) -> str | None:
     return None
 
 
-def parse_buyer(text: str) -> dict[str, Any]:
+def parse_buyer(text: str, *, container_mt: float | None = None) -> dict[str, Any]:
     """Deterministic buyer-requirement parse (the gateway-down fallback)."""
     t = text or ""
     out: dict[str, Any] = {}
@@ -145,7 +207,10 @@ def parse_buyer(text: str) -> dict[str, Any]:
     if (price := _first_price(t)) is not None:
         out["target_price_usd_per_mt"] = price
         out["target_price_incoterm"] = out.get("incoterm")
-    if (q := _quantity(t)) is not None:
+    detail = quantity_detail(t, container_mt=container_mt)
+    if detail:
+        out.update(detail)
+    elif (q := _quantity(t)) is not None:
         out["quantity_mt"] = q
     if (port := _PORT_AFTER_TERM.search(t) or _PORT.search(t)):
         out["destination_port"] = port.group(1).strip()
@@ -273,12 +338,16 @@ def _clean(data: dict[str, Any], allowed: dict[str, str]) -> dict[str, Any]:
     return out
 
 
-async def extract_buyer(text: str, *, product: str | None = None) -> dict[str, Any]:
+async def extract_buyer(text: str, *, product: str | None = None,
+                        container_mt: float | None = None) -> dict[str, Any]:
     """Buyer reply → requirement fields (``source``/``confidence`` included)."""
-    pattern = parse_buyer(text)
+    pattern = parse_buyer(text, container_mt=container_mt)
     llm = await _llm("buyer", text, _BUYER_FIELDS, product)
     if llm:
         fields = {**pattern, **_clean(llm, _BUYER_FIELDS)}
+        if pattern.get("quantity_confirm"):  # the converted amount, not the model's guess
+            for k in ("quantity_mt", "quantity_stated", "quantity_unit", "quantity_confirm"):
+                fields[k] = pattern[k]
         fields["confidence"] = 0.85
     else:
         fields = pattern

@@ -127,6 +127,8 @@ def buyer_missing(facts: dict[str, Any], *, qc_selected: bool, quantity_known: b
     from shared.connectors.qc_providers import QC_PROVIDER_CATALOG, enabled_qc_providers
     from shared.orchestration import packing
     out: list[str] = []
+    if facts.get("quantity_to_confirm"):
+        out.append(f"confirm the quantity as we read it: {facts['quantity_to_confirm']}")
     if not facts.get("destination_port"):
         out.append("destination port (our price is CIF to that port)")
     if not (facts.get("quantity_mt") or quantity_known):
@@ -152,6 +154,8 @@ async def buyer_brief(session: Any, history: str = "", inbound: str = "") -> dic
     cand = _selected_candidate(deal, getattr(session, "buyer_email", None)) if deal else None
     req = getattr(cand, "requirement", None) if cand else None
     facts = _buyer_facts(req)
+    if req is not None and getattr(req, "quantity_confirm", None) and not getattr(req, "quantity_confirmed", False):
+        facts["quantity_to_confirm"] = req.quantity_confirm
     from shared.orchestration import packing as _packing
     agreed_packing = _packing.describe(getattr(session, "packing", None))
     if agreed_packing:

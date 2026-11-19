@@ -61,6 +61,31 @@ def poll_minutes() -> float:
     return max(1.0, _float("QC_POLL_MINUTES", 60.0))
 
 
+def inspection_day_poll_minutes() -> float:
+    """QIMA has no webhook: on the inspection day (and the report days after it,
+    ``QC_INSPECTION_DAY_POLL_DAYS_AFTER``, default 2) the order is read this often
+    (``QC_POLL_MINUTES_INSPECTION_DAY``, default 15) instead of ``QC_POLL_MINUTES``."""
+    return max(1.0, _float("QC_POLL_MINUTES_INSPECTION_DAY", 15.0))
+
+
+def poll_minutes_for(inspection_date: object, now: datetime | None = None) -> float:
+    """The poll interval for one order: the short one from its inspection day until the
+    report should be in, else the normal one. An unreadable / missing date → normal."""
+    normal = poll_minutes()
+    raw = str(inspection_date or "").strip()[:10]
+    if not raw:
+        return normal
+    try:
+        day = date.fromisoformat(raw)
+    except ValueError:
+        return normal
+    today_ = (now or datetime.now(timezone.utc)).date()
+    after = max(0, _int("QC_INSPECTION_DAY_POLL_DAYS_AFTER", 2))
+    if day <= today_ <= day + timedelta(days=after):
+        return min(normal, inspection_day_poll_minutes())
+    return normal
+
+
 def ship_after_inspection_days() -> int:
     return max(0, _int("QC_SHIP_AFTER_INSPECTION_DAYS", 7))
 

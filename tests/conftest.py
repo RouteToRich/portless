@@ -34,6 +34,8 @@ os.environ["RATE_LIMIT_PUBLIC_PER_MINUTE"] = "0"
 # that exercise the connector itself monkeypatch ``run()`` explicitly.
 os.environ["APIFY_TOKEN"] = ""
 os.environ["APIFY_TOKEN_AUTODISCOVER"] = "false"
+os.environ["NATIONAL_TRADE_SOURCES_ENABLED"] = "false"  # HMRC / Comext never called from the suite
+os.environ["APIFY_CACHE_ENABLED"] = "false"  # result cache tested on its own (test_apify_usage.py)
 
 # .env (gitignored) holds the real MongoDB cluster and the shared LLM
 # Gateway credential, and shared/config.py loads it into os.environ. A unit

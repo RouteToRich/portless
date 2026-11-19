@@ -538,13 +538,15 @@ async def _rfq_candidates(deal) -> list[dict[str, Any]]:
                 "fob_price_usd": s.get("fob_price_usd"),
                 "email": s.get("email"),
                 "verification": (s.get("validation") or {}).get("status"),
+                "capacity_mt": s.get("annual_capacity_mt"),
             } for s in (seed.top_sellers if seed else [])]
             if out:
                 by_id = {s["supplier_id"]: s for s in sellers if s["supplier_id"]}
                 for c in out:
                     s = by_id.get(c["supplier_id"])
                     if s:
-                        c.update(email=s["email"], contact_id=s["contact_id"], source=s["source"])
+                        c.update(email=s["email"], contact_id=s["contact_id"], source=s["source"],
+                                 capacity_mt=s.get("capacity_mt"))
             else:
                 out = sellers
         except Exception as exc:  # noqa: BLE001
@@ -569,12 +571,64 @@ def rfq_traded_max() -> int:
         return 2
 
 
+def rfq_base_suppliers() -> int:
+    """RFQ_BASE_SUPPLIERS (default 3): suppliers asked when their stated capacity covers what
+    the buyers want; the list widens up to RFQ_MAX_SUPPLIERS when it does not."""
+    try:
+        return max(1, int(os.getenv("RFQ_BASE_SUPPLIERS", "3")))
+    except ValueError:
+        return 3
+
+
+def _buyers_quantity_mt(deal) -> float:
+    """What the buyers want in total: interested / pending candidates' stated quantities,
+    else the deal's own quantity."""
+    total = 0.0
+    for c in getattr(deal, "buyer_candidates", None) or []:
+        if str(getattr(c, "status", "") or "") in ("declined", "no_reply", "skipped"):
+            continue
+        req = getattr(c, "requirement", None)
+        q = getattr(req, "quantity_mt", None) if req is not None else None
+        if q:
+            total += float(q)
+    return total or float(getattr(deal, "quantity_mt", None) or 0.0)
+
+
+def _capacity_mt(c: dict[str, Any], deal) -> float:
+    """A supplier's stated capacity, as MT it could ship for this order (0 = not stated)."""
+    cap = c.get("capacity_mt")
+    if cap:
+        return float(cap)
+    for o in getattr(deal, "supplier_offers", None) or []:
+        if getattr(o, "supplier_id", None) == c.get("supplier_id") and getattr(o, "capacity_mt_per_month", None):
+            return float(o.capacity_mt_per_month)
+    return 0.0
+
+
+def rfq_cap(deal, ranked: list[dict[str, Any]]) -> int:
+    """How many suppliers the RFQ asks (todo 13.1): RFQ_BASE_SUPPLIERS, widened one by one up
+    to RFQ_MAX_SUPPLIERS while the stated capacity of those asked is below the buyers' total
+    quantity. A supplier that states no capacity covers nothing, so with no capacities known
+    the RFQ goes to RFQ_MAX_SUPPLIERS."""
+    hard = _RFQ_MAX_SUPPLIERS
+    need = _buyers_quantity_mt(deal)
+    if not need:  # nothing to cover against: ask as many as allowed
+        return hard
+    cap = min(rfq_base_suppliers(), hard)
+    while cap < hard and cap < len(ranked):
+        if sum(_capacity_mt(c, deal) for c in ranked[:cap]) >= need:
+            break
+        cap += 1
+    return cap
+
+
 def _cap_rfq(deal, ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The RFQ list within RFQ_MAX_SUPPLIERS (review board B-15). Traded suppliers are asked
     first but take at most RFQ_TRADED_MAX slots, so a new — maybe cheaper — supplier is never
     crowded out by old ones; slots nobody else wants go back to traded suppliers. Ranking
-    order is kept. The suppliers the cap leaves out are logged."""
-    cap = _RFQ_MAX_SUPPLIERS
+    order is kept. The suppliers the cap leaves out are logged. How many are asked comes
+    from ``rfq_cap`` (capacity against the buyers' quantity)."""
+    cap = rfq_cap(deal, ranked)
     traded = [c for c in ranked if c.get("traded")]
     own = [c for c in ranked if not c.get("traded")]
     keep_traded = traded[: rfq_traded_max()]

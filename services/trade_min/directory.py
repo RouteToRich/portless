@@ -91,7 +91,8 @@ def _merge_raw(old: CounterpartyRecord | None, new: CounterpartyRecord) -> Count
     data = old.model_dump()
     manual = old.source == "manual"
     for field in ("name", "country", "email", "phone", "website", "address", "contact_url",
-                  "fit_score", "fit_reason", "gstin", "iec", "estimated_fob_price_usd"):
+                  "fit_score", "fit_reason", "gstin", "iec", "estimated_fob_price_usd",
+                  "vat_number", "lei", "legal_name", "cin", "udyam", "incorporation_year"):
         value = getattr(new, field)
         # A supplier staff added by hand keeps what staff entered; a scan only fills gaps.
         if value not in (None, "") and not (manual and data.get(field) not in (None, "")):
@@ -348,7 +349,7 @@ def _buyer_record(b: BuyerSignal, hs_code: str, market: str, outcome: str,
         hs_codes=[hs_code], markets=[market.upper()] if market else [],  # the corridor scanned
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=b.validation,
-        flags=list(b.flags or []),
+        flags=list(b.flags or []), vat_number=b.vat_number, lei=b.lei, legal_name=b.legal_name,
     )
 
 
@@ -366,7 +367,8 @@ def _supplier_record(s: SellerCandidate, hs_code: str, market: str, outcome: str
         hs_codes=[hs_code], markets=[market.upper()] if market else [],
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=s.validation,
-        flags=list(s.flags or []),
+        flags=list(s.flags or []), vat_number=s.vat_number, cin=s.cin, udyam=s.udyam,
+        incorporation_year=s.incorporation_year,
     )
 
 
@@ -411,6 +413,63 @@ async def clean_existing() -> int:
             cleaned = clean_record(rec)
             if cleaned is not rec:
                 directory._store[key] = cleaned
+                changed += 1
+    return changed
+
+
+# A "buyer" that makes / ships the product (an Indian exporter found by a buyer search).
+_MAKES_PRODUCT = re.compile(
+    r"\b(manufactur\w*|exporters?|export house|processors?|processing|mills?|millers?|producers?|growers?|"
+    r"packers?|farms?|plantations?|suppliers?|agro|industries)\b", re.IGNORECASE)
+
+
+async def clean_roles() -> dict[str, int]:
+    """Run the role check over the stored directory (todo 18.1 "clean the roles"): a buyer
+    flagged ``role_suspect`` that is Indian and makes / ships the product becomes a supplier
+    record (merged into an existing one, flag ``moved_from_buyer``, the buyer record removed);
+    any other ``role_suspect`` buyer stays out of outreach (``outreach.start_outreach`` skips
+    the flag). Staff-held records (do-not-contact, notes, manual) are only flagged, never moved.
+    Returns counts."""
+    directory = await get_directory()
+    counts = {"moved_to_suppliers": 0, "excluded_from_outreach": 0}
+    for rec in await directory.list("buyer", limit=100_000):
+        rec = clean_record(rec)
+        if "role_suspect" not in (rec.flags or []):
+            continue
+        text = " ".join(x for x in (rec.name, rec.fit_reason) if x)
+        held = rec.do_not_contact or bool(rec.notes) or bool(rec.manual) or bool(rec.merged_from)
+        if (rec.country or "").upper() == "IN" and _MAKES_PRODUCT.search(text) and not held:
+            data = rec.model_dump()
+            data.update(id=record_key("supplier", rec.name, rec.website), role="supplier",
+                        markets=[], validation=None,
+                        flags=_union([f for f in rec.flags if f != "role_suspect"], ["moved_from_buyer"]))
+            await directory.upsert(CounterpartyRecord.model_validate(data))
+            await directory.delete(rec.id)
+            counts["moved_to_suppliers"] += 1
+        else:
+            counts["excluded_from_outreach"] += 1
+    return counts
+
+
+def scrub_operator_note(text: str | None) -> str | None:
+    """The contact finder's note to the operator ("Write to info@x.com — the general inbox")
+    is not a fact about the company: dropped from stored text fields."""
+    if not text:
+        return text
+    from shared.orchestration.outreach import _OPERATOR_NOTE
+    return None if _OPERATOR_NOTE.search(text) else text
+
+
+async def scrub_notes() -> int:
+    """Drop operator notes stored as a company's ``fit_reason`` (todo 19: the filter stops
+    them reaching a buyer; the data still held them). Returns records changed."""
+    directory = await get_directory()
+    changed = 0
+    for role in ("buyer", "supplier"):
+        for rec in await directory.list(role, limit=100_000):
+            cleaned = scrub_operator_note(rec.fit_reason)
+            if cleaned != rec.fit_reason:
+                await directory.replace(rec.model_copy(update={"fit_reason": cleaned}))
                 changed += 1
     return changed
 

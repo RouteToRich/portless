@@ -145,6 +145,8 @@ pytest tests/test_supply_gap.py          # buyer quantity vs supplier capacity /
 pytest tests/test_search_terms.py        # buyer search line in the market's language (+ catalogue local name)
 pytest tests/test_cost_meter.py          # platform running costs per day (LLM / Apify / Tavily / fixed), GET /health/costs
 pytest tests/test_idempotency_audit.py   # concurrent approvals → one decision; webhook ×10 → booked once; double release
+pytest tests/test_apify_usage.py         # Apify run / USD budget in Mongo per day, result cache, tracking pause after source_refused, qualifier "unchecked", VAT/LEI to screening, retired slots
+pytest tests/test_scan_data_batch.py     # CIN age, directory role clean-up + note scrub, reply quantity in containers / bags, HMRC + Comext, registration duplicates, source yield, RFQ widening, harvest calendar, QIMA inspection-day poll
 pytest tests/test_journey_replay.py      # LLM journey counterparty replies recorded and replayed (--replay-run)
 pytest tests/test_ops_scripts.py         # uptime check, response-time budgets, coverage gate scripts and workflows
 pytest tests/llm_gateway -q              # gateway contract: sign-in, 401 / TTL renewal, timeout, blank / malformed reply, template fallback
@@ -595,7 +597,12 @@ GOOGLE_DRIVE_ROOT_FOLDER     # default "Portless" â€” docs land in <root>/<
 APIFY_TOKEN                  # Apify API token (auto-discovered from ~/.apify/auth.json in dev unless APIFY_TOKEN_AUTODISCOVER=false)
 APIFY_ACTOR_OWNER            # default rich_minds; APIFY_ACTOR_<KEY> overrides one actor (slug / owner~slug / id)
 APIFY_ENABLE_AI / APIFY_MAX_ITEMS / APIFY_RUN_TIMEOUT_SECONDS / APIFY_MAX_DISCOVERY_CHARGE_USD / APIFY_WEBHOOK_SECRET
-APIFY_MAX_RUNS_PER_DAY       # daily actor-run budget across scans / enrichment / tracking (0 = unlimited)
+APIFY_MAX_RUNS_PER_DAY       # daily actor-run budget across scans / enrichment / tracking (0 = unlimited); counted in Mongo platform_costs per UTC day (shared/connectors/apify_usage.py)
+APIFY_MAX_USD_PER_DAY        # daily Apify spend cap (usageTotalUsd; 0 = unlimited)
+APIFY_CACHE_ENABLED (true) / APIFY_CACHE_HOURS_<ACTOR_KEY>   # result cache per actor input (Mongo apify_result_cache); pinned off in tests
+APIFY_CARRIER_TRACKING_RETRY_REFUSED (false)   # tracking actor runs again after a source_refused day (set once A.27 runs)
+NATIONAL_TRADE_SOURCES_ENABLED (true)   # UK HMRC + Eurostat Comext in Phase 1 (pinned off in tests); RFQ_BASE_SUPPLIERS (3) widened to RFQ_MAX_SUPPLIERS on capacity
+QC_POLL_MINUTES_INSPECTION_DAY (15) / QC_INSPECTION_DAY_POLL_DAYS_AFTER (2)   # QIMA poll on the inspection day; HARVEST_MONTHS_<COMMODITY> overrides the crop calendar
 ENRICHMENT_ON_DEAL_CREATED   # default true â€” contact finder + sanctions screening at deal.created
 TRADE_MIN_VALIDATION_ENABLED / TRADE_MIN_VALIDATION_TOP_N (5) / TRADE_MIN_VALIDATION_MAX_AGE_DAYS (30)   # scan-time buyer / supplier check (radar "Verified only"); readiness `counterparty_validation` fails in production when off or without APIFY_TOKEN
 PROSPECT_EFFORT_HIGH (12)    # e-mails + decisions on a prospect with no interested buyer / quote → "busy, not moving"

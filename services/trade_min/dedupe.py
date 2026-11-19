@@ -5,6 +5,7 @@ its legal form ("Gulf Foods LLC" / "Gulf Foods Trading"), or through two sources
 (``GET /trade-min/directory/{role}/duplicates``) group records of one role that share
 
 - the same company e-mail domain (never a free-mail one), or
+- the same registration number (GSTIN, CIN, VAT id, LEI), or
 - the same phone number (last 9 digits), or
 - the same name core in the same country (legal forms and trade words removed).
 
@@ -50,6 +51,16 @@ def _phone(rec: CounterpartyRecord) -> str | None:
     return digits[-9:] if len(digits) >= 9 else None
 
 
+def _registration(rec: CounterpartyRecord) -> str | None:
+    """A registration number that names one legal company (todo 21.3: domain → registration
+    number → name + city)."""
+    for value in (rec.gstin, rec.cin, rec.vat_number, rec.lei):
+        v = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+        if len(v) >= 8:
+            return v
+    return None
+
+
 def suggestions(rows: list[CounterpartyRecord]) -> list[dict[str, Any]]:
     """Groups of probable duplicates (union of the three keys), biggest first."""
     parent = {r.id: r.id for r in rows}
@@ -63,7 +74,8 @@ def suggestions(rows: list[CounterpartyRecord]) -> list[dict[str, Any]]:
     reasons: dict[frozenset, set[str]] = {}
     keys: dict[tuple[str, str], list[str]] = {}
     for r in rows:
-        for kind, value in (("e-mail domain", _email_domain(r)), ("phone", _phone(r)),
+        for kind, value in (("e-mail domain", _email_domain(r)), ("registration number", _registration(r)),
+                            ("phone", _phone(r)),
                             ("name", f"{name_core(r.name)}|{(r.country or '').upper()}" if len(name_core(r.name)) >= 4 else None)):
             if value:
                 keys.setdefault((kind, value), []).append(r.id)
@@ -116,7 +128,8 @@ async def merge(role: str, keep_id: str, merge_ids: list[str], by: str) -> Count
     for o in others:
         for f in ("sources", "hs_codes", "markets", "opportunity_ids", "flags"):
             data[f] = _join(data.get(f) or [], getattr(o, f) or [])
-        for f in ("email", "phone", "website", "address", "contact_url", "gstin", "iec", "country"):
+        for f in ("email", "phone", "website", "address", "contact_url", "gstin", "iec", "country",
+                  "vat_number", "lei", "legal_name", "cin", "udyam", "incorporation_year"):
             if not data.get(f) and getattr(o, f, None):
                 data[f] = getattr(o, f)
         data["notes"] = [*(data.get("notes") or []), *[n.model_dump() for n in o.notes]]

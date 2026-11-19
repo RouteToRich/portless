@@ -170,6 +170,8 @@ class TradeMinConfig:
         default_factory=lambda: {
             "comtrade":       7 * _DAY,
             "census":         7 * _DAY,
+            "uk_hmrc":        7 * _DAY,
+            "eurostat_comext": 7 * _DAY,
             "wits_tariff":    7 * _DAY,
             "access2markets": 7 * _DAY,   # EU tariffs/NTBs (when configured)
             # PortLess-owned Apify actors — every run costs money, so cache the

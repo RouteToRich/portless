@@ -368,23 +368,25 @@ class TestTradeMinWiring:
         from services.trade_min.service import describe_sources
         d = describe_sources()
         names = {s["name"] for s in d["sources"]}
-        assert {"apify_us_importers", "apify_alibaba_rfq", "apify_export_markets", "apify_india_suppliers",
-                "apify_contact_finder", "apify_company_search", "apify_counterparty_check",
+        assert {"apify_export_markets", "apify_contact_finder", "apify_company_search", "apify_counterparty_check",
                 "apify_email_qualifier", "apify_carrier_tracking"} <= names
+        # retired slots are not listed (todo 23.1)
+        assert not names & {"apify_us_importers", "apify_alibaba_rfq", "apify_india_suppliers"}
         assert d["apify"]["token_present"] is False
         assert all(s["mode"] in ("live", "stub", "open") for s in d["sources"])
         by_name = {s["name"]: s for s in d["sources"]}
         # contact finder and company search share one actor but stay separate entries
         assert by_name["apify_contact_finder"]["actor"] == by_name["apify_company_search"]["actor"]
-        assert "not used" in by_name["apify_us_importers"]["detail"]
+        assert by_name["apify_company_search"]["cache"]["ttl_hours"] == 14 * 24
 
     def test_sources_mark_blocked_actors_stub_even_with_token(self, monkeypatch):
         from services.trade_min.service import describe_sources
         monkeypatch.setenv("APIFY_TOKEN", "tok")
         by_name = {s["name"]: s for s in describe_sources()["sources"]}
         assert by_name["apify_company_search"]["mode"] == "live"
-        for blocked in ("apify_us_importers", "apify_alibaba_rfq", "apify_india_suppliers"):
-            assert by_name[blocked]["mode"] == "stub"
+        for retired in ("apify_us_importers", "apify_alibaba_rfq", "apify_india_suppliers"):
+            assert retired not in by_name
+            assert retired not in {c.name for c in ap.APIFY_CONNECTORS}
 
     @pytest.mark.asyncio
     async def test_phase2_buyers_come_from_company_search(self):

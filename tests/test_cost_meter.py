@@ -33,11 +33,19 @@ async def test_days_totals_and_fixed(monkeypatch):
 
 
 async def test_deal_cost_also_counts_platform_wide():
+    from shared.connectors import apify_usage
+    apify_usage.reset_for_tests()
     deal_costs.add("D1", llm_calls=1, llm_tokens=500, llm_usd=0.001, decisions=1)
-    deal_costs.add(None, apify_runs=1, apify_usd=0.3)  # outside a deal: platform only
+    # Apify runs reach the day counter through the run budget (counted once, not via deal_costs)
+    deal_costs.add(None, apify_runs=1, apify_usd=0.3)
+    assert await apify_usage.reserve_run("COUNTERPARTY_CHECK") is None
+    await apify_usage.record_usd("COUNTERPARTY_CHECK", 0.3)
     today = datetime.now(timezone.utc)
     r = await cost_meter.report(1, now=today)
     assert r["totals"]["llm_calls"] == 1 and r["totals"]["apify_runs"] == 1
+    assert r["totals"]["apify_usd"] == pytest.approx(0.3)
+    assert r["apify_budget"]["by_actor"]["COUNTERPARTY_CHECK"] == {"runs": 1, "usd": 0.3}
+    apify_usage.reset_for_tests()
     assert r["booked_to_deals_usd"] == pytest.approx(0.0, abs=0.01)
 
 
