@@ -63,6 +63,19 @@ class ProductLine(BaseModel):
     """What the destination needs before the goods arrive, per ISO-2 market or ``*`` for
     every market: e.g. ``{"US": ["FDA food-facility registration", "FDA prior notice"],
     "*": ["phytosanitary certificate"]}``. Shown on the radar row."""
+    attributes: list[dict[str, Any]] = Field(default_factory=list)
+    """Specification template (shared/product_spec.SpecAttribute): what defines a tradeable lot —
+    ``[{"key": "variety", "values": ["red", "pink"], "question": "Which variety?"}, ...]``."""
+    hs8_codes: list[str] = Field(default_factory=list)
+    """8-digit ITC-HS codes of this exact product (the 6-digit code mixes different goods)."""
+    synonyms: list[str] = Field(default_factory=list)
+    """Other names for the same product ("shallot", "big onion"); a reply or a search naming one
+    maps to this line."""
+    form: str | None = None
+    """``fresh`` / ``dried`` / ``processed`` — each form is its own product line."""
+    quality_requirements: dict[str, list[str]] = Field(default_factory=dict)
+    """Market quality rules per ISO-2 market or ``*`` (pesticide MRLs, phytosanitary, labelling):
+    they become the QC booking comments and the packing spec notes (todo 13.6)."""
 
 
 class Catalogue(BaseModel):
@@ -164,7 +177,41 @@ def products_for(hs_code: str) -> list[str]:
     line = line_for(hs_code)
     if not line:
         return []
-    return list(line.products) or [line.name]
+    names = list(line.products) or [line.name]
+    return names + [s for s in line.synonyms if s and s not in names]
+
+
+def line_for_name(text: str | None) -> ProductLine | None:
+    """The line whose name or synonym appears in the text (longest name wins) — "shallot" maps
+    to the onion line when staff listed it as a synonym."""
+    import re
+    t = " " + " ".join((text or "").lower().split()) + " "
+    best: tuple[int, ProductLine] | None = None
+    for p in _state.products:
+        for name in [p.name, *p.synonyms, *p.products]:
+            n = " ".join((name or "").lower().split())
+            if n and re.search(r"(?<![a-z])" + re.escape(n) + r"(?![a-z])", t):
+                if best is None or len(n) > best[0]:
+                    best = (len(n), p)
+    return best[1] if best else None
+
+
+def line_for_hs8(code: str | None) -> ProductLine | None:
+    digits = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if len(digits) >= 8:
+        for p in _state.products:
+            if digits[:8] in p.hs8_codes:
+                return p
+    return line_for(digits[:6]) if digits else None
+
+
+def quality_requirements_for(hs_code: str, market: str | None) -> list[str]:
+    """Market quality rules for the product: market-specific first, then ``*``."""
+    line = line_for(hs_code)
+    if not line:
+        return []
+    m = (market or "").upper()
+    return list(dict.fromkeys([*line.quality_requirements.get(m, []), *line.quality_requirements.get("*", [])]))
 
 
 def seller_profile_for(hs_code: str) -> str | None:

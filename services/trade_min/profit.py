@@ -187,8 +187,10 @@ def _lot(opp: EnrichedOpportunity, config: TradeMinConfig, buyer_price: float | 
             return float(qty), "catalogue default quantity"
     except Exception:  # noqa: BLE001
         pass
-    lot = container_mt or config.default_lot_mt
-    basis = "one container"
+    from .volume import stated_order_mt
+    stated, stated_basis = stated_order_mt(list(getattr(opp, "buyer_signals", None) or [])[:10])
+    lot = stated or container_mt or config.default_lot_mt
+    basis = stated_basis or "one container"
     if buyer_price and buyer_price * lot > config.max_lot_value_usd:
         lot = round(config.max_lot_value_usd / buyer_price, 3)
         basis = f"first order capped at ${config.max_lot_value_usd:,.0f}"

@@ -92,7 +92,8 @@ def _merge_raw(old: CounterpartyRecord | None, new: CounterpartyRecord) -> Count
     manual = old.source == "manual"
     for field in ("name", "country", "email", "phone", "website", "address", "contact_url",
                   "fit_score", "fit_reason", "gstin", "iec", "estimated_fob_price_usd",
-                  "vat_number", "lei", "legal_name", "cin", "udyam", "incorporation_year"):
+                  "vat_number", "lei", "legal_name", "cin", "udyam", "incorporation_year",
+                  "annual_volume_mt", "shipments_12m", "volume_source", "order_size_band"):
         value = getattr(new, field)
         # A supplier staff added by hand keeps what staff entered; a scan only fills gaps.
         if value not in (None, "") and not (manual and data.get(field) not in (None, "")):
@@ -107,12 +108,48 @@ def _merge_raw(old: CounterpartyRecord | None, new: CounterpartyRecord) -> Count
         last_outcome=(old.last_outcome if new.last_outcome == WORLDWIDE_OUTCOME and old.last_outcome
                       else new.last_outcome or old.last_outcome),
         times_seen=old.times_seen + 1,
+        product_facts=_merge_product_facts(old.product_facts, new.product_facts),
+        people=_merge_people(old.people, new.people),
         last_seen_at=new.last_seen_at,
         # A newer check replaces the stored one; a scan that checked nothing keeps it.
         validation=(new.validation.model_dump() if new.validation is not None
                     else (old.validation.model_dump() if old.validation is not None else None)),
     )
     return CounterpartyRecord.model_validate(data)
+
+
+def _merge_product_facts(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Per product, every new fact by the precedence rules of shared/product_spec.py."""
+    if not new:
+        return dict(old or {})
+    from shared import product_spec
+    out = dict(old or {})
+    for hs, raw in new.items():
+        incoming = raw if isinstance(raw, product_spec.ProductFacts) else product_spec.ProductFacts.model_validate(raw)
+        cur = out.get(hs)
+        cur_pf = (cur if isinstance(cur, product_spec.ProductFacts) else product_spec.ProductFacts.model_validate(cur)) if cur else None
+        for key, fact in incoming.facts.items():
+            cur_pf, _ = product_spec.merge(cur_pf, hs, {key: fact.value}, source=fact.source, at=fact.at,
+                                           by=fact.by, ref=fact.ref, product=incoming.product)
+        out[hs] = cur_pf.model_dump(mode="json") if cur_pf else raw
+    return out
+
+
+def _merge_people(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Contact persons joined by e-mail (else name); a newer row fills empty fields."""
+    out: list[dict[str, Any]] = [dict(p) for p in (old or [])]
+    for p in new or []:
+        key = (p.get("email") or "").lower() or (p.get("name") or "").lower()
+        if not key:
+            continue
+        same = next((o for o in out if ((o.get("email") or "").lower() or (o.get("name") or "").lower()) == key), None)
+        if same is None:
+            out.append(dict(p))
+        else:
+            for k, v in p.items():
+                if v and not same.get(k):
+                    same[k] = v
+    return out[:20]
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +387,16 @@ def _buyer_record(b: BuyerSignal, hs_code: str, market: str, outcome: str,
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=b.validation,
         flags=list(b.flags or []), vat_number=b.vat_number, lei=b.lei, legal_name=b.legal_name,
+        annual_volume_mt=b.annual_volume_mt, shipments_12m=b.shipments_12m, people=list(b.people or []),
+        volume_source=b.source if (b.annual_volume_mt or b.shipments_12m) else None,
+        order_size_band=_band(b),
     )
+
+
+def _band(b: BuyerSignal) -> str | None:
+    from .volume import order_size_band
+    return order_size_band(text=" ".join(x for x in (b.fit_reason, b.buyer_name) if x),
+                           product_lines=len(b.hs_codes or []), annual_volume_mt=b.annual_volume_mt)
 
 
 def _supplier_record(s: SellerCandidate, hs_code: str, market: str, outcome: str,
@@ -367,7 +413,7 @@ def _supplier_record(s: SellerCandidate, hs_code: str, market: str, outcome: str
         hs_codes=[hs_code], markets=[market.upper()] if market else [],
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=s.validation,
-        flags=list(s.flags or []), vat_number=s.vat_number, cin=s.cin, udyam=s.udyam,
+        flags=list(s.flags or []), vat_number=s.vat_number, cin=s.cin, udyam=s.udyam, people=list(s.people or []),
         incorporation_year=s.incorporation_year,
     )
 

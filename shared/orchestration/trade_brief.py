@@ -104,6 +104,12 @@ async def brief(deal_id: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("TradeBrief: orders of %s unavailable: %s", deal_id, exc)
     out["product"] = product_title(out.get("hs_code")) if out.get("hs_code") else None
+    try:  # market quality rules (MRLs, phytosanitary, labelling) become the inspector's checks
+        from shared import catalogue
+        if out.get("hs_code"):
+            out["quality_requirements"] = catalogue.quality_requirements_for(out["hs_code"], out.get("market"))
+    except Exception:  # noqa: BLE001
+        pass
     out["desk"] = " | ".join(x for x in (
         os.getenv("PORTLESS_CONTACT_EMAIL", "").strip(), os.getenv("PORTLESS_PHONE", "").strip(),
     ) if x) or company_profile.brand()
@@ -130,6 +136,8 @@ def note(b: dict[str, Any], audience: str, extra: str = "") -> str:
     if audience in ("inspector", "escrow") and b.get("inspection_types"):
         parts.append("inspection " + "/".join(b["inspection_types"])
                      + (f" by {str(b.get('inspection_agency')).upper()}" if b.get("inspection_agency") else ""))
+    if audience == "inspector" and b.get("quality_requirements"):
+        parts.append("check against destination rules: " + "; ".join(b["quality_requirements"][:6]))
     if audience == "carrier":
         parts.append("container stuffing supervised and sealed by the inspector")
     if audience in ("escrow", "payout", "customs") and b.get("carrier_booking"):

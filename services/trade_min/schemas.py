@@ -191,6 +191,8 @@ class BuyerSignal(BaseModel):
     lei: str | None = None
     legal_name: str | None = None
     registration_number: str | None = None
+    people: list[dict[str, Any]] = Field(default_factory=list)
+    """Contact persons the contact finder read from the site (name, role, e-mail)."""
 
 
 class TariffData(BaseModel):
@@ -268,6 +270,7 @@ class SellerCandidate(BaseModel):
     """Indian Corporate Identity Number read from the supplier's own site (MCA)."""
     incorporation_year: int | None = None
     """Year of incorporation encoded in the CIN."""
+    people: list[dict[str, Any]] = Field(default_factory=list)
 
 
 CounterpartyRole = Literal["buyer", "supplier"]
@@ -404,6 +407,17 @@ class CounterpartyRecord(BaseModel):
     merged_at: datetime | None = None
     merged_by: str | None = None
     notes: list[CompanyNote] = Field(default_factory=list)
+    product_facts: dict[str, Any] = Field(default_factory=dict)
+    """Per 6-digit HS code, what this buyer wants / this supplier supplies
+    (shared/product_spec.ProductFacts as JSON: every fact with its source and date)."""
+    people: list[dict[str, Any]] = Field(default_factory=list)
+    """Contact persons: ``{"name", "role", "email", "phone", "language", "source", "at"}``."""
+    annual_volume_mt: float | None = None
+    """Buyers: imports per year when a source states it (import records, a reply)."""
+    shipments_12m: int | None = None
+    volume_source: str | None = None
+    order_size_band: str | None = None
+    """``small`` / ``medium`` / ``large`` estimated from company signals — never an offer quantity."""
     """Staff notes and follow-up reminders (company_notes.py), newest last."""
     contacts_refreshed_at: datetime | None = None
     """Last contact-finder refresh when the company entered a prospect (contact_refresh.py)."""
@@ -594,6 +608,10 @@ class EnrichedOpportunity(BaseModel):
     via the export-market actor) — the real buyer price anchor, replacing the
     1.25× FOB heuristic when no named buyer carries a price."""
     price_benchmark_source: str | None = None
+    found_by: str = "market_statistics"
+    """How the opportunity was found (radar source chip): ``market_statistics`` (UN Comtrade /
+    the export-market actor), ``national_statistics`` (UK HMRC / Eurostat monthly data),
+    ``directory``, ``buyer_enquiry``, ``supplier_offer``, ``worldwide_search``."""
     market_avg_usd_per_mt: float | None = None
     """What the market pays per MT from ALL origins (Comtrade unit value)."""
     india_to_market_usd_per_mt: float | None = None

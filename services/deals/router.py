@@ -235,6 +235,16 @@ async def funnel(days: int = Query(default=90, ge=1, le=730), user: AuthUser = D
     return await f.build(days, org_id=require_org_scope(user))
 
 
+@router.post("/{deal_id}/sourcing/widen", response_model=dict)
+async def sourcing_widen(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    """Ask more directory suppliers for a quote now (the sourcing agent's widening, by hand)."""
+    from shared.orchestration import sourcing_agent
+    try:
+        return await sourcing_agent.widen(deal_id, force=True)
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/prospects/cleanup", response_model=list[dict])
 async def prospects_cleanup_preview(user: AuthUser = Depends(require_portless)) -> list[dict]:
     """Prospects the clean-up would close: untouched for PROSPECT_RETENTION_DAYS, not parked."""
@@ -560,6 +570,16 @@ class InspectionPlanChoice(BaseModel):
     types: list[str]
     """Any of DUPRO / PSI / PEO (PSI is always included)."""
     reason: str = ""
+
+
+@router.get("/{deal_id}/inspection-options", response_model=dict)
+async def inspection_options(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    """Inspectors' prices for this booking and the lighter inspection plans that would be enough."""
+    from shared.orchestration import inspection_options as io
+    try:
+        return await io.options(deal_id)
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.put("/{deal_id}/inspection-plan", response_model=DealRecord)
@@ -972,10 +992,18 @@ async def get_packing(deal_id: str, user: AuthUser = Depends(get_current_user)) 
     session = await neg_repo().get_session_by_deal(deal_id)
     spec = getattr(session, "packing", None) if session else None
     extra, parts = packing.surcharge(spec, getattr(session, "quantity_mt", None) or 20.0)
+    market_rules: list[str] = []
+    try:  # destination quality rules (catalogue) join the inspector's checks
+        from shared import catalogue
+        deal = await service.get_deal(deal_id)
+        market_rules = catalogue.quality_requirements_for(deal.hs_code, getattr(deal, "market", None))
+    except Exception:  # noqa: BLE001
+        market_rules = []
     return {"deal_id": deal_id, "packing": spec, "description": packing.describe(spec) or None,
             "special": packing.special(spec), "surcharge_usd_per_mt": extra, "surcharge_parts": parts,
             "in_supplier_price": bool(getattr(session, "packing_in_supplier_price", False)),
-            "qc_checks": packing.qc_checklist(spec)}
+            "qc_checks": packing.qc_checklist(spec) + [f"destination rule: {r}" for r in market_rules],
+            "market_quality_requirements": market_rules}
 
 
 @router.put("/{deal_id}/packing")

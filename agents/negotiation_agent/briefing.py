@@ -145,6 +145,8 @@ def buyer_missing(facts: dict[str, Any], *, qc_selected: bool, quantity_known: b
         out.append(f"which inspection agency they trust ({', '.join(names[:-1])} or {names[-1]})")
     if not facts.get("certifications_required"):
         out.append("documents and certificates required at destination")
+    at = 1 if facts.get("quantity_to_confirm") else 0  # the exact product next, after a quantity to confirm
+    out[at:at] = [q for q in (facts.get("spec_questions") or []) if q not in out]
     return out[:_MAX_MISSING]
 
 
@@ -156,6 +158,11 @@ async def buyer_brief(session: Any, history: str = "", inbound: str = "") -> dic
     facts = _buyer_facts(req)
     if req is not None and getattr(req, "quantity_confirm", None) and not getattr(req, "quantity_confirmed", False):
         facts["quantity_to_confirm"] = req.quantity_confirm
+    if deal is not None:
+        from shared.orchestration.outreach import spec_questions
+        qs = spec_questions(getattr(deal, "hs_code", "") or "", dict(getattr(req, "spec", None) or {}) if req else None)
+        if qs:
+            facts["spec_questions"] = qs
     from shared.orchestration import packing as _packing
     agreed_packing = _packing.describe(getattr(session, "packing", None))
     if agreed_packing:

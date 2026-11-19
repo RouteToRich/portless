@@ -343,6 +343,23 @@ async def api_poll_tracking(deal_id: str) -> dict[str, Any]:
     return await poll_tracking(deal_id)
 
 
+@router.get("/deals/{deal_id}/freight-quotes")
+async def deal_freight_quotes(deal_id: str) -> dict:
+    """Quotes from every configured freight source for the deal's lane, each checked against the
+    lane's rate index, and the cheapest that meets the date."""
+    from shared.orchestration import continuations
+    from . import freight_compare
+    from .service import _fetch_deal
+    try:
+        deal = await _fetch_deal(deal_id)
+    except DealNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return await freight_compare.compare(
+        origin=await continuations._supplier_port(deal_id), destination=await continuations._pi_destination_port(deal_id),
+        market=getattr(deal, "market", None), hs_code=getattr(deal, "hs_code", None),
+        quantity_mt=getattr(deal, "quantity_mt", None))
+
+
 @router.get("/deals/{deal_id}/shipment")
 async def api_shipment(deal_id: str) -> dict[str, Any]:
     """Booking, containers, B/L / VGM state and the container event timeline."""

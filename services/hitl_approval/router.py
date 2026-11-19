@@ -94,6 +94,14 @@ def _policy_view() -> dict[str, Any]:
     }
 
 
+@router.get("/scorecard")
+async def api_scorecard(days: int = 30) -> dict:
+    """One row per agent: gates opened, approved / rejected / auto-approved / edited, money its
+    approved gates moved, agreement with people and the autonomy level its record supports."""
+    from shared.orchestration import agent_scorecard
+    return await agent_scorecard.scorecard(days)
+
+
 @router.get("/learning")
 async def api_learning() -> dict:
     """Feedback loop: calibration of the match board's chance of closing against real

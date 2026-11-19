@@ -1927,13 +1927,26 @@ async def _qc_tranche_and_freight(deal, payload: dict[str, Any], loading=None) -
         seal_text = (f" — container {', '.join(loading.container_numbers)} sealed "
                      f"{', '.join(loading.seal_numbers)}") if loading else ""
         destination_port = await _pi_destination_port(deal_id)
+        origin_port = await _supplier_port(deal_id)
+        quotes: dict[str, Any] = {}
+        try:  # several freight sources quoted; the cheapest that meets the date is proposed
+            from services.shield_link import freight_compare  # type: ignore[import]
+            quotes = await freight_compare.compare(origin=origin_port, destination=destination_port,
+                                                   market=getattr(deal, "market", None),
+                                                   hs_code=getattr(deal, "hs_code", None),
+                                                   quantity_mt=getattr(deal, "quantity_mt", None))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Continuation: freight quotes unavailable for %s: %s", deal_id, exc)
+        chosen = quotes.get("chosen")
         await _create_gate(
             deal_id, "BOOK_FREIGHT",
-            summary=f"QC passed — book freight for deal {deal_id}{seal_text}",
+            summary=f"QC passed — book freight for deal {deal_id}{seal_text}"
+                    + (f" — cheapest quote {chosen} USD {quotes.get('chosen_rate_usd'):,.0f}/box" if chosen else ""),
             financial_impact_usd=None,
             callback_payload={"deal_id": deal_id, "incoterm": "FOB",
-                              "origin_port": await _supplier_port(deal_id),
+                              "origin_port": origin_port,
                               "idempotency_key": f"auto-freight-{deal_id}",
+                              **({"provider": chosen, "freight_quotes": quotes.get("quotes")} if chosen else {}),
                               **({"destination_port": destination_port} if destination_port else {}),
                               **({"container_numbers": loading.container_numbers,
                                   "seal_numbers": loading.seal_numbers} if loading else {})},

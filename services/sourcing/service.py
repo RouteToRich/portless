@@ -140,7 +140,8 @@ def _build_rfq_message(payload: RfqRequest) -> str:
     )
 
 
-def rfq_email_body(company_name: str | None, message: str, email: str | None = None) -> str:
+def rfq_email_body(company_name: str | None, message: str, email: str | None = None,
+                   questions: list[str] | None = None) -> str:
     """The RFQ e-mail: the request, why this order is worth quoting for, and
     exactly what to send back. Payment wording follows the escrow model
     (purchase order only once the buyer's money is in escrow; production
@@ -162,7 +163,9 @@ def rfq_email_body(company_name: str | None, message: str, email: str | None = N
         "  3. Minimum order quantity and monthly capacity (MT)\n"
         "  4. Lead time from purchase order to goods at port, and your port of loading\n"
         "  5. Certificates you can provide (COA, ISO, FSSAI, Halal, etc.)\n"
-        "  6. Your GSTIN and IEC, so we can complete verification before the purchase order\n\n"
+        "  6. Your GSTIN and IEC, so we can complete verification before the purchase order\n"
+        + (f"  7. For the exact product: {'; '.join(questions)}\n" if questions else "")
+        + "\n"
         "Please keep the reference in the subject line so that your quotation reaches the right desk. "
         "We look forward to your offer and to building a long-term export partnership with you.\n\n"
         + supplier_opt_out_line(email)
@@ -292,7 +295,9 @@ async def _dispatch_by_email(
         from services.email_gateway.schemas import SendEmailRequest  # type: ignore[import]
         from services.email_gateway.sender import send_email  # type: ignore[import]
 
-        body = rfq_email_body(supplier.company_name, message, supplier.email)
+        from shared.orchestration.outreach import spec_questions
+        body = rfq_email_body(supplier.company_name, message, supplier.email,
+                              questions=spec_questions(payload.hs_code))
         result = await send_email(SendEmailRequest(
             to_address=supplier.email or "",
             subject=rfq_subject(rfq_id, payload.hs_code, payload.quantity_mt),
@@ -635,8 +640,22 @@ async def _record_offer(payload: QuoteIntakeRequest, quote: QuoteRecord,
             incoterm=(payload.incoterm or "FOB").upper() if getattr(payload, "incoterm", None) else "FOB",
             origin_deal_id=payload.deal_id, received_at=quote.received_at,
         )
-        await upsert_supplier_offer(payload.deal_id, offer)
         deal = await get_deal(payload.deal_id)
+        try:
+            from shared import catalogue, product_spec
+            text = " ".join(str(x) for x in (payload.grade, getattr(payload, "notes", None),
+                                             getattr(payload, "raw_text", None)) if x)
+            spec = product_spec.read_attributes(catalogue.line_for(deal.hs_code), text)
+            if spec:
+                offer = offer.model_copy(update={"spec": spec})
+        except Exception:  # noqa: BLE001
+            pass
+        await upsert_supplier_offer(payload.deal_id, offer)
+        try:  # kept on the supplier's directory record (todo 15.2)
+            from services.trade_min import product_facts  # type: ignore[import]
+            await product_facts.record_supplier_offer(deal, offer)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Sourcing: offer not kept on the directory: %s", exc)
         await pricebook.record(pricebook.PriceObservation(
             hs_code=deal.hs_code, side="supplier", kind="supplier_quote",
             price_usd_per_mt=payload.unit_price_usd, grade=payload.grade, incoterm=payload.incoterm,

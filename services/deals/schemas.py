@@ -68,6 +68,8 @@ class BuyerRequirement(BaseModel):
     quantity_confirm: str | None = None
     """The converted amount to echo back ("2 × 20' ≈ 40 MT — correct?") until the buyer confirms."""
     quantity_confirmed: bool = False
+    spec: dict[str, Any] = Field(default_factory=dict)
+    """Catalogue template attributes the buyer named (variety, size, packing …)."""
     delivery_window: str | None = None
     """Free text as the buyer wrote it ("March", "within 6 weeks")."""
     delivery_by_days: int | None = None
@@ -121,6 +123,8 @@ class SupplierOffer(BaseModel):
     before any margin (``trade_costs.exw_to_fob``)."""
     port_km: float | None = None
     """Road distance mill → port, for an EXW price."""
+    spec: dict[str, Any] = Field(default_factory=dict)
+    """Catalogue template attributes the supplier supplies (variety, sizes, packing …)."""
     moq_mt: float | None = None
     capacity_mt_per_month: float | None = None
     lead_time_days: int | None = None
@@ -263,6 +267,8 @@ class DealRecord(BaseModel):
     est_margin_pct: float | None = None
     realized_margin_pct: float | None = None
     # ── Prospect parked (prospect_actions.park): no reminders, record kept ──
+    sourcing_widened_at: datetime | None = None
+    """When the supplier sourcing agent last widened a stalled RFQ (sourcing_agent.py)."""
     parked_at: datetime | None = None
     parked_until: datetime | None = None
     """The park ends by itself at this time; None = until unparked by hand."""

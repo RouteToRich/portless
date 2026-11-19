@@ -439,6 +439,15 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     except Exception as exc:  # noqa: BLE001
         logger.error("DealWatcher: prospect clean-up failed: %s", exc)
 
+    # Interested buyer, no supplier quote after the stall period: widen the RFQ (sourcing_agent.py).
+    try:
+        from shared.orchestration import sourcing_agent
+        res = await sourcing_agent.sweep(now)
+        if res.get("asked"):
+            counts["sourcing_widened"] = res["asked"]
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: sourcing agent failed: %s", exc)
+
     # Supplier quotes about to expire: ask for a reconfirmation; unanswered ones expire.
     try:
         from shared.orchestration import quote_reconfirm

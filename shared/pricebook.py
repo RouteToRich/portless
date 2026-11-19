@@ -233,12 +233,51 @@ async def public_priors(hs_code: str, market: str | None) -> dict[str, Any]:
             out["tariff_pct"] = getattr(tariff, "applied_duty_pct", None)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Price book: no public prior for %s×%s: %s", hs_code, market, exc)
+    await _mandi_prior(hs_code, out)
     return out
+
+
+async def mandi_fob_usd_per_mt(hs_code: str) -> float | None:
+    """The latest Agmarknet wholesale price of the product's commodity (PortLess's own daily
+    history) as an FOB estimate: INR / quintal × 10 ÷ USD/INR × (1 + MANDI_TO_FOB_MARKUP_PCT)."""
+    try:
+        from services.trade_min import mandi_history  # type: ignore[import]
+        from shared.connectors import mandi
+        commodity = mandi.commodity_for(hs_code)
+        if not commodity:
+            return None
+        pts = await mandi_history.points(commodity)
+        if not pts:
+            return None
+        inr_per_q = float(pts[-1]["modal_inr_per_quintal"])
+        usd_inr = mandi._usd_inr()  # noqa: SLF001
+        if not usd_inr:
+            return None
+        return round(inr_per_q * 10.0 / usd_inr * (1 + mandi.markup_pct() / 100.0), 2)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Price book: no mandi prior for %s: %s", hs_code, exc)
+        return None
+
+
+async def _mandi_prior(hs_code: str, out: dict[str, Any]) -> None:
+    """Commodity price feed next to Comtrade (todo 13.6): the mandi FOB estimate joins the
+    supplier-side prior — alone when Comtrade gives none, averaged with it otherwise."""
+    fob = await mandi_fob_usd_per_mt(hs_code)
+    if not fob:
+        return
+    out["supplier_mandi"] = fob
+    if out.get("supplier"):
+        out["supplier"] = round((float(out["supplier"]) + fob) / 2.0, 2)
+        out["supplier_source"] = f"{out.get('source') or 'comtrade'}+agmarknet"
+    else:
+        out["supplier"] = fob
+        out["supplier_source"] = "agmarknet"
 
 
 async def estimate(hs_code: str, side: Side, *, market: str | None = None, grade: str | None = None,
                    priors: dict[str, Any] | None = None) -> PriceEstimate:
     priors = priors if priors is not None else await public_priors(hs_code, market)
     obs = await observations(hs_code, side)
+    source = priors.get("supplier_source") if side == "supplier" and priors.get("supplier_source") else priors.get("source")
     return estimate_from(obs, hs_code=hs_code, side=side, market=market, grade=grade,
-                         prior=priors.get(side), prior_source=priors.get("source"))
+                         prior=priors.get(side), prior_source=source)

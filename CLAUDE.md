@@ -146,6 +146,7 @@ pytest tests/test_search_terms.py        # buyer search line in the market's lan
 pytest tests/test_cost_meter.py          # platform running costs per day (LLM / Apify / Tavily / fixed), GET /health/costs
 pytest tests/test_idempotency_audit.py   # concurrent approvals → one decision; webhook ×10 → booked once; double release
 pytest tests/test_apify_usage.py         # Apify run / USD budget in Mongo per day, result cache, tracking pause after source_refused, qualifier "unchecked", VAT/LEI to screening, retired slots
+pytest tests/test_product_spec_batch.py  # product spec template + facts per company (source / date / precedence, replies, deals, staff), ask what is missing, spec conflicts block a pair, volume line / band / lot, source merge rule, found-by, proposed / supplier markets, people, sourcing agent, scan plan, scorecard, mandi prior, quality rules, freight index + compare, inspection options, env parity
 pytest tests/test_scan_data_batch.py     # CIN age, directory role clean-up + note scrub, reply quantity in containers / bags, HMRC + Comext, registration duplicates, source yield, RFQ widening, harvest calendar, QIMA inspection-day poll
 pytest tests/test_journey_replay.py      # LLM journey counterparty replies recorded and replayed (--replay-run)
 pytest tests/test_ops_scripts.py         # uptime check, response-time budgets, coverage gate scripts and workflows
@@ -602,6 +603,10 @@ APIFY_MAX_USD_PER_DAY        # daily Apify spend cap (usageTotalUsd; 0 = unlimit
 APIFY_CACHE_ENABLED (true) / APIFY_CACHE_HOURS_<ACTOR_KEY>   # result cache per actor input (Mongo apify_result_cache); pinned off in tests
 APIFY_CARRIER_TRACKING_RETRY_REFUSED (false)   # tracking actor runs again after a source_refused day (set once A.27 runs)
 NATIONAL_TRADE_SOURCES_ENABLED (true)   # UK HMRC + Eurostat Comext in Phase 1 (pinned off in tests); RFQ_BASE_SUPPLIERS (3) widened to RFQ_MAX_SUPPLIERS on capacity
+SOURCING_AGENT_ENABLED (true) / SOURCING_AGENT_MAX_NEW (3)   # stalled RFQ widened to directory suppliers (shared/orchestration/sourcing_agent.py)
+FREIGHT_COMPARE_QUOTES (true) / FREIGHT_COMPARE_PROVIDERS / FREIGHT_MAX_TRANSIT_DAYS   # cheapest freight quote proposed at BOOK_FREIGHT; LANE_QUOTE_DEVIATION_PCT (20) lane index
+WORLDWIDE_MARKET_MIN_BUYERS (3) / SOURCE_DISAGREE_PCT (25) / SCAN_PLAN_* / SCORECARD_MIN_DECISIONS (30) / INSPECTION_PSI_ONLY_MAX_MT (100)
+# Ops docs: docs/operations/RUNBOOKS.md, DISASTER_RECOVERY.md; env parity: python scripts/env_parity.py dev=.env production=prod.env
 QC_POLL_MINUTES_INSPECTION_DAY (15) / QC_INSPECTION_DAY_POLL_DAYS_AFTER (2)   # QIMA poll on the inspection day; HARVEST_MONTHS_<COMMODITY> overrides the crop calendar
 ENRICHMENT_ON_DEAL_CREATED   # default true â€” contact finder + sanctions screening at deal.created
 TRADE_MIN_VALIDATION_ENABLED / TRADE_MIN_VALIDATION_TOP_N (5) / TRADE_MIN_VALIDATION_MAX_AGE_DAYS (30)   # scan-time buyer / supplier check (radar "Verified only"); readiness `counterparty_validation` fails in production when off or without APIFY_TOKEN

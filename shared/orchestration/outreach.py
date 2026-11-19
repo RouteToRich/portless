@@ -192,6 +192,27 @@ async def market_fact(deal: Any) -> str | None:
             "lower your landed cost.")
 
 
+def spec_questions(hs_code: str, known: dict[str, Any] | None = None) -> list[str]:
+    """The product's unanswered template attributes as short questions (todo 15.2 "ask for
+    what is missing"); empty when the catalogue line has no template."""
+    try:
+        from shared import catalogue, product_spec
+        line = catalogue.line_for(hs_code or "")
+        facts = product_spec.ProductFacts(hs_code=hs_code or "", facts={
+            k: product_spec.Fact(value=v) for k, v in (known or {}).items() if v not in (None, "", [])})
+        return product_spec.missing_questions(line, facts)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _spec_questions(deal: Any, cand: Any) -> str:
+    req = getattr(cand, "requirement", None)
+    qs = spec_questions(getattr(deal, "hs_code", "") or "", dict(getattr(req, "spec", None) or {}) if req else None)
+    if not qs:
+        return ""
+    return "  6. For the exact product: " + "; ".join(qs) + "\n"
+
+
 def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | None = None) -> tuple[str, str]:
     """The buyer's first e-mail from PortLess — written to earn a reply.
 
@@ -248,7 +269,8 @@ def draft(deal: Any, cand: Any, *, followup: bool = False, market_line: str | No
         "  2. Quantity (MT) and required delivery date\n"
         "  3. Destination port\n"
         "  4. Your target price per MT, if you have one\n"
-        "  5. Certificates or documents required at destination\n\n"
+        "  5. Certificates or documents required at destination\n"
+        + _spec_questions(deal, cand) + "\n"
         "I would be glad to answer any questions, and I look forward to the possibility of working with you."
         + cp.signature()
         + "\n" + unsubscribe.opt_out_line(deal.deal_id, getattr(cand, "candidate_id")) + "\n"
@@ -484,6 +506,16 @@ async def send_outreach(deal_id: str, candidate_id: str, to_address: str, subjec
     else:
         updates.update({"status": "contacted", "contacted_at": now})
     await update_buyer_candidate(deal_id, candidate_id, updates)
+    try:  # the person this prospect wrote to, on the company's record (todo 20 "people")
+        from services.trade_min import product_facts  # type: ignore[import]
+        deal_now = await get_deal(deal_id)
+        cand_now = next((c for c in deal_now.buyer_candidates if c.candidate_id == candidate_id), None)
+        await product_facts.note_person("buyer", {"email": (to_address or "").lower() or None,
+                                                  "written_at": now.isoformat(), "source": "outreach"},
+                                        name=getattr(cand_now, "legal_name", None),
+                                        website=getattr(cand_now, "website", None), email=to_address)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Outreach: person not noted: %s", exc)
     logger.info("Outreach: %s to %s (%s) for deal %s → %s", kind, to_address, candidate_id, deal_id, outcome)
     return {"candidate_id": candidate_id, "outcome": str(outcome), "email_id": email_id, "delivered": True}
 

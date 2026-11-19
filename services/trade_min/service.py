@@ -21,6 +21,8 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -467,14 +469,19 @@ async def _phase1_historical_demand(
                          f"({nat['source']}, to {nat.get('data_period')})"),
             fetched_at=now,
         ))
-        # The fresher monthly unit value is the buyer anchor when the actor gave none.
-        if not result.price_benchmark_usd_per_mt:
-            anchor = nat.get("india_unit_value_usd_per_mt") or nat.get("unit_value_usd_per_mt")
-            if anchor:
+        # One merge rule for every source (todo 17.1): the freshest figure with a quantity is the
+        # buyer anchor; the source and its month are recorded; a second source more than
+        # SOURCE_DISAGREE_PCT (25) apart is flagged rather than silently ignored.
+        anchor = nat.get("india_unit_value_usd_per_mt") or nat.get("unit_value_usd_per_mt")
+        if anchor:
+            current = result.price_benchmark_usd_per_mt
+            if current and abs(anchor - current) / max(anchor, current) * 100.0 > _disagree_pct():
+                result.market_data_flags = [*result.market_data_flags, "sources_disagree"]
+            if not current or _period_key(nat.get("data_period")) > _period_key(result.data_period):
                 result.price_benchmark_usd_per_mt = anchor
                 result.price_benchmark_source = (f"{nat['source']}:india" if nat.get("india_unit_value_usd_per_mt")
                                                  else nat["source"])
-                result.data_period = result.data_period or nat.get("data_period")
+                result.data_period = nat.get("data_period") or result.data_period
         if not result.market_avg_usd_per_mt and nat.get("unit_value_usd_per_mt"):
             result.market_avg_usd_per_mt = nat["unit_value_usd_per_mt"]
         if not result.india_to_market_usd_per_mt and nat.get("india_unit_value_usd_per_mt"):
@@ -483,6 +490,40 @@ async def _phase1_historical_demand(
     result.demand_index = round(sum(s for _, s in scores), 2)
     result.source = scores[0][0] if scores else ""
     return result
+
+
+FOUND_BY = ("market_statistics", "national_statistics", "directory", "buyer_enquiry", "supplier_offer",
+            "worldwide_search")
+
+
+def found_by_for(benchmark_source: str | None) -> str:
+    """The radar's source chip for a scanned opportunity."""
+    src = str(benchmark_source or "")
+    return "national_statistics" if src.startswith(("uk_hmrc", "eurostat_comext")) else "market_statistics"
+
+
+def count_found_by(opps: list[Any]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for o in opps:
+        key = getattr(o, "found_by", None) or "market_statistics"
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
+def _period_key(period: str | None) -> str:
+    """Comparable period: "2026-09" as is, a year "2025" as its December ("2025-12")."""
+    p = str(period or "").strip()
+    if re.fullmatch(r"\d{4}", p):
+        return f"{p}-12"
+    m = re.match(r"(\d{4})-?(\d{2})", p)
+    return f"{m.group(1)}-{m.group(2)}" if m else ""
+
+
+def _disagree_pct() -> float:
+    try:
+        return float(os.getenv("SOURCE_DISAGREE_PCT", "25") or 25)
+    except ValueError:
+        return 25.0
 
 
 def _corridor_facts(result: _Phase1Result, row: dict) -> None:
@@ -831,6 +872,7 @@ async def _phase2_live_signals(
                 email_status=c.get("email_status"),
                 vat_number=(str(c.get("vat_id") or "").strip().upper() or None),
                 legal_name=c.get("legal_name"),
+                people=_people(c.get("people")),
             ))
 
     if rfq_r is not None:
@@ -1079,6 +1121,7 @@ async def _phase4_seller_discovery(
                 "fit_reason": c.get("summary") or c.get("page_title"),
                 "name_source": c.get("name_source"),
                 "vat_id": c.get("vat_id"),
+                "people": c.get("people"),
                 "id_text": " ".join(str(c.get(k) or "") for k in ("vat_id", "summary", "address", "first_line")),
             }, "apify_company_search")
 
@@ -1147,11 +1190,23 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         address=s.get("address") or None,
         fit_reason=s.get("fit_reason") or None,
         name_source=s.get("name_source") or None,
+        people=_people(s.get("people")),
         **ids,
     )
 
 
-_GSTIN_RE = __import__("re").compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]$")
+def _people(rows: Any) -> list[dict]:
+    """Contact persons from the contact finder: name, role (title), e-mail — source ``website``."""
+    out = []
+    now = datetime.now(timezone.utc).isoformat()
+    for p in rows or []:
+        if isinstance(p, dict) and (p.get("name") or p.get("email")):
+            out.append({"name": p.get("name"), "role": p.get("title") or p.get("role"), "email": p.get("email"),
+                        "phone": p.get("phone"), "language": p.get("language"), "source": "website", "at": now})
+    return out[:10]
+
+
+_GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]$")
 
 
 def _indian_ids(s: dict) -> dict:
@@ -1320,6 +1375,7 @@ async def _phase5_assemble_and_persist(
         source=phase1.source,  # type: ignore[arg-type]
         price_benchmark_usd_per_mt=phase1.price_benchmark_usd_per_mt,
         price_benchmark_source=phase1.price_benchmark_source,
+        found_by=found_by_for(phase1.price_benchmark_source),
         buyer_signals=phase1.buyer_signals + phase2.buyer_signals,
         active_rfq_count=phase2.active_rfq_count,
         active_tender_count=phase2.active_tender_count,

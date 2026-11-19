@@ -253,6 +253,20 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
                                                  getattr(offer, "grade", None))
     if grade_block:
         blockers.append(grade_block)
+    # Match on the specification, not the HS code (todo 15.3): a conflict on a hard template
+    # attribute (variety, size, form, packing) blocks the pair; each matching one raises the fit.
+    b_spec = dict(getattr(req, "spec", None) or {}) if req else {}
+    s_spec = dict(getattr(offer, "spec", None) or {})
+    if b_spec and s_spec:
+        try:
+            from shared import catalogue, product_spec
+            spec_conflicts, spec_matches = product_spec.conflicts(
+                catalogue.line_for(str(getattr(deal, "hs_code", "") or "")), b_spec, s_spec)
+        except Exception:  # noqa: BLE001
+            spec_conflicts, spec_matches = [], 0
+        blockers.extend(f"specification mismatch — {c}" for c in spec_conflicts)
+        if spec_matches and not grade_block:
+            spec = min(1.0, spec + 0.05 * spec_matches)
     if grade_missing:
         missing.append(grade_missing)
     need = {c.upper() for c in (getattr(req, "certifications", None) or [])} if req else set()
@@ -934,6 +948,14 @@ async def handle_buyer_reply(deal: Any, cand: Any, from_address: str, body: str,
     except Exception:  # noqa: BLE001 - the default box size applies
         pass
     fields = await extraction.extract_buyer(new_text, product=_product_label(deal), container_mt=container_mt)
+    try:
+        from shared import catalogue, product_spec
+        spec = product_spec.read_attributes(catalogue.line_for(str(getattr(deal, "hs_code", "") or "")), new_text)
+        if spec:
+            prev_spec = dict(getattr(getattr(cand, "requirement", None), "spec", None) or {})
+            fields["spec"] = {**prev_spec, **spec}
+    except Exception:  # noqa: BLE001 - the template is optional
+        pass
     prior = getattr(cand, "requirement", None)
     if (prior is not None and getattr(prior, "quantity_confirm", None) and not fields.get("quantity_mt")
             and re.search(r"\b(?:yes|correct|confirm(?:ed)?|that'?s right|right)\b", new_text or "", re.IGNORECASE)):
@@ -975,6 +997,15 @@ async def handle_buyer_reply(deal: Any, cand: Any, from_address: str, body: str,
     merged["updated_at"] = now
     updates["requirement"] = BuyerRequirement(**{k: v for k, v in merged.items() if k in BuyerRequirement.model_fields})
     deal = await update_buyer_candidate(deal.deal_id, cand.candidate_id, updates)
+    try:  # kept on the company's directory record, so it outlives the prospect (todo 15.2)
+        from services.trade_min import product_facts  # type: ignore[import]
+        await product_facts.record_buyer_requirement(deal, cand, updates["requirement"])
+        await product_facts.note_person("buyer", {"email": (from_address or "").lower() or None,
+                                                  "replied_at": now.isoformat(), "source": "email"},
+                                        name=getattr(cand, "legal_name", None), website=getattr(cand, "website", None),
+                                        email=getattr(cand, "email", None))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Matchmaking: requirement not kept on the directory: %s", exc)
     responded = getattr(updates.get("indicative_offer"), "response", None)
     if responded:
         from shared.orchestration import outcomes

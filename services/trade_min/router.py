@@ -45,6 +45,63 @@ async def get_catalogue() -> dict:
     return _catalogue_view()
 
 
+def _staff():
+    from shared.auth.dependencies import require_portless
+    return require_portless
+
+
+@router.get("/freight-lanes/check")
+async def freight_lane_check(market: str, usd_per_container: float = Query(gt=0),
+                             container_type: str = "dry") -> dict:
+    """Is a freight quote in line with what the lane has cost (median of the last 180 days)?"""
+    from . import freight_lanes as fl
+    return await fl.check_quote(market, usd_per_container, container_type)
+
+
+@router.get("/scan/plan")
+async def scan_plan() -> dict:
+    """Which corridors to scan, rescan or skip today, ranked by expected profit per Apify dollar
+    and cut at the day's Apify budget; ``scan_request`` is the body for POST /trade-min/scan."""
+    from . import scan_plan as plan
+    return await plan.build_plan()
+
+
+@router.get("/catalogue/proposed-markets")
+async def catalogue_proposed_markets() -> list[dict]:
+    """Countries where buyers of a catalogue product were found (mostly by the worldwide search)
+    at least WORLDWIDE_MARKET_MIN_BUYERS times, not yet one of the line's markets."""
+    from . import markets
+    return await markets.proposed_markets()
+
+
+class AcceptMarket(BaseModel):
+    product_id: str
+    market: str
+
+
+@router.post("/catalogue/proposed-markets/accept")
+async def catalogue_accept_market(body: AcceptMarket, user=Depends(_staff())) -> dict:
+    """Add the market to the catalogue line, so the next scan covers it."""
+    from . import markets
+    try:
+        return await markets.accept_market(body.product_id, body.market, by=getattr(user, "email", None) or "staff")
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/suppliers/{record_id:path}/markets")
+async def supplier_markets(record_id: str) -> dict:
+    """Every market whose directory buyers want this supplier's products (supplier-led
+    opportunities beyond the scanned corridors); start one with …/start-prospect."""
+    from . import markets
+    try:
+        return await markets.markets_for_supplier(record_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/hs-search")
 async def hs_search(q: str = Query("", description="HS code prefix or product words"),
                     limit: int = Query(20, ge=1, le=50)) -> dict:
@@ -121,11 +178,6 @@ class IncentiveUpdate(BaseModel):
 async def list_incentives() -> list[incentives.ExportIncentive]:
     """RoDTEP / duty drawback rates per HS code (income in the radar's profit once confirmed)."""
     return await incentives.list_entries()
-
-
-def _staff():
-    from shared.auth.dependencies import require_portless
-    return require_portless
 
 
 @router.put("/incentives/{hs_code}", response_model=incentives.ExportIncentive)
@@ -289,6 +341,48 @@ async def clean_directory(user=Depends(_staff())) -> dict:
     changed = await directory.clean_existing()
     roles = await directory.clean_roles()
     return {"changed": changed, **roles, "notes_scrubbed": await directory.scrub_notes()}
+
+
+@router.get("/{role}/{record_id:path}/products")
+async def counterparty_products(role: str, record_id: str) -> dict:
+    """Per product: what the buyer wants / the supplier supplies, each fact with its source and
+    date, how complete it is against the catalogue template, and the questions still open."""
+    from . import product_facts
+    r = _role_of(role)
+    try:
+        return await product_facts.view(r, _full_id(r, record_id))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class ProductFactsEdit(BaseModel):
+    facts: dict[str, Any]
+    reason: str | None = None
+
+
+@router.put("/{role}/{record_id:path}/products/{hs_code}")
+async def edit_counterparty_products(role: str, record_id: str, hs_code: str, body: ProductFactsEdit,
+                                     user=Depends(_staff())) -> dict:
+    """Staff enter or correct a company's requirement / offer for one product (audited). A staff
+    entry is never overwritten by a reply or a scan."""
+    from . import product_facts
+    r = _role_of(role)
+    try:
+        return await product_facts.staff_edit(r, _full_id(r, record_id), hs_code, body.facts,
+                                              by=getattr(user, "email", None) or "staff", reason=body.reason)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _role_of(role: str) -> str:
+    r = {"buyers": "buyer", "suppliers": "supplier", "buyer": "buyer", "supplier": "supplier"}.get(role)
+    if r is None:
+        raise HTTPException(status_code=404, detail="role must be buyers or suppliers")
+    return r
+
+
+def _full_id(role: str, record_id: str) -> str:
+    return record_id if record_id.startswith(f"{role}:") else f"{role}:{record_id}"
 
 
 @router.post("/mandi/{hs_code}/backfill")
@@ -782,18 +876,30 @@ async def list_opportunities(
     urgency_tier: int | None = Query(default=None, ge=1, le=4),
     counterparties: Literal["verified", "all"] = Query(
         default="all", description="verified → only buyers / suppliers that passed the scan-time check"),
+    found_by: str | None = Query(default=None, description="source chip: market_statistics, national_statistics, …"),
 ) -> list[EnrichedOpportunity]:
     """List active enriched opportunities.
 
     Results are sorted by urgency tier (4 = emergency first) then arbitrage rank.
-    Use ``urgency_tier`` to filter for a specific urgency level only.
+    Use ``urgency_tier`` to filter for a specific urgency level only, ``found_by`` for how
+    the opportunity was found.
     """
-    return await service.list_opportunities(
+    rows = await service.list_opportunities(
         limit=limit,
         min_rank=min_rank,
         urgency_tier=urgency_tier,
         counterparties=counterparties,
     )
+    if found_by:
+        rows = [o for o in rows if (getattr(o, "found_by", None) or "market_statistics") == found_by]
+    return rows
+
+
+@router.get("/opportunities/found-by")
+async def opportunities_found_by() -> dict:
+    """How many listed opportunities each source found (compare which source turns into deals)."""
+    rows = await service.list_opportunities(limit=500, min_rank=0.0, urgency_tier=None, counterparties="all")
+    return {"counts": service.count_found_by(rows), "sources": list(service.FOUND_BY)}
 
 
 @router.post("/opportunities/{opportunity_id}/rescore", response_model=EnrichedOpportunity)

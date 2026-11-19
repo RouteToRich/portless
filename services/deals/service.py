@@ -653,6 +653,13 @@ async def _learn_from_status(deal: DealRecord, status: str, reason: str | None) 
             await remember_deal_summary(deal, _SUMMARY_EVENTS[status], reason)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Deal summary skipped for %s: %s", deal.deal_id, exc)
+    if status == "PAID":
+        # what was traded becomes both companies' proven requirement / offer (todo 15.2)
+        try:
+            from services.trade_min import product_facts  # type: ignore[import]
+            await product_facts.record_from_deal(deal)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Product facts from deal skipped for %s: %s", deal.deal_id, exc)
 
 
 async def update_financials(deal_id: str, payload: UpdateFinancialsRequest) -> DealRecord:

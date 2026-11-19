@@ -184,8 +184,12 @@ async def profile(role: str, record_id: str) -> dict[str, Any]:
     rows, events = _engagements(rec, deals)
     engaged = {r["deal_id"] for r in rows}
     opens = _open_prospects(rec, deals, engaged)
+    from .volume import order_mt, volume_line
     return {
         "company": rec.model_dump(mode="json"),
+        "volume": {"line": volume_line(rec.annual_volume_mt, rec.shipments_12m, rec.volume_source),
+                   "order_mt": order_mt(rec.annual_volume_mt, rec.shipments_12m),
+                   "band": rec.order_size_band, "band_is_estimate": bool(rec.order_size_band)},
         "engagements": rows,
         "correspondence": await correspondence(rec, sorted(engaged)),
         "timeline": events[:50],

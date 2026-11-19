@@ -214,6 +214,28 @@ async def rescore(opportunity_id: str, *, pairs: int = 3) -> EnrichedOpportunity
         changes.append(f"{name}: counterparty check {x.validation.status}")
     await _store_checks(buyers, sellers)
 
+    async def _spec_still_needed(opp_, pair, buyers_, sellers_) -> list[str]:
+        """The catalogue template attributes neither company has stated yet (todo 15.3)."""
+        try:
+            from shared import catalogue, product_spec
+            from . import product_facts
+            line = catalogue.line_for(opp_.hs_code)
+            if not product_spec.own_attributes(line):
+                return []
+            b = next((x for x in buyers_ if x.buyer_name == pair.buyer_name), None)
+            s = next((x for x in sellers_ if x.company_name == pair.seller_name), None)
+            out: list[str] = []
+            for role, who, name in (("buyer", b, pair.buyer_name), ("supplier", s, pair.seller_name)):
+                facts = await product_facts.facts_for(role, opp_.hs_code, name=name,
+                                                      website=getattr(who, "website", None),
+                                                      email=getattr(who, "email", None))
+                for key in product_spec.completeness(line, facts, role)["missing"]:
+                    if key in {a.key for a in product_spec.own_attributes(line)}:
+                        out.append(f"{role} {key.replace('_', ' ')} (specification)")
+            return out
+        except Exception:  # noqa: BLE001
+            return []
+
     after_pairs = pair_match.match_opportunity(opp)
     after = {_pair_key(p): p for p in after_pairs}
     rows: list[dict[str, Any]] = []
@@ -223,7 +245,7 @@ async def rescore(opportunity_id: str, *, pairs: int = 3) -> EnrichedOpportunity
             "buyer": p.buyer_name, "seller": p.seller_name,
             "before": {"score": p.score, "grade": p.grade, "confidence": p.confidence},
             "after": {"score": a.score, "grade": a.grade, "confidence": a.confidence},
-            "still_needed": a.improve,
+            "still_needed": list(a.improve) + await _spec_still_needed(opp, p, buyers, sellers),
             "blockers": a.blockers,
         })
     now = datetime.now(timezone.utc)
