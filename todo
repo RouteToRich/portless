@@ -19,7 +19,7 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-19)
 
-**384 open · 285 done** (43 % done).
+**397 open · 285 done** (42 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
@@ -27,13 +27,13 @@ accountant · (Biz) founder / business · (QA) quality.
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 29 | 0 |
 | P0 — before the first real trade | 70 | 33 |
-| P1 — before more than a few deals a month | 192 | 229 |
-| P2 — improvements | 20 | 23 |
-| Apify actors (outside this repo) | 38 | 0 |
+| P1 — before more than a few deals a month | 202 | 229 |
+| P2 — improvements | 21 | 23 |
+| Apify actors (outside this repo) | 40 | 0 |
 | Decisions needed | 23 | 0 |
-| **Total** | **384** | **285** |
+| **Total** | **397** | **285** |
 
-Open items by owner: Eng 98 · Apify 38 · Ops 26 · Legal 27 · Biz 42 · QA 33 (untagged items are not counted; an item can name more than one owner).
+Open items by owner: Eng 102 · Apify 40 · Ops 26 · Legal 27 · Biz 43 · QA 33 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
 <!-- todo-metrics:end -->
 
@@ -368,6 +368,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 ### 3.4 Sanctions, KYC, AML — Legal, regulatory and trade compliance (India export)
 - [ ] **(Legal)** Written KYC / AML policy: buyer identity and beneficial owners, source of funds, enhanced checks for review-country buyers, record retention.
 - [ ] **(Legal)** Review the embargo and review-country lists in `COMPLIANCE_BLOCKED_COUNTRIES` / `COMPLIANCE_REVIEW_COUNTRIES` with counsel.
+- [ ] **(Eng) P1** **ECGC in the buyer and country checks (A1 / A2 country categories)** — the ECGC rating sits in the country profile, but nothing acts on it. (1) Suggest a tier from the rating (A1 / A2 → preferred allowed, B1 / B2 → standard, C1 / C2 → review, D → blocked) and raise `COUNTRY:<cc>:ecgc_changed` when A.32 reports a new rating; staff confirm the tier through the audited put. (2) Once the ECGC policy exists (14.3) and a deal is ever sold on terms other than escrow (DA / DP / open account): an ECGC buyer credit limit before the PI, a check against ECGC's Specific Approval List (buyers ECGC restricts — shown to policyholders on the ECGC portal; staff relay until it can be read), the premium as a cost-sheet line, and the exposure limit capped at the approved limit.
 
 ### 3.5 Documents that do not exist yet — Legal, regulatory and trade compliance (India export)
 - [ ] **(Ops)** Fumigation certificate when the buyer asks for fumigation (packing spec carries it; the certificate is not tracked).
@@ -391,6 +392,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Biz)** Kill Switch drill: pause, confirm every money path refuses, resume — monthly.
 - [x] **(Eng)** Alert when realised margin on a closed deal is below the margin floor (cost sheet estimate vs actual costs). — done 2026-11-18: when every tranche is released and the supplier is paid in full, a realised margin below the deal's margin floor (else `DEALMAKER_PO_MARGIN_FLOOR_PCT`) raises `deal.exception` `PAID:margin_below_floor` (category MARGIN_BREACH) once, with the estimate, net received, supplier paid and PortLess's costs; mid-deal figures are never judged.
 - [x] **(Eng)** Supplier retention (10 % held until buyer acceptance): confirm the supplier contract states it, and the payout e-mail explains it. — payout e-mail done 2026-11-18: the payment notice says how much is held until the buyer accepts (its share of the order value), why, and that it is paid on acceptance or when the window lapses (`retained_until_acceptance` on `payout.completed`). The supplier contract wording is still for counsel (3.4).
+- [ ] **(Eng/Legal) P1** **Cargo insurance from the supplier's warehouse to the buyer's place, per Incoterm** — the cost sheet has one marine-insurance % (`marine_insurance`, CIF only). PortLess is the exporter, so it carries the risk from the supplier's warehouse until the risk passes under the term. (1) Inland transit cover from the supplier's warehouse to the port for every term, FOB / FCA included (the e-way-bill truck). (2) The sea leg for CIF / CIP, insured by PortLess to the named port / place at 110 % of the CIF value, with the buyer as the party paid: Institute Cargo Clauses (C) for CIF, (A) for CIP. (3) D-terms (DAP / DPU / DDP) insured to the buyer's door. (4) FOB / CFR / CPT: seller's-interest (contingency) cover in case the buyer's own cover does not respond. Cost-sheet lines per segment (`insurance_inland`, `insurance_marine`, `insurance_contingency`); the per-shipment declaration under the open policy made before the ship sails, with its certificate number on the CI and the insurance declaration (with the 3.5 Ops item); the warehouse-to-warehouse transit clause on the certificate. A claims step tied to a dispute: survey at destination, notice within the policy's days, claim against the insurer and the carrier, recovery booked in the journal.
 
 ### 5.1 Found in the automation runs (open) — Workflow gaps found end to end
 - [x] **(Eng)** Facility address: the watcher reminds the supplier about the goods-ready date, but there is no reminder for a missing facility address (`facility_address_request` is sent once). Add a reminder and a stall exception. — done 2026-11-18: while the inspection waits for the address the deal watcher sends `facility_address_reminder` every `DEAL_FACILITY_ADDRESS_REMINDER_AFTER_HOURS` (48) from the request (max `DEAL_REMINDER_MAX`), then raises `PO_ISSUED:facility_address_missing`; the "please confirm the PO" reminder is no longer sent for a PO already acknowledged; an address that arrived without a booking is booked by the sweep.
@@ -408,6 +410,8 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** **Verify the mandi connector on live data** once `DATA_GOV_IN_API_KEY` is set: resource id, commodity names, `modal_price` / `min_price` / `max_price` field names and the INR-per-quintal unit (`shared/connectors/mandi.py` follows the published dataset; never run against the live API yet).
 - [ ] **(Eng)** **Verify the freight lane-quote request** with Cogoport / Freightos before relying on it: `freight_lanes.refresh` sends `origin_port`, `destination_country`, `hs_code`, `container_type` (20GP / 20RF) and reads `rate_usd` / `rates[]` — field names assumed from the existing connector, not from the providers' docs.
 - [x] **(Eng) P2** Prospects started before 2026-11-17 have no `radar_estimate` snapshot (the desk recomputes it from the opportunity each time); backfill the snapshot once so estimate vs outcome (16.1) covers them. — done 2026-11-18: the desk stores the snapshot the first time it reads a prospect without one (`backfilled_at` in it); `POST /deals/radar-estimate/backfill` (staff) does every deal from an opportunity, settled ones included.
+- [ ] **(Eng/Ops) P1** **Customs house agent (CHA / licensed customs broker) hand-off per shipment** — ICEGATE filing is a stub and `POST /shield-link/deals/{id}/customs/manual` only records the result; the steps before it are not in the system. (1) A CHA list per port (`cha_agents`: firm, customs broker licence number under CBLR 2018 and its validity, ports, contact, charges per shipment / per container; seeded from A.40) with one chosen per lane. (2) The CHA's KYC of PortLess kept once (IEC, GSTIN, PAN, AD code, LUT, signed authorisation letter — CBLR 2018 reg. 10) and re-sent when one changes. (3) At QC_PASSED the CHA gets the pack by e-mail with a `[CHA:<deal>]` token: CI, PL, SDF, Shipping Bill checklist, the inspector's loading record, e-way bill, certificates, and which incentives to claim. Its checklist reply waits for staff approval (new gate `APPROVE_SB_CHECKLIST`, L0), and only then may it file. (4) The Shipping Bill number, date, port code, LEO date and the RoDTEP / RoSCTL / drawback declarations it carried are read from the CHA's reply or entered by staff; they feed realisation and incentive credits. (5) The CHA's invoice (agency, CFS, THC, examination) is recorded against the cost-sheet line `cha`, with an overrun alert like freight (`cost_overrun.py`). Tests on recorded e-mails.
+- [ ] **(Eng/Ops) P1** **Empty container survey before stuffing** — the inspector's loading record has container and seal numbers, but nothing says the box was fit for food. Before stuffing, the inspector (or a container surveyor) checks each empty box: valid CSC plate, no holes or light, dry, clean, odour-free, no previous-cargo residue or nails, doors and gaskets intact, liner / kraft paper / desiccant where the packing spec asks, and for reefer cargo the pre-trip inspection (PTI) and set temperature. Record per box `container_survey` (passed / rejected, defects, photos, surveyor) through the QC webhook loading fields or `POST /shield-link/deals/{id}/loading`. A rejected box asks the carrier for a replacement (Maersk booking amendment) and stuffing waits. The compliance shipment check refuses T2 and `BOOK_FREIGHT` while a stuffed box has no passed survey (`container_survey_missing`). The QIMA loading-supervision booking and the SGS / BV request name the survey, and the survey report joins the buyer's documents and the evidence pack.
 
 ### 5.3 Process design to confirm with the trade desk — Workflow gaps found end to end
 - [ ] **(Ops)** Who approves which gate, response-time targets per gate, and the backup approver when the first is away (L1 timeouts default: negotiation e-mails 4 h → approve, money 24 h → reject).
@@ -415,6 +419,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Ops)** Demurrage / detention: who pays when the buyer clears late; nothing tracks it today.
 - [ ] **(Ops)** Quality claims after delivery beyond the acceptance window (warranty period, evidence, partial refund) — only full dispute / refund exists.
 - [x] **(Eng/Ops)** **Samples before the first order.** Buyers of agri commodities usually ask for a sample before they commit; nothing in the flow handles it (the word "sample" in the code is only QIMA's sampling level). Add a sample step on the prospect: buyer asks (read from the reply) → sample requested from the supplier → courier AWB recorded (DHL / FedEx / India Post; a sample is not an export shipment, but courier rules and the destination's food-import rules still apply) → buyer's verdict. Cost per sample on the deal's run costs, and an approved sample becomes the quality reference written into the PI / PO and the QC booking ("as per approved sample ref …"). Found 2026-11-19 (export-business video, stage 6). — done 2026-11-19: `shared/orchestration/samples.py`: request read from the buyer's reply or staff, courier + AWB + cost (run costs `samples_usd`), verdict; the approved sample is the quality reference in the PI / PO description and the QC note (`/deals/{id}/samples`).
+- [ ] **(Eng/Ops) P1** **Letter of intent (LOI) from a buyer — and the LOI / ICPO / FCO broker-chain pattern** — many buyers send an LOI before a PI; nothing reads one or asks for one. (1) An LOI template PortLess can send a new buyer on a large lot: product + spec, quantity and tolerance, price range, Incoterm® 2020 + named place, delivery window, payment through escrow, validity, non-binding except confidentiality. (2) A buyer's LOI (body or PDF attachment) is read into the `BuyerRequirement` (firm quantity, window, port, spec) with `commitment=loi`; the match board raises the chance of closing for it, and the PI quotes the LOI reference. (3) A guard: the classic commodity-scam chain from intermediaries ("LOI → ICPO → FCO → SPA → POF / BCL", "SGS at load port", "buyer's mandate", "procedures") is flagged `broker_chain_pattern`, forces L0, and is never answered with bank details, proof of funds or company documents. An LOI counts only from a buyer that is screened and writes from its own domain.
 
 ### 5.4 Currency — Workflow gaps found end to end
 - [x] **(Eng)** Only INR has a local rate; every other country is written to in USD (shared/currency.py). Add a rate source before adding a country (AED, EUR …) for buyers. — done 2026-11-19: `shared/fx_rates.py` — staff reference rates (`POST /deals/fx/reference`, audited, plausible band per currency), a daily ECB feed (`FX_REFERENCE_URL`, frankfurter.app) and `FX_RATE_<CCY>` settings; a buyer country (AE, SA, EU, GB, SG …) is written to in its own currency only once a fresh rate exists (`currency.party_currency`). System Health card.
@@ -435,6 +440,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(QA/Eng)** Link TC-E2E-002 … TC-E2E-010 to LLM journeys with `@journey:` (as TC-E2E-000 is) or rewrite them for the backend runner.
 - [ ] **(QA)** Re-run all 15 LLM journeys (UC-01 … UC-15) after every change to the negotiation, commitment or money code; today only UC-01 and UC-15 ran after the latest changes.
 - [ ] **(QA)** Run the whole catalogue once and record the baseline (no full catalogue run is stored in the automation database).
+- [ ] **(QA/Ops) P1** **Case-study scenarios with real numbers** — five worked trades, written once, as the reference for automation, operator training and the pilot: (1) basmati 1×20' to Jebel Ali, CIF, Tazapay, PSI, APEDA RCAC; (2) whole spices 1×40' HC to Hamburg, FOB, ethylene-oxide test, EU refusal history checked; (3) a 1000 MT buyer covered by 800 + 200 MT suppliers (composition); (4) QC fail → re-inspection → pass; (5) the buyer clears late → demurrage clock and who pays. Each lists the inputs (prices, freight quote, quantity, packing), the expected cost sheet line by line, the margin, every gate, every e-mail, every document with its key fields, and the money per tranche. Deliver each as `docs/case-studies/<n>.md`, a Gherkin case and an LLM journey that must match the expected numbers within a tolerance.
 
 ### 6.2 Browser (console) tests — Quality assurance gaps
 - [ ] **(QA)** Rewrite TC-E2E-001 … TC-E2E-010 as browser journeys (console for every decision, providers on the simulators).
@@ -543,6 +549,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [x] **(Biz/Eng)** **Export incentives as income**: RoDTEP credits and duty drawback where the product qualifies — put them on the cost sheet as income per deal, track the claim and the credit received. Confirm eligibility for a merchant exporter per HS code with the CA. — done 2026-11-18: cost-sheet line `export_incentive` (negative, RoDTEP + drawback % × `INCENTIVE_FOB_SHARE` 0.9) once the CA has confirmed eligibility (`incentives.entry_for(...).eligible_confirmed`); never booked as a cost. Tracking the claim and the credit received: still open.
 - [ ] **(Biz/Eng)** **GST working capital**: export under LUT (no IGST outflow) and procure at the merchant-exporter concessional rate where eligible (3.3) — less cash locked per deal.
 - [x] **(Biz/Eng)** **FX margin**: buy in INR, sell in USD; time the conversion, compare the AD bank rate with the escrow provider's rate, and add a small FX buffer to supplier offers. Optional forward cover for large deals. — done 2026-11-18: cost-sheet line `fx_buffer` (`FX_BUFFER_PCT` 0.5 % of the price) when the supplier is paid in INR; never booked as a cost. Comparing the AD bank and escrow-provider rates and forward cover: still open (decision 3.3).
+- [ ] **(Eng) P1** **RoSCTL for textiles, and the incentive declaration on the Shipping Bill** — `services/trade_min/incentives.py` knows only RoDTEP and drawback. Apparel (chapters 61, 62) and made-ups (63) earn RoSCTL instead of RoDTEP (Ministry of Textiles schedule, % of FOB with a cap per unit). Add `scheme` per HS entry (`rodtep` / `rosctl` / `drawback`; never RoDTEP and RoSCTL on the same item), import the rate table, and track `incentive_credits` per scheme. The claim is lost when the Shipping Bill does not carry the declaration, so the CHA pack (5.2) states which schemes to claim, and the Shipping Bill record keeps what was declared. An incentive counted on the cost sheet but not declared raises `INCENTIVE:not_declared` before LEO. Rate changes come from A.29 (Ministry of Textiles notifications, Appendix 4R).
 
 ### 11.2 Cut costs on every shipment — New features to raise profit per deal (product)
 - [x] **(Eng)** **Freight quotes from more than one source** (Maersk + forwarders) and book the cheapest that meets the date; today Maersk is booked by default. — done 2026-11-19: `services/shield_link/freight_compare.py`: every provider with real keys quoted before the BOOK_FREIGHT gate; the cheapest priced, non-stub quote within `FREIGHT_MAX_TRANSIT_DAYS` names the provider in the gate (quotes + lane checks beside it); `GET /shield-link/deals/{id}/freight-quotes`.
@@ -627,6 +634,7 @@ Everything after the match assumes one supplier party today: PO, QC, loading, pa
 
   The inspector supervises each stuffing point. The choice feeds the composition score (13.3).
 - [x] **(Eng)** Get freight quotes from the endpoints that exist: `CogoportConnector.quote` (already FCL / LCL; pass container type, cargo weight and LCL volume), `FreightosConnector.quote` and Maersk. `MaerskConnector.quote` today returns only the contract rate from `MAERSK_RATE_USD_PER_CONTAINER`; confirm the Maersk Product Offers / spot-rate API on the account and wire it. Compare quotes for each container plan and record the chosen quote with its source on the cost sheet. This overlaps 11.2 "freight quotes from more than one source". — done 2026-11-19: Cogoport / Freightos / Maersk are each asked with container type, cargo weight and (LCL) volume in m³; Maersk still answers its contract rate until Product Offers is confirmed.
+- [ ] **(Eng) P1** **CBM from the real packages, on the documents** — `container_choice` estimates volume from the catalogue stowage factor (`m3_per_mt`), and no document shows a volume. From the packing spec (bag / carton dimensions, net and gross weight, packages per pallet), compute CBM per package, per line and per shipment. Print gross weight, net weight, packages and CBM per line and in total on the packing list, CI, shipping instructions and the Maersk booking. Base LCL freight (W/M) on the computed CBM. Check container fill against usable volume (20' ≈ 33, 40' ≈ 67, 40' HC ≈ 76 CBM) and payload, and the inspector's loaded package count against the plan. With no package dimensions, fall back to the stowage factor with `cbm_source=estimate`.
 
 ### 13.6 Apify actors for quality trade and trade information — Deal composition after negotiation
 Build each one with `/actor-pipeline` on the `rich_minds` account. That plan cannot run Store actors, so they must be PortLess's own actors. Each one needs a connector + normaliser in `shared/connectors/apify.py`, a readiness check, a place in the `APIFY_MAX_RUNS_PER_DAY` budget, and pinned stub mode in tests.
@@ -709,6 +717,7 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 - [x] **(Eng)** **Carried into the deal**: the agreed specification fills the PI / PO description, the packing spec, the QC booking (inspection criteria, AQL, QIMA product ids) and the cost sheet (reefer vs dry box, MT per container) instead of being typed again at each step. — done 2026-11-19: the agreed specification (buyer's spec narrowed to the supplier's) is in the PI / PO product description and in the inspector's and carrier's notes (`product_spec.spec_text`).
 - [x] **(Eng)** **Export policy per exact product**: the trade check reads the 8-digit code and form; onion is a product India has restricted before (export ban, minimum export price), so the current DGFT notification is checked before outreach and again before the PI (3.4, compliance seed). — done 2026-11-19: the trade check reads the catalogue's 8-digit code and form (`compliance.exact_product`); seed entries for fresh onion, dried vegetables, basmati / non-basmati rice; checked at deal creation and before the PI as before.
 - [ ] **(QA)** Gherkin cases + automation: a requirement read from a reply lands on the directory record with its source; an unknown attribute is never invented; a variety / size / packing conflict blocks the pair; the outreach e-mail asks only the unanswered attributes; a staff entry survives the next scan; browser case for the product line, completeness and filters.
+- [ ] **(Eng) P1** **Several items in one order (bill of quantities / BOQ)** — a deal carries one product, grade and quantity, but buyers often order a list: two grades of rice, three pack sizes, chilli + turmeric in one container. Add an itemised list (`order_lines`: product, 8-digit HS, spec, pack, quantity, unit, unit price, MOQ per line) through the RFQ, the quotes (a supplier may quote some lines only), the match board, the negotiation (price per line), PI / PO / CI / PL (one row per line plus totals), the QC booking (one QIMA product per line), the container plan over all lines, and the margin per line plus total. The floor holds on the total, and no line sells below its own landed cost.
 
 ### 15.4 How much the buyer buys — before and after contact — Exact product requirement per buyer and supplier
 **Today (2026-11-18).** *After contact* the quantity is known: the introduction asks "Quantity (MT) and required delivery date", the reply is read into `BuyerRequirement.quantity_mt` (LLM gateway, regex fallback for MT / tons / containers / kg), the negotiation asks again while it is missing (`briefing.buyer_missing`), staff can set it (`PUT /deals/{id}/buyer-candidates/{cid}/requirement`), and the deal takes it as `quantity_mt` (else the radar's lot). *Before contact* nothing is known: only the US-importers actor returns a buyer's yearly volume, and the Apify plan cannot run it, so every web-search buyer has no volume, the pair score's **volume fit** (12–15 % of the weight) is always blank and the radar sizes every buyer at one container.
@@ -765,6 +774,7 @@ Build each one with `/actor-pipeline` on the `rich_minds` account. That plan can
 - [x] **(Eng)** **8-digit codes end to end**: the national sources speak CN8 / HS10 / ITC-HS8; map them to the catalogue's product lines (15.1 "exact product code") so a price is per grade, not per 6-digit mix — fixes many "price check needed" gaps. — done 2026-11-19: the catalogue's `hs8_codes` go to UK HMRC (exact CommodityId) and Eurostat (product = CN8), so their price is per grade.
 - [x] **(Eng)** Demand gate uses these sources too: a market with recent monthly imports from a national source is "live demand" even when Comtrade has nothing (89 buyers were dropped as "no live demand data" on 2026-11-17). — done 2026-11-19: recent monthly imports from UK HMRC / Eurostat count as an active Phase 1 source (done with the connectors, 2026-11-19).
 - [ ] **(QA)** Tests per connector on recorded responses (`httpx.MockTransport`), the merge rule (freshest-with-quantity wins, disagreement flagged), and the actor's normaliser; readiness shows each source live / stub.
+- [ ] **(Eng/Biz) P1** **ITC Trade Map (trademap.org) as a source** — ITC's free database (registration; free for users in developing countries such as India) has monthly / quarterly data for many reporters, mirror data, unit values per partner, India's competitors per market and lists of importing companies by product and country. There is no public API, so first read its terms of use. If automated reading is allowed, use actor A.39; otherwise staff import Trade Map's Excel / CSV exports (`POST /trade-min/trade-map/import`). Either way the data goes into the price book, the merge rule (a source with its `data_period`) and the directory (importers as buyer candidates, source `trade_map`).
 
 
 ### 18.1 Opportunities from companies, not only from market statistics — How opportunities are found
@@ -1045,6 +1055,7 @@ Where each fact comes from, and what PortLess does with it. Actors A.29 – A.38
 
 ### 14.4 Brand, website and contact details — Starting the company (non-technical: registrations, accounts, set-up)
 - [ ] **(Biz)** Trade fairs and buyer-seller meets (Gulfood, Anuga, SIAL, export promotion council events) and membership listings in council directories.
+- [ ] **(Biz) P2** **Published case studies for buyers and suppliers** — after the first completed trades, a short case study per corridor, with the counterparty's written consent: product, lane, how escrow and inspection protected both sides, days from PI to delivery. It goes on the website and as a link in outreach. Only true facts — `shared/company_profile.py` adds no track record until then.
 
 ### 14.6 Office, people and records — Starting the company (non-technical: registrations, accounts, set-up)
 - [ ] **(Biz)** Business insurance: office, professional indemnity, directors' and officers' cover.
@@ -1063,49 +1074,266 @@ Where each fact comes from, and what PortLess does with it. Actors A.29 – A.38
 
 ## Apify actors — built outside this repo
 
-PortLess's own actors live in the agent-pool repos on the `rich_minds` account and are built with `/actor-pipeline` (or `/actor-implement` on an existing actor), then `/actor-test` → `/actor-publish` → `/actor-deploy`. Nothing here is done in this repository. Each actor's PortLess side (connector slot + normaliser in `shared/connectors/apify.py`, wiring, tests on recorded rows) is a separate item in its area that names the actor it needs (A.n). Read public pages only (site terms, robots rules; no LinkedIn scraping); measure each actor's cost with the scan cost meter (16) before turning it on for every scan; a live smoke run per actor before PortLess enables it.
+PortLess's own actors live in the agent-pool repos on the `rich_minds` account. Nothing in this section is done in this repository. Each actor below says **why** PortLess needs it, the **source**, the **input** and the **row** it must return (field names exactly as written — the PortLess normaliser is written against them), the **rules** it must keep, when it is **done**, and the **PortLess side** (a separate item in its own area). "New" = a new actor via `/actor-pipeline`; "change" = `/actor-implement` on the existing clone, then `/actor-test` → `/actor-publish` → `/actor-deploy`.
 
-- [ ] **(Apify)** A.1 **`india-export-stats-ai` (new)** — DGCI&S TradeStat (tradestat.commerce.gov.in, web form, no API): India's exports by 8-digit ITC-HS × destination × month, value and quantity; one row per code × destination × month; cache a month (published monthly).
-- [ ] **(Apify) P1** A.2 **US import records (new, only if decision 12 picks the own actor)** — public US bill-of-lading data per consignee: shipments in the last 12 months, MT, typical size, frequency, last date, origins.
-- [ ] **(Apify)** A.3 **`company-contact-finder-ai` — contact persons** (profile mode): read the team / about / contact pages for named people and roles (purchasing / import / export manager) and the company's LinkedIn page URL (no LinkedIn scraping).
-- [ ] **(Apify)** A.4 **`company-contact-finder-ai` — product range**: classify the site's product range (the corridor's product listed or not, private label, pack sizes, organic) into fields per row.
-- [ ] **(Apify)** A.5 **`trade-fair-exhibitors-ai` (new)** — exhibitor directories of Gulfood, Anuga, SIAL, Biofach, Fruit Logistica, Seafood Expo … (buyers) and World Food India, AAHAR, India International Seafood Show, Spices fairs (suppliers): company, country, product categories, website; refresh per fair edition.
-- [ ] **(Apify)** A.6 **`counterparty-check-ai` — company age, size, activity**: domain age (RDAP / WHOIS), website still updated, employee range (company page).
-- [ ] **(Apify)** A.7 **`counterparty-check-ai` — reputation / adverse media**: news and forum hits for fraud / scam / default with the company's name, and its public review rating where one exists.
-- [ ] **(Apify)** A.8 **`company-contact-finder-ai` — search diagnostics**: OUTPUT per query: sites found, dropped as directories / no contact / wrong country.
-- [ ] **(Apify) P1** A.9 **`india-exporter-registries-ai` (new)** — public registered-exporter lists of the Spices Board (CRES), APEDA, MPEDA, Tea / Coffee Boards and FIEO's member directory: company, registration number, products, city / state, contact.
-- [ ] **(Apify) P1** A.10 **`india-b2b-suppliers-ai` (new; the never-built `india-supplier-finder-ai` slot)** — public seller pages of IndiaMART, TradeIndia, ExportersIndia per product: company, city, listed price and unit, MOQ, GST-verified badge, years in business. No paid IndiaMART API keys.
-- [ ] **(Apify) P2** A.11 **`apmc-traders-ai` (new)** — licensed commission agents / traders published by state agricultural marketing boards (APMC) for the commodity's main mandis.
-- [ ] **(Apify) P1** A.12 **`trade-association-members-ai` (new)** — member directories of ASTA, the European Spice Association and its national members, FEDIOL, national rice / seafood / nut federations, Gulf foodstuff traders' groups.
-- [ ] **(Apify) P1** A.13 **`importer-list-extractor-ai` (new)** — extract the named companies from "Top 20 spice importers in Germany" / "rice importers in Dubai" articles.
-- [ ] **(Apify) P1** A.14 **`b2b-directory-companies-ai` (new)** — free public listings of Europages, Kompass (free tier), Dubai Chamber / Saudi chambers' member search, German IHK company search, by activity code and country: company, activity, size class, website.
-- [ ] **(Apify) P1** A.15 **`local-business-leads-ai` (new)** on the Google Places API (needs a Google Maps Platform key, paid per request): "spice wholesaler Hamburg", "rice trader Deira": name, address, phone, website, rating. (Could also be a direct PortLess connector — decide when building.)
-- [ ] **(Apify) P2** A.16 **`buy-leads-ai` (new)** — buy-offer boards (go4WorldBusiness, TradeKey, ExportersIndia buy leads, Alibaba RFQ public pages): buyer country, product, quantity, date.
-- [ ] **(Apify) P2** A.17 **`food-tenders-ai` (new)** — UN Global Marketplace (UNGM), World Food Programme, Saudi Etimad, US SAM.gov food awards: buyer, product, quantity, deadline.
-- [ ] **(Apify) P2** A.18 **`competitor-clients-ai` (new)** — the "our clients / where we export" pages of the leading exporters from the market's main competing origin (from the radar's `competitors`).
-- [ ] **(Apify) P1** A.19 **`company-contact-finder-ai` — legal-notice page**: read the Impressum / Mentions légales / Aviso legal / Note legali / Colofon page EU (and many Gulf) company sites must publish: legal name, register court + number (e.g. HRB), VAT id, managing director, registered address → one `legalNotice` object per row. The strongest free proof that a buyer is a real registered company.
-- [ ] **(Apify) P1** A.20 **`company-contact-finder-ai` — search in other languages**: accept non-English query lines and non-Latin names (Arabic, Turkish, Chinese) end to end, search with the market's Google domain and language (`google.de` / `hl=de`, `google.ae` / `hl=ar`) per line, and report the language and domain used per query (PortLess now sends one local-language line per market — `shared/search_terms.py`).
-- [ ] **(Apify) P2** A.21 **`company-contact-finder-ai` — every phone, typed**: all phone numbers found (not only the first), each in E.164 with type mobile / landline and a WhatsApp flag when the site links `wa.me` / `api.whatsapp.com` for that number.
-- [ ] **(Apify) P2** A.22 **`company-contact-finder-ai` — mailbox status per address**: with `verifyMailbox` on, return the SMTP result for every address in `emails` (not only `bestEmail`) so one run replaces the separate `email-list-qualifier-ai` run.
-- [ ] **(Apify) P1** A.23 **`email-list-qualifier-ai` — return every input address**: also the rejected ones, each with `disposition` and reason (undeliverable, no MX, disposable, syntax). Today only qualified rows come back, so a timeout looks like "every address invalid".
-- [ ] **(Apify) P0** A.24 **`counterparty-check-ai` — India's own lists**: the DGFT denied-entity list (fetched and cached — replaces the manual CSV upload and closes the `DgftConnector.book` known gap), MHA banned organisations under the UAPA First Schedule, RBI caution list, SEBI debarred entities; one `listsChecked` entry per list and its publication date.
-- [ ] **(Apify) P1** A.25 **`counterparty-check-ai` — company registers with free APIs**: given a register number (from A.19) or name + country, read the status and incorporation date from UK Companies House, France SIRENE, Norway Brønnøysund, Estonia e-Business Register, the Dutch KvK basic profile — `companyStatus` (active / dissolved / in liquidation) and `incorporatedOn` (company age).
-- [ ] **(Apify) P1** A.26 **`export-market-finder-ai` — monthly, per origin**: monthly frequency with the last 12 months, net weight per month next to value, and per competing origin its unit value (India's price advantage per competitor), each figure with its `dataPeriod`; today the annual figure is often two years old.
-- [ ] **(Apify) P1** A.27 **`multi-carrier-tracking-ai` — rebuild without Store actors**: read the carriers' own public tracking pages / DCSA Track & Trace endpoints (MSC, CMA CGM, Hapag-Lloyd, ONE, Evergreen, COSCO, Maersk public) directly so it runs on the `rich_minds` plan; today every run ends with 0 rows and `OUTPUT.ok: false`.
-- [ ] **(Apify) P2** A.28 **`us-importer-finder-ai` and `alibaba-rfq-leads-ai` — retire or rebuild**: both read third-party Store Actors the plan refuses and nothing in PortLess calls them; fold them into A.2 (US import records) and A.16 (`buy-leads-ai`) or unpublish them.
+**Contract every PortLess actor keeps** (so the connector, the cost guards and the tests need nothing special per actor):
+- **Plan.** Runs on the `rich_minds` plan: no third-party Store actors and no Apify model proxy (both refused today). Plain HTTP + parsing (Crawlee Cheerio; Playwright only where the page needs JavaScript). Deterministic rules decide every field; `enableAi` stays an optional extra that defaults to false.
+- **Common input.** `sourceMode` (`live` | `list` | `dataset`), `enableAi` (false), `maxQualified` (row cap), `maxDiscoveryChargeUsd` (spend cap per run), `dedupeAcrossRuns` (PortLess sends false), `goalDescription` (optional). Countries are ISO-2 codes. HS codes are strings without dots, 6 or 8 digits, and an 8-digit code also matches its 6-digit heading. Dates are ISO 8601.
+- **Every row** carries `source` (short id), `sourceUrl`, `fetchedAt` (UTC) and `flags[]` (quality warnings). An unknown value is `null`, never a guess. Free text is trimmed to 2,000 characters. A stable `rowId` (hash of source + natural key) lets PortLess upsert.
+- **OUTPUT record** `{ "ok": bool, "rows": n, "refused": [{ "source", "reason" }], "queries": [...], "costUsd": n, "dataPeriod"?: "YYYY-MM" }`. A source that blocked, changed layout or timed out gives `ok: false` with the source listed in `refused`. PortLess then shows `source_refused`, never a silent empty result. Parse failures are listed, not swallowed.
+- **Law and manners.** Public pages only. Keep each site's terms and robots rules. Polite rate: at most one request per second per host unless the site allows more, with backoff on 429 / 503. No captcha solving. No personal social-media scraping (no LinkedIn profiles). No sign-in walls, except PortLess's own account where the terms allow it. Personal data is kept to business contact fields (DPDP, 3.7).
+- **Pricing.** Pay-per-event per row (`/actor-pricing`); the first run of a mode is measured with PortLess's scan cost meter (16.3) before it is turned on for every scan. PortLess's daily budgets (`APIFY_MAX_RUNS_PER_DAY`, `APIFY_MAX_USD_PER_DAY`) and result cache (`APIFY_CACHE_HOURS_<KEY>`) apply.
+- **Done when** (every actor): unit tests on saved pages for each source, input schema ⇄ RunConfig ⇄ dataset schema in sync, README listing every input and row field below, a live smoke run on the platform, and 5–10 real rows saved for PortLess as `tests/fixtures/apify/<slug>.json` (the normaliser tests run on them).
+- **PortLess side** (each its own item): actor key + `default_slug` + `quote()` + normaliser in `shared/connectors/apify.py`, a row in `GET /trade-min/sources`, a readiness warning while not configured, and tests on the recorded rows.
 
-**Regulations and safe markets (added 2026-11-19, for 3.1, 14.7, 14.8, 24).** Rule used to decide actor or not: an actor only where the source is a web page with no API or download (DGFT, CBIC, India Trade Portal, ECGC, FoSCoS, the commodity boards); where an official file or API exists, PortLess reads it directly with a plain connector (cheaper, no Apify run): UN / OFAC / EU / UK sanctions lists, the FATF lists page, the OECD country risk table, WTO tariff data, ECB rates, the US FDA import refusal data. The PortLess side of each actor is in 23.3.
+### Lists of buyers and suppliers (21.3, 18.1, 12)
 
-- [ ] **(Apify) P0** A.29 **`trade-regulation-watch-ai` (new)** — new items since the last run from DGFT notifications, public notices and trade notices; CBIC customs notifications (export duty, tariff); APEDA, Spices Board, MPEDA and FSSAI circulars. One row per item: source, number, date, title, type (prohibition / restriction / minimum export price / duty / procedure / other), PDF link, PDF text, the ITC-HS codes and product names found in it, a hash of the text. Input: `since` date and the source list; output only what is new. Runs daily (PortLess schedules it). Replaces the manual weekly review of DGFT notifications (3.1).
-- [ ] **(Apify) P1** A.30 **`india-trade-portal-ai` (new)** — indiantradeportal.in per ITC-HS code × importing country: MFN tariff, preferential tariff under each Indian trade agreement and its rules of origin, SPS and TBT measures, other non-tariff measures, import licensing, documents asked at the border; one row per HS × country with the page URL, the date read and a hash per section so a change can be found. Check the site's terms first (free sign-in for some pages); cache a month.
-- [ ] **(Apify) P1** A.31 **`destination-rule-watch-ai` (new)** — the importing side's rule changes: WTO ePing SPS / TBT notifications by country and product (new limits, bans, labelling, certificates), plus the rule pages of the main preferred-market regulators (EU food and feed rules, US FDA import alerts, SFDA Saudi, UAE MOCCAE / Dubai Municipality, Japan MHLW, FSANZ). One row per new item: country, product / HS, measure, date in force, link. Runs weekly.
-- [ ] **(Apify) P1** A.32 **`country-risk-feed-ai` (new)** — ECGC's country risk classification (A1 … D) and the other country lists that are only web pages: India's country-specific trade notices (DGFT / MEA), the escrow providers' supported-country pages (Tazapay, Escrow.com), embassy / chamber attestation rules for invoices and certificates of origin (Gulf markets). One row per ISO-2 country with source and date. Runs monthly. (FATF, OECD risk and the sanctions programmes are read directly — see the rule above.)
-- [ ] **(Apify) P1** A.33 **`import-refusals-ai` (new)** — refusals and alerts against Indian goods: EU RASFF notifications, US FDA import refusals and import alerts (where the FDA download does not cover it), Japan MHLW violations; one row per case: country, date, product, HS, exporter name when published, reason (pesticide residue, ethylene oxide, aflatoxin, salmonella …). Feeds 13.6 "Rejection history" and the country requirements (what to test for before shipping to that market).
-- [ ] **(Apify) P1** A.34 **`india-exporter-registries-ai` (A.9) — lookup mode**: besides the registered-exporter lists, check one registration number at its source: FSSAI licence (FoSCoS licence search: status, kind, valid until), APEDA RCMC, Spices Board CRES, MPEDA registration, Tea / Coffee Board; one row per number with `status` (active / expired / not found), `validUntil`, company name. Used for suppliers' certificates and for PortLess's own registrations (expiry, 14.8).
-- [ ] **(Apify) P1** A.35 **`export-market-finder-ai` — safe-market inputs**: accept `countries` / `excludeCountries` (PortLess sends the preferred and standard markets, never blocked or review ones, so no paid row is spent on them), and per market return the preferential duty India pays under a trade agreement next to the MFN duty (from WTO tariff data / A.30), with the agreement's name.
-- [ ] **(Apify) P1** A.36 **`company-contact-finder-ai` — country fence for the worldwide search**: accept `allowedCountries`; a company whose country (address, ccTLD, phone prefix) is outside the list is dropped before its site is opened (paid page reads saved), and each row says how its country was decided (`countrySource`, `countryConfidence`).
-- [ ] **(Apify) P1** A.37 **`counterparty-check-ai` — trade-risk evidence per company**: for an Indian supplier, its import refusals (from A.33's data) and its commodity-board registration status (A.34 lookup); for a foreign buyer, whether its country is under a country-wide sanctions programme and the country's FATF status, so one result carries everything the PI needs; each in `listsChecked` with source and date.
-- [ ] **(Apify) P2** A.38 **`multi-carrier-tracking-ai` (with A.27) — courier AWBs for samples and original documents**: DHL Express, FedEx, Aramex, UPS and India Post Speed Post tracking numbers from their public tracking pages: status, last scan, delivered date and who signed. Used by the sample step (5.3) and the original B/L / certificate of origin courier (3.5).
+- [ ] **(Apify)** A.1 **`india-export-stats-ai` (new)** — India's own export statistics from DGCI&S TradeStat.
+  - **Why**: the freshest record of what India already sells to a market, at 8 digits and monthly. Comtrade is annual and often two years old. It feeds the merge rule (17.1) and the radar's demand and price prior.
+  - **Source**: tradestat.commerce.gov.in → Export → Commodity-wise / Country-wise (web form, no API, no download link). Monthly and annual views; value in USD and INR, quantity with unit.
+  - **Input**: `hsCodes[]` (ITC-HS 2–8 digit), `countries[]` (ISO-2, empty = all), `fromMonth` / `toMonth` (YYYY-MM, default the last 13 published months), `frequency` (`monthly` | `annual`).
+  - **Row**: `hsCode` (8 digits as published), `hsDescription`, `country` (ISO-2), `countryName`, `period` (YYYY-MM or YYYY), `valueUsd`, `valueInr`, `quantity`, `unit` (as published: KGS / TON / NOS …), `quantityMt` (converted when the unit is a weight, else null), `unitValueUsdPerMt`, `provisional` (bool).
+  - **Rules**: map TradeStat country names to ISO-2 through a fixed table, and flag `country_unmapped` when the name is not in it. Never sum provisional and final months silently. Cache a month (data is published monthly, around mid-month).
+  - **Done when**: 090422 × DE / AE / US for the last 13 months matches the site by hand on three sampled cells.
+  - **PortLess side**: 17.1 "India's own export statistics — PortLess side".
+- [ ] **(Apify) P1** A.2 **US import records (new, only if decision 12 picks our own actor)** — who in the US actually imports the product, from public bill-of-lading data.
+  - **Why**: a buyer that has imported the product in the last 12 months is far more likely to close. It also gives real lot sizes and frequency for the volume band (15.4).
+  - **Source**: public US Customs manifest data (CBP AMS releases as republished on public sites). Decision 12 chooses between this actor and a paid data provider (ImportGenius / Panjiva / ImportYeti-style). Check each site's terms first.
+  - **Input**: `products[]` (keywords), `hsCodes[]`, `originCountries[]` (default IN), `months` (default 12), `excludeForwarders` (default true), `maxConsignees`.
+  - **Row**: `consigneeName`, `consigneeAddress`, `consigneeCountry` (US), `website` (when published), `shipments12m`, `totalMt12m`, `typicalShipmentMt`, `frequencyDays`, `lastShipmentDate`, `origins[]` (ISO-2 with share), `topShippers[]` (names), `products[]` (bill-of-lading descriptions), `isForwarder` (bool).
+  - **Rules**: NVOCC / forwarder consignees are flagged and dropped by default. Weights are converted to MT. Shipper names are kept as published; they are the competing origin's exporters.
+  - **Done when**: a known US importer of basmati appears with its last shipment date.
+  - **PortLess side**: 15.4 volume band, 21.3 directory buyers (source `us_customs`), the radar's buyer quality.
+- [ ] **(Apify)** A.3 **`company-contact-finder-ai` — contact persons (change)** — the named buyer, not info@.
+  - **Why**: introductions to a named purchasing / import manager get more replies, and the person's role tells the negotiation agent who decides.
+  - **Source**: the company's own team / about / contact / impressum pages (already crawled).
+  - **Input**: add `extractPeople` (default true) and `preferRoles[]` (PortLess sends `purchasing`, `import`, `export`, `sales`, `general`; already accepted).
+  - **Row**: extend `people[]` with objects `{ name, title, roleGroup (purchasing | import | export | sales | management | other), email, phone, sourceUrl }`, plus `linkedinCompanyUrl` (the URL only, as linked from the site — the actor never opens LinkedIn).
+  - **Rules**: only people the company itself publishes. Never guess an e-mail pattern (no "firstname.lastname@" invention). If more than 10 people are found, keep the first 10, those matching `preferRoles` first.
+  - **Done when**: 20 sampled buyer sites give ≥ 1 named person on the sites that publish one, and none is invented.
+  - **PortLess side**: 21.2 "contact persons" (people on the directory record, introduction addressed to the person).
+- [ ] **(Apify)** A.4 **`company-contact-finder-ai` — product range (change)** — does this company really deal in our product?
+  - **Why**: today a supplier whose site names another product is only caught by a keyword rule (`product_mismatch`). A product-range classification makes pair matching and the radar's supplier trust honest.
+  - **Input**: `products[]` (the corridor's product names and local names) and `hsCodes[]`.
+  - **Row**: `productRange { listsProduct (bool), matchedTerms[], otherProducts[] (top 10), privateLabel (bool|null), packSizes[] (e.g. "1 kg", "25 kg bag"), organic (bool|null), certifications[] (FSSAI, BRCGS, ISO 22000, HACCP, Organic, Halal, Kosher — as named on the site), evidenceUrls[] }`.
+  - **Rules**: a decision comes only from words on the site, recorded in `matchedTerms` / `evidenceUrls`. A certification named on the site is a claim, not a check (it is labelled `claimed`).
+  - **Done when**: 20 sampled supplier sites give no false `listsProduct=true` on a site that does not show the product.
+  - **PortLess side**: 21.2 "product range" (directory fit score, `product_mismatch` replaced by the actor's evidence, certification claims shown next to the A.34 check).
+- [ ] **(Apify)** A.5 **`trade-fair-exhibitors-ai` (new)** — buyers and suppliers from trade-fair exhibitor lists.
+  - **Why**: exhibitors at food fairs are real, active companies that already trade internationally, and their product categories are given.
+  - **Source**: public exhibitor directories. Buyers: Gulfood (Dubai), Anuga (Cologne), SIAL (Paris), Biofach, Fruit Logistica, Seafood Expo Global, Sial Middle East. Suppliers: World Food India, AAHAR, India International Seafood Show, World Spice Congress, IIJS-type commodity fairs.
+  - **Input**: `fairs[]` (ids from a fixed list in the README), `edition` (year, default latest), `categories[]` (fair category names or keywords), `countries[]` (exhibitor country filter), `role` (`buyer` | `supplier`, used only to label rows).
+  - **Row**: `companyName`, `country`, `city`, `website`, `hall`, `stand`, `categories[]`, `productsText`, `fair`, `edition`, `exhibitorUrl`, `email` / `phone` (only when the directory publishes them).
+  - **Rules**: one adapter per fair, behind a fixed list. A fair whose directory needs a sign-in is listed in `refused`. Refresh per fair edition (cache a year per fair × edition).
+  - **Done when**: 2 buyer fairs and 2 supplier fairs return ≥ 50 exhibitors each, filtered by category.
+  - **PortLess side**: 21.3 "trade-fair exhibitors" (directory source `trade_fair:<fair>`, then the normal contact finder + check).
+- [ ] **(Apify)** A.6 **`counterparty-check-ai` — company age, size and activity (change)** — is the company alive and old enough?
+  - **Why**: compliance blocks a company under one year old (`COMPLIANCE_MIN_COMPANY_AGE_YEARS`), and today age is known only from an Indian CIN. A dead site is a strong scam or closure signal.
+  - **Input**: `website` / `domain` per item (PortLess already sends name, country, VAT, LEI and registration number).
+  - **Row**: add `domainCreated` (RDAP; WHOIS fallback), `domainAgeYears`, `siteLastUpdated` (newest date found: copyright year, news / blog date, sitemap `lastmod`), `employeeRange` (as published on the site or company page, e.g. "11-50"), `activitySignals[]`.
+  - **Rules**: use RDAP first (structured, allowed). Never treat a privacy-redacted WHOIS record as young. Flag `site_stale` when nothing is newer than 2 years.
+  - **Done when**: a 2-month-old domain is flagged, and a long-standing company is not.
+  - **PortLess side**: 21.2 "company age" (compliance age check for foreign buyers, trust score).
+- [ ] **(Apify)** A.7 **`counterparty-check-ai` — reputation and adverse media (change)** — fraud, scam or default stories about the company.
+  - **Why**: a buyer named in "scam" / "fraud" / "did not pay" stories should never get a PI. A supplier with complaints should not get the RFQ.
+  - **Source**: Google News RSS / GDELT for the company name + country with risk words (fraud, scam, default, arrested, sanctions, insolvency, ED / CBI raid for India), public scam-report forums, and the public review rating where one exists (Google / Trustpilot summary only).
+  - **Row**: add `adverseMedia[] { title, url, date, source, riskWords[], nameMatchScore }`, `adverseMediaVerdict` (`none` | `possible` | `likely`), `reviewRating`, `reviewCount`.
+  - **Rules**: only hits with name match ≥ `minNameScore` and the right country count. A hit older than 5 years is labelled `old`. The verdict never turns a sanctions `clear` into `block`; it can only add `review`.
+  - **Done when**: a known fraud case is found, and a same-name company in another country is not matched.
+  - **PortLess side**: 21.2 "reputation" (screening review queue shows the hits, compliance `review` finding `adverse_media`).
+- [ ] **(Apify)** A.8 **`company-contact-finder-ai` — search diagnostics (change)** — why a search found nothing.
+  - **Why**: today an empty corridor cannot be told apart from a bad query. The scan report (16) needs a reason per query.
+  - **Row / OUTPUT**: OUTPUT `queries[] { query, country, language, googleDomain, resultsSeen, sitesOpened, kept, dropped: { directory, marketplace, association, noContact, wrongCountry, duplicate, blocked } }`.
+  - **Done when**: one run with 3 queries shows the counts adding up to `resultsSeen`.
+  - **PortLess side**: scan report drop reasons per product × market (16.4 console).
+- [ ] **(Apify) P1** A.9 **`india-exporter-registries-ai` (new)** — Indian suppliers from the official registered-exporter lists.
+  - **Why**: a supplier registered with its commodity board is a real exporter. Some products cannot be exported without the registration (Spices Board CRES, APEDA RCMC for basmati, MPEDA for seafood).
+  - **Source**: public lists of the Spices Board (registered exporters / CRES holders), APEDA (registered exporters, basmati RCAC holders), MPEDA (registered exporters), Tea Board, Coffee Board, Cashew EPC, and FIEO's member directory.
+  - **Input**: `registries[]` (`spices_board`, `apeda`, `mpeda`, `tea_board`, `coffee_board`, `cepc`, `fieo`), `products[]` (keywords), `states[]` (Indian states, optional).
+  - **Row**: `companyName`, `registry`, `registrationNumber`, `registrationType` (CRES / RCMC / …), `validUntil` (when published), `products[]`, `address`, `city`, `state`, `pin`, `email`, `phone`, `website`.
+  - **Rules**: when a registry publishes PDFs, parse them and record the PDF date in `publishedOn`. When a registry has no product filter, filter by keyword on the products field.
+  - **Done when**: the Spices Board and APEDA lists both return ≥ 100 rows for pepper / basmati.
+  - **PortLess side**: 21.3 "registered exporters" (directory suppliers, registration recorded as verified fact).
+- [ ] **(Apify) P1** A.10 **`india-b2b-suppliers-ai` (new; fills the never-built `india-supplier-finder-ai` slot)** — suppliers with a listed price from Indian B2B marketplaces.
+  - **Why**: gives the supplier-side price estimate before any RFQ (price book prior) and many small suppliers the search misses. No paid IndiaMART keys are needed.
+  - **Source**: public seller and product pages on IndiaMART, TradeIndia and ExportersIndia (no sign-in, no buy-lead pages).
+  - **Input**: `products[]`, `hsCodes[]`, `states[]`, `maxPerSite`, `sites[]` (default all three).
+  - **Row**: `companyName`, `city`, `state`, `productTitle`, `price`, `priceUnit` (per kg / quintal / tonne / bag), `priceUsdPerMt` (converted at the run's USD/INR, recorded in `fxRate`), `moq`, `moqUnit`, `gstVerified` (badge), `gstin` (when shown), `yearsInBusiness`, `responseRate`, `listingUrl`, `site`.
+  - **Rules**: a price shown as "Get latest price" is null, not 0. A price range keeps both ends. Phone numbers that are marketplace call-tracking numbers are flagged `masked_phone`.
+  - **Done when**: 3 products give ≥ 30 sellers each, with prices normalised to USD/MT.
+  - **PortLess side**: connector slot `INDIA_SUPPLIER_FINDER` (exists, unused) → normaliser on these fields, prices into the price book as `listed` (lower weight than a quote).
+- [ ] **(Apify) P2** A.11 **`apmc-traders-ai` (new)** — licensed traders at the main mandis.
+  - **Why**: for agricultural commodities, mandi traders and commission agents are the supply behind most exporters. Buying from them can cut out one margin.
+  - **Source**: state agricultural marketing boards' published licensee lists (e.g. Karnataka, Maharashtra, Madhya Pradesh, Punjab, Telangana) and eNAM trader lists where public.
+  - **Input**: `states[]`, `mandis[]`, `commodities[]`.
+  - **Row**: `traderName`, `licenceNumber`, `licenceType` (trader / commission agent / processor), `mandi`, `district`, `state`, `commodities[]`, `phone`, `validUntil`.
+  - **PortLess side**: 21.3 directory suppliers (source `apmc`), standby supplier pool.
+- [ ] **(Apify) P1** A.12 **`trade-association-members-ai` (new)** — buyers from importers' association member lists.
+  - **Why**: members of ASTA / ESA / national federations are established importers. Membership is a trust signal.
+  - **Source**: public member directories of ASTA (American Spice Trade Association), the European Spice Association and its national members (e.g. Fachverband der Gewürzindustrie), FEDIOL, national rice / nut / seafood federations, and Gulf foodstuff traders' groups.
+  - **Input**: `associations[]` (ids from a fixed list), `countries[]`.
+  - **Row**: `companyName`, `association`, `memberType`, `country`, `city`, `website`, `categories[]`, `memberUrl`.
+  - **PortLess side**: 21.3 directory buyers (source `association:<id>`), trust score + `association_member` flag.
+- [ ] **(Apify) P1** A.13 **`importer-list-extractor-ai` (new)** — named companies from "top importers" articles.
+  - **Why**: articles such as "Top 20 spice importers in Germany" name real buyers that searches for company sites miss.
+  - **Input**: `queries[]` (PortLess builds "top <product> importers in <country>" lines) or `urls[]`.
+  - **Row**: `companyName`, `country`, `website` (when linked), `articleUrl`, `articleTitle`, `articleDate`, `position` (rank in the list), `contextText` (the sentence around the name).
+  - **Rules**: only names in a list or table structure. Directory / marketplace names are dropped. Each name is deduplicated across articles with the count kept in `mentions`.
+  - **PortLess side**: 21.3 (names → contact finder → check, source `article`).
+- [ ] **(Apify) P1** A.14 **`b2b-directory-companies-ai` (new)** — companies by activity code from public business directories.
+  - **Source**: Europages, Kompass (free tier only), Dubai Chamber member search, Saudi chambers' member search, German IHK company search.
+  - **Input**: `directories[]`, `activityCodes[]` (NACE / directory category) or `keywords[]`, `countries[]`.
+  - **Row**: `companyName`, `country`, `city`, `activity`, `activityCode`, `sizeClass`, `website`, `phone`, `directory`, `directoryUrl`, `registrationNumber` (when shown).
+  - **PortLess side**: 21.3 directory buyers (source `directory:<id>`).
+- [ ] **(Apify) P1** A.15 **`local-business-leads-ai` (new; or a direct PortLess connector — decide when building)** — wholesalers and traders from Google Places.
+  - **Why**: many Gulf and European wholesalers have a maps listing but a weak website.
+  - **Source**: Google Places API (Text Search + Place Details). It needs a Google Maps Platform key and is paid per request, so the key stays PortLess's and is passed in the input as a secret.
+  - **Input**: `queries[]` ("spice wholesaler Hamburg", "rice trader Deira"), `maxPerQuery`, `apiKey` (secret).
+  - **Row**: `name`, `address`, `country`, `phone` (E.164), `website`, `rating`, `reviewCount`, `placeId`, `types[]`, `businessStatus`.
+  - **Rules**: keep Google's terms (no storing beyond what they allow; `placeId` may be kept).
+  - **PortLess side**: 21.3 (source `places`).
+- [ ] **(Apify) P2** A.16 **`buy-leads-ai` (new; absorbs `alibaba-rfq-leads-ai`, see A.28)** — buyers who are asking right now.
+  - **Source**: public buy-offer boards: go4WorldBusiness, TradeKey, ExportersIndia buy leads, Alibaba RFQ public pages.
+  - **Input**: `products[]`, `countries[]`, `postedWithinDays` (default 14).
+  - **Row**: `buyerName` (when shown), `country`, `product`, `quantity`, `unit`, `quantityMt`, `incoterm`, `destination`, `postedOn`, `deadline`, `leadUrl`, `board`, `contactShown` (bool).
+  - **Rules**: buy leads are often brokers, so they are flagged `unverified_lead` and never treated as a buyer until the contact finder + check pass.
+  - **PortLess side**: 18.1 "buyer requests" (lead → candidate with the requirement filled).
+- [ ] **(Apify) P2** A.17 **`food-tenders-ai` (new)** — public food tenders and awards.
+  - **Source**: UN Global Marketplace (UNGM), World Food Programme procurement, Saudi Etimad, US SAM.gov awards (food PSC codes).
+  - **Row**: `buyer`, `country`, `title`, `product`, `quantity`, `unit`, `deadline`, `awardedTo`, `awardValueUsd`, `tenderUrl`, `documentsUrl`.
+  - **PortLess side**: 18.1 (tenders as opportunities; the award winners as buyer candidates for resale).
+- [ ] **(Apify) P2** A.18 **`competitor-clients-ai` (new)** — whom the competing exporters sell to.
+  - **Input**: `exporters[]` (sites of the main exporters from the radar's `competitors` origin) or `country` + `products[]` to find them.
+  - **Row**: `exporterName`, `exporterCountry`, `clientName`, `clientCountry`, `evidenceUrl`, `evidenceText`.
+  - **PortLess side**: 21.3 buyer candidates with `buys_from_competitor` (the introduction can lead with India's price advantage).
+
+### More facts about each company (21.2, 12)
+
+- [ ] **(Apify) P1** A.19 **`company-contact-finder-ai` — legal-notice page (change)** — the strongest free proof that a buyer is a registered company.
+  - **Source**: the Impressum / Mentions légales / Aviso legal / Note legali / Colofon / "Legal" pages that EU (and many Gulf) company sites must publish.
+  - **Row**: `legalNotice { legalName, legalForm (GmbH / SARL / BV / LLC …), registerCourt, registerNumber (e.g. HRB 12345), vatId, managingDirectors[], registeredAddress, shareCapital, sourceUrl, language }`.
+  - **Rules**: parse per language with fixed labels ("Registergericht", "Handelsregister", "RCS", "KvK", "P.IVA"). Keep the raw text block in `legalNotice.rawText` (≤ 2,000 characters).
+  - **Done when**: 20 German / French / Dutch buyer sites give a register number where the page has one.
+  - **PortLess side**: 21.2 "legal notice" (VAT → VIES, register number → A.25, legal name on the deal party).
+- [ ] **(Apify) P1** A.20 **`company-contact-finder-ai` — search in other languages (change)**
+  - **Why**: PortLess now sends one local-language line per market (`shared/search_terms.py`). The actor must search it properly.
+  - **Input**: `queries[]` may be non-English and non-Latin (Arabic, Turkish, Chinese, Japanese); optional `googleDomain` / `hl` per line (else derived from the line's country: `google.de` / `hl=de`, `google.ae` / `hl=ar`).
+  - **Row / OUTPUT**: `query`, `queryLanguage`, `googleDomain` on each row and in OUTPUT `queries[]`.
+  - **Rules**: names in non-Latin script are kept as written plus a `nameLatin` transliteration.
+  - **Done when**: an Arabic line for AE returns UAE companies, with the language reported.
+  - **PortLess side**: none beyond reading `queryLanguage` into the scan report.
+- [ ] **(Apify) P2** A.21 **`company-contact-finder-ai` — every phone, typed (change)**
+  - **Row**: `phones[] { number (E.164), type (mobile | landline | tollfree | unknown), whatsapp (bool — the site links wa.me / api.whatsapp.com for that number), label (sales / export / office as written), sourceUrl }`; `phone` stays the best one.
+  - **PortLess side**: phone check + WhatsApp relay (`shared/phone_check.py`) on every number.
+- [ ] **(Apify) P2** A.22 **`company-contact-finder-ai` — mailbox status per address (change)**
+  - **Row**: with `verifyMailbox` on, `emails[] { email, mailbox (deliverable | undeliverable | catch_all | unknown), role (bool, e.g. info@), sourceUrl }` for every address, not only `bestEmail`.
+  - **Why**: one run replaces the separate `email-list-qualifier-ai` run (cost).
+  - **PortLess side**: `validation.py` skips the qualifier when every address already has a status.
+- [ ] **(Apify) P1** A.23 **`email-list-qualifier-ai` — return every input address (change)**
+  - **Why**: only qualified rows come back today, so a timeout looks like "every address invalid" and PortLess marks good addresses bad.
+  - **Row**: one row per input address: `email`, `disposition` (`qualified` | `undeliverable` | `no_mx` | `disposable` | `syntax` | `role` | `timeout` | `unknown`), `reason`, `mx`, `catchAll`.
+  - **Rules**: a timeout is `unknown`, never `undeliverable`.
+  - **PortLess side**: the normaliser already reads `disposition` / `reason`. Treat `unknown` as unchecked, not bounced.
+- [ ] **(Apify) P0** A.24 **`counterparty-check-ai` — India's own lists (change)** — closes the `DgftConnector.book` known gap.
+  - **Source**: DGFT Denied Entity List (fetched and cached; replaces the manual CSV upload), MHA banned organisations (UAPA First Schedule), RBI caution list, SEBI debarred entities, and the list of entities barred under PMLA / FIU-IND where published.
+  - **Input**: as today (name, country, IEC, GSTIN, PAN optional). Add `iec` / `gstin` / `pan` per item.
+  - **Row**: `listsChecked` gets one entry per list: `{ list, publishedOn, checkedAt, hit (bool), matchedName, matchScore, matchedId (IEC / PAN), sourceUrl }`; an IEC or PAN match → `verdict: block`, a name-only match ≥ score → `review`.
+  - **Rules**: each list is cached with its publication date. A list that cannot be read appears in `listsChecked` with `unavailable: true`, which keeps the verdict at `review` (PortLess already does that).
+  - **Done when**: a known DGFT-listed IEC is blocked, and the publication date is shown.
+  - **PortLess side**: compliance reads the actor's DGFT entry instead of `COMPLIANCE_DGFT_LIST` / the CSV. Remove the known gap from CLAUDE.md.
+- [ ] **(Apify) P1** A.25 **`counterparty-check-ai` — company registers with free APIs (change)**
+  - **Source**: UK Companies House (free key), France SIRENE (INSEE API), Norway Brønnøysund, Estonia e-Business Register, Dutch KvK basic profile, and OpenCorporates' free lookup where allowed.
+  - **Input**: `registrationNumber` (from A.19) or name + country.
+  - **Row**: `register { name, country, number, companyStatus (active | dissolved | in_liquidation | unknown), incorporatedOn, registeredAddress, officers[] (names), sourceUrl }`.
+  - **PortLess side**: compliance company age + `dissolved` → block. Directory shows the register status.
+- [ ] **(Apify) P1** A.26 **`export-market-finder-ai` — monthly, per origin (change)**
+  - **Why**: the annual Comtrade figure is often two years old. India's price advantage must be per competitor, not against the average.
+  - **Input**: `frequency` (`A` | `M`), `months` (default 12).
+  - **Row**: add `monthly[] { period, importValueUsd, netWeightMt, unitValueUsdPerMt }`, `origins[] { country, valueUsd, netWeightMt, unitValueUsdPerMt, sharePct }`, `indiaPriceAdvantagePct` per origin, and `dataPeriod` on every figure.
+  - **PortLess side**: radar profit uses the freshest figure. `india_price_advantage_pct` per competitor goes into the outreach market fact.
+- [ ] **(Apify) P1** A.27 **`multi-carrier-tracking-ai` — rebuild without Store actors (change)**
+  - **Why**: every run today ends with 0 rows and `OUTPUT.ok: false` (Store actors refused). Non-Maersk bookings have no tracking, so the delivery window waits for staff.
+  - **Source**: the carriers' own public tracking pages / DCSA Track & Trace endpoints: MSC, CMA CGM, Hapag-Lloyd, ONE, Evergreen, COSCO, Yang Ming, HMM, ZIM and Maersk public. Carrier detected from the container prefix (BIC owner code) or B/L prefix.
+  - **Input**: unchanged: `trackingNumbers[]` lines "NUMBER, carrier, reference".
+  - **Row**: unchanged shape PortLess reads today: `trackingNumber`, `carrier`, `status` (BOOKED / IN_TRANSIT / ARRIVED / DISCHARGED / DELIVERED / EMPTY_RETURNED), `milestone` (DCSA code), `milestoneIsActual`, `milestoneDescription`, `eventDate`, `location` (UN/LOCODE), `vessel`, `voyage`, `eta`, `podEta`, `events[]`.
+  - **Done when**: one live container per carrier returns its last event, and the OUTPUT is `ok: true`.
+  - **PortLess side**: readiness `carrier_tracking` turns ok; set `APIFY_CARRIER_TRACKING_RETRY_REFUSED=true`.
+- [ ] **(Apify) P2** A.28 **`us-importer-finder-ai` and `alibaba-rfq-leads-ai` — retire or rebuild (change)**
+  - Both read third-party Store actors the plan refuses, and nothing in PortLess calls them. Fold them into A.2 (US import records) and A.16 (`buy-leads-ai`), then unpublish them.
+  - **PortLess side**: remove the two connector classes and their `GET /trade-min/sources` rows once the replacements run.
+
+### Regulations and safe markets (3.1, 14.7, 14.8, 24 — added 2026-11-19)
+
+Rule for actor or not: an actor only where the source is a web page with no API or download (DGFT, CBIC, India Trade Portal, ECGC, FoSCoS, the commodity boards, Ministry of Textiles). Where an official file or API exists, PortLess reads it directly with a plain connector, which is cheaper and needs no Apify run: UN / OFAC / EU / UK sanctions lists, the FATF lists page, the OECD country risk table, WTO tariff data, ECB rates, US FDA import refusal data. The PortLess side of each actor is in 23.3.
+
+- [ ] **(Apify) P0** A.29 **`trade-regulation-watch-ai` (new)** — every new Indian export rule, the day it is published.
+  - **Why**: one missed ban or minimum export price can make a whole container illegal to ship. Replaces the manual weekly review (3.1). PortLess's `regulatory_watch` today reads only the list pages' text.
+  - **Source**: DGFT notifications, public notices and trade notices; CBIC customs notifications (tariff and non-tariff, export duty); APEDA, Spices Board, MPEDA and FSSAI circulars; Ministry of Textiles notifications (RoSCTL rates); the RoDTEP schedule (Appendix 4R) changes.
+  - **Input**: `since` (date of the last run), `sources[]` (default all).
+  - **Row**: `source`, `number`, `date`, `title`, `type` (`prohibition` | `restriction` | `minimum_export_price` | `export_duty` | `incentive_rate` | `procedure` | `other`), `pdfUrl`, `pdfText` (trimmed), `hsCodes[]` (ITC-HS / CTH codes found in the text, 4–8 digits), `products[]` (product names found), `effectiveFrom`, `textHash`.
+  - **Rules**: output only items newer than `since` (by number + date). PDF text is extracted from scanned PDFs too (OCR only when there is no text layer). Hindi-only notices keep the Hindi title plus an English title when one is published.
+  - **Done when**: the last 30 days of DGFT notifications are all listed, with HS codes found in a ban notice.
+  - **PortLess side**: 23.3 "Regulation watch on A.29".
+- [ ] **(Apify) P1** A.30 **`india-trade-portal-ai` (new)** — what the importing country asks of an Indian product.
+  - **Source**: indiantradeportal.in per ITC-HS code × importing country. Check the site's terms first (some pages need a free sign-in).
+  - **Input**: `hsCodes[]`, `countries[]`.
+  - **Row** (one per HS × country): `mfnTariffPct`, `preferentialTariffs[] { agreement, ratePct, rulesOfOrigin }`, `spsMeasures[]`, `tbtMeasures[]`, `otherNtm[]`, `importLicensing`, `borderDocuments[]`, `pageUrl`, `readOn`, `sectionHashes { tariff, sps, tbt, documents }`.
+  - **Rules**: a section that changed since the last run is flagged `changed_sections[]`. Cache a month.
+  - **PortLess side**: 23.3 "Destination requirements from A.30 + A.31".
+- [ ] **(Apify) P1** A.31 **`destination-rule-watch-ai` (new)** — rule changes on the importing side.
+  - **Source**: WTO ePing SPS / TBT notifications by country and product (new limits, bans, labelling, certificates); the rule pages of the main preferred-market regulators: EU food and feed rules, US FDA import alerts, SFDA (Saudi), UAE MOCCAE / Dubai Municipality, Japan MHLW, FSANZ.
+  - **Input**: `countries[]`, `hsCodes[]`, `since`.
+  - **Row**: `country`, `regulator`, `hsCodes[]`, `products[]`, `measure` (text), `measureType` (`mrl` | `ban` | `labelling` | `certificate` | `testing` | `other`), `publishedOn`, `inForceFrom`, `commentDeadline`, `link`.
+  - **Rules**: runs weekly.
+  - **PortLess side**: 23.3 (catalogue `import_requirements` re-checked; open deals to that market get a review finding).
+- [ ] **(Apify) P1** A.32 **`country-risk-feed-ai` (new)** — the country facts that are only web pages, including the **ECGC country categories A1 … D**.
+  - **Source**: ECGC country risk classification (A1, A2, B1, B2, C1, C2, D — published quarterly), India's country-specific trade notices (DGFT / MEA), the escrow providers' supported-country pages (Tazapay, Escrow.com), and embassy / chamber attestation rules for invoices and certificates of origin (Gulf markets).
+  - **Input**: `countries[]` (default all).
+  - **Row** (one per ISO-2 country): `ecgcRating`, `ecgcRatingDate`, `ecgcCoverRestrictions` (e.g. "cover on restrictive terms"), `indiaTradeNotices[] { number, date, title, link }`, `escrowProviders[]` (`tazapay`, `escrow_com` — supported for buyers in that country), `attestation { required (bool), documents[], authority, feeNote }`, `source`, `fetchedAt` per field.
+  - **Rules**: runs monthly. FATF, OECD risk and the sanctions programmes are read directly (see the rule above).
+  - **PortLess side**: `COUNTRY_RISK_FEED_URL` / country profiles, plus the ECGC tier suggestion (3.4 "ECGC in the buyer and country checks").
+- [ ] **(Apify) P1** A.33 **`import-refusals-ai` (new)** — refusals and alerts against Indian goods.
+  - **Source**: EU RASFF notifications (RASFF Window), US FDA import refusals and import alerts (where the FDA download does not cover it), Japan MHLW import violations.
+  - **Input**: `originCountry` (IN), `hsCodes[]` / `products[]`, `since`.
+  - **Row**: `country`, `authority`, `date`, `product`, `hsCode`, `exporterName` (when published), `exporterCity`, `hazard` (pesticide residue / ethylene oxide / aflatoxin / salmonella / …), `hazardDetail` (substance + level), `action` (border rejection / recall / alert), `reference`, `link`.
+  - **PortLess side**: 23.3 "Refusal history" (what to test for per HS × market; a supplier with refusals → review).
+- [ ] **(Apify) P1** A.34 **`india-exporter-registries-ai` (A.9) — lookup mode (change)** — check one registration number at its source.
+  - **Source**: FSSAI licence search (FoSCoS), APEDA RCMC, Spices Board CRES, MPEDA registration, Tea / Coffee Board, and any EPC RCMC lookup.
+  - **Input**: `lookups[] { kind, number }`.
+  - **Row**: `kind`, `number`, `status` (`active` | `expired` | `suspended` | `not_found`), `validUntil`, `companyName`, `address`, `products[]` / `licenceCategory` (FSSAI: central / state / registration, kind of business), `checkedAt`, `sourceUrl`.
+  - **PortLess side**: 23.3 "Registration checks on A.34" (suppliers' certificates, PortLess's own registrations and expiry).
+- [ ] **(Apify) P1** A.35 **`export-market-finder-ai` — safe-market inputs (change)**
+  - **Input**: `countries[]` / `excludeCountries[]`. PortLess sends the preferred and standard markets, never blocked or review ones, so no paid row is spent on them.
+  - **Row**: add `preferentialDuty { agreement, ratePct }` next to `mfnDutyPct` (from WTO tariff data / A.30), so the radar's net gap uses the duty India actually pays.
+  - **PortLess side**: the scan already filters markets (done). Read `preferentialDuty` into `TariffData`.
+- [ ] **(Apify) P1** A.36 **`company-contact-finder-ai` — country fence for the worldwide search (change)**
+  - **Input**: `allowedCountries[]`.
+  - **Row**: `country`, `countrySource` (`address` | `cctld` | `phone_prefix` | `query`), `countryConfidence` (0–1).
+  - **Rules**: a company whose country is outside the list is dropped before its site is opened (paid page reads saved), and counted in `dropped.wrongCountry` (A.8).
+  - **PortLess side**: send `allowedCountries` from the country tiers (the scan already computes them).
+- [ ] **(Apify) P1** A.37 **`counterparty-check-ai` — trade-risk evidence per company (change)**
+  - **Row**: for an Indian supplier, `importRefusals[]` (from A.33's data, by name match) and `boardRegistration` (A.34 lookup); for a foreign buyer, `countrySanctionsProgramme` (bool + programme) and `countryFatfStatus`. Each also goes in `listsChecked` with source and date, so one result carries everything the PI needs.
+  - **PortLess side**: compliance findings from the one result; no second run.
+- [ ] **(Apify) P2** A.38 **`multi-carrier-tracking-ai` (with A.27) — courier AWBs for samples and original documents (change)**
+  - **Source**: public tracking pages of DHL Express, FedEx, Aramex, UPS and India Post Speed Post.
+  - **Input**: `trackingNumbers[]` lines "AWB, courier".
+  - **Row**: `trackingNumber`, `courier`, `status` (`picked_up` | `in_transit` | `customs` | `out_for_delivery` | `delivered` | `exception`), `lastScan`, `lastScanAt`, `deliveredAt`, `signedBy`.
+  - **PortLess side**: 23.3 "Courier tracking (A.38)" (samples step, original B/L / certificate-of-origin courier).
+
+### New from the 2026-11-19 term check
+
+- [ ] **(Apify) P1** A.39 **`trade-map-ai` (new — only if ITC's terms allow automated reading; otherwise staff import the Trade Map exports, see 17.1)** — ITC Trade Map data that Comtrade lacks.
+  - **Why**: monthly / quarterly figures for many reporters, mirror data for markets that report late (Gulf, Africa), unit values per partner, India's competitors per market, and lists of importing companies by product and country.
+  - **Source**: trademap.org (ITC; free registration, free for users in developing countries such as India). Uses PortLess's own account.
+  - **Input**: `hsCodes[]` (6 digits; national 8 / 10 where shown), `countries[]`, `view` (`imports_by_partner` | `monthly` | `companies`), `periods`.
+  - **Row** (trade): `reporter`, `partner`, `hsCode`, `period`, `valueUsd`, `quantity`, `unit`, `unitValueUsdPerMt`, `mirror` (bool). Row (companies): `companyName`, `country`, `city`, `website`, `products[]`, `role` (importer / exporter), `employees`.
+  - **PortLess side**: 17.1 "ITC Trade Map as a source".
+- [ ] **(Apify) P2** A.40 **`customs-broker-directory-ai` (new)** — licensed customs brokers (CHA) per port.
+  - **Why**: to choose and check the CHA for each port (5.2 "CHA hand-off"). A broker's licence must be valid under CBLR 2018.
+  - **Source**: CBIC / customs commissionerates' published lists of licensed customs brokers (PDF / HTML per zone), plus the brokers' own sites for contact details.
+  - **Input**: `ports[]` (UN/LOCODE or customs port code, e.g. INNSA1), `zones[]`.
+  - **Row**: `firmName`, `licenceNumber`, `licenceValidUntil`, `commissionerate`, `ports[]`, `address`, `phone`, `email`, `website`, `listPublishedOn`.
+  - **PortLess side**: seed for `cha_agents` (5.2), licence validity checked before each hand-off.
 
 ---
 
