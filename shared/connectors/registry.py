@@ -274,6 +274,13 @@ CONNECTOR_REGISTRY: dict[str, type[Connector]] = {
 }
 
 
+# Actors specified but not built yet (todo "Apify actors"): each runs only once its
+# APIFY_ACTOR_<KEY>_BUILT flag is set; until then quote() is the empty stub result.
+from .apify_more import PENDING_CONNECTORS as _PENDING  # noqa: E402
+
+CONNECTOR_REGISTRY.update({cls.name: cls for cls in _PENDING})
+
+
 def get_connector(name: str) -> Connector:
     """Instantiate a connector adapter by its registered name."""
     try:

@@ -47,6 +47,14 @@ def record(hs_code: str, market: str, result: str, reason: str, opportunity_id: 
     ))
 
 
+def add_diagnostics(rows: list[dict] | None) -> None:
+    """The company search's per-query diagnostics on the running scan (no-op outside one)."""
+    report = _current.get()
+    if report is None or not rows:
+        return
+    report.search_diagnostics.extend(rows)
+
+
 async def _collection():
     try:
         from .repository import MongoOpportunityRepository, get_repository

@@ -149,6 +149,8 @@ def _apply_contact(party: Any, contact: dict[str, Any] | None, actor: str | None
             updates["address"] = contact["address"]
         if contact.get("vat_id") and not getattr(party, "vat_number", None):
             updates["vat_number"] = contact["vat_id"]
+        if contact.get("people") and not getattr(party, "people", None):
+            updates["people"] = list(contact["people"])[:10]
         if contact.get("email") or contact.get("website"):
             updates["contact_source"] = source
             updates["contact_confidence"] = contact.get("confidence")

@@ -181,6 +181,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("Country profiles / registrations not loaded (seed and settings apply): %s", exc)
 
+    # ── Destination requirements + import refusals into their caches (radar, QC note, gates) ──
+    try:
+        from shared.orchestration import destination_rules as _dest, refusals as _refusals
+        await _dest.load()
+        await _refusals.load()
+    except Exception as exc:
+        logger.error("Destination requirements / refusals not loaded: %s", exc)
+
     # ── Autonomy policy: per-action L0–L3 overrides (Mongo-persisted) ─────
     try:
         from shared.orchestration.autonomy_policy import load_policy

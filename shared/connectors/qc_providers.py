@@ -540,7 +540,7 @@ class QimaConnector(QcProviderConnector):
             "customField2": request.get("tpo_id"),
             "customField3": " · ".join(filter(None, [
                 request.get("inspection_type") or "PSI",
-                "LOADING_SUPERVISION requested" if "LOADING_SUPERVISION" in services else "",
+                "LOADING_SUPERVISION + empty-container survey per box requested" if "LOADING_SUPERVISION" in services else "",
             ])),
             "performInQimaone": None,
             "allowChangeInspectionDate": os.getenv("QIMA_ALLOW_DATE_CHANGE", "true").lower() in ("1", "true", "yes"),

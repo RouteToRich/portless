@@ -225,6 +225,7 @@ def build(
     hs_code: str | None = None,
     supplier_currency: str | None = None,
     incentive_pct: float = 0.0,
+    sale_incoterm: str | None = None,
 ) -> CostSheet:
     """The deal's cost sheet from what is known now (quotes where they exist)."""
     from shared.orchestration import landed_cost
@@ -357,8 +358,16 @@ def build(
                               note=f"{incentive_pct:g} % of FOB, credited after shipment (eligibility confirmed)"))
 
     # 5. Costs that scale with the price.
-    lines.append(CostLine(key="marine_insurance", label="Marine cargo insurance (CIF)",
-                          pct_of_price=landed_cost.insurance_pct(), source="setting"))
+    if sale_incoterm:
+        # Insurance per leg of the agreed term (cargo_insurance.py): inland on ex-works supply, the
+        # sea leg at 110 % for CIF / CIP / D-terms, seller's-interest cover for F- / C-terms.
+        from shared.orchestration import cargo_insurance
+        for seg in cargo_insurance.segments(sale_incoterm, basis):
+            lines.append(CostLine(key=seg["key"], label=seg["label"], pct_of_price=seg["pct_of_price"],
+                                  source="setting", note=seg["note"]))
+    else:
+        lines.append(CostLine(key="marine_insurance", label="Marine cargo insurance (CIF)",
+                              pct_of_price=landed_cost.insurance_pct(), source="setting"))
     fee = escrow_fee_pct if escrow_fee_pct is not None else landed_cost.escrow_fee_pct()
     lines.append(CostLine(key="escrow_fee", label="Escrow provider fee", pct_of_price=float(fee),
                           source="quote" if escrow_fee_pct is not None else "setting"))

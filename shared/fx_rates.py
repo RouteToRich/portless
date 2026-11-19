@@ -10,6 +10,12 @@ Where a rate comes from, in order:
    by the deal watcher while ``FX_REFERENCE_AUTO_REFRESH`` is on (pinned off in the test suite);
 3. a static ``FX_RATE_<CCY>`` setting (e.g. ``FX_RATE_AED=3.6725`` — the dirham is pegged).
 
+4. a **USD peg** (``PEGS``: AED 3.6725, SAR 3.75, QAR 3.64, OMR 0.3845, BHD 0.376 — the Gulf
+   currencies the ECB feed lacks), source "peg", while ``FX_PEGS_ENABLED`` (default on; pinned off in
+   the test suite and automation). ``check_pegs`` (monthly, deal watcher) compares every recorded staff
+   / bank rate with its peg and pages Telegram when one moved more than ``FX_PEG_TOLERANCE_PCT`` (0.5);
+   KWD is basket-pegged, so it needs a staff / bank rate.
+
 A rate older than ``FX_REFERENCE_MAX_AGE_DAYS`` (7) is not used, except a pegged one set by
 setting. ``shared.currency`` uses these: a country is written to in its own currency only once
 a usable rate exists, and the USD/INR fallback is the latest reference rate rather than the
@@ -31,6 +37,9 @@ BANDS: dict[str, tuple[float, float]] = {
     "QAR": (3.0, 4.5), "OMR": (0.3, 0.5), "KWD": (0.25, 0.4), "BHD": (0.3, 0.5), "SGD": (1.0, 2.0),
     "MYR": (3.0, 6.0), "JPY": (80.0, 250.0), "CNY": (5.0, 9.0), "AUD": (1.0, 2.2), "CAD": (1.0, 1.8),
 }
+
+PEGS: dict[str, float] = {"AED": 3.6725, "SAR": 3.75, "QAR": 3.64, "OMR": 0.3845, "BHD": 0.376}
+"""Units per USD of the currencies pegged to the dollar (central-bank pegs)."""
 
 _cache: dict[str, dict[str, Any]] = {}
 _memory: list[dict[str, Any]] = []
@@ -76,7 +85,54 @@ def _setting(currency: str) -> dict[str, Any] | None:
     if rate and plausible(currency, rate):
         return {"currency": currency.upper(), "rate": rate, "source": f"setting FX_RATE_{currency.upper()}",
                 "as_of": None, "kind": "setting"}
+    return _peg(currency)
+
+
+def pegs_enabled() -> bool:
+    return os.getenv("FX_PEGS_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _peg(currency: str) -> dict[str, Any] | None:
+    cur = currency.upper()
+    if cur in PEGS and pegs_enabled():
+        return {"currency": cur, "rate": PEGS[cur], "source": "peg", "as_of": None, "kind": "peg"}
     return None
+
+
+async def check_pegs(*, now: datetime | None = None) -> dict[str, Any]:
+    """Every recorded rate of a pegged currency against its peg; a move beyond the tolerance is paged
+    (a peg change is rare and must not go unnoticed)."""
+    tol = _f("FX_PEG_TOLERANCE_PCT", 0.5)
+    out: dict[str, Any] = {"checked": [], "moved": []}
+    for cur, peg in PEGS.items():
+        row = await latest(cur)
+        if not row:
+            continue
+        dev = abs(float(row["rate"]) - peg) / peg * 100.0
+        out["checked"].append({"currency": cur, "rate": row["rate"], "peg": peg, "deviation_pct": round(dev, 3)})
+        if dev > tol:
+            out["moved"].append(cur)
+    if out["moved"]:
+        try:
+            from shared import telegram
+            await telegram.send_message("FX peg check: " + ", ".join(
+                f"{c['currency']} recorded {c['rate']} vs peg {c['peg']}" for c in out["checked"]
+                if c["currency"] in out["moved"]) + " — confirm the peg before quoting in that currency")
+        except Exception:  # noqa: BLE001
+            pass
+    _last_refresh["pegs"] = now or datetime.now(timezone.utc)
+    return out
+
+
+async def monthly_peg_check(now: datetime | None = None) -> dict[str, Any] | None:
+    """Deal watcher hook: the peg check at most once every 30 days."""
+    if not pegs_enabled():
+        return None
+    now = now or datetime.now(timezone.utc)
+    last = _last_refresh.get("pegs")
+    if last and now - last < timedelta(days=30):
+        return None
+    return await check_pegs(now=now)
 
 
 def cached(currency: str) -> dict[str, Any] | None:

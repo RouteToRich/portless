@@ -357,7 +357,7 @@ async def _incentive_pct(hs_code: str | None) -> float:
         from services.trade_min import incentives  # type: ignore[import]
         entry = await incentives.entry_for(hs_code or "")
         if entry is not None and entry.eligible_confirmed:
-            return float(entry.rodtep_pct or 0.0) + float(entry.drawback_pct or 0.0)
+            return float(entry.rodtep_pct or 0.0) + float(getattr(entry, "rosctl_pct", 0.0) or 0.0) + float(entry.drawback_pct or 0.0)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Cost sheet: incentives for %s unavailable: %s", hs_code, exc)
     return 0.0
@@ -372,6 +372,7 @@ async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
         market = session.buyer_country_code
         inspection_types: list[str] | None = None
         supplier_currency: str | None = None
+        sale_incoterm: str | None = None
         try:
             from services.deals.service import get_deal  # type: ignore[import]
             deal = await get_deal(session.deal_id)
@@ -384,6 +385,10 @@ async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
             address = getattr(supplier, "address", None) if supplier else None
             from shared.currency import party_currency
             supplier_currency = party_currency(getattr(supplier, "country", None) if supplier else "IN")
+            chosen = next((c for c in (getattr(deal, "buyer_candidates", None) or [])
+                           if getattr(c, "status", None) == "selected"), None)
+            req = getattr(chosen, "requirement", None) if chosen else None
+            sale_incoterm = getattr(req, "incoterm", None) if req else None
         except Exception as exc:  # noqa: BLE001
             logger.debug("Cost sheet: deal lookup for %s failed: %s", session.deal_id, exc)
         fee_pct = None
@@ -410,6 +415,7 @@ async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
             packing=session.packing, packing_in_supplier_price=session.packing_in_supplier_price,
             inspection_types=inspection_types, hs_code=getattr(session, "product_code", None),
             supplier_currency=supplier_currency, incentive_pct=await _incentive_pct(session.product_code),
+            sale_incoterm=sale_incoterm,
         )
         session.cost_sheet = sheet.model_dump(mode="json")
         try:
@@ -421,8 +427,11 @@ async def refresh_cost_sheet(session: NegotiationSession) -> NegotiationSession:
                                                 float(session.quantity_mt or 20.0))
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Cost sheet: lane quotes for %s not refreshed: %s", session.negotiation_id, exc)
+            from shared.orchestration import cbm as cbm_mod
+            measured = cbm_mod.shipment(session.packing, float(session.quantity_mt or 20.0))
             session.cost_sheet["container_choice"] = await container_choice.choose(
-                market, session.product_code, float(session.quantity_mt or 20.0))
+                market, session.product_code, float(session.quantity_mt or 20.0),
+                cbm=measured["cbm"] if measured["cbm_source"] == "packages" else None, gross_kg=measured["gross_kg"])
         except Exception as exc:  # noqa: BLE001 - the sheet stands without it
             logger.debug("Cost sheet: container choice for %s failed: %s", session.negotiation_id, exc)
     except Exception as exc:  # noqa: BLE001

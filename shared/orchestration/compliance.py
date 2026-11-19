@@ -207,8 +207,37 @@ class LoadingRecord(BaseModel):
     goods_description: str | None = None
     inspector_ref: str | None = None
     photos: list[str] = Field(default_factory=list)
+    container_surveys: list[dict[str, Any]] = Field(default_factory=list)
+    """Empty-container survey per box before stuffing: ``container``, ``status`` (passed /
+    rejected), ``defects``, ``photos``, ``surveyor``, ``reefer_pti`` (reefer pre-trip inspection)."""
     source: str = "operator"
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+SURVEY_CHECKS = ("CSC safety-approval plate valid", "no holes or light inside with the doors shut", "dry floor and walls",
+                 "clean, odour-free, no residue of the previous cargo, no loose nails", "doors, gaskets and locking bars intact",
+                 "liner / kraft paper / desiccant where the packing spec asks", "reefer: pre-trip inspection and set temperature")
+
+
+def container_survey_required() -> bool:
+    """CONTAINER_SURVEY_REQUIRED (default on; pinned off in the suite / automation): every stuffed box
+    needs a passed empty-container survey before the QC tranche and the freight booking."""
+    return os.getenv("CONTAINER_SURVEY_REQUIRED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def survey_problems(loading: "LoadingRecord | None") -> list[str]:
+    """Pure: each stuffed container without a passed survey (``<box>: missing`` / ``<box>: rejected``)."""
+    if loading is None:
+        return []
+    by_box = {str(s.get("container") or "").strip().upper(): s for s in loading.container_surveys or []}
+    out = []
+    for box in loading.container_numbers:
+        s = by_box.get(box)
+        if s is None:
+            out.append(f"{box}: missing")
+        elif str(s.get("status") or "").lower() != "passed":
+            out.append(f"{box}: {s.get('status') or 'not passed'}")
+    return out
 
 
 class HoldClearance(BaseModel):
@@ -921,8 +950,22 @@ async def record_loading(deal_id: str, loading: LoadingRecord) -> ComplianceReco
     rec = await get_record(deal_id)
     loading.container_numbers = [c.strip().upper() for c in loading.container_numbers if c and c.strip()]
     loading.seal_numbers = [s.strip().upper() for s in loading.seal_numbers if s and s.strip()]
+    loading.container_surveys = [{**s, "container": str(s.get("container") or "").strip().upper()}
+                                 for s in loading.container_surveys or [] if isinstance(s, dict)]
     rec.loading = loading
-    return await save_record(rec)
+    saved = await save_record(rec)
+    rejected = [s["container"] for s in loading.container_surveys if str(s.get("status") or "").lower() == "rejected"]
+    if rejected:
+        try:
+            from shared.orchestration.continuations import _publish_exception
+            await _publish_exception(deal_id, "CONTAINER:rejected",
+                                     f"container(s) {', '.join(rejected)} failed the empty-container survey — ask the "
+                                     "carrier for a replacement; stuffing waits",
+                                     {"category": "FREIGHT_DELAY", "containers": rejected,
+                                      "action_required": "request_replacement_container"})
+        except Exception:  # noqa: BLE001
+            pass
+    return saved
 
 
 async def _pi_po(deal_id: str):
@@ -969,6 +1012,12 @@ async def check_shipment(deal) -> CheckResult:
         if not loading.photos:
             findings.append(Finding(code="shipment_no_photos", severity="review",
                                     message="no stuffing / seal photos from the inspector"))
+        problems = survey_problems(loading) if container_survey_required() else []
+        if problems:
+            findings.append(Finding(code="shipment_container_survey", severity="block",
+                                    message="empty-container survey not passed for " + "; ".join(problems)
+                                            + " — a fit-for-food box is checked before stuffing",
+                                    data={"containers": problems}))
     from shared.orchestration import export_certs
     if export_certs.enabled():
         for kind in (await export_certs.status(deal))["missing"]:

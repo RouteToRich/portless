@@ -118,7 +118,7 @@ def cached() -> dict[str, dict[str, Any]]:
     return {**_parse_setting(), **_memory, **_cache}
 
 
-async def record(kind: str, number: str, expires_on: str | None, *, by: str) -> dict[str, Any]:
+async def record(kind: str, number: str, expires_on: str | None, *, by: str, source: str = "staff") -> dict[str, Any]:
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {', '.join(KINDS)}")
     if not (number or "").strip():
@@ -129,7 +129,7 @@ async def record(kind: str, number: str, expires_on: str | None, *, by: str) -> 
         except ValueError as exc:
             raise ValueError("expires_on must be an ISO date (YYYY-MM-DD)") from exc
     row = {"kind": kind, "number": number.strip(), "expires_on": expires_on, "recorded_by": by,
-           "recorded_at": datetime.now(timezone.utc).isoformat(), "source": "staff"}
+           "recorded_at": datetime.now(timezone.utc).isoformat(), "source": source}
     col = _collection()
     if col is None:
         _memory[kind] = row

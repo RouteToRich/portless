@@ -62,6 +62,7 @@ class _Subject:
     legal_name: str | None = None
     cin: str | None = None
     udyam: str | None = None
+    legal_notice: dict | None = None
     target: Any = None
     """The BuyerSignal / SellerCandidate / CounterpartyRecord the result is written to."""
     v: CounterpartyValidation = field(default_factory=CounterpartyValidation)
@@ -131,6 +132,12 @@ def decide(v: CounterpartyValidation, *, role: str, country: str | None,
         reasons.append("phone number is not a valid number either")
     if v.vat_valid is False and v.vat_number:
         reasons.append(f"VAT number {v.vat_number} is not valid in EU VIES")
+    if v.adverse_media in ("possible", "likely"):
+        reasons.append(f"{v.adverse_media} adverse media (fraud / scam / default stories) — a person reads the hits")
+    if v.domain_age_years is not None and v.domain_age_years < 1 and v.company_age_years is None:
+        reasons.append(f"web domain only {v.domain_age_years:g} year(s) old")
+    if v.site_stale:
+        reasons.append("nothing on its website is newer than two years")
     min_age = _min_company_age()
     if v.company_age_years is not None and min_age and v.company_age_years < min_age:
         reasons.append(f"company incorporated {v.company_age_years} year(s) ago (CIN) — younger than "
@@ -206,6 +213,15 @@ async def _screen(subjects: list[_Subject]) -> None:
         s.v.evidence_url = row.get("evidence_url")
         s.v.lei = row.get("lei") or s.lei
         s.v.lei_status = row.get("lei_status")
+        s.v.domain_age_years = row.get("domain_age_years")
+        if row.get("site_last_updated"):
+            s.v.site_stale = str(row["site_last_updated"])[:4] < str(datetime.now(timezone.utc).year - 2)
+        verdict = row.get("adverse_media_verdict")
+        if verdict in ("none", "possible", "likely"):
+            s.v.adverse_media = verdict
+            s.v.adverse_hits = list(row.get("adverse_media") or [])[:5]
+            if verdict != "none" and s.v.sanctions == "clear":
+                s.v.sanctions = "review"  # into the screening review queue: a person reads the stories
         if row.get("vat_number") or s.vat_number:
             s.v.vat_number = row.get("vat_number") or s.vat_number
             s.v.vat_valid = row.get("vat_valid")
@@ -219,6 +235,15 @@ def _screen_input(s: _Subject) -> dict:
         value = getattr(s, field_name, None)
         if value:
             item[key] = value
+    ln = getattr(s, "legal_notice", None) or {}
+    if ln.get("vat_id") and "vat_number" not in item:
+        item["vat_number"] = ln["vat_id"]
+    if ln.get("register_number") and "registration_number" not in item:
+        item["registration_number"] = ln["register_number"]
+    if ln.get("legal_name"):
+        item["legal_name"] = ln["legal_name"]
+    if getattr(s, "website", None):
+        item["website"] = s.website
     return item
 
 
@@ -239,6 +264,12 @@ def existence(v: CounterpartyValidation, s: _Subject | None = None, now: datetim
         out.append(f"Udyam {s.udyam}")
     if v.gst == "active":
         out.append("GST active")
+    ln = (s.legal_notice if s is not None else None) or {}
+    if ln.get("register_number"):
+        out.append(f"commercial register {(ln.get('register_court') or '').strip()} {ln['register_number']}".replace("  ", " ")
+                   + " (legal notice on its site)")
+    if v.domain_age_years is not None:
+        out.append(f"web domain {v.domain_age_years:g} year(s) old")
     return out
 
 
@@ -325,6 +356,9 @@ async def _run(subjects: list[_Subject], now: datetime) -> None:
         if s.cin:
             from shared import indian_ids
             s.v.company_age_years = indian_ids.company_age_years(s.cin, now)
+        ln = s.legal_notice or {}
+        if ln.get("register_number"):
+            s.v.register_ref = " ".join(x for x in (ln.get("register_court"), ln["register_number"]) if x)
         s.v.existence = existence(s.v, s, now)
         s.target.validation = decide(s.v, role=s.role, country=s.country, has_phone=bool(s.phone))
 
@@ -336,13 +370,15 @@ async def _run(subjects: list[_Subject], now: datetime) -> None:
 def _buyer_subject(b: BuyerSignal) -> _Subject:
     return _Subject(role="buyer", name=b.buyer_name, country=b.buyer_country, email=b.email,
                     email_status=b.email_status, phone=b.phone, website=b.website, target=b,
-                    vat_number=b.vat_number, lei=b.lei, legal_name=b.legal_name)
+                    vat_number=b.vat_number, lei=b.lei, legal_name=b.legal_name,
+                    legal_notice=getattr(b, "legal_notice", None))
 
 
 def _seller_subject(s: SellerCandidate) -> _Subject:
     return _Subject(role="supplier", name=s.company_name, country=s.country, email=s.email,
                     email_status=s.email_status, phone=s.phone, website=s.website,
-                    gstin=s.gstin, iec=s.iec, target=s, vat_number=s.vat_number, cin=s.cin, udyam=s.udyam)
+                    gstin=s.gstin, iec=s.iec, target=s, vat_number=s.vat_number, cin=s.cin, udyam=s.udyam,
+                    legal_notice=getattr(s, "legal_notice", None))
 
 
 def _rank(item: Any) -> tuple:
@@ -398,7 +434,7 @@ async def validate_record(rec: CounterpartyRecord) -> CounterpartyRecord:
                        email_status=(rec.validation.email if rec.validation else None),
                        phone=rec.phone, website=rec.website, gstin=rec.gstin, iec=rec.iec, target=rec,
                        vat_number=rec.vat_number, lei=rec.lei, legal_name=rec.legal_name, cin=rec.cin,
-                       udyam=rec.udyam)
+                       udyam=rec.udyam, legal_notice=rec.legal_notice)
     await _run([subject], datetime.now(timezone.utc))
     return rec
 

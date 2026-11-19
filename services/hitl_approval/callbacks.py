@@ -270,6 +270,12 @@ async def _cb_confirm_supplier_order(deal_id: str, payload: dict[str, Any]) -> d
             "pi_id": getattr(pi, "pi_id", None), "status": "confirmed"}
 
 
+async def _cb_approve_sb_checklist(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """The CHA's Shipping Bill checklist approved → the CHA is told to file."""
+    from shared.orchestration import cha
+    return await cha.approve_filing(deal_id, payload)
+
+
 async def _cb_release_escrow_tranche(deal_id: str, payload: dict[str, Any]) -> dict | None:
     """Release one staged escrow tranche against its proof refs."""
     from services.escrow_guard.schemas import ReleaseTrancheRequest  # type: ignore[import]
@@ -429,6 +435,7 @@ _CALLBACK_MAP = {
     "SEND_INDICATIVE_OFFER": _cb_send_indicative_offer,
     "SEND_BEST_AND_FINAL": _cb_send_best_and_final,
     "CONFIRM_MATCH": _cb_confirm_match,
+    "APPROVE_SB_CHECKLIST": _cb_approve_sb_checklist,
 }
 
 
@@ -524,6 +531,8 @@ _REJECT_CALLBACK_MAP = {
     "SEND_INDICATIVE_OFFER": _rcb_log_only,
     "SEND_BEST_AND_FINAL": _rcb_log_only,
     "CONFIRM_MATCH": _rcb_confirm_match,
+    # The checklist needs a fix — the CHA is asked again on its thread; nothing is filed.
+    "APPROVE_SB_CHECKLIST": _rcb_log_only,
 }
 
 SOFT_REJECT_ACTIONS: frozenset[str] = frozenset(_REJECT_CALLBACK_MAP)

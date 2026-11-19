@@ -745,7 +745,8 @@ class ApifyExportMarketConnector(ApifyActorConnector):
             "exporterCountry": (request.get("exporter_country") or "IN").upper(),
             "minScore": int(request.get("min_score", 0)),
             "minImportValueUsd": int(request.get("min_import_value_usd", 250_000)),
-            "frequency": "A",
+            "frequency": "M" if _flag("EXPORT_MARKET_MONTHLY", False) else "A",
+            **({"months": 12} if _flag("EXPORT_MARKET_MONTHLY", False) else {}),
         }
         actor_input["enableAi"] = bool(request.get("enable_ai", False))  # rules are enough here
         if markets:
@@ -768,7 +769,18 @@ class ApifyExportMarketConnector(ApifyActorConnector):
         per_kg = _safe_float(r.get("unitValueUsdPerKg"))
         exp_per_kg = _safe_float(r.get("exporterUnitValueUsdPerKg"))
         world_per_kg = _safe_float(r.get("exporterWorldUnitValueUsdPerKg"))
+        monthly = monthly_figures(r.get("monthly"))
+        last12 = last_12_months(monthly)
         return {
+            "monthly": monthly,
+            "last_12m": last12,
+            "data_period": (last12 or {}).get("period") or r.get("dataPeriod") or r.get("latestPeriod"),
+            "origins": [{"country": iso2(o.get("country")) or o.get("country"), "value_usd": _safe_float(o.get("valueUsd")),
+                         "net_weight_mt": _safe_float(o.get("netWeightMt")),
+                         "unit_value_usd_per_mt": _safe_float(o.get("unitValueUsdPerMt")),
+                         "share_pct": _safe_float(o.get("sharePct")),
+                         "india_price_advantage_pct": _safe_float(o.get("indiaPriceAdvantagePct"))}
+                        for o in (r.get("origins") or []) if isinstance(o, dict)][:10],
             "market": iso2(r.get("marketCountryCode")) or r.get("marketCountry"),
             "market_name": r.get("marketCountry"),
             "hs_code": r.get("hsCode"),
@@ -780,7 +792,8 @@ class ApifyExportMarketConnector(ApifyActorConnector):
             "exporter_value_usd": _safe_float(r.get("exporterValueUsd")),
             "exporter_share_pct": _safe_float(r.get("exporterSharePct")),
             "unit_value_usd_per_kg": per_kg,
-            "unit_value_usd_per_mt": round(per_kg * 1000.0, 2) if per_kg else None,
+            # The last 12 months (monthly mode, A.26) beat the annual figure, which is often two years old.
+            "unit_value_usd_per_mt": (last12 or {}).get("unit_value_usd_per_mt") or (round(per_kg * 1000.0, 2) if per_kg else None),
             "exporter_unit_value_usd_per_mt": round(exp_per_kg * 1000.0, 2) if exp_per_kg else None,
             "exporter_world_unit_value_usd_per_mt": round(world_per_kg * 1000.0, 2) if world_per_kg else None,
             "top_suppliers": list(r.get("topSuppliers") or [])[:5],
@@ -791,6 +804,29 @@ class ApifyExportMarketConnector(ApifyActorConnector):
             "url": r.get("url"),
             "mirror": bool(r.get("mirror")),
         }
+
+
+def monthly_figures(raw: Any) -> list[dict[str, Any]]:
+    """A.26 monthly rows → ``period`` / ``import_value_usd`` / ``net_weight_mt`` / ``unit_value_usd_per_mt``."""
+    out = []
+    for m in raw or []:
+        if isinstance(m, dict) and m.get("period"):
+            out.append({"period": str(m["period"]), "import_value_usd": _safe_float(m.get("importValueUsd")),
+                        "net_weight_mt": _safe_float(m.get("netWeightMt")),
+                        "unit_value_usd_per_mt": _safe_float(m.get("unitValueUsdPerMt"))})
+    return sorted(out, key=lambda m: m["period"])
+
+
+def last_12_months(monthly: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pure: value, tonnes and the weighted unit value of the latest 12 months that carry both."""
+    rows = [m for m in monthly if m.get("import_value_usd") and m.get("net_weight_mt")][-12:]
+    if not rows:
+        return None
+    value = sum(m["import_value_usd"] for m in rows)
+    mt = sum(m["net_weight_mt"] for m in rows)
+    return {"period": f"{rows[0]['period']}..{rows[-1]['period']}", "months": len(rows),
+            "import_value_usd": round(value, 2), "net_weight_mt": round(mt, 2),
+            "unit_value_usd_per_mt": round(value / mt, 2) if mt else None}
 
 
 # ---------------------------------------------------------------------------
@@ -932,9 +968,12 @@ class ApifyContactFinderConnector(ApifyActorConnector):
             p0 = phones[0]
             phone = p0.get("number") or p0.get("phone") if isinstance(p0, dict) else str(p0)
         people = []
-        for p in (r.get("people") or [])[:5]:
+        for p in (r.get("people") or [])[:10]:
             if isinstance(p, dict):
-                people.append({"name": p.get("name"), "title": p.get("title") or p.get("role"), "email": p.get("email")})
+                people.append({k: v for k, v in {
+                    "name": p.get("name"), "title": p.get("title") or p.get("role"), "email": p.get("email"),
+                    "phone": p.get("phone"), "role_group": p.get("roleGroup"), "source_url": p.get("sourceUrl"),
+                }.items() if v is not None or k in ("name", "title", "email")})
         status = r.get("mailboxStatus") or r.get("bestEmailStatus")
         if status in ("valid", "ok"):
             status = "ok"
@@ -964,12 +1003,41 @@ class ApifyContactFinderConnector(ApifyActorConnector):
             "contact_route": r.get("contactRoute"),
             "contact_page_url": r.get("contactPageUrl"),
             "people": people,
+            "linkedin_company_url": r.get("linkedinCompanyUrl"),
+            "product_range": _product_range(r.get("productRange")),
+            "legal_notice": _legal_notice(r.get("legalNotice")),
+            "phones_typed": [{"number": p.get("number"), "type": p.get("type"), "whatsapp": bool(p.get("whatsapp")),
+                              "label": p.get("label")} for p in phones if isinstance(p, dict) and p.get("number")],
+            "mailboxes": {str(e.get("email")).lower(): e.get("mailbox") for e in (r.get("emails") or [])
+                          if isinstance(e, dict) and e.get("email") and e.get("mailbox")},
+            "country_source": r.get("countrySource"),
             "first_line": r.get("generatedText") or "",
             "not_found": bool(r.get("notFound")),
             "not_found_reason": r.get("notFoundReason"),
             "fit_score": _safe_int(r.get("score")),
             "source_path": r.get("sourcePath"),
         }
+
+
+def _product_range(raw: Any) -> dict[str, Any] | None:
+    """A.4: what the company's own site lists — only claims with evidence."""
+    if not isinstance(raw, dict):
+        return None
+    return {"lists_product": raw.get("listsProduct"), "matched_terms": list(raw.get("matchedTerms") or [])[:10],
+            "other_products": list(raw.get("otherProducts") or [])[:10], "private_label": raw.get("privateLabel"),
+            "pack_sizes": list(raw.get("packSizes") or [])[:10], "organic": raw.get("organic"),
+            "certifications_claimed": list(raw.get("certifications") or [])[:10],
+            "evidence_urls": list(raw.get("evidenceUrls") or [])[:5]}
+
+
+def _legal_notice(raw: Any) -> dict[str, Any] | None:
+    """A.19: the legal-notice (Impressum / Mentions legales) facts, None when the page had none."""
+    if not isinstance(raw, dict) or not any(raw.get(k) for k in ("registerNumber", "vatId", "legalName")):
+        return None
+    return {"legal_name": raw.get("legalName"), "legal_form": raw.get("legalForm"),
+            "register_court": raw.get("registerCourt"), "register_number": raw.get("registerNumber"),
+            "vat_id": raw.get("vatId"), "managing_directors": list(raw.get("managingDirectors") or [])[:5],
+            "registered_address": raw.get("registeredAddress"), "source_url": raw.get("sourceUrl")}
 
 
 # Sites that list OTHER companies (directories, marketplaces, associations, news) —
@@ -1342,6 +1410,12 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
             "preferRoles": (["purchasing", "general", "sales"] if role == "buyer"
                             else ["export", "sales", "general"]),
         }
+        if _flag("COMPANY_SEARCH_VERIFY_MAILBOX", False):
+            # One paid e-mail check (todo 23.1): the search checks the mailboxes, so the scan-time
+            # validation skips email-list-qualifier-ai for every address that already has a status.
+            actor_input["verifyMailbox"] = True
+        if request.get("allowed_countries"):
+            actor_input["allowedCountries"] = [c for c in (iso2(x) for x in request["allowed_countries"]) if c]
         rows = await self.run(actor_input, max_items=len(queries) * per_query)
         if not rows and not self.configured:
             return self._empty()
@@ -1370,8 +1444,27 @@ class ApifyCompanySearchConnector(ApifyActorConnector):
                 "summary": r.get("summary"),
             })
             companies.append(c)
+        diagnostics = None
+        if self.configured and self.last_run:
+            diagnostics = search_diagnostics(await self.run_output())
         return {"companies": companies, "total": len(companies), "queries": queries,
-                "actor": self.actor_ref}
+                "diagnostics": diagnostics, "actor": self.actor_ref}
+
+
+def search_diagnostics(output: dict[str, Any] | None) -> list[dict[str, Any]] | None:
+    """A.8: per query — results seen, sites opened, kept, and why the rest were dropped."""
+    if not isinstance(output, dict) or not isinstance(output.get("queries"), list):
+        return None
+    out = []
+    for q in output["queries"]:
+        if not isinstance(q, dict):
+            continue
+        dropped = q.get("dropped") if isinstance(q.get("dropped"), dict) else {}
+        out.append({"query": q.get("query"), "country": q.get("country"), "language": q.get("language"),
+                    "google_domain": q.get("googleDomain"), "results_seen": _safe_int(q.get("resultsSeen")),
+                    "sites_opened": _safe_int(q.get("sitesOpened")), "kept": _safe_int(q.get("kept")),
+                    "dropped": {k: _safe_int(v) or 0 for k, v in dropped.items()}})
+    return out
 
 
 class ApifyCounterpartyCheckConnector(ApifyActorConnector):
@@ -1457,6 +1550,16 @@ class ApifyCounterpartyCheckConnector(ApifyActorConnector):
             "evidence_url": r.get("evidenceUrl"),
             "checked_at": r.get("checkedAt") or r.get("scrapedAt"),
             "next_step": r.get("recommendedNextStep") or "",
+            "domain_created": r.get("domainCreated"),
+            "domain_age_years": _safe_float(r.get("domainAgeYears")),
+            "site_last_updated": r.get("siteLastUpdated"),
+            "employee_range": r.get("employeeRange"),
+            "adverse_media": [{"title": h.get("title"), "url": h.get("url"), "date": h.get("date"),
+                               "risk_words": list(h.get("riskWords") or []), "score": _safe_int(h.get("nameMatchScore"))}
+                              for h in (r.get("adverseMedia") or [])[:10] if isinstance(h, dict)],
+            "adverse_media_verdict": (str(r.get("adverseMediaVerdict") or "").lower() or None),
+            "review_rating": _safe_float(r.get("reviewRating")),
+            "flags": list(r.get("flags") or []),
             "is_sample": bool(r.get("isSample")),
             "score": _safe_int(r.get("score")),
         }

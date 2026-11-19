@@ -181,6 +181,8 @@ class ApprovalAction(str, Enum):
     SEND_BEST_AND_FINAL = "SEND_BEST_AND_FINAL"
     """Ask every other quoted supplier to match or beat the best quote (best_and_final.py)."""
     CONFIRM_MATCH = "CONFIRM_MATCH"
+    APPROVE_SB_CHECKLIST = "APPROVE_SB_CHECKLIST"
+    """The customs broker's Shipping Bill checklist (cha.py) — APPROVE tells the CHA to file."""
     """Templated first introduction to a buyer the scan identified (the
     outreach funnel, shared/orchestration/outreach.py). Soft REJECT skips
     that buyer."""

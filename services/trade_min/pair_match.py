@@ -395,6 +395,17 @@ def _buyer_price(b: BuyerSignal, benchmark: float | None) -> tuple[float | None,
     return None, None
 
 
+def range_fit(product_range: dict | None) -> tuple[float, str] | None:
+    """Pure: the product-fit score from a site's product range (A.4) — None when the site said nothing."""
+    if not isinstance(product_range, dict) or product_range.get("lists_product") is None:
+        return None
+    if product_range["lists_product"]:
+        terms = ", ".join(product_range.get("matched_terms") or [])[:80]
+        return 100.0, f"its own site lists the product{' (' + terms + ')' if terms else ''}"
+    others = ", ".join(product_range.get("other_products") or [])[:80]
+    return 30.0, f"its own site lists other products{' (' + others + ')' if others else ''}, not this one"
+
+
 def score_pair(
     b: BuyerSignal,
     buyer_index: int,
@@ -422,6 +433,16 @@ def score_pair(
     # Data-quality flags (quality.py).
     if "role_suspect" in getattr(b, "flags", []):
         blockers.append("Buyer looks like an Indian exporter, not an importer in the market")
+    # What each side's own site lists (contact finder A.4) replaces the implied fit with evidence.
+    for side, who in ((b, "buyer"), (s, "supplier")):
+        verdict = range_fit(getattr(side, "product_range", None))
+        if verdict is None:
+            continue
+        score, why = verdict
+        if who == "buyer" or score < (f["product_fit"] or 0):
+            f["product_fit"], reasons["product_fit"] = score, f"{who.title()}: {why}"
+        if score <= 30.0:
+            improve.append(f"Confirm the {who} deals in this product (its site lists other products)")
     if "product_mismatch" in getattr(s, "flags", []) and (f["product_fit"] or 0) > 30.0:
         f["product_fit"] = 30.0
         reasons["product_fit"] = "Supplier's own site names another product, not this one"

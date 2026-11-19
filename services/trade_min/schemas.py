@@ -136,6 +136,16 @@ class CounterpartyValidation(BaseModel):
     """EU VIES answer for ``vat_number`` (None = not checked)."""
     company_age_years: int | None = None
     """From the Indian CIN (year of incorporation) when known."""
+    domain_age_years: float | None = None
+    """Age of the company's web domain (RDAP, counterparty-check A.6)."""
+    site_stale: bool | None = None
+    """Nothing on the site newer than two years (A.6)."""
+    adverse_media: str | None = None
+    """``none`` / ``possible`` / ``likely`` — fraud / scam / default stories (A.7); a hit sends the
+    check to the screening review queue, never to ``failed`` on its own."""
+    adverse_hits: list[dict] = Field(default_factory=list)
+    register_ref: str | None = None
+    """Commercial register court + number from the site's legal notice (A.19)."""
     existence: list[str] = Field(default_factory=list)
     """Evidence the company exists beyond its website, for the badge: LEI, VIES, CIN, Udyam."""
     checked_at: datetime | None = None
@@ -192,6 +202,11 @@ class BuyerSignal(BaseModel):
     legal_name: str | None = None
     registration_number: str | None = None
     people: list[dict[str, Any]] = Field(default_factory=list)
+    product_range: dict[str, Any] | None = None
+    """What the company's own site lists (contact finder A.4): lists_product, matched terms, other products."""
+    legal_notice: dict[str, Any] | None = None
+    """Legal-notice page facts (A.19): register court + number, VAT id, managing directors."""
+    linkedin_company_url: str | None = None
     """Contact persons the contact finder read from the site (name, role, e-mail)."""
 
 
@@ -271,6 +286,11 @@ class SellerCandidate(BaseModel):
     incorporation_year: int | None = None
     """Year of incorporation encoded in the CIN."""
     people: list[dict[str, Any]] = Field(default_factory=list)
+    product_range: dict[str, Any] | None = None
+    """What the company's own site lists (contact finder A.4): lists_product, matched terms, other products."""
+    legal_notice: dict[str, Any] | None = None
+    """Legal-notice page facts (A.19): register court + number, VAT id, managing directors."""
+    linkedin_company_url: str | None = None
 
 
 CounterpartyRole = Literal["buyer", "supplier"]
@@ -418,6 +438,16 @@ class CounterpartyRecord(BaseModel):
     volume_source: str | None = None
     order_size_band: str | None = None
     """``small`` / ``medium`` / ``large`` estimated from company signals — never an offer quantity."""
+    stated_quantity_mt: float | None = None
+    """Buyers: a quantity the buyer itself stated in public demand (tender, buy request, enquiry)."""
+    stated_quantity_source: str | None = None
+    stated_at: str | None = None
+    product_range: dict[str, Any] | None = None
+    """What the company's own site lists (A.4): listsProduct, matched terms, other products, pack sizes,
+    certifications claimed, evidence URLs."""
+    legal_notice: dict[str, Any] | None = None
+    """The site's legal-notice page (A.19): legal name, register court + number, VAT id, directors."""
+    linkedin_company_url: str | None = None
     documents: list[dict[str, Any]] = Field(default_factory=list)
     """Suppliers: onboarding papers (GST certificate, cancelled cheque, FSSAI …) — supplier_onboarding.py."""
     bank_verified_at: str | None = None
@@ -574,6 +604,8 @@ class ScanReport(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     corridors: list[ScanCorridorResult] = Field(default_factory=list)
+    search_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    """Per company-search query (A.8): results seen, sites opened, kept, dropped and why."""
     opportunities: int = 0
     dropped: int = 0
     errors: int = 0

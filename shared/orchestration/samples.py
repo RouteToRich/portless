@@ -134,3 +134,42 @@ async def record_verdict(deal_id: str, sample_id: str, *, verdict: str, note: st
     extra = {"approved_sample_ref": sample_id} if verdict == "approved" else {}
     await _save(deal_id, samples, **extra)
     return row
+
+
+async def poll_couriers(deals: list[Any] | None = None) -> dict[str, Any]:
+    """Shipped samples tracked by their AWB (A.38 courier mode): a delivered parcel is recorded
+    (``courier_status``, ``delivered_at``, ``signed_by``) and the sample waits for the buyer's verdict.
+    Nothing runs while the actor is not built. Never raises."""
+    out: dict[str, Any] = {"polled": 0, "delivered": []}
+    try:
+        if deals is None:
+            from services.deals.repository import get_repository  # type: ignore[import]
+            deals = await get_repository().list_active(limit=5000)
+        parcels = [(d.deal_id, s) for d in deals for s in (getattr(d, "samples", None) or [])
+                   if s.get("status") == "shipped" and s.get("awb") and not s.get("delivered_at")]
+        if not parcels:
+            return out
+        from shared.connectors.registry import get_connector
+        res = await get_connector("apify_courier_tracking").quote(
+            {"parcels": [{"awb": s["awb"], "courier": s.get("courier")} for _, s in parcels]})
+        if res.get("stub"):
+            return {**out, "stub": True}
+        by_awb = {p["awb"]: p for p in res.get("parcels", [])}
+        out["polled"] = len(by_awb)
+        for deal_id, s in parcels:
+            p = by_awb.get(s["awb"])
+            if p is None:
+                continue
+            deal = await _deal(deal_id)
+            rows = [dict(x) for x in (getattr(deal, "samples", None) or [])]
+            row = _find(rows, s["sample_id"])
+            row.update(courier_status=p["status"], courier_last_scan=p.get("last_scan"))
+            if p["delivered"]:
+                row.update(delivered_at=p.get("delivered_at") or datetime.now(timezone.utc).isoformat(),
+                           signed_by=p.get("signed_by"))
+                out["delivered"].append(s["sample_id"])
+            await _save(deal_id, rows)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Samples: courier poll failed: %s", exc)
+        out["error"] = str(exc)[:200]
+    return out

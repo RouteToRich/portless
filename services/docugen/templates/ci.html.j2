@@ -8,6 +8,8 @@
   {{ m.fact("Proforma Invoice", pi_id, mono=True) }}
   {{ m.fact("Delivery terms", incoterm_named(incoterm, port_of_destination)) }}
   {{ m.fact("Country of origin", "India") }}
+  {% if cbm %}{{ m.fact("Packages / volume", ((packages ~ " · ") if packages else "") ~ cbm ~ " CBM" ~ ((" · " ~ (gross_weight_mt | qty) ~ " MT gross") if gross_weight_mt else "")) }}{% endif %}
+  {% if insurance_certificate %}{{ m.fact("Insurance certificate", insurance_certificate, mono=True) }}{% endif %}
 {% endblock %}
 {% block content %}
 <h2>Parties</h2>

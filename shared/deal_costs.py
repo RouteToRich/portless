@@ -31,7 +31,7 @@ _resolved = False
 _tasks: set[asyncio.Task] = set()
 
 FIELDS = ("llm_calls", "llm_tokens", "llm_usd", "apify_runs", "apify_usd", "decisions", "decision_wait_hours",
-          "samples", "samples_usd")
+          "samples", "samples_usd", "insurance_recovered_usd")
 
 
 def current() -> str | None:

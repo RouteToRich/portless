@@ -2,7 +2,8 @@
 
 India refunds part of the taxes embedded in exported goods: RoDTEP (DGFT, Appendix 4R,
 a % of FOB with a cap per unit) and the all-industry duty drawback (CBIC schedule, a % of
-FOB). For a merchant exporter they are often 1–3 % of FOB — enough to move a deal over
+FOB). Apparel (chapters 61, 62) and made-ups (63) earn **RoSCTL** (Ministry of Textiles schedule, %
+of FOB with a cap) instead of RoDTEP — never both on the same item. For a merchant exporter they are often 1–3 % of FOB — enough to move a deal over
 the margin floor — but eligibility depends on the product, the exporter and how the
 goods are procured, so a rate counts as income only once staff have confirmed it
 (``eligible_confirmed``, with who confirmed it). Rates are entered from the official
@@ -15,7 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,9 @@ class ExportIncentive(BaseModel):
     """RoDTEP cap per unit, converted to USD per MT (Appendix 4R caps are per kg / unit)."""
     drawback_pct: float = Field(default=0.0, ge=0.0, le=20.0)
     drawback_cap_usd_per_mt: float | None = Field(default=None, ge=0.0)
+    rosctl_pct: float = Field(default=0.0, ge=0.0, le=20.0)
+    """RoSCTL — apparel / made-ups (HS 61, 62, 63) instead of RoDTEP."""
+    rosctl_cap_usd_per_mt: float | None = Field(default=None, ge=0.0)
     eligible_confirmed: bool = False
     """Only a confirmed entry is counted as income in the profit."""
     confirmed_by: str | None = None
@@ -38,6 +42,30 @@ class ExportIncentive(BaseModel):
     """Where the rate comes from: e.g. "DGFT Appendix 4R, notification 12/2026"."""
     note: str | None = None
     updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _one_tax_refund(self) -> "ExportIncentive":
+        if self.rodtep_pct and self.rosctl_pct:
+            raise ValueError("RoDTEP and RoSCTL are never claimed on the same item — set one")
+        hs = "".join(ch for ch in self.hs_code if ch.isdigit())
+        if self.rosctl_pct and hs[:2] not in ROSCTL_CHAPTERS:
+            raise ValueError("RoSCTL covers apparel and made-ups only (HS chapters 61, 62, 63)")
+        return self
+
+
+ROSCTL_CHAPTERS = ("61", "62", "63")
+
+
+def schemes(entry: ExportIncentive | None) -> list[str]:
+    """The schemes the Shipping Bill must declare for this entry (``rodtep`` / ``rosctl`` / ``drawback``)."""
+    if entry is None:
+        return []
+    return [k for k, pct in (("rodtep", entry.rodtep_pct), ("rosctl", entry.rosctl_pct),
+                             ("drawback", entry.drawback_pct)) if pct]
+
+
+def total_pct(entry: ExportIncentive | None) -> float:
+    return float(entry.rodtep_pct + entry.rosctl_pct + entry.drawback_pct) if entry else 0.0
 
 
 def reset_for_tests() -> None:
@@ -108,12 +136,17 @@ def income_per_mt(entry: ExportIncentive | None, fob_usd_per_mt: float | None) -
     drawback = fob_usd_per_mt * entry.drawback_pct / 100.0
     if entry.drawback_cap_usd_per_mt is not None:
         drawback = min(drawback, entry.drawback_cap_usd_per_mt)
-    total = round(rodtep + drawback, 2)
+    rosctl = fob_usd_per_mt * entry.rosctl_pct / 100.0
+    if entry.rosctl_cap_usd_per_mt is not None:
+        rosctl = min(rosctl, entry.rosctl_cap_usd_per_mt)
+    total = round(rodtep + rosctl + drawback, 2)
     if total <= 0:
         return None, None
     parts = []
     if rodtep:
         parts.append(f"RoDTEP {entry.rodtep_pct:g}%")
+    if rosctl:
+        parts.append(f"RoSCTL {entry.rosctl_pct:g}%")
     if drawback:
         parts.append(f"drawback {entry.drawback_pct:g}%")
     return total, f"{' + '.join(parts)} of FOB (HS {entry.hs_code}; {entry.source or 'official schedule'})"

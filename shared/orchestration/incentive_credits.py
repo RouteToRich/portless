@@ -24,7 +24,7 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("rodtep", "drawback")
+KINDS = ("rodtep", "rosctl", "drawback")
 _memory: list[dict[str, Any]] = []
 
 
@@ -127,7 +127,7 @@ async def check(deal_id: str) -> dict[str, Any]:
     fob = await _fob_value(deal)
     pct = 0.0
     if entry is not None and entry.eligible_confirmed:
-        pct = float(entry.rodtep_pct or 0) + float(entry.drawback_pct or 0)
+        pct = incentives.total_pct(entry)
     counted = round(fob * pct / 100.0, 2) if pct else None
     rows = await recorded(deal_id)
     credited = round(sum(r["amount_usd"] for r in rows), 2)

@@ -122,6 +122,150 @@ async def hs_policy_due(user: AuthUser = Depends(require_portless)) -> dict:
             "max_age_days": compliance.hs_policy_max_age_days()}
 
 
+# ---------------------------------------------------------------------------
+# Trade operations data (todo 2026-11-19 batch): CHA list, regulation items, destination
+# requirements, refusals, demand leads, Indian missions
+# ---------------------------------------------------------------------------
+
+class ChaAgentBody(BaseModel):
+    agent_id: str | None = None
+    firm: str
+    licence_no: str
+    licence_valid_until: str | None = None
+    ports: list[str] = Field(default_factory=list)
+    email: str
+    phone: str | None = None
+    charges_per_shipment_usd: float | None = None
+    charges_per_container_usd: float | None = None
+
+
+class ChaKycBody(BaseModel):
+    sent_on: str
+    authorisation_ref: str
+
+
+class RegulatoryItemBody(BaseModel):
+    title: str
+    url: str | None = None
+    number: str | None = None
+    date: str | None = None
+    hs_codes: list[str] = Field(default_factory=list)
+    products: list[str] = Field(default_factory=list)
+
+
+class MissionRequestBody(BaseModel):
+    market: str
+    hs_code: str
+    product: str | None = None
+    quantity_range: str | None = None
+
+
+class MissionImportBody(BaseModel):
+    rows: list[dict] | None = None
+
+
+@router.get("/cha/agents")
+async def cha_agents(user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cha
+    return {"agents": await cha.agents()}
+
+
+@router.put("/cha/agents")
+async def put_cha_agent(body: ChaAgentBody, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cha
+    try:
+        return await cha.put_agent(body.model_dump(), by=_staff_name(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/cha/agents/{agent_id}/kyc")
+async def cha_kyc(agent_id: str, body: ChaKycBody, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cha
+    try:
+        await cha.record_kyc(agent_id, sent_on=body.sent_on, authorisation_ref=body.authorisation_ref, by=_staff_name(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await cha.kyc_status(agent_id)
+
+
+@router.get("/cha/agents/{agent_id}/kyc")
+async def cha_kyc_status(agent_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cha
+    return await cha.kyc_status(agent_id)
+
+
+@router.get("/compliance/regulatory-items")
+async def regulatory_items(hs: str | None = None, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import regulatory_watch
+    return {"items": await regulatory_watch.items(hs)}
+
+
+@router.post("/compliance/regulatory-items")
+async def record_regulatory_item(body: RegulatoryItemBody, user: AuthUser = Depends(require_portless)) -> dict:
+    """Record a DGFT / CBIC notification by hand: the same effect as one the watcher found."""
+    _officer(user, "record a regulatory notification")
+    from shared.orchestration import regulatory_watch
+    try:
+        row = await regulatory_watch.record_manual(title=body.title, url=body.url, number=body.number, date=body.date,
+                                                   hs_codes=body.hs_codes, products=body.products, by=_staff_name(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    row = dict(row)
+    row["item_id"] = row.pop("_id", None)
+    return row
+
+
+@router.get("/compliance/destination-requirements")
+async def destination_requirements(hs: str, market: str, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import destination_rules, refusals
+    return {"requirements": destination_rules.requirements(hs, market),
+            "preferential": destination_rules.preferential(hs, market),
+            "test_for": refusals.tests_for(hs, market)}
+
+
+@router.get("/leads/recent")
+async def demand_leads_recent(limit: int = Query(100, ge=1, le=1000), user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import demand_leads
+    return {"leads": await demand_leads.recent(limit)}
+
+
+@router.get("/leads/stats")
+async def demand_leads_stats(user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import gov_leads
+    return await gov_leads.stats()
+
+
+@router.get("/missions/requests")
+async def mission_requests(user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import gov_leads
+    return {"requests": await gov_leads.all_requests()}
+
+
+@router.post("/missions/requests")
+async def mission_request(body: MissionRequestBody, user: AuthUser = Depends(require_portless)) -> dict:
+    """E-mail the commercial wing of India's mission in a market for a list of importers."""
+    from shared.orchestration import gov_leads
+    try:
+        return await gov_leads.request_list(body.market, body.hs_code, product=body.product,
+                                            quantity_range=body.quantity_range, by=_staff_name(user))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/missions/requests/{request_id}/import")
+async def mission_import(request_id: str, body: MissionImportBody, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import gov_leads
+    try:
+        return await gov_leads.import_list(request_id, rows=body.rows, by=_staff_name(user))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/compliance/countries")
 async def list_countries(user: AuthUser = Depends(require_portless)) -> dict:
     """Every country profile (seed + stored) with its tier."""
@@ -1596,3 +1740,164 @@ async def incentive_credit_check(deal_id: str, user: AuthUser = Depends(require_
     await _org_deal(deal_id, user)
     from shared.orchestration import incentive_credits
     return await incentive_credits.check(deal_id)
+
+
+# ---------------------------------------------------------------------------
+# CHA hand-off, cargo insurance, letter of intent (todo 2026-11-19 batch)
+# ---------------------------------------------------------------------------
+
+class ShippingBillBody(BaseModel):
+    number: str
+    date: str | None = None
+    port_code: str | None = None
+    leo_date: str | None = None
+    declared: list[str] = Field(default_factory=list)
+
+
+class ChaInvoiceBody(BaseModel):
+    amount_usd: float
+    items: dict[str, float] | None = None
+
+
+class InsuranceDeclarationBody(BaseModel):
+    certificate_no: str
+    insurer: str | None = None
+    sum_insured_usd: float | None = None
+
+
+class InsuranceClaimBody(BaseModel):
+    reason: str
+    amount_usd: float
+    delivered_on: str | None = None
+
+
+class InsuranceClaimUpdate(BaseModel):
+    status: str
+    survey_ref: str | None = None
+    recovered_usd: float | None = None
+    note: str | None = None
+
+
+class LoiBody(BaseModel):
+    text: str | None = None
+    """The buyer's LOI text (read like an e-mail); or the facts below."""
+    quantity_mt: float | None = None
+    delivery_window: str | None = None
+    port: str | None = None
+    spec: str | None = None
+    reference: str | None = None
+    candidate_id: str | None = None
+
+
+@router.get("/{deal_id}/cha")
+async def deal_cha(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    deal = await _org_deal(deal_id, user)
+    return deal.cha or {}
+
+
+@router.post("/{deal_id}/cha/pack")
+async def deal_cha_pack(deal_id: str, port: str | None = None, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cha
+    await _org_deal(deal_id, user)
+    try:
+        return await cha.send_pack(deal_id, by=_staff_name(user), port=port)
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{deal_id}/cha/shipping-bill")
+async def deal_shipping_bill(deal_id: str, body: ShippingBillBody, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cha
+    await _org_deal(deal_id, user)
+    try:
+        row = await cha.record_shipping_bill(deal_id, body.model_dump(), by=_staff_name(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "cha.shipping_bill", deal_id, number=row["number"])
+    return row
+
+
+@router.post("/{deal_id}/cha/invoice")
+async def deal_cha_invoice(deal_id: str, body: ChaInvoiceBody, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cha
+    await _org_deal(deal_id, user)
+    try:
+        return await cha.record_invoice(deal_id, amount_usd=body.amount_usd, items=body.items, by=_staff_name(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/{deal_id}/insurance")
+async def deal_insurance(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cargo_insurance
+    deal = await _org_deal(deal_id, user)
+    return {**(deal.insurance or {}), "overdue_claims": cargo_insurance.overdue(deal)}
+
+
+@router.post("/{deal_id}/insurance/declaration")
+async def insurance_declaration(deal_id: str, body: InsuranceDeclarationBody,
+                                user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cargo_insurance
+    await _org_deal(deal_id, user)
+    try:
+        return await cargo_insurance.record_declaration(deal_id, certificate_no=body.certificate_no, insurer=body.insurer,
+                                                        sum_insured_usd=body.sum_insured_usd, by=_staff_name(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/{deal_id}/insurance/claims")
+async def insurance_claim(deal_id: str, body: InsuranceClaimBody, user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cargo_insurance
+    await _org_deal(deal_id, user)
+    try:
+        return await cargo_insurance.open_claim(deal_id, reason=body.reason, amount_usd=body.amount_usd,
+                                                delivered_on=body.delivered_on, by=_staff_name(user))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/{deal_id}/insurance/claims/{claim_id}")
+async def insurance_claim_update(deal_id: str, claim_id: str, body: InsuranceClaimUpdate,
+                                 user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import cargo_insurance
+    await _org_deal(deal_id, user)
+    try:
+        row = await cargo_insurance.update_claim(deal_id, claim_id, status=body.status, by=_staff_name(user),
+                                                 survey_ref=body.survey_ref, recovered_usd=body.recovered_usd, note=body.note)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "insurance.claim", deal_id, claim_id=claim_id, status=row["status"])
+    return row
+
+
+@router.post("/{deal_id}/loi")
+async def record_loi(deal_id: str, body: LoiBody, user: AuthUser = Depends(require_portless)) -> dict:
+    """Record a buyer's letter of intent (pasted text or its facts)."""
+    from shared.orchestration import loi
+    await _org_deal(deal_id, user)
+    if body.text and loi.broker_chain_pattern(body.text):
+        raise HTTPException(status_code=422, detail="the text carries the LOI / ICPO / FCO broker-chain pattern — "
+                                                    "confirm the buyer directly before recording it")
+    facts = loi.parse(body.text) if body.text else {"is_loi": True}
+    if facts is None:
+        raise HTTPException(status_code=422, detail="the text is not a letter of intent")
+    facts.update({k: v for k, v in body.model_dump(exclude={"text", "candidate_id"}).items() if v is not None})
+    return await loi.record(deal_id, facts, source="staff", by=_staff_name(user), candidate_id=body.candidate_id)
+
+
+@router.get("/{deal_id}/loi/template")
+async def loi_template(deal_id: str, incoterm: str = "CIF", place: str = "", delivery_window: str = "within 45 days",
+                       user: AuthUser = Depends(require_portless)) -> dict:
+    from shared.orchestration import loi
+    from shared.product_label import product_label
+    deal = await _org_deal(deal_id, user)
+    price = deal.buyer_target_price_usd
+    return {"text": loi.template(product=product_label(deal.hs_code or "") or f"HS {deal.hs_code}", spec=None,
+                                 quantity_mt=float(deal.quantity_mt or 0), price_low=round(price * 0.97) if price else None,
+                                 price_high=round(price * 1.03) if price else None, incoterm=incoterm,
+                                 place=place or (deal.market or ""), delivery_window=delivery_window)}

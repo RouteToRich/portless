@@ -493,6 +493,37 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     except Exception as exc:  # noqa: BLE001
         logger.error("DealWatcher: FX reference refresh failed: %s", exc)
 
+    # Data jobs (each off by its own switch, and an actor slot only once that actor is built):
+    # Gulf peg check (monthly), destination requirements (monthly ITP / weekly ePing), import refusals,
+    # PortLess registrations at their source, buy requests / tenders, courier AWBs, mission reminders.
+    data_jobs = (
+        ("fx_peg_check", "shared.fx_rates", "monthly_peg_check"),
+        ("destination_itp", "shared.orchestration.destination_rules", "monthly"),
+        ("destination_eping", "shared.orchestration.destination_rules", "weekly"),
+        ("refusals", "shared.orchestration.refusals", "daily"),
+        ("registration_checks", "shared.orchestration.registration_checks", "monthly"),
+        ("demand_leads", "shared.orchestration.demand_leads", "daily"),
+    )
+    import importlib
+    for label, module, fn in data_jobs:
+        try:
+            res = await getattr(importlib.import_module(module), fn)(now)
+            if res and not res.get("stub"):
+                counts[label] = 1
+        except Exception as exc:  # noqa: BLE001
+            logger.error("DealWatcher: %s failed: %s", label, exc)
+    if os.getenv("DATA_JOBS_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off"):
+        try:
+            from shared.orchestration import gov_leads, samples
+            res = await samples.poll_couriers(deals)
+            if res.get("delivered"):
+                counts["samples_delivered"] = len(res["delivered"])
+            reminded = await gov_leads.reminders(now)
+            if reminded:
+                counts["mission_reminders"] = len(reminded)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("DealWatcher: courier / mission jobs failed: %s", exc)
+
     # Containers at the port of discharge near the end of their free days (demurrage.py).
     try:
         from shared.orchestration import demurrage

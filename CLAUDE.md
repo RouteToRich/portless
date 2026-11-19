@@ -45,7 +45,7 @@ make up    # docker compose up --build
 make down
 
 # Tests
-pytest -q                                 # full suite (5766 pass, 1 skip, ~2 min)
+pytest -q                                 # full suite (5810 pass, 1 skip, ~2 min)
 pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 92.0% line + branch without services/automation; money modules + safety.py + 2026-11-19 modules at 100% (2026-11-19)
 pytest tests/test_health.py -q            # smoke: every service boots + /health 200
 pytest -m smoke -q                        # markers by file (tests/markers.py): smoke · money · unit · integration · slow · regression
@@ -147,6 +147,7 @@ pytest tests/test_cost_meter.py          # platform running costs per day (LLM /
 pytest tests/test_idempotency_audit.py   # concurrent approvals → one decision; webhook ×10 → booked once; double release
 pytest tests/test_apify_usage.py         # Apify run / USD budget in Mongo per day, result cache, tracking pause after source_refused, qualifier "unchecked", VAT/LEI to screening, retired slots
 pytest tests/test_supplier_ops_batch.py  # supplier relays + evidence, onboarding docs + bank check before first payout, container plan, freight per box type / LCL, agreed spec in PI/PO/notes, exact-product export policy, site facts + certificates, Census anchor, CN8, company-led opportunities, price discovery, reorder agent, document check, claim options, outreach A/B, DPDP erase / retention
+pytest tests/test_trade_ops_batch.py     # Gulf pegs, ECGC tier suggestion, cargo insurance per Incoterm + claims, CHA hand-off (APPROVE_SB_CHECKLIST), container survey, LOI + broker-chain hold, RoSCTL, CBM, government portals + missions, demand leads, payment chase, actor slots A.16/A.17/A.29/A.30/A.31/A.33/A.34/A.38 + contact / check normalisers
 pytest tests/test_country_markets.py     # country profiles + tiers (scan / radar / outreach / exposure / money approver), PortLess registrations + expiry, regulatory watch, Incoterms® 2020 pricing (FAS / DPU / D-term costs, DDP held) + wording + ICC clause, samples, buyer import permits, country documents, RoDTEP credits, partial supply, question agent
 pytest tests/test_product_spec_batch.py  # product spec template + facts per company (source / date / precedence, replies, deals, staff), ask what is missing, spec conflicts block a pair, volume line / band / lot, source merge rule, found-by, proposed / supplier markets, people, sourcing agent, scan plan, scorecard, mandi prior, quality rules, freight index + compare, inspection options, env parity
 pytest tests/test_scan_data_batch.py     # CIN age, directory role clean-up + note scrub, reply quantity in containers / bags, HMRC + Comext, registration duplicates, source yield, RFQ widening, harvest calendar, QIMA inspection-day poll
@@ -616,6 +617,9 @@ REGISTRATIONS_REQUIRED (true) / PORTLESS_REGISTRATIONS (kind:number:expiry,…) 
 REGULATORY_WATCH_ENABLED (true) / REGULATORY_WATCH_URLS / REGULATORY_DENIED_LIST_URL   # DGFT / CBIC notices daily (shared/orchestration/regulatory_watch.py)
 TRADE_COST_DTHC_USD_PER_CONTAINER (250) / TRADE_COST_DEST_HAULAGE_USD_PER_MT (12) / TRADE_COST_DEST_UNLOADING_USD_PER_MT (5) / TRADE_COST_LOADING_USD_PER_MT (4)   # D-terms / FAS-FCA in landed_cost
 QUESTION_AGENT_ENABLED (true; off in tests) / INCENTIVE_CREDIT_TOLERANCE_PCT (5) / DEAL_COMPOSITION_ENABLED (false) / COMPOSITION_MAX_BUYERS (3)   # question agent, RoDTEP credits, partial supply
+FX_PEGS_ENABLED (true; off in tests) / FX_PEG_TOLERANCE_PCT (0.5) / CONTAINER_SURVEY_REQUIRED (true; off in tests) / CHA_HANDOFF_ENABLED (true) / CHA_OVERRUN_PCT (20) / INSURED_VALUE_PCT (110) / INSURANCE_INLAND_PCT (0.05) / INSURANCE_CONTINGENCY_PCT (0.1) / INSURANCE_CLAIM_NOTICE_DAYS (7)   # fx_rates pegs, compliance survey, cha.py, cargo_insurance.py
+DATA_JOBS_ENABLED / DESTINATION_RULES_ENABLED / REFUSALS_ENABLED / REGISTRATION_CHECKS_ENABLED / DEMAND_LEADS_ENABLED (true; off in tests) / FDA_REFUSALS_URL / REFUSAL_LOOKBACK_MONTHS (24) / MISSION_REMINDER_DAYS (14)   # watcher data jobs (destination_rules, refusals, registration_checks, demand_leads, gov_leads, samples couriers)
+APIFY_ACTOR_<KEY>_BUILT   # an actor slot specified but not built (shared/connectors/apify_more.py) runs only once set; COMPANY_SEARCH_VERIFY_MAILBOX / EXPORT_MARKET_MONTHLY (false)   # one paid e-mail check (A.22), monthly market data (A.26)
 QC_POLL_MINUTES_INSPECTION_DAY (15) / QC_INSPECTION_DAY_POLL_DAYS_AFTER (2)   # QIMA poll on the inspection day; HARVEST_MONTHS_<COMMODITY> overrides the crop calendar
 ENRICHMENT_ON_DEAL_CREATED   # default true â€” contact finder + sanctions screening at deal.created
 TRADE_MIN_VALIDATION_ENABLED / TRADE_MIN_VALIDATION_TOP_N (5) / TRADE_MIN_VALIDATION_MAX_AGE_DAYS (30)   # scan-time buyer / supplier check (radar "Verified only"); readiness `counterparty_validation` fails in production when off or without APIFY_TOKEN

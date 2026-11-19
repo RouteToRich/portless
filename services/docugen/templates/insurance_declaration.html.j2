@@ -9,6 +9,7 @@
   {{ m.fact("Sum insured", sum_insured | money(currency)) }}
   {{ m.fact("Basis", "110% of the invoice value") }}
   {{ m.fact("Open policy", policy_number, mono=True) }}
+  {% if insurance_certificate %}{{ m.fact("Certificate no.", insurance_certificate, mono=True) }}{% endif %}
 {% endblock %}
 {% block content %}
 <div class="notice">The insurer issues the insurance certificate on this declaration; that certificate is the document the buyer receives.</div>

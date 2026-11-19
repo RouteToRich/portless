@@ -350,6 +350,8 @@ class LoadingRecordRequest(BaseModel):
     inspector_ref: str | None = None
     photos: list[str] = Field(default_factory=list)
     """Links to stuffing / seal photos."""
+    container_surveys: list[dict] = Field(default_factory=list)
+    """Empty-container survey per box: container, status (passed / rejected), defects, photos, surveyor."""
     source: str = "operator"
 
 

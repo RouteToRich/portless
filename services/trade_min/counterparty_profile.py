@@ -278,6 +278,11 @@ async def add_to_prospect(role: str, record_id: str, deal_id: str) -> dict[str, 
         ))
         return {"deal_id": deal_id, "added": "buyer_candidate", "candidate_id": cid,
                 "next": "Use Contact next buyers on the prospect to send the introduction"}
+    try:  # the supplier's certificate numbers checked at their source (registration_checks.py, A.34)
+        from shared.orchestration import registration_checks
+        await registration_checks.check_supplier(rec)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Directory: certificate check for %s skipped: %s", rec.name, exc)
     await deals.upsert_supplier_offer(deal_id, SupplierOffer(
         offer_id=f"OFR-DIR-{cid[:24]}", supplier_id=cid, company_name=rec.name, email=rec.email,
         source=f"directory:{rec.source}", fob_price_usd_per_mt=None,

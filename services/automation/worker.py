@@ -134,7 +134,8 @@ async def _run(args: argparse.Namespace, guard: NetworkGuard) -> int:
                                                              "QC_FACILITY_ADDRESS_REQUIRED",
                                                              "SUPPLIER_BANK_VERIFICATION_REQUIRED",
                                                              "REGISTRATIONS_REQUIRED", "COUNTRY_PROFILE_REQUIRED",
-                                                             "QUESTION_AGENT_ENABLED")}
+                                                             "QUESTION_AGENT_ENABLED", "FX_PEGS_ENABLED",
+                                                             "CONTAINER_SURVEY_REQUIRED")}
             if cases:
                 os.environ["SUPPLIER_CONFIRMATION_REQUIRED"] = "false"
                 os.environ["PO_ACK_REQUIRED"] = "false"
@@ -145,6 +146,8 @@ async def _run(args: argparse.Namespace, guard: NetworkGuard) -> int:
                 os.environ["REGISTRATIONS_REQUIRED"] = "false"
                 os.environ["COUNTRY_PROFILE_REQUIRED"] = "false"
                 os.environ["QUESTION_AGENT_ENABLED"] = "false"
+                os.environ["FX_PEGS_ENABLED"] = "false"
+                os.environ["CONTAINER_SURVEY_REQUIRED"] = "false"
             linked: list[tuple[Any, str]] = []  # (case, journey id): a Gherkin case played by an LLM journey
             for case in cases:
                 journey_id = next((tag.split(":", 1)[1] for tag in case.tags if tag.startswith("@journey:")), None)

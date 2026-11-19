@@ -107,8 +107,10 @@ async def _lcl_option(market: str | None, kind: str, qty: float, m3_per_mt: floa
             "source": source}
 
 
-async def choose(market: str | None, hs_code: str | None, quantity_mt: float) -> dict[str, Any]:
-    """The plan for a lot on a lane, from the lane quotes and the product's stowage factor."""
+async def choose(market: str | None, hs_code: str | None, quantity_mt: float, *, cbm: float | None = None,
+                 gross_kg: float | None = None) -> dict[str, Any]:
+    """The plan for a lot on a lane, from the lane quotes and the product's stowage factor — or, when
+    the packing spec gives the packages' real volume (``cbm``, cbm.py), from that."""
     kind, m3_per_mt = "dry", None
     try:
         from shared import catalogue
@@ -119,6 +121,8 @@ async def choose(market: str | None, hs_code: str | None, quantity_mt: float) ->
     except Exception:  # noqa: BLE001
         pass
     kind = kind if kind in EQUIPMENT else "dry"
+    if cbm and quantity_mt:
+        m3_per_mt = round(float(cbm) / float(quantity_mt), 4)  # measured, not the catalogue estimate
     base20: float | None = None
     rates: dict[str, tuple[float, str]] = {}
     try:
@@ -150,6 +154,9 @@ async def choose(market: str | None, hs_code: str | None, quantity_mt: float) ->
                      "usd_per_mt_if_filled": None, "lcl": lcl})
     elif lcl:
         plan["lcl_alternative"] = lcl
-    plan.update({"kind": kind, "m3_per_mt": m3_per_mt, "market": market,
+    if cbm or gross_kg:
+        from shared.orchestration import cbm as cbm_mod
+        plan["fill_check"] = cbm_mod.fill_check(cbm, gross_kg, plan.get("boxes") or {})
+    plan.update({"kind": kind, "m3_per_mt": m3_per_mt, "cbm_source": "packages" if cbm else "estimate", "market": market,
                  "quoted": sorted(c for c in rates), "estimated": sorted(o["code"] for o in options if o["source"] == "estimate")})
     return plan

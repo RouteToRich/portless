@@ -74,6 +74,8 @@ class BuyerRequirement(BaseModel):
     """Free text as the buyer wrote it ("March", "within 6 weeks")."""
     delivery_by_days: int | None = None
     """Days from now the goods must arrive, when the window could be read as a number."""
+    commitment: str | None = None
+    """``loi`` when the buyer sent a letter of intent (loi.py) — a stronger signal than an interested reply."""
     incoterm: str | None = None
     destination_port: str | None = None
     target_price_usd_per_mt: float | None = None
@@ -287,6 +289,14 @@ class DealRecord(BaseModel):
     buyer_permits: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """Import permits the buyer holds (name → number, valid until, who recorded it); the PI waits for
     the ones the catalogue marks ``buyer:`` (compliance ``buyer_import_permit_missing``)."""
+    insurance: dict[str, Any] = Field(default_factory=dict)
+    """Cargo insurance (cargo_insurance.py): the per-shipment ``declaration`` (certificate number)
+    and ``claims`` (opened → notified → surveyed → filed → settled / rejected)."""
+    cha: dict[str, Any] = Field(default_factory=dict)
+    """Customs broker hand-off (cha.py): agent, pack sent, checklist approval, Shipping Bill record,
+    incentive declarations, the CHA's invoice."""
+    loi: dict[str, Any] | None = None
+    """The buyer's letter of intent (loi.py): reference, quantity, window, port, spec, source."""
     radar_estimate: dict[str, Any] | None = None
     """The Opportunity Radar's numbers when the prospect was started (trade_min
     profit block: buyer / supplier price and basis, lot, margin, chance of

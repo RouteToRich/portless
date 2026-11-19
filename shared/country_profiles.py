@@ -60,6 +60,10 @@ class CountryProfile(BaseModel):
     documents: list[str] = Field(default_factory=list)
     """What the country asks for beyond the standard pack (CoO form, attestation, consular invoice …)."""
     email_rule: EmailRule = "opt_out"
+    commercial_wing_email: str | None = None
+    """Commercial wing of India's embassy / consulate there — asked for importer lists (gov_leads.py)."""
+    tier_suggestion: str | None = None
+    """Tier the ECGC rating suggests (``suggest_tier``) when it differs from ``tier`` — staff confirm."""
     language: str | None = None
     timezone: str | None = None
     sources: dict[str, str] = Field(default_factory=dict)
@@ -202,7 +206,64 @@ async def put(iso2: str, fields: dict[str, Any], *, by: str, source: str | None 
         pass
     changed = before is not None and before.tier != profile.tier
     rechecked = await tier_changed(cc, before.tier if before else None, profile.tier) if changed else []
+    ecgc_moved = (before is not None and "ecgc_rating" in fields
+                  and (before.ecgc_rating or "") != (profile.ecgc_rating or ""))
+    if ecgc_moved or ("ecgc_rating" in fields and before is None):
+        suggestion = suggest_tier(profile.ecgc_rating)
+        update = {"tier_suggestion": suggestion if suggestion and suggestion != profile.tier else None}
+        _stored[cc] = {**_stored[cc], **{k: v for k, v in update.items() if v}} if update["tier_suggestion"] else {
+            k: v for k, v in _stored[cc].items() if k != "tier_suggestion"}
+        if col is not None:
+            try:
+                await col.replace_one({"iso2": cc}, {**_stored[cc]}, upsert=True)
+            except Exception:  # noqa: BLE001
+                pass
+        if ecgc_moved:
+            rechecked += await ecgc_changed(cc, before.ecgc_rating, profile.ecgc_rating, suggestion, profile.tier)
+        profile = get(cc) or profile
     return {"profile": profile.model_dump(mode="json"), "tier_changed": changed, "deals_rechecked": rechecked}
+
+
+# ECGC country risk categories (A1 lowest risk … D highest) → the tier they allow at most.
+ECGC_TIER: dict[str, str] = {"A1": "preferred", "A2": "preferred", "B1": "standard", "B2": "standard",
+                             "C1": "review", "C2": "review", "D": "blocked"}
+
+
+def suggest_tier(rating: str | None) -> str | None:
+    """Pure: the tier an ECGC rating suggests (A1 / A2 preferred allowed, B standard, C review, D blocked)."""
+    return ECGC_TIER.get(str(rating or "").strip().upper())
+
+
+async def ecgc_changed(iso2: str, old: str | None, new: str | None, suggestion: str | None, tier: str) -> list[str]:
+    """ECGC re-rated a country: ``COUNTRY:<cc>:ecgc_changed`` on its open deals and a Telegram page.
+    The tier itself changes only when staff confirm it (the audited ``put``)."""
+    out: list[str] = []
+    try:
+        from services.deals.repository import get_repository  # type: ignore[import]
+        deals = await get_repository().list_active(limit=5000)
+    except Exception:  # noqa: BLE001
+        deals = []
+    from shared.orchestration.continuations import _publish_exception
+    note = f"ECGC rating of {iso2} moved {old or 'none'} → {new or 'none'}"
+    if suggestion and suggestion != tier:
+        note += f"; it suggests tier {suggestion} (now {tier}) — confirm on the country profile"
+    for d in deals:
+        status = str(getattr(getattr(d, "status", ""), "value", getattr(d, "status", "")))
+        if status in ("PAID", "CANCELLED", "REFUNDED", "NEGOTIATION_FAILED"):
+            continue
+        countries = {str(getattr(d, "market", "") or "").upper()} | {
+            str(getattr(p, "country", "") or "").upper() for p in getattr(d, "parties", None) or []}
+        if iso2 in countries:
+            await _publish_exception(d.deal_id, f"COUNTRY:{iso2}:ecgc_changed", note,
+                                     {"category": "UNKNOWN", "country": iso2, "old_rating": old, "new_rating": new,
+                                      "tier_suggestion": suggestion, "action_required": "review_country_change"})
+            out.append(d.deal_id)
+    try:
+        from shared import telegram
+        await telegram.send_message(f"{note}; {len(out)} open deal(s) flagged")
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 async def tier_changed(iso2: str, old: str | None, new: str) -> list[str]:

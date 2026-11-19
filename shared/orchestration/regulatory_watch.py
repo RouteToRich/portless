@@ -14,6 +14,12 @@ name or a synonym) or one of its HS codes (4 / 6 / 8 digits) is a **hit**:
 The DGFT denied-entity list page (``REGULATORY_DENIED_LIST_URL``) is read too: a link dated after
 the loaded list (``denied_list.meta``) warns that a newer list is published.
 
+**With actor A.29** (``trade-regulation-watch-ai``, once ``APIFY_ACTOR_TRADE_REGULATION_WATCH_BUILT``)
+the daily run also takes its rows — number, date, type, PDF text and the HS codes / products found in
+the text, not only the title — with ``since`` = the last run; each is matched and acted on the same
+way. Until then staff record a notification by hand (``POST /deals/compliance/regulatory-items``) with
+the same effect; ``GET /deals/compliance/regulatory-items?hs=`` lists what was seen.
+
 Pages are parsed for links only (``<a href>…</a>``); a page that cannot be read is reported, never
 fatal. Field names and page layouts change — the watcher reports what it read, not more.
 """
@@ -223,6 +229,87 @@ async def _denied_list_newer(client: Any) -> dict[str, Any] | None:
     return {"published": newest, "loaded": loaded, "newer": newer}
 
 
+async def _ingest(item: dict[str, Any], lines: list[Any], now: datetime) -> dict[str, Any] | None:
+    """Store one structured item (actor row or staff entry) and act on a hit; None when seen before."""
+    item_id = item.get("hash") or hashlib.sha1(f"{item.get('source')}|{item.get('number')}|{item.get('title')}".encode()).hexdigest()
+    if await _known(item_id):
+        return None
+    text = " ".join([item.get("title") or "", " ".join(item.get("hs_codes") or []), " ".join(item.get("products") or []),
+                     (item.get("text") or "")[:2000]])
+    m = match(text, lines)
+    row = {"_id": item_id, "source": item.get("source") or "actor", "title": item.get("title") or "",
+           "url": item.get("url") or "", "number": item.get("number"), "date": item.get("date"),
+           "type": item.get("type"), "effective_from": item.get("effective_from"), **m,
+           "seen_at": now.isoformat(), "hit": bool(m["hs_codes"]), "entered_by": item.get("entered_by")}
+    await _store(row)
+    if row["hit"]:
+        row["deals_held"] = await _act_on_hit(row)
+        await _store(row)
+    return row
+
+
+async def run_actor(*, now: datetime | None = None) -> dict[str, Any]:
+    """A.29 rows since the last run (nothing while the actor is not built)."""
+    now = now or datetime.now(timezone.utc)
+    from shared import catalogue
+    from shared.connectors.registry import get_connector
+    out: dict[str, Any] = {"new": 0, "hits": []}
+    try:
+        res = await get_connector("apify_regulation_watch").quote({"since": _last_run.get("actor_since")})
+    except Exception as exc:  # noqa: BLE001
+        return {**out, "error": str(exc)[:200]}
+    if res.get("stub"):
+        return {**out, "stub": True}
+    lines = catalogue.active_lines()
+    for item in res.get("items", []):
+        row = await _ingest(item, lines, now)
+        if row:
+            out["new"] += 1
+            if row["hit"]:
+                out["hits"].append({k: row[k] for k in ("source", "title", "url", "hs_codes", "products")})
+    _last_run["actor_since"] = now.date().isoformat()
+    return out
+
+
+async def record_manual(*, title: str, url: str | None, number: str | None, date: str | None,
+                        hs_codes: list[str] | None, products: list[str] | None, by: str) -> dict[str, Any]:
+    """Staff record a DGFT / CBIC notification by hand — the same effect as one the watcher found."""
+    if not (title or "").strip():
+        raise ValueError("the notification title is required")
+    from shared import catalogue
+    item = {"source": "staff", "title": title.strip(), "url": url or "", "number": number, "date": date,
+            "hs_codes": ["".join(ch for ch in h if ch.isdigit()) for h in hs_codes or []], "products": products or [],
+            "entered_by": by, "hash": hashlib.sha1(f"staff|{number}|{title}".encode()).hexdigest()}
+    row = await _ingest(item, catalogue.active_lines(), datetime.now(timezone.utc))
+    if row is None:
+        raise ValueError("this notification is already recorded")
+    try:
+        from shared import audit_log
+        await audit_log.record("regulatory_item_recorded", by, row["_id"], {"title": row["title"], "hs_codes": row["hs_codes"]})
+    except Exception:  # noqa: BLE001
+        pass
+    return row
+
+
+async def items(hs: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    rows = list(_seen.values())
+    col = _collection()
+    if col is not None:
+        try:
+            rows = [d async for d in col.find({}).sort("seen_at", -1).limit(2000)]
+        except Exception:  # noqa: BLE001
+            pass
+    code = "".join(ch for ch in str(hs or "") if ch.isdigit())
+    if code:
+        rows = [r for r in rows if any(c.startswith(code[:4]) or code.startswith(c[:4]) for c in r.get("hs_codes") or [])]
+    out = []
+    for r in sorted(rows, key=lambda r: r.get("seen_at", ""), reverse=True)[:limit]:
+        r = dict(r)
+        r["item_id"] = r.pop("_id", None)
+        out.append(r)
+    return out
+
+
 _last_run: dict[str, str] = {}
 
 
@@ -235,7 +322,11 @@ async def daily(now: datetime | None = None, *, transport: Any = None) -> dict[s
     if _last_run.get("day") == day:
         return None
     _last_run["day"] = day
-    return await run(transport=transport, now=now)
+    out = await run(transport=transport, now=now)
+    actor = await run_actor(now=now)
+    out["actor"] = actor
+    out["hits"] = out.get("hits", []) + actor.get("hits", [])
+    return out
 
 
 async def recent_hits(now: datetime | None = None, days: int = 7) -> list[dict[str, Any]]:

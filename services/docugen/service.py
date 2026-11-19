@@ -257,17 +257,38 @@ def _needs_phyto(hs_code: str) -> bool:
     return digits[:2].isdigit() and 6 <= int(digits[:2]) <= 14
 
 
+def _cargo(f: dict, req: GenerateDocumentRequest) -> dict:
+    """Packages, gross weight and CBM — what the request says, else worked out from the agreed
+    packing spec (cbm.py), else the catalogue stowage factor (CBM only, marked estimate)."""
+    from shared.orchestration import cbm
+    spec = getattr(f.get("session"), "packing", None)
+    m3 = None
+    try:
+        from shared import catalogue
+        line = catalogue.line_for(f.get("hs_code") or "")
+        m3 = getattr(line, "m3_per_mt", None) if line else None
+    except Exception:  # noqa: BLE001
+        m3 = None
+    net = req.net_weight_mt or f["shipped_quantity_mt"]
+    calc = cbm.shipment(spec, net, m3)
+    return {"packages": req.no_of_packages or calc["packages"],
+            "gross_mt": req.gross_weight_mt or (round(calc["gross_kg"] / 1000.0, 3) if calc["gross_kg"] else None),
+            "cbm": calc["cbm"], "cbm_source": calc["cbm_source"]}
+
+
 def _rows(f: dict, req: GenerateDocumentRequest) -> list[dict]:
     """One packing row per container, the inspector's loaded weight split evenly."""
     containers = f["container_numbers"] or [None]
     seals = f["seal_numbers"]
     net_total = req.net_weight_mt or f["shipped_quantity_mt"]
-    gross_total = req.gross_weight_mt
+    cargo = _cargo(f, req)
+    gross_total = cargo["gross_mt"]
     n = len(containers)
     return [{
         "container": c, "seal": seals[i] if i < len(seals) else None,
-        "packages": req.no_of_packages if n == 1 else None,
+        "packages": cargo["packages"] if n == 1 else (round(cargo["packages"] / n) if cargo["packages"] else None),
         "net": net_total / n, "gross": (gross_total / n) if gross_total else None,
+        "cbm": round(cargo["cbm"] / n, 2) if cargo["cbm"] else None,
     } for i, c in enumerate(containers)]
 
 
@@ -318,6 +339,7 @@ async def _common(req: GenerateDocumentRequest, f: dict, doc_id: str) -> dict:
                          f"{f['loaded_quantity_mt']:,.3f} MT (within the ±{_QTY_TOLERANCE_PCT}% tolerance).")
     return {
         "doc_id": doc_id, "deal_id": req.deal_id,
+        "insurance_certificate": ((getattr(f["deal"], "insurance", None) or {}).get("declaration") or {}).get("certificate_no"),
         "doc_date": req.invoice_date or date.today(),
         "buyer": buyer, "supplier": supplier, "product": f["product"], "hs_code": f["hs_code"],
         "currency": f["currency"], "unit_price": unit_price,
@@ -351,6 +373,8 @@ Spec = tuple[dict, tuple[str, ...], dict]
 
 
 async def _ci(req: GenerateDocumentRequest, f: dict, c: dict) -> Spec:
+    cargo = _cargo(f, req)
+    c.update(packages=c.get("packages") or cargo["packages"], cbm=cargo["cbm"], gross_weight_mt=cargo["gross_mt"])
     return c, ("address", "iec", "gstin", "lut_arn"), {
         "buyer address": c["buyer"]["address"], "unit price (from the PI)": c["unit_price"],
         "port of loading": c["port_of_loading"], "port of discharge": c["port_of_destination"]}
@@ -358,9 +382,11 @@ async def _ci(req: GenerateDocumentRequest, f: dict, c: dict) -> Spec:
 
 async def _pl(req: GenerateDocumentRequest, f: dict, c: dict) -> Spec:
     rows = _rows(f, req)
-    c.update(rows=rows, net_weight_mt=sum(r["net"] for r in rows), gross_weight_mt=req.gross_weight_mt,
+    cargo = _cargo(f, req)
+    c.update(packages=c.get("packages") or cargo["packages"], cbm=cargo["cbm"], cbm_source=cargo["cbm_source"])
+    c.update(rows=rows, net_weight_mt=sum(r["net"] for r in rows), gross_weight_mt=cargo["gross_mt"],
              loading_source=getattr(f["loading"], "inspector_ref", None) or (getattr(f["loading"], "source", None) if f["loading"] else None))
-    return c, ("address",), {"number of packages": req.no_of_packages, "gross weight": req.gross_weight_mt,
+    return c, ("address",), {"number of packages": c["packages"], "gross weight": cargo["gross_mt"],
                              "container number (inspector's loading record)": c["containers"]}
 
 
@@ -415,6 +441,9 @@ async def _inspection_order(req: GenerateDocumentRequest, f: dict, c: dict) -> S
 async def _shipping_instructions(req: GenerateDocumentRequest, f: dict, c: dict) -> Spec:
     freight = f["freight"]
     route = getattr(getattr(f["session"], "cost_sheet", None), "supplier_route", None)
+    cargo = _cargo(f, req)
+    c.update(cbm=cargo["cbm"], cbm_source=cargo["cbm_source"], gross_weight_mt=cargo["gross_mt"],
+             packages=c.get("packages") or cargo["packages"])
     c.update(rows=_rows(f, req), freight_provider=(getattr(freight, "provider", None) or "").title() or None,
              booking_ref=getattr(freight, "ext_ref", None),
              place_of_receipt=getattr(route, "city", None) or getattr(route, "state", None) or c["supplier"].get("address"),
@@ -426,7 +455,10 @@ async def _shipping_instructions(req: GenerateDocumentRequest, f: dict, c: dict)
 async def _insurance(req: GenerateDocumentRequest, f: dict, c: dict) -> Spec:
     import os
     route = getattr(getattr(f["session"], "cost_sheet", None), "supplier_route", None)
-    c.update(sum_insured=round(c["total_value"] * 1.10, 2), policy_number=(os.getenv("PORTLESS_MARINE_POLICY") or "").strip(),
+    from shared.orchestration import cargo_insurance
+    c.update(insurance_certificate=cargo_insurance.certificate_no(f["deal"]))
+    c.update(sum_insured=round(c["total_value"] * cargo_insurance.insured_value_pct() / 100.0, 2),
+             policy_number=(os.getenv("PORTLESS_MARINE_POLICY") or "").strip(),
              cover_clauses=(os.getenv("PORTLESS_MARINE_CLAUSES") or "(A)").strip(),
              place_of_receipt=getattr(route, "city", None) or getattr(route, "state", None))
     return c, ("address",), {"marine open policy number (PORTLESS_MARINE_POLICY)": c["policy_number"]}

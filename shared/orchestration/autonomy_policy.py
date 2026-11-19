@@ -196,6 +196,12 @@ ACTION_CLASSES: tuple[ActionClass, ...] = (
         default="L0",
     ),
     ActionClass(
+        "APPROVE_SB_CHECKLIST", "Shipping Bill Checklist",
+        "The customs broker's Shipping Bill checklist (HS code, FOB value, incentives declared) — "
+        "APPROVE tells the CHA to file.",
+        default="L0",
+    ),
+    ActionClass(
         "FILE_CUSTOMS", "Customs Filing",
         "File the Shipping Bill with the CHA / ICEGATE once freight is booked.",
         default="L0", follows_deal_profile=True, default_on_timeout="APPROVE",

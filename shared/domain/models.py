@@ -52,6 +52,8 @@ class Party(BaseModel):
     ``operator`` — shown in the UI so a human knows how much to trust it."""
     contact_confidence: float | None = None
     """0–1 confidence of the website/email choice (actor's websiteConfidence)."""
+    people: list[dict] = Field(default_factory=list)
+    """Named contact persons the company publishes (contact finder A.3): name, title, role group, e-mail."""
     email_status: str | None = None
     """``ok`` (domain takes mail) · ``risky`` (no MX / catch-all) · ``invalid``
     · ``unverified`` (never checked)."""

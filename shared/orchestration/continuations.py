@@ -958,7 +958,10 @@ async def on_quote_received(event: DomainEvent) -> None:
                 company = company or q.company_name
         except Exception:  # noqa: BLE001
             pass
-        hard = "gst_not_verified" in flags or "iec_inactive" in flags
+        from shared.orchestration import refusals as _refusals
+        if _refusals.supplier_refusals(company):
+            flags.append("supplier_import_refusal")
+        hard = "gst_not_verified" in flags or "iec_inactive" in flags or "supplier_import_refusal" in flags
         # Auto-source rule: a supplier whose GSTIN and IEC were actually checked
         # and passed, quoting inside the margin corridor, needs no human to
         # start negotiating — the Match Engine's DISCARD came from the empty
@@ -1844,6 +1847,17 @@ async def _generate_documents(deal_id: str) -> list[str]:
     return doc_ids
 
 
+async def _cha_pack(deal_id: str) -> None:
+    """The customs broker's pack (cha.py) once a CHA is on the list for the port; else nothing."""
+    if os.getenv("CHA_HANDOFF_ENABLED", "true").strip().lower() in ("0", "false", "no", "off"):
+        return
+    from shared.orchestration import cha
+    try:
+        await cha.send_pack(deal_id, by="system:qc_passed")
+    except LookupError as exc:
+        logger.info("Continuation: no CHA pack for %s (%s)", deal_id, exc)
+
+
 async def on_qc_passed(event: DomainEvent) -> None:
     """QC_PASSED → generate the document pack, gate tranche T2, create the
     BOOK_FREIGHT HITL gate."""
@@ -1857,6 +1871,7 @@ async def on_qc_passed(event: DomainEvent) -> None:
     from shared.orchestration import notifications
     await _best_effort("QC_PASSED→NOTIFY_BUYER", deal_id, notifications.notify_qc_result(deal, payload, passed=True))
     await _best_effort("QC_PASSED→DOCS", deal_id, _generate_documents(deal_id))
+    await _best_effort("QC_PASSED→CHA_PACK", deal_id, _cha_pack(deal_id))
     from shared.orchestration import compliance
     if compliance.loading_check_required():
         if payload.get("seal_numbers"):
@@ -1870,6 +1885,7 @@ async def on_qc_passed(event: DomainEvent) -> None:
                     goods_description=payload.get("goods_description"),
                     inspector_ref=payload.get("ext_ref"),
                     photos=payload.get("photos") or [],
+                    container_surveys=payload.get("container_surveys") or [],
                     source="qc_webhook",
                 )))
         await _after_loading_check(deal, stage="QC_PASSED")

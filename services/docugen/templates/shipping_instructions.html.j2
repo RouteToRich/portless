@@ -28,12 +28,12 @@
 
 <h2>Cargo</h2>
 <table>
-  <thead><tr><th>Container</th><th>Seal</th><th>Marks</th><th>Description of goods</th><th class="num">Packages</th><th class="num">Net (MT)</th><th class="num">Gross (MT)</th></tr></thead>
+  <thead><tr><th>Container</th><th>Seal</th><th>Marks</th><th>Description of goods</th><th class="num">Packages</th><th class="num">Net (MT)</th><th class="num">Gross (MT)</th><th class="num">CBM</th></tr></thead>
   <tbody>
   {% for row in rows %}
     <tr><td class="mono">{{ row.container or "—" }}</td><td class="mono">{{ row.seal or "—" }}</td><td>{{ marks }}</td>
       <td><strong>{{ product }}</strong><div class="small muted">HS {{ hs_code }}</div></td>
-      <td class="num">{{ row.packages or "—" }}</td><td class="num">{{ row.net | qty }}</td><td class="num">{{ row.gross | qty if row.gross else "—" }}</td></tr>
+      <td class="num">{{ row.packages or "—" }}</td><td class="num">{{ row.net | qty }}</td><td class="num">{{ row.gross | qty if row.gross else "—" }}</td><td class="num">{{ row.cbm or "—" }}</td></tr>
   {% endfor %}
   </tbody>
 </table>

@@ -58,6 +58,12 @@ class PackingSpec(BaseModel):
     material: str | None = None
     """pp | jute | bopp | paper | non_woven | carton | fibc | bulk"""
     unit_weight_kg: float | None = None
+    gross_weight_kg: float | None = None
+    """Gross weight of one package (net + bag / carton) — for the packing list and the VGM."""
+    length_cm: float | None = None
+    width_cm: float | None = None
+    height_cm: float | None = None
+    """One package's dimensions → CBM per package and per shipment (cbm.py)."""
     inner_liner: bool = False
     marking: str | None = None
     """What goes on each bag / carton (buyer's marks, language, lot number …)."""

@@ -848,6 +848,8 @@ async def _phase2_live_signals(
         _safe_quote("eu_ted", ted_req),
         _safe_quote("apify_company_search", buyer_search_req) if _web_searchable(keyword) else _noop(),
     )
+    if isinstance(search_r, dict):
+        scan_reports.add_diagnostics(search_r.get("diagnostics"))
     if not _web_searchable(keyword):
         logger.warning("Trade-Min: no product name for HS %s — buyer web search skipped "
                        "(add it to the catalogue: PUT /trade-min/catalogue)", hs_code)
@@ -883,10 +885,13 @@ async def _phase2_live_signals(
                 name_source=c.get("name_source"),
                 pitch_angle=_pitch(c.get("first_line")),
                 hs_codes=[hs_code],
-                email_status=c.get("email_status"),
+                email_status=c.get("email_status") or mailbox_status(c),
                 vat_number=(str(c.get("vat_id") or "").strip().upper() or None),
                 legal_name=c.get("legal_name"),
                 people=_people(c.get("people")),
+                product_range=c.get("product_range"),
+                legal_notice=c.get("legal_notice"),
+                linkedin_company_url=c.get("linkedin_company_url"),
             ))
 
     if rfq_r is not None:
@@ -960,6 +965,28 @@ async def _phase2_live_signals(
 # ---------------------------------------------------------------------------
 
 async def _phase3_tariff_gate(
+    hs_code: str,
+    market: str,
+    gross_price_gap_pct: float,
+    config: TradeMinConfig,
+) -> TariffData:
+    """The tariff profile — and, when the India Trade Portal gives a lower preferential duty under an
+    Indian trade agreement (destination_rules.py, A.30), that duty is the one India pays."""
+    tariff = await _phase3_tariff_gate_mfn(hs_code, market, gross_price_gap_pct, config)
+    try:
+        from shared.orchestration import destination_rules
+        pref = destination_rules.preferential(hs_code, market)
+    except Exception:  # noqa: BLE001
+        pref = None
+    if pref and (not tariff.verified or pref["rate_pct"] < tariff.applied_duty_pct):
+        rate = round(float(pref["rate_pct"]), 2)
+        roo = f"{pref.get('agreement') or 'trade agreement'}: {pref.get('rules_of_origin') or 'preferential certificate of origin'}"
+        tariff = tariff.model_copy(update={"applied_duty_pct": rate, "total_landed_cost_add_pct": rate,
+                                           "rules_of_origin": roo, "verified": True})
+    return tariff
+
+
+async def _phase3_tariff_gate_mfn(
     hs_code: str,
     market: str,
     gross_price_gap_pct: float,  # noqa: ARG001 — kept for future gate logic
@@ -1104,6 +1131,8 @@ async def _phase4_seller_discovery(
             "keyword": keyword, "countries": ["IN"], "role": "supplier", "max_results": 5,
         }) if _web_searchable(keyword) else _noop(),
     )
+    if isinstance(search_r, dict):
+        scan_reports.add_diagnostics(search_r.get("diagnostics"))
 
     candidates: list[SellerCandidate] = []
     seen: set[str] = set()
@@ -1130,12 +1159,15 @@ async def _phase4_seller_discovery(
                 "listing_url": c.get("contact_page_url") or c.get("website"),
                 "fit_score": c.get("fit_score"),
                 "country": "IN",
-                "email_status": c.get("email_status"),
+                "email_status": c.get("email_status") or mailbox_status(c),
                 "address": c.get("address"),
                 "fit_reason": c.get("summary") or c.get("page_title"),
                 "name_source": c.get("name_source"),
                 "vat_id": c.get("vat_id"),
                 "people": c.get("people"),
+                "product_range": c.get("product_range"),
+                "legal_notice": c.get("legal_notice"),
+                "linkedin_company_url": c.get("linkedin_company_url"),
                 "id_text": " ".join(str(c.get(k) or "") for k in ("vat_id", "summary", "address", "first_line")),
             }, "apify_company_search")
 
@@ -1205,8 +1237,21 @@ def _seller_from_raw(s: dict, source: str, hs_code: str) -> SellerCandidate:
         fit_reason=s.get("fit_reason") or None,
         name_source=s.get("name_source") or None,
         people=_people(s.get("people")),
+        product_range=s.get("product_range"),
+        legal_notice=s.get("legal_notice"),
+        linkedin_company_url=s.get("linkedin_company_url"),
         **ids,
     )
+
+
+_MAILBOX = {"deliverable": "ok", "catch_all": "risky", "undeliverable": "invalid"}
+
+
+def mailbox_status(c: dict) -> str | None:
+    """The best address's SMTP result from the search's own mailbox check (A.22), so the scan-time
+    check does not pay email-list-qualifier-ai for it again."""
+    email = str(c.get("email") or "").lower()
+    return _MAILBOX.get(str((c.get("mailboxes") or {}).get(email) or ""))
 
 
 def _people(rows: Any) -> list[dict]:
@@ -1215,8 +1260,10 @@ def _people(rows: Any) -> list[dict]:
     now = datetime.now(timezone.utc).isoformat()
     for p in rows or []:
         if isinstance(p, dict) and (p.get("name") or p.get("email")):
-            out.append({"name": p.get("name"), "role": p.get("title") or p.get("role"), "email": p.get("email"),
-                        "phone": p.get("phone"), "language": p.get("language"), "source": "website", "at": now})
+            row = {"name": p.get("name"), "role": p.get("title") or p.get("role"), "email": p.get("email"),
+                   "phone": p.get("phone"), "language": p.get("language"), "source": "website", "at": now}
+            row.update({k: p[k] for k in ("role_group", "source_url") if p.get(k)})
+            out.append(row)
     return out[:10]
 
 

@@ -320,7 +320,8 @@ async def _email_booking_desk(connector: Any, tpo_id: str, deal_id: str, booking
         f"{sampling.get('aql_critical')} / major {sampling.get('aql_major')} / minor {sampling.get('aql_minor')}\n"
         f"  Readiness          : 100% produced, at least {(booking.get('readiness') or {}).get('packed_pct_min', 80)}% packed\n\n"
         "Please send the report (PDF with photos) and, for loading supervision, the container and seal numbers "
-        "to this address.\n\nPortLess Trade Desk"
+        "and the empty-container survey of each box before stuffing (CSC plate, no holes / light, dry, clean, "
+        "odour-free, no residue; reefer pre-trip inspection) to this address.\n\nPortLess Trade Desk"
     )
     try:
         from services.email_gateway.schemas import SendEmailRequest  # type: ignore[import]
@@ -432,9 +433,12 @@ async def _book_qc(req: QcBookingRequest, *, reinspection: bool = False,
     brief = await trade_brief.brief(req.deal_id)
     from shared.orchestration import samples as _samples
     sample_ref = _samples.approved_ref(deal) if deal is not None else None
+    from shared.orchestration import refusals as _refusals
+    lab = _refusals.tests_for(getattr(deal, "hs_code", None), getattr(deal, "market", None)) if deal is not None else []
     note = trade_brief.note({**brief, "inspection_types": [phase]}, "inspector",
                             extra=f"{inspection_plan.label(phase)}: {inspection_plan.META[phase]['when']}"
-                            + (f"; quality {sample_ref}" if sample_ref else ""))
+                            + (f"; quality {sample_ref}" if sample_ref else "")
+                            + (f"; lab tests for {', '.join(lab)} (recent import refusals in the destination)" if lab else ""))
     hs_code = req.hs_code or getattr(deal, "hs_code", "")
     supplier = _supplier_facts(deal)
     connector = get_qc_connector(provider)
@@ -705,6 +709,7 @@ async def book_freight(req: FreightBookingRequest) -> ThirdPartyOrderResponse:
             "hs_code": hs_code,
             "commodity": brief.get("product"),
             "quantity_mt": quantity,
+            **(await _cargo_measure(req.deal_id, hs_code, quantity)),
             "incoterm": req.incoterm,
             "note": note,
             "brief": brief,
@@ -921,6 +926,20 @@ async def record_milestone(ref: str, req: RecordMilestoneRequest) -> dict[str, s
     )
 
 
+async def _cargo_measure(deal_id: str, hs_code: str, quantity: float) -> dict[str, Any]:
+    """Packages, gross kg and CBM from the agreed packing spec (cbm.py) for the carrier booking."""
+    try:
+        from agents.negotiation_agent.repository import get_repository as neg_repo  # type: ignore[import]
+        from shared import catalogue
+        from shared.orchestration import cbm
+        session = await neg_repo().get_session_by_deal(deal_id)
+        line = catalogue.line_for(hs_code or "")
+        calc = cbm.shipment(getattr(session, "packing", None), quantity, getattr(line, "m3_per_mt", None) if line else None)
+        return {k: calc[k] for k in ("packages", "gross_kg", "cbm") if calc.get(k)}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 _PHASE_SERVICE = {"DUPRO": "DURING_PRODUCTION_INSPECTION", "PSI": "PRE_SHIPMENT_INSPECTION",
                   "PEO": "PRE_CUSTOMS_CLEARANCE_INSPECTION"}
 
@@ -944,7 +963,7 @@ async def record_loading(deal_id: str, req: LoadingRecordRequest) -> dict[str, A
         container_numbers=req.container_numbers, seal_numbers=req.seal_numbers,
         loaded_quantity_mt=req.loaded_quantity_mt, hs_code=req.hs_code,
         goods_description=req.goods_description, inspector_ref=req.inspector_ref,
-        photos=req.photos, source=req.source,
+        photos=req.photos, container_surveys=req.container_surveys, source=req.source,
     ))
     await _emit(EventTopic.LOADING_RECORDED, deal_id, {
         "container_numbers": rec.loading.container_numbers if rec.loading else [],

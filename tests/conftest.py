@@ -87,6 +87,14 @@ os.environ["REGISTRATIONS_REQUIRED"] = "false"  # PortLess registrations before 
 os.environ["COUNTRY_PROFILE_REQUIRED"] = "false"  # outreach waits for a country profile: tests/test_country_markets.py
 os.environ["REGULATORY_WATCH_ENABLED"] = "false"  # no DGFT / CBIC fetch from the suite: tests/test_country_markets.py
 os.environ["QUESTION_AGENT_ENABLED"] = "false"  # questions answered from deal facts: tests/test_country_markets.py
+os.environ["FX_PEGS_ENABLED"] = "false"  # Gulf USD pegs as reference rates: tests/test_trade_ops_batch.py
+os.environ["CONTAINER_SURVEY_REQUIRED"] = "false"  # empty-container survey before stuffing: tests/test_trade_ops_batch.py
+os.environ["DATA_JOBS_ENABLED"] = "false"  # courier / mission watcher jobs: tests/test_trade_ops_batch.py
+os.environ["DESTINATION_RULES_ENABLED"] = "false"
+os.environ["REFUSALS_ENABLED"] = "false"
+os.environ["REGISTRATION_CHECKS_ENABLED"] = "false"
+os.environ["DEMAND_LEADS_ENABLED"] = "false"
+os.environ["CHA_HANDOFF_ENABLED"] = "false"  # CHA pack at QC_PASSED: tests/test_trade_ops_batch.py
 # QC, freight, customs, escrow and payout connectors answer from stubs only in
 # INTEGRATION_MODE=sandbox (shared/integration_mode.py); live mode always calls
 # the provider. The suite runs in sandbox; tests of the live HTTP paths set

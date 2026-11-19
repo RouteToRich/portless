@@ -93,7 +93,9 @@ def _merge_raw(old: CounterpartyRecord | None, new: CounterpartyRecord) -> Count
     for field in ("name", "country", "email", "phone", "website", "address", "contact_url",
                   "fit_score", "fit_reason", "gstin", "iec", "estimated_fob_price_usd",
                   "vat_number", "lei", "legal_name", "cin", "udyam", "incorporation_year",
-                  "annual_volume_mt", "shipments_12m", "volume_source", "order_size_band"):
+                  "annual_volume_mt", "shipments_12m", "volume_source", "order_size_band",
+                  "stated_quantity_mt", "stated_quantity_source", "stated_at", "product_range", "legal_notice",
+                  "linkedin_company_url"):
         value = getattr(new, field)
         # A supplier staff added by hand keeps what staff entered; a scan only fills gaps.
         if value not in (None, "") and not (manual and data.get(field) not in (None, "")):
@@ -388,6 +390,7 @@ def _buyer_record(b: BuyerSignal, hs_code: str, market: str, outcome: str,
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=b.validation,
         flags=list(b.flags or []), vat_number=b.vat_number, lei=b.lei, legal_name=b.legal_name,
         annual_volume_mt=b.annual_volume_mt, shipments_12m=b.shipments_12m, people=list(b.people or []),
+        product_range=b.product_range, legal_notice=b.legal_notice, linkedin_company_url=b.linkedin_company_url,
         product_facts=_site_facts(hs_code, b.fit_reason, b.website),
         volume_source=b.source if (b.annual_volume_mt or b.shipments_12m) else None,
         order_size_band=_band(b),
@@ -423,6 +426,7 @@ def _supplier_record(s: SellerCandidate, hs_code: str, market: str, outcome: str
         opportunity_ids=[opportunity_id] if opportunity_id else [],
         last_outcome=outcome, first_seen_at=now, last_seen_at=now, validation=s.validation,
         flags=list(s.flags or []), vat_number=s.vat_number, cin=s.cin, udyam=s.udyam, people=list(s.people or []),
+        product_range=s.product_range, legal_notice=s.legal_notice, linkedin_company_url=s.linkedin_company_url,
         product_facts=_site_facts(hs_code, s.fit_reason, s.website),
         incorporation_year=s.incorporation_year,
     )

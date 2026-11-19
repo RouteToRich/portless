@@ -329,7 +329,8 @@ async def test_watch_run_acts_on_a_hit(repo, monkeypatch):
     assert (await rw.recent_hits(NOW))[0]["title"].startswith("Minimum export price")
     monkeypatch.setenv("REGULATORY_WATCH_ENABLED", "true")
     monkeypatch.setattr(rw, "run", AsyncMock(return_value={"hits": []}))
-    assert await rw.daily(NOW) == {"hits": []} and await rw.daily(NOW) is None
+    first = await rw.daily(NOW)
+    assert first["hits"] == [] and first["actor"]["stub"] and await rw.daily(NOW) is None
 
 
 # ---------------------------------------------------------------------------

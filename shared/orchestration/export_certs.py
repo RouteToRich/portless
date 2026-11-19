@@ -37,7 +37,7 @@ KINDS = {
 }
 
 
-def country_kinds(market: str | None) -> list[str]:
+def country_kinds(market: str | None, hs_code: str | None = None) -> list[str]:
     """What the destination asks of the exporter (country profile, todo 24): the trade agreement's
     certificate of origin form, attestation / legalisation, a consular invoice. Documents the
     importer files itself (e.g. FDA prior notice) are listed for the buyer, never required here."""
@@ -48,12 +48,17 @@ def country_kinds(market: str | None) -> list[str]:
         p = country_profiles.get(market)
     except Exception:  # noqa: BLE001
         p = None
-    if p is None:
-        return []
     out: list[str] = []
-    if p.coo_form:
+    if p is not None and p.coo_form:
         out.append("preferential_coo")
-    for doc in p.documents:
+    elif hs_code:
+        try:  # the India Trade Portal says a preferential duty applies (destination_rules.py)
+            from shared.orchestration import destination_rules
+            if destination_rules.preferential(hs_code, market):
+                out.append("preferential_coo")
+        except Exception:  # noqa: BLE001
+            pass
+    for doc in (p.documents if p is not None else []):
         d = doc.lower()
         if "importer" in d:
             continue
@@ -73,7 +78,7 @@ def enabled() -> bool:
 def required(hs_code: str | None, market: str | None = None) -> list[str]:
     hs = "".join(ch for ch in (hs_code or "") if ch.isdigit())
     out = ["certificate_of_origin"]
-    out += [k for k in country_kinds(market) if k not in out]
+    out += [k for k in country_kinds(market, hs_code) if k not in out]
     if hs[:2] and 6 <= int(hs[:2]) <= 14:
         out.append("phytosanitary")
     if hs.startswith(_BASMATI) or hs[:8] in _BASMATI:

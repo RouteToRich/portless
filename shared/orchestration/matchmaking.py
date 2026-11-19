@@ -417,6 +417,10 @@ def score_pair(deal: Any, cand: Any, offer: Any, *, buyer_est: pricebook.PriceEs
         from shared.orchestration.outcomes import calibrate
         probability = calibrate(raw, table)
         calibrated = True
+    req = getattr(cand, "requirement", None)
+    if feasible and getattr(req, "commitment", None) == "loi":
+        from shared.orchestration.loi import CHANCE_FACTOR
+        probability = round(min(0.95, probability * CHANCE_FACTOR), 4)  # the buyer sent a letter of intent
     ev = round(probability * max(margin or 0.0, 0.0) * qty, 2)
     firm = sp.basis == "quoted" and bp.basis in _FIRM_BUYER
 
@@ -492,7 +496,7 @@ async def _costs(deal: Any) -> tuple[float | None, str | None, float]:
         freight, basis = await freight_lanes.freight_per_mt(getattr(deal, "market", None) or "", (kind or "dry").lower())
         entry = await incentives.entry_for(deal.hs_code)
         if entry is not None and entry.eligible_confirmed:
-            incentive_pct = float(entry.rodtep_pct or 0.0) + float(entry.drawback_pct or 0.0)
+            incentive_pct = float(entry.rodtep_pct or 0.0) + float(getattr(entry, "rosctl_pct", 0.0) or 0.0) + float(entry.drawback_pct or 0.0)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Matchmaking: lane freight / incentives unavailable for %s: %s", deal.deal_id, exc)
     return freight, basis, incentive_pct

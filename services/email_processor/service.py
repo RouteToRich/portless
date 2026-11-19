@@ -286,6 +286,11 @@ async def _process_inbound(
         logger.info("Inbound %s is a %s (from=%s): %s", inbound_id, kind, raw.from_address, note)
         return ProcessingResult(inbound_id=inbound_id, status=status, message=note)
 
+    # ── Third-party threads: customs broker, Indian missions, government enquiry portals ──
+    third = await _third_party_thread(record, raw)
+    if third is not None:
+        return third
+
     # ── Map to negotiation session ─────────────────────────────────────────
     mapping = await map_email(
         from_address=raw.from_address,
@@ -295,6 +300,21 @@ async def _process_inbound(
         negotiation_id_override=negotiation_id_override,
         party_override=party_override,
     )
+
+    # ── The LOI → ICPO → FCO broker chain: never answered by the system (loi.py) ──
+    from shared.orchestration import loi as loi_mod
+    chain = loi_mod.broker_chain_pattern(raw.body_text)
+    if chain and (mapping.negotiation_id or getattr(mapping, "outreach_deal_id", None)):
+        hitl_id = await _create_price_hitl(
+            record, summary=(f"{raw.from_address} wrote with the commodity broker-chain pattern ({', '.join(chain)}) — "
+                             "do not send bank details, proof of funds or company documents; confirm the buyer directly. "
+                             f"Preview: {(raw.body_text or '')[:200]}"),
+            risk_flags=["broker_chain_pattern", *[f"chain_{c}" for c in chain]])
+        record = record.model_copy(update={"status": InboundEmailStatus.NEEDS_OPERATOR, "hitl_approval_id": hitl_id,
+                                           "error": "broker-chain pattern", "updated_at": datetime.now(timezone.utc)})
+        await repo.save(record)
+        return ProcessingResult(inbound_id=inbound_id, status=InboundEmailStatus.NEEDS_OPERATOR,
+                                negotiation_id=mapping.negotiation_id, message="broker-chain pattern held for a person")
 
     # ── Buyer answering an outreach introduction (buyer funnel) ────────────
     if getattr(mapping, "outreach_deal_id", None) and not mapping.negotiation_id:
@@ -525,6 +545,36 @@ _SENDER_REASON = {
 }
 
 
+async def _third_party_thread(record: InboundEmailRecord, raw: InboundRawEmail) -> ProcessingResult | None:
+    """Replies that are not a buyer / supplier negotiation: the customs broker on ``[CHA:<deal>]``
+    (cha.py), an Indian mission on ``[MISSION:<id>]`` and buyer enquiries from Trade Connect / the
+    Indian Business Portal (gov_leads.py). None when the e-mail is none of them."""
+    from shared.orchestration import cha, gov_leads
+    handled: dict | None = None
+    deal_id = cha.parse_token(raw.subject)
+    try:
+        if deal_id:
+            handled = {"kind": "cha", "deal_id": deal_id,
+                       **(await cha.handle_reply(deal_id, raw.from_address, raw.body_text))}
+        elif (rid := gov_leads.parse_token(raw.subject)):
+            handled = {"kind": "mission", **(await gov_leads.handle_mission_reply(rid, raw.from_address, raw.body_text))}
+        else:
+            res = await gov_leads.handle_inbound(raw.from_address, raw.subject, raw.body_text)
+            handled = {"kind": "portal_enquiry", "handled": True, **res} if res else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Inbound %s: third-party thread handling failed: %s", record.inbound_id, exc)
+        handled = {"kind": "third_party", "handled": False, "reason": str(exc)[:200]}
+    if handled is None:
+        return None
+    ok = bool(handled.get("handled"))
+    status = InboundEmailStatus.PROCESSED if ok else InboundEmailStatus.NEEDS_OPERATOR
+    note = f"{handled['kind']}: " + ("handled" if ok else handled.get("reason", "needs a person"))
+    record = record.model_copy(update={"status": status, "deal_id": handled.get("deal_id") or record.deal_id,
+                                       "error": None if ok else note, "updated_at": datetime.now(timezone.utc)})
+    await get_repository().save(record)
+    return ProcessingResult(inbound_id=record.inbound_id, status=status, message=note)
+
+
 async def _hold_unverified_sender(record: InboundEmailRecord, mapping) -> ProcessingResult:
     """Park a reply whose sender could not be tied to the right side. Nothing
     advances; an operator confirms who it is from and resubmits it through
@@ -578,6 +628,15 @@ async def _handle_outreach_reply(record: InboundEmailRecord, raw: InboundRawEmai
         logger.error("Outreach reply %s: handling failed: %s", record.inbound_id, exc)
         verdict = {"verdict": "unclear", "error": str(exc)}
 
+    if verdict.get("verdict") == "interested":
+        try:
+            from services.deals.repository import get_repository as _deals  # type: ignore[import]
+            from shared.orchestration import loi as loi_mod
+            _deal = await _deals().get(deal_id)
+            cand = next((c for c in (getattr(_deal, "buyer_candidates", None) or []) if c.candidate_id == candidate_id), None)
+            await loi_mod.capture_from_reply(deal_id, cand, raw.from_address, raw.body_text)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Outreach reply %s: LOI capture skipped: %s", record.inbound_id, exc)
     if verdict.get("verdict") in ("interested", "declined") and verdict.get("matched", True):
         record = record.model_copy(update={
             "status": InboundEmailStatus.PROCESSED, "processed_at": datetime.now(timezone.utc),
@@ -801,6 +860,22 @@ async def _handle_post_agreement_reply(
             negotiation_id=record.negotiation_id,
             message=f"Buyer acceptance of PI {pi.pi_id} detected; approval {hitl_id} created.",
         )
+
+    # Payment chase (todo 23.2): a buyer who has not funded yet asks how to pay — answered from the
+    # escrow record behind SEND_NEGOTIATION_EMAIL (question_agent "funding").
+    if mapping.party == "buyer" and deal_status in ("PI_ACCEPTED", "ESCROW_PENDING") and not accepted:
+        from shared.orchestration import question_agent
+        if "funding" in question_agent.topics(raw.body_text):
+            email_id = await question_agent.answer(mapping.negotiation_id, "buyer", raw.from_address,
+                                                   raw.subject, raw.body_text or "")
+            if email_id:
+                record = record.model_copy(update={"status": InboundEmailStatus.PROCESSED,
+                                                   "processed_at": datetime.now(timezone.utc),
+                                                   "updated_at": datetime.now(timezone.utc)})
+                await repo.save(record)
+                return ProcessingResult(inbound_id=record.inbound_id, status=InboundEmailStatus.PROCESSED,
+                                        negotiation_id=record.negotiation_id,
+                                        message=f"Payment question answered from the escrow record (draft {email_id})")
 
     # After delivery: the buyer's acceptance of the goods releases the final
     # escrow tranche (via the CONFIRM_BUYER_ACCEPTANCE gate); a complaint

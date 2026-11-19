@@ -196,8 +196,10 @@ class MaerskConnector(Connector):
             "commodities": [{
                 "commodityType": (request.get("commodity") or brief.get("product") or f"HS {request.get('hs_code', '')}")[:550],
                 "HSCodes": [str(request.get("hs_code") or "")[:10]] if request.get("hs_code") else [],
-                "cargoGrossWeight": round(qty * 1000, 3),
+                "cargoGrossWeight": round(float(request.get("gross_kg") or qty * 1000), 3),
                 "cargoGrossWeightUnit": "KGM",
+                **({"cargoVolume": round(float(request["cbm"]), 3), "cargoVolumeUnit": "MTQ"} if request.get("cbm") else {}),
+                **({"numberOfPackages": int(request["packages"])} if request.get("packages") else {}),
             }],
             "partyContactDetails": [c for c in request.get("contacts") or [] if c.get("name") or c.get("email")],
             # DCSA Booking 2.0 fields beyond the mirrored minimum — the ports and our references.

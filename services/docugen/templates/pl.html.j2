@@ -17,7 +17,7 @@
 
 <h2>Packing</h2>
 <table>
-  <thead><tr><th>Container</th><th>Seal</th><th>Marks</th><th>Description</th><th class="num">Packages</th><th class="num">Net (MT)</th><th class="num">Gross (MT)</th></tr></thead>
+  <thead><tr><th>Container</th><th>Seal</th><th>Marks</th><th>Description</th><th class="num">Packages</th><th class="num">Net (MT)</th><th class="num">Gross (MT)</th><th class="num">CBM</th></tr></thead>
   <tbody>
   {% for row in rows %}
     <tr>
@@ -28,6 +28,7 @@
       <td class="num">{{ row.packages if row.packages else "—" }}</td>
       <td class="num">{{ row.net | qty }}</td>
       <td class="num">{{ row.gross | qty if row.gross else "—" }}</td>
+      <td class="num">{{ row.cbm if row.cbm else "—" }}</td>
     </tr>
   {% endfor %}
   </tbody>
@@ -35,6 +36,7 @@
 <div class="totals">
   <div class="row"><span>Total packages</span><span>{{ packages or "—" }}</span></div>
   <div class="row"><span>Total net weight</span><span>{{ net_weight_mt | qty }} MT</span></div>
+  <div class="row"><span>Total volume</span><span>{{ (cbm ~ " CBM" ~ (" (estimate)" if cbm_source == "estimate" else "")) if cbm else "—" }}</span></div>
   <div class="row grand"><span>Total gross weight</span><span>{{ (gross_weight_mt | qty ~ " MT") if gross_weight_mt else "—" }}</span></div>
 </div>
 {% if loading_source %}<p class="small muted" style="margin-top:10px">Weights and container / seal numbers as recorded by the inspector at stuffing ({{ loading_source }}).</p>{% endif %}
