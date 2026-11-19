@@ -46,7 +46,7 @@ make down
 
 # Tests
 pytest -q                                 # full suite (5488 pass, 1 skip, ~2 min)
-pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 86% line + branch, 92% without services/automation (2026-11-18)
+pytest -q --cov=agents --cov=services --cov=shared --cov=app --cov-branch --cov-report=term  # 92.0% line + branch without services/automation; money modules + safety.py + 2026-11-19 modules at 100% (2026-11-19)
 pytest tests/test_health.py -q            # smoke: every service boots + /health 200
 pytest -m smoke -q                        # markers by file (tests/markers.py): smoke · money · unit · integration · slow · regression
 pytest -m "unit and not slow" -q          # the quick inner loop

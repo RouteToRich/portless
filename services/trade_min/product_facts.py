@@ -57,10 +57,7 @@ async def find_record(role: str, *, name: str | None = None, website: str | None
         rec = await store.get(directory.record_key(role, name, website))
         if rec is not None:
             return rec
-    try:
-        from agents.negotiation_agent.email_safety import FREEMAIL
-    except Exception:  # noqa: BLE001
-        FREEMAIL = set()  # type: ignore[assignment]  # noqa: N806
+    from agents.negotiation_agent.email_safety import FREEMAIL
     want_email = (email or "").lower().strip()
     want_domain = _domain(website) or (_domain(email) if want_email and want_email.split("@")[-1] not in FREEMAIL else "")
     if not (want_email or want_domain):

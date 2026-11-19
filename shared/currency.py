@@ -97,14 +97,15 @@ async def rate_info(currency: str = "INR") -> dict[str, Any]:
             live = None
     if live:
         return {"currency": currency, "rate": float(live), "source": "live"}
+    row = None
     try:
         from shared import fx_rates
         row = await fx_rates.usable(currency)
-        if row:
-            return {"currency": currency, "rate": float(row["rate"]), "source": "reference",
-                    "reference": row.get("source"), "as_of": row.get("as_of")}
     except Exception:  # noqa: BLE001
-        pass
+        row = None
+    if row:
+        return {"currency": currency, "rate": float(row["rate"]), "source": "reference",
+                "reference": row.get("source"), "as_of": row.get("as_of")}
     rate = fallback_rate(currency)
     return {"currency": currency, "rate": rate, "source": "fallback" if rate else "none"}
 

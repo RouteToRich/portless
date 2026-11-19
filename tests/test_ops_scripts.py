@@ -80,11 +80,13 @@ def test_coverage_gate():
     def f(cov, tot):
         return {"summary": {"covered_lines": cov, "num_statements": tot, "covered_branches": 0, "num_branches": 0}}
 
-    report = {"files": {p: f(100, 100) for p in gate.MONEY_MIN} | {"services/automation/x.py": f(0, 1000)}}
+    report = {"files": {p: f(100, 100) for p in [*gate.MONEY_MIN, *gate.FULL]} | {"services/automation/x.py": f(0, 1000)}}
     assert gate.gate(report) == []  # automation excluded from the overall figure
     report["files"]["services/escrow_guard/service.py"] = f(50, 100)
     misses = gate.gate(report)
     assert any("escrow_guard/service.py: 50.0%" in m for m in misses)
+    report["files"]["services/automation/safety.py"] = f(99, 100)  # the guard is held at 100 % too
+    assert any("automation/safety.py: 99.0%" in m for m in gate.gate(report))
 
 
 def test_workflows_wired():

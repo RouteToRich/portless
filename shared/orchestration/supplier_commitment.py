@@ -514,14 +514,14 @@ async def mark_and_advance(deal_id: str, outcome: str, note: str | None = None) 
         if party is None or party.party_id != row["supplier_id"]:
             rec.skipped.append({**row, "reason": "supplier party is operator-set — not replaced automatically"})
             break
-        if session is not None:
-            from agents.negotiation_agent.repository import get_repository  # type: ignore[import]
-            session = session.model_copy(update={
-                "seller_id": row["supplier_id"], "seller_email": row["email"],
-                "supplier_quote_price": row["price"], "supplier_last_quote": row["price"],
-                "current_ask": row["price"], "last_offer_to_supplier": None,
-            })
-            await get_repository().save_session(session)
+        # Only reached with a session: without one the margin counts as 0 % and every standby is skipped.
+        from agents.negotiation_agent.repository import get_repository  # type: ignore[import]
+        session = session.model_copy(update={
+            "seller_id": row["supplier_id"], "seller_email": row["email"],
+            "supplier_quote_price": row["price"], "supplier_last_quote": row["price"],
+            "current_ask": row["price"], "last_offer_to_supplier": None,
+        })
+        await get_repository().save_session(session)
         await _request(rec, updated, supplier_id=row["supplier_id"], company=row["company_name"],
                        email=row["email"], price=row["price"], introduced=False)
         logger.info("SupplierCommitment: deal %s moved to standby supplier %s (%.1f%% margin)",

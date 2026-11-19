@@ -368,12 +368,7 @@ def build(
                               pct_of_price=contingency, source="setting"))
 
     fixed, pct = _sum(lines)
-    try:
-        from shared import catalogue
-        mt20 = catalogue.container_for(hs_code)[0] if hs_code else None
-    except Exception:  # noqa: BLE001
-        mt20 = None
-    plan = container_plan(qty, mt20)
+    plan = _plan
     if plan["fill_suggestion_mt"]:
         warnings.append(f"the last container travels {plan['fill_pct']:.0f} % full — offer the buyer "
                         f"{plan['fill_suggestion_mt']:g} MT more to fill the boxes already paid for")

@@ -218,7 +218,7 @@ def journal_from(hold: Any, ledger: Any, *, po_issued_at: datetime | None = None
         debits += e.amount
         credits += e.amount
     issues: list[str] = []
-    if abs(sum(balances.values())) > _TOLERANCE:
+    if abs(sum(balances.values())) > _TOLERANCE:  # pragma: no cover - every entry posts both sides; kept as the audit control
         issues.append(f"trial balance off by {sum(balances.values()):.2f}")
     expected_trust = round(float(getattr(ledger, "outstanding", 0.0) or 0.0), 2)
     if funded and abs(balances.get("escrow_trust", 0.0) - expected_trust) > _TOLERANCE:

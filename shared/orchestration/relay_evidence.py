@@ -24,7 +24,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class Evidence(BaseModel):
@@ -107,6 +107,3 @@ async def supplier_steps(deal: Any) -> dict[str, Any]:
     return {"deal_id": deal.deal_id, "steps": rows,
             "evidence_required": required()}
 
-
-def evidence_field() -> Any:
-    return Field(default=None, description="Call note, WhatsApp screenshot, photo of the signed PO, document")

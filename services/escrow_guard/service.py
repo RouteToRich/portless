@@ -686,6 +686,7 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
             req.deal_id,
             f"payout {req.amount:.2f} would pay the supplier more than it is owed ({owed:.2f} after chargebacks, "
             f"{completed + pending:.2f} paid or pending)",
+            "payouts <= supplier owed",
         )
     retained = _retained_until_acceptance(hold, owed)
     if retained and completed + pending + req.amount > owed - retained + _FUNDING_TOLERANCE:
@@ -1427,13 +1428,12 @@ async def refund(escrow_id: str, req: RefundRequest) -> EscrowResponse:
             await notifications.notify_escrow_refunded(deal, escrow_id, undisbursed, hold.currency, req.reason)
         except Exception as exc:  # noqa: BLE001
             logger.error("EscrowGuard: refund notice failed for deal %s: %s", hold.deal_id, exc)
-    if undisbursed > 0:
-        try:
-            from shared.orchestration.continuations import _issue_document
-            await _issue_document(hold.deal_id, "CREDIT_NOTE", suffix=escrow_id,
-                                  refund_amount=round(undisbursed, 2), refund_reason=req.reason)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("EscrowGuard: credit note failed for deal %s: %s", hold.deal_id, exc)
+    try:  # undisbursed > 0 here: _undisbursed_or_refuse refused a refund of nothing
+        from shared.orchestration.continuations import _issue_document
+        await _issue_document(hold.deal_id, "CREDIT_NOTE", suffix=escrow_id,
+                              refund_amount=round(undisbursed, 2), refund_reason=req.reason)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("EscrowGuard: credit note failed for deal %s: %s", hold.deal_id, exc)
 
     await _emit(EventTopic.DEAL_EXCEPTION, hold.deal_id, {
         "source": "escrow_guard",
