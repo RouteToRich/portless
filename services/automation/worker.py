@@ -149,22 +149,37 @@ async def _run(args: argparse.Namespace, guard: NetworkGuard) -> int:
                 os.environ["FX_PEGS_ENABLED"] = "false"
                 os.environ["CONTAINER_SURVEY_REQUIRED"] = "false"
             linked: list[tuple[Any, str]] = []  # (case, journey id): a Gherkin case played by an LLM journey
+            from services.automation import browser as browser_runner
+            ready, why_not = browser_runner.available()
+            session: Any = None
+
+            def needs_browser(c: Any) -> bool:
+                return c.layer == "ui" or any(s.text.startswith("the browser is signed in") for s in c.steps)
+
             for case in cases:
                 journey_id = next((tag.split(":", 1)[1] for tag in case.tags if tag.startswith("@journey:")), None)
                 if journey_id:
                     linked.append((case, journey_id))
                     continue
-                if case.layer == "ui":
-                    for i, row in enumerate(case.iterations()):
-                        await sink.result({"tc_id": case.tc_id, "iteration": i, "row": row, "status": "needs_browser",
-                                           "error": "Runs in a browser; the backend runner does not drive the console.",
-                                           "steps": [], "emails": [], "phase": case.phase, "layer": case.layer, "duration_ms": 0})
-                    continue
+                prepare = None
+                if needs_browser(case):
+                    if not ready:
+                        for i, row in enumerate(case.iterations()):
+                            await sink.result({"tc_id": case.tc_id, "iteration": i, "row": row, "status": "needs_browser",
+                                               "error": f"Runs in a browser; no browser runner here: {why_not}.",
+                                               "steps": [], "emails": [], "phase": case.phase, "layer": case.layer, "duration_ms": 0})
+                        continue
+                    if session is None:
+                        session = browser_runner.BrowserSession()
+                        await session.start()
+                    prepare = session.prepare(client)
                 for i, row in enumerate(case.iterations()):
-                    result = await engine.run_iteration(case, row, client, background, mail, llm)
+                    result = await engine.run_iteration(case, row, client, background, mail, llm, prepare=prepare)
                     result.update(iteration=i, phase=case.phase, layer=case.layer)
                     await sink.result(result)
                     print(f"{case.tc_id}[{i}] {result['status']}: {(result['error'] or '')[:300]}", flush=True)
+            if session is not None:
+                await session.stop()
             for key, value in commitment_env.items():
                 if value is None:
                     os.environ.pop(key, None)
@@ -241,6 +256,12 @@ def main() -> int:
     os.environ.setdefault("COMPLIANCE_DGFT_LIST", "allow")
     os.environ.setdefault("EXPORT_CERTS_REQUIRED", "false")  # likewise: no certificate is ever recorded there
     os.environ.setdefault("FX_REFERENCE_AUTO_REFRESH", "false")  # the network guard allows no rate feed
+    # The daily data jobs read public sites (UN / OFAC lists, DGFT / CBIC notices, FDA data); the network
+    # guard refuses them, so a run would only log blocked connections. Their own scenarios turn them on.
+    for name in ("COUNTRY_FEEDS_ENABLED", "REGULATORY_WATCH_ENABLED", "DESTINATION_RULES_ENABLED", "REFUSALS_ENABLED",
+                 "REGISTRATION_CHECKS_ENABLED", "DEMAND_LEADS_ENABLED", "INDIA_EXPORTS_ENABLED", "DIRECTORY_SOURCES_ENABLED",
+                 "FREIGHT_PROCUREMENT_ENABLED", "DATA_JOBS_ENABLED", "MARKET_CHECK_ENABLED"):
+        os.environ.setdefault(name, "false")
     os.environ.setdefault("DEALMAKER_STORAGE_DIR", str(work / "dealmaker"))
     os.environ.setdefault("DOCUGEN_STORAGE_DIR", str(work / "docugen"))
     os.chdir(work)  # a relative env_file=".env" finds nothing here

@@ -228,6 +228,14 @@ def _options(suffix: str) -> dict[str, Any]:
         (r"with the re-inspection gate pending", lambda m: {"_after": ("reinspect",)}),
         (r"with the payout gate open", lambda m: {"_after": ("payout_gate",)}),
         (r"with an approved tranche gate \"\{APPR\}\"", lambda m: {"_after": ("approved_tranche",)}),
+        (r"with a DGFT-denied supplier", lambda m: {"_after": ("dgft_denied",)}),
+        (r"with an approval \"\{APPR\}\" in state \"([^\"]+)\"", lambda m: {"released": ["T1", "T2"], "_after": ("approval_state", m.group(1))}),
+        (r"with an approved \"RELEASE_ESCROW_TRANCHE\" gate for \"(T\d)\" whose callback failed",
+         lambda m: {"released": ["T1", "T2"], "_after": ("approval_state", f"approved for {m.group(1)}")}),
+        (r"with a prohibited HS code", lambda m: {"_after": ("prohibited_hs",)}),
+        (r"with buyer and supplier sharing a phone", lambda m: {"_after": ("shared_phone",)}),
+        (r"with a supplier company younger than ([\d.]+) years?", lambda m: {"_after": ("young_supplier", float(m.group(1)))}),
+        (r"with a buyer/supplier price ratio above ([\d.]+)", lambda m: {"supplier_price": round(1250 / (float(m.group(1)) + 0.2), 2)}),
     ]
     for pattern, build in rules:
         m = re.fullmatch(pattern, s)
@@ -677,13 +685,13 @@ async def gate_amount(ctx: Ctx, action: str, amount: str) -> None:
 
 async def _all_mail(ctx: Ctx) -> list[dict[str, str]]:
     from agents.negotiation_agent.email_history import get_email_repository
-    drafts = await get_email_repository().list_by_deal(_deal_id(ctx))
+    drafts = await get_email_repository().list_by_deal(_deal_id(ctx)) if "D" in ctx.ids else []
     return ctx.emails + [{"to": e.to_address, "subject": e.subject, "body": e.body} for e in drafts if _value(e.direction) == "outbound"]
 
 
 @step(r'an e-mail containing "([^"]+)" is composed for the "([^"]+)"')
 async def mail_composed(ctx: Ctx, text: str, party: str) -> None:
-    other = ctx.ids["supplier_mail" if party == "buyer" else "buyer_mail"]
+    other = ctx.ids.get("supplier_mail" if party == "buyer" else "buyer_mail")
     mails = await _all_mail(ctx)
     hit = [m for m in mails if m["to"] != other and (text.lower() in m["subject"].lower() or text.lower() in m["body"].lower())]
     assert hit, f"no e-mail with {text!r} to the {party}; subjects: {[m['subject'] for m in mails][:8]}"
@@ -828,7 +836,7 @@ async def journal_balanced(ctx: Ctx) -> None:
     assert journal.get("balanced", True), f"journal not balanced: {journal.get('issues')}"
 
 
-from . import steps2, steps3, steps4, steps5, steps6  # noqa: E402,F401 — registers the remaining steps
+from . import steps2, steps3, steps4, steps5, steps6, steps7, steps_ui  # noqa: E402,F401 — registers the remaining steps
 
 
 def _assign_test_organisations() -> None:

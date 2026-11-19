@@ -2,7 +2,7 @@
 title: PortLess browser scenarios and Playwright plan
 scope: Operator console (portless-ui) driven in a real browser against a real backend
 source_of_truth: docs/testing/TEST_CASES.md (the @ui and console-written @e2e cases) + section 4 of this file (new browser cases)
-status: Not automated. To be built as its own task in a separate repository (portless-e2e).
+status: The @ui cases of TEST_CASES.md run in the automation worker's browser runner (services/automation/browser.py + steps_ui.py, Playwright / Chromium, in-process backend — 2026-11-20). The separate portless-e2e repository below stays the plan for cross-browser, multi-operator and visual runs.
 ---
 
 # PortLess browser scenarios and Playwright plan

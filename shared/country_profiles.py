@@ -157,8 +157,10 @@ def get(iso2: str | None) -> CountryProfile | None:
     cc = (iso2 or "").strip().upper()[:2]
     if len(cc) != 2:
         return None
-    base: dict[str, Any] = {"iso2": cc, "tier": _settings_tier(cc)}
     seeded = SEED.get(cc)
+    if not seeded and cc not in _stored and _settings_tier(cc) == "standard":
+        return None  # nothing is known about this country (tier() still answers "standard")
+    base: dict[str, Any] = {"iso2": cc, "tier": _settings_tier(cc)}
     if seeded:
         base.update(seeded)
         if _settings_tier(cc) in ("blocked", "review"):  # the settings' lists outrank a seed's tier

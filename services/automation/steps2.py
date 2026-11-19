@@ -678,6 +678,8 @@ async def funds_with(ctx: Ctx, what: str) -> None:
         await _fund(ctx, m.group(1), m.group(2) or fx.MARKET)
     elif what == "no payer reported":
         await _fund(ctx, None, None)
+    elif (c := re.match(r'the buyer paying from country "([^"]+)"', what)):
+        await _fund(ctx, ctx.ids["buyer_company"], c.group(1))
     else:
         raise NotAutomated(f"Funding variant not automated: {what}")
 

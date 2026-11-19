@@ -2421,8 +2421,9 @@ Feature: Opening and funding the escrow
     Then the response status is 502
 
   @TC-ESC-006 @P1 @positive
-  Scenario: Legacy hold on an open escrow step
-    Given a deal "D" at status "ESCROW_PENDING" from fixture "FX-STD" with no hold
+  Scenario: Legacy hold on an open escrow step (only while ESCROW_LEGACY_STRIPE_HOLD is on)
+    Given the setting "ESCROW_LEGACY_STRIPE_HOLD" is "true"
+    And a deal "D" at status "ESCROW_PENDING" from fixture "FX-STD" with no hold
     When I call "POST /escrow-guard/holds" with body:
       """
       {"deal_id":"{D}","amount":25000,"currency":"USD","idempotency_key":"h1"}
@@ -2431,7 +2432,8 @@ Feature: Opening and funding the escrow
 
   @TC-ESC-007 @P1 @negative
   Scenario Outline: A legacy hold needs ESCROW_PENDING
-    Given a deal "D" at status "<status>" from fixture "FX-STD"
+    Given the setting "ESCROW_LEGACY_STRIPE_HOLD" is "true"
+    And a deal "D" at status "<status>" from fixture "FX-STD"
     When I call "POST /escrow-guard/holds" with body:
       """
       {"deal_id":"{D}","amount":25000,"currency":"USD","idempotency_key":"h1"}
@@ -2441,6 +2443,17 @@ Feature: Opening and funding the escrow
     Examples:
       | status        |
       | PI_SENT       |
+
+  @TC-ESC-040 @P0 @negative @money
+  Scenario: The legacy Stripe hold is refused by default
+    Given the setting "ESCROW_LEGACY_STRIPE_HOLD" is "false"
+    And a deal "D" at status "ESCROW_PENDING" from fixture "FX-STD" with no hold
+    When I call "POST /escrow-guard/holds" with body:
+      """
+      {"deal_id":"{D}","amount":25000,"currency":"USD","idempotency_key":"h1"}
+      """
+    Then the response status is 410
+    And the response detail contains "neutral escrow"
 
   @TC-ESC-008 @P2 @positive
   Scenario: List escrow providers
@@ -4818,6 +4831,769 @@ Feature: Opportunity intake, identity and readiness
     Then the startup is refused
 ```
 
+### Phase 14: Export desk operations
+
+Samples, buyer permits, export incentive credits, country profiles and registrations, the regulation watch,
+the customs broker (CHA) hand-off, cargo insurance, the buyer's letter of intent and the broker-chain guard.
+
+```gherkin
+@phase:export-desk @api
+Feature: Samples before the first order
+  A buyer's sample request, the courier and the verdict; the approved sample is the quality reference.
+
+  Background:
+    Given I am "staff"
+    And a deal "D" at status "MATCHING" from fixture "FX-STD"
+
+  @TC-SMP-001 @P1 @positive
+  Scenario: Request, courier and approve a sample
+    When I call "POST /deals/{D}/samples" with body:
+      """
+      {"note":"for the buyer's lab"}
+      """
+    Then the response status is 200
+    And the response field "status" is "requested"
+    And I remember the response field "sample_id" as "SMP"
+    When I call "POST /deals/{D}/samples/{SMP}/courier" with body:
+      """
+      {"courier":"dhl","awb":"1234567890","cost_usd":45}
+      """
+    Then the response status is 200
+    And the response field "status" is "shipped"
+    When I call "POST /deals/{D}/samples/{SMP}/verdict" with body:
+      """
+      {"verdict":"approved","note":"matches the spec"}
+      """
+    Then the response status is 200
+    When I call "GET /deals/{D}/samples"
+    Then the response field "approved_sample_ref" is "{SMP}"
+
+  @TC-SMP-002 @P1 @negative
+  Scenario Outline: A courier record needs a known courier and an AWB
+    When I call "POST /deals/{D}/samples" with body:
+      """
+      {}
+      """
+    And I remember the response field "sample_id" as "SMP"
+    And I call "POST /deals/{D}/samples/{SMP}/courier" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | body                                       |
+      | {"courier":"pigeon","awb":"1"}             |
+      | {"courier":"dhl","awb":""}                 |
+      | {"courier":"dhl","awb":"1","cost_usd":-5}  |
+
+  @TC-SMP-003 @P2 @negative
+  Scenario Outline: Unknown sample or verdict
+    When I call "POST /deals/{D}/samples/<sample>/verdict" with body:
+      """
+      {"verdict":"<verdict>"}
+      """
+    Then the response status is <status>
+
+    Examples:
+      | sample  | verdict  | status |
+      | SMP-NO  | approved | 404    |
+      | SMP-NO  | maybe    | 422    |
+
+  @TC-SMP-004 @P2 @negative
+  Scenario: A sample for an unknown deal
+    When I call "POST /deals/DEAL-NOPE00/samples" with body:
+      """
+      {}
+      """
+    Then the response status is 404
+
+  @TC-SMP-005 @P1 @positive
+  Scenario: A second request for the same buyer returns the open one
+    When I call "POST /deals/{D}/samples" with body:
+      """
+      {"buyer":"C1"}
+      """
+    And I remember the response field "sample_id" as "SMP"
+    And I call "POST /deals/{D}/samples" with body:
+      """
+      {"buyer":"C1"}
+      """
+    Then the response field "sample_id" is "{SMP}"
+```
+
+```gherkin
+@phase:export-desk @api @compliance
+Feature: Buyer permits and export incentive credits
+
+  Background:
+    Given I am "staff"
+    And a deal "D" at status "NEGOTIATION_AGREED" from fixture "FX-STD"
+
+  @TC-PRM-001 @P1 @positive
+  Scenario: Record the buyer's import permit
+    When I call "PUT /deals/{D}/buyer-permits" with body:
+      """
+      {"name":"SFDA importer licence","number":"S-99","valid_until":"2027-06-30"}
+      """
+    Then the response status is 200
+    And the response field "buyer_permits.SFDA importer licence.number" is "S-99"
+
+  @TC-PRM-002 @P1 @negative
+  Scenario Outline: A permit needs a name, a number and an ISO date
+    When I call "PUT /deals/{D}/buyer-permits" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | body                                                    |
+      | {"name":"SFDA","number":"1","valid_until":"next year"}  |
+      | {"name":"","number":"1"}                                |
+
+  @TC-INC-001 @P1 @positive @money
+  Scenario Outline: Record an incentive credit per Shipping Bill
+    When I call "POST /deals/{D}/incentive-credits" with body:
+      """
+      {"shipping_bill":"7654321","kind":"<kind>","amount_usd":120,"credited_on":"2026-11-10"}
+      """
+    Then the response status is 200
+    And the response field "credited_usd" is "120"
+
+    Examples:
+      | kind     |
+      | rodtep   |
+      | rosctl   |
+      | drawback |
+
+  @TC-INC-002 @P1 @negative @money
+  Scenario Outline: An incentive credit is refused when it is not a credit
+    When I call "POST /deals/{D}/incentive-credits" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | body                                                               |
+      | {"shipping_bill":"1","kind":"subsidy","amount_usd":1}              |
+      | {"shipping_bill":"","kind":"rodtep","amount_usd":1}                |
+      | {"shipping_bill":"1","kind":"rodtep","amount_usd":-1}              |
+      | {"shipping_bill":"1","kind":"rodtep","amount_usd":1,"credited_on":"soon"} |
+
+  @TC-INC-003 @P2 @positive
+  Scenario: Deals whose credits fell short are listed
+    When I call "GET /deals/incentive-credits/short"
+    Then the response status is 200
+    And the response field "short" is present
+```
+
+```gherkin
+@phase:export-desk @api @compliance
+Feature: Country profiles, registrations and HS policy re-confirmation
+
+  Background:
+    Given I am "staff"
+
+  @TC-CTY-001 @P1 @positive
+  Scenario Outline: Starter markets carry a profile and a tier
+    When I call "GET /deals/compliance/countries/<cc>"
+    Then the response status is 200
+    And the response field "tier" is "<tier>"
+
+    Examples:
+      | cc | tier      |
+      | AE | preferred |
+      | SG | preferred |
+      | CA | standard  |
+      | KP | blocked   |
+
+  @TC-CTY-002 @P2 @negative
+  Scenario: A country without a profile answers 404
+    When I call "GET /deals/compliance/countries/ZZ"
+    Then the response status is 404
+
+  @TC-CTY-003 @P1 @negative
+  Scenario Outline: A profile change is checked
+    When I call "PUT /deals/compliance/countries/<cc>" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | cc  | body                          |
+      | BRA | {"currency":"BRL","source":"x"} |
+      | BR  | {"source":"bcb"}              |
+      | BR  | {"tier":"golden","source":"x"} |
+
+  @TC-CTY-004 @P1 @positive
+  Scenario: An ECGC downgrade suggests a stricter tier but does not apply it
+    When I call "PUT /deals/compliance/countries/OM" with body:
+      """
+      {"ecgc_rating":"C1","source":"ECGC quarterly list"}
+      """
+    Then the response status is 200
+    And the response field "profile.tier" is "preferred"
+    And the response field "profile.tier_suggestion" is "review"
+
+  @TC-CTY-005 @P0 @security @negative
+  Scenario: Only a compliance officer changes a profile when officers are named
+    Given the setting "AUTH_COMPLIANCE_OFFICER_EMAILS" is "officer@portless-qa.invalid"
+    When I call "PUT /deals/compliance/countries/BR" with body:
+      """
+      {"currency":"BRL","source":"bcb"}
+      """
+    Then the response status is 403
+
+  @TC-REG-001 @P1 @positive
+  Scenario: Record a registration with its expiry
+    When I call "PUT /deals/compliance/registrations/iec" with body:
+      """
+      {"number":"AAACP1234Q","expires_on":"2027-06-30"}
+      """
+    Then the response status is 200
+    When I call "GET /deals/compliance/registrations"
+    Then the response field "held.iec.number" is "AAACP1234Q"
+
+  @TC-REG-002 @P1 @negative
+  Scenario Outline: A registration needs a known kind, a number and an ISO date
+    When I call "PUT /deals/compliance/registrations/<kind>" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | kind  | body                                      |
+      | bogus | {"number":"1"}                            |
+      | lut   | {"number":""}                             |
+      | lut   | {"number":"AD33","expires_on":"31/03/2027"} |
+
+  @TC-REG-003 @P2 @positive
+  Scenario: HS codes due for re-confirmation are listed
+    When I call "GET /deals/compliance/hs-policy-due"
+    Then the response status is 200
+    And the response field "max_age_days" is "30"
+
+  @TC-RGW-001 @P0 @positive @compliance
+  Scenario: A notification recorded by hand holds the open deals of that code
+    Given a deal "D" at status "MATCHING" from fixture "FX-STD"
+    When I call "PUT /trade-min/catalogue" with body:
+      """
+      {"products":[{"product_id":"qa-rice","hs_code":"100630","name":"milled rice","markets":["AE"]}],"updated_by":"qa"}
+      """
+    And I call "PUT /deals/compliance/hs-policy/100630" with body:
+      """
+      {"status":"free","note":"checked against ITC-HS"}
+      """
+    And I call "POST /deals/compliance/regulatory-items" with body:
+      """
+      {"title":"Minimum export price on non-basmati rice","number":"PN-RICE-{uid}","hs_codes":["1006.30"]}
+      """
+    Then the response status is 200
+    And the response field "hit" is "true"
+    And an exception is recorded with "deal_id" equal to "{D}"
+    When I call "GET /deals/compliance/hs-policy-due"
+    Then the response field "due" contains "100630"
+
+  @TC-RGW-002 @P1 @negative
+  Scenario: A notification without a title is refused
+    When I call "POST /deals/compliance/regulatory-items" with body:
+      """
+      {"title":" "}
+      """
+    Then the response status is 422
+
+  @TC-RGW-003 @P2 @positive
+  Scenario: A notification naming no catalogue product is kept but holds nothing
+    When I call "POST /deals/compliance/regulatory-items" with body:
+      """
+      {"title":"Steel quality control order {uid}","number":"QCO-{uid}"}
+      """
+    Then the response status is 200
+    And the response field "hit" is "false"
+    When I call "GET /deals/compliance/regulatory-items"
+    Then the response list "items" has at least 1 item
+```
+
+```gherkin
+@phase:export-desk @flow @email
+Feature: Customs broker (CHA) hand-off
+  A licensed broker per port, the pack by e-mail, the checklist approved before filing, the Shipping Bill.
+
+  Background:
+    Given I am "staff"
+    And a deal "D" at status "QC_PASSED" from fixture "FX-STD"
+
+  @TC-CHA-001 @P1 @positive
+  Scenario: Register a broker, record its KYC and send the pack
+    When I call "PUT /deals/cha/agents" with body:
+      """
+      {"firm":"Nhava Sheva Brokers {uid}","licence_no":"R-{uid}","licence_valid_until":"2030-12-31","ports":["INNSA1","Nhava Sheva"],"email":"docs@cha-{uid}.invalid","charges_per_shipment_usd":140}
+      """
+    Then the response status is 200
+    And I remember the response field "agent_id" as "AGENT"
+    When I call "POST /deals/cha/agents/{AGENT}/kyc" with body:
+      """
+      {"sent_on":"2026-11-01","authorisation_ref":"AUTH-{uid}"}
+      """
+    Then the response field "sent" is "true"
+    When I call "POST /deals/{D}/cha/pack?port=INNSA1"
+    Then the response status is 200
+    And the response field "status" is "pack_sent"
+    And an e-mail containing "[CHA:" is composed for the "cha"
+
+  @TC-CHA-002 @P1 @negative
+  Scenario Outline: A broker needs a firm, a licence, an address and a port
+    When I call "PUT /deals/cha/agents" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | body                                                                 |
+      | {"firm":"","licence_no":"1","email":"a@b.invalid","ports":["INNSA1"]} |
+      | {"firm":"X","licence_no":"1","email":"nope","ports":["INNSA1"]}      |
+      | {"firm":"X","licence_no":"1","email":"a@b.invalid","ports":[]}       |
+
+  @TC-CHA-003 @P1 @negative
+  Scenario: No broker with a valid licence at the port
+    When I call "POST /deals/{D}/cha/pack?port=NOWHERE-{uid}"
+    Then the response status is 409
+
+  @TC-CHA-004 @P1 @positive
+  Scenario: The Shipping Bill is recorded with its LEO date
+    When I call "PUT /deals/cha/agents" with body:
+      """
+      {"firm":"Mundra Brokers {uid}","licence_no":"M-{uid}","licence_valid_until":"2030-12-31","ports":["INMUN1"],"email":"sb@cha2-{uid}.invalid"}
+      """
+    And I call "POST /deals/{D}/cha/pack?port=INMUN1"
+    And I call "POST /deals/{D}/cha/shipping-bill" with body:
+      """
+      {"number":"1234567","date":"2026-11-20","leo_date":"2026-11-21","declared":[]}
+      """
+    Then the response status is 200
+    And the response field "number" is "1234567"
+
+  @TC-CHA-005 @P1 @negative
+  Scenario Outline: A Shipping Bill number is 6 to 8 digits
+    When I call "POST /deals/{D}/cha/shipping-bill" with body:
+      """
+      {"number":"<number>"}
+      """
+    Then the response status is 422
+
+    Examples:
+      | number    |
+      | 12        |
+      | ABCDEFG   |
+      | 123456789 |
+
+  @TC-CHA-006 @P1 @money @positive
+  Scenario: A broker invoice above the estimate is flagged
+    When I call "POST /deals/{D}/cha/invoice" with body:
+      """
+      {"amount_usd":900,"items":{"agency":600,"CFS":300}}
+      """
+    Then the response status is 200
+    And the response field "over_estimate" is "true"
+    And an exception is recorded with "stage" equal to "CHA:cost_overrun"
+
+  @TC-CHA-007 @P2 @positive
+  Scenario: A broker invoice inside the estimate is accepted quietly
+    When I call "POST /deals/{D}/cha/invoice" with body:
+      """
+      {"amount_usd":100}
+      """
+    Then the response field "over_estimate" is "false"
+
+  @TC-CHA-008 @P1 @email @security @negative
+  Scenario: A reply on the CHA thread from another domain is not trusted
+    When an e-mail from "spoof@evil-{uid}.invalid" arrives with subject "Re: Shipping Bill [CHA:{D}]" and body:
+      """
+      Shipping Bill No: 7654321 filed
+      """
+    Then the e-mail was processed as "needs_operator"
+```
+
+```gherkin
+@phase:export-desk @api @money
+Feature: Cargo insurance declaration and claims
+
+  Background:
+    Given I am "staff"
+    And a deal "D" at status "IN_TRANSIT" from fixture "FX-STD"
+
+  @TC-INS-001 @P1 @positive
+  Scenario: Record the per-shipment declaration
+    When I call "POST /deals/{D}/insurance/declaration" with body:
+      """
+      {"certificate_no":"MC-{uid}","insurer":"QA Insurance","sum_insured_usd":27500}
+      """
+    Then the response status is 200
+    And the response field "certificate_no" is "MC-{uid}"
+    When I call "GET /deals/{D}/insurance"
+    Then the response field "declaration.insurer" is "QA Insurance"
+
+  @TC-INS-002 @P1 @negative
+  Scenario Outline: A declaration needs a certificate and a positive sum
+    When I call "POST /deals/{D}/insurance/declaration" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | body                                          |
+      | {"certificate_no":" "}                        |
+      | {"certificate_no":"C1","sum_insured_usd":-1}  |
+
+  @TC-INS-003 @P1 @positive
+  Scenario: A claim runs from notice to settlement
+    When I call "POST /deals/{D}/insurance/claims" with body:
+      """
+      {"reason":"water damage in one container","amount_usd":1800,"delivered_on":"2026-11-15"}
+      """
+    Then the response status is 200
+    And the response field "notice_due" is "2026-11-22"
+    And I remember the response field "claim_id" as "CLM"
+    When I call "POST /deals/{D}/insurance/claims/{CLM}" with body:
+      """
+      {"status":"notified"}
+      """
+    Then the response field "status" is "notified"
+    When I call "POST /deals/{D}/insurance/claims/{CLM}" with body:
+      """
+      {"status":"surveyed","survey_ref":"SV-{uid}"}
+      """
+    And I call "POST /deals/{D}/insurance/claims/{CLM}" with body:
+      """
+      {"status":"filed"}
+      """
+    And I call "POST /deals/{D}/insurance/claims/{CLM}" with body:
+      """
+      {"status":"settled","recovered_usd":1500}
+      """
+    Then the response status is 200
+    And the response field "recovered_usd" is "1500"
+
+  @TC-INS-004 @P1 @negative
+  Scenario Outline: A claim moves only forward
+    When I call "POST /deals/{D}/insurance/claims" with body:
+      """
+      {"reason":"shortage","amount_usd":300}
+      """
+    And I remember the response field "claim_id" as "CLM"
+    And I call "POST /deals/{D}/insurance/claims/{CLM}" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | body                     |
+      | {"status":"settled"}     |
+      | {"status":"surveyed"}    |
+      | {"status":"bogus"}       |
+
+  @TC-INS-005 @P2 @negative
+  Scenario Outline: A claim needs a reason, an amount and an ISO delivery date
+    When I call "POST /deals/{D}/insurance/claims" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | body                                                      |
+      | {"reason":"","amount_usd":10}                             |
+      | {"reason":"wet","amount_usd":0}                           |
+      | {"reason":"wet","amount_usd":10,"delivered_on":"monday"}  |
+
+  @TC-INS-006 @P2 @negative
+  Scenario: An unknown claim answers 404
+    When I call "POST /deals/{D}/insurance/claims/CLM-NOPE" with body:
+      """
+      {"status":"notified"}
+      """
+    Then the response status is 404
+```
+
+```gherkin
+@phase:export-desk @flow @email
+Feature: Letter of intent and the broker-chain guard
+
+  Background:
+    Given I am "staff"
+    And a deal "D" at status "MATCHING" from fixture "FX-STD"
+
+  @TC-LOI-001 @P1 @positive
+  Scenario: Record a buyer's LOI from its text
+    When I call "POST /deals/{D}/loi" with body:
+      """
+      {"text":"Please find our LOI.\nLOI No: GF-{uid}\nWe intend to buy 500 MT per month, CIF Jebel Ali, port.\nShipment within December 2026."}
+      """
+    Then the response status is 200
+    And the response field "quantity_mt" is "500"
+    And the response field "monthly" is "true"
+    And the deal field "loi.reference" is "GF-{uid}"
+
+  @TC-LOI-002 @P0 @security @negative
+  Scenario Outline: The broker-chain pattern is refused
+    When I call "POST /deals/{D}/loi" with body:
+      """
+      {"text":"<text>"}
+      """
+    Then the response status is 422
+
+    Examples:
+      | text                                                       |
+      | LOI attached. Send ICPO, then we issue the FCO.            |
+      | Our buyer mandate needs proof of funds and SGS at load port |
+
+  @TC-LOI-003 @P2 @negative
+  Scenario: A text that is not a letter of intent
+    When I call "POST /deals/{D}/loi" with body:
+      """
+      {"text":"Thanks for the offer, we will revert."}
+      """
+    Then the response status is 422
+
+  @TC-LOI-004 @P1 @positive
+  Scenario: The LOI template names the Incoterms 2020 rule and the escrow
+    When I call "GET /deals/{D}/loi/template?incoterm=CNF&place=Jebel%20Ali"
+    Then the response status is 200
+    And the response field "text" contains "CFR Jebel Ali, Incoterms® 2020"
+    And the response field "text" contains "escrow"
+
+  @TC-LOI-005 @P1 @positive
+  Scenario: Staff record an LOI's facts without its text
+    When I call "POST /deals/{D}/loi" with body:
+      """
+      {"quantity_mt":80,"port":"Dammam","reference":"PO-{uid}"}
+      """
+    Then the response status is 200
+    And the response field "port" is "Dammam"
+```
+
+### Phase 15: Radar sources, freight, leads and data feeds
+
+Forwarder quotes by e-mail, government and embassy leads, destination requirements, India's export
+statistics, list actors into the directory and the country feeds.
+
+```gherkin
+@phase:radar-sources @flow @email
+Feature: Freight procurement by e-mail
+
+  Background:
+    Given I am "staff"
+    And a deal "D" at status "PO_ISSUED" from fixture "FX-STD"
+
+  @TC-FWD-001 @P1 @positive
+  Scenario: Forwarders on the lane are asked; their quotes are read and countered
+    When I call "PUT /deals/freight/forwarders" with body:
+      """
+      {"name":"Alpha Logistics {uid}","email":"rates@alpha-{uid}.invalid","lanes":["AE"]}
+      """
+    Then the response status is 200
+    When I call "PUT /deals/freight/forwarders" with body:
+      """
+      {"name":"Beta Cargo {uid}","email":"quotes@beta-{uid}.invalid","lanes":["AE"]}
+      """
+    And I call "POST /deals/{D}/freight/request" with body:
+      """
+      {"ready_date":"2026-12-10"}
+      """
+    Then the response status is 200
+    And the response list "requests" has at least 2 items
+    And an e-mail containing "[FRT:" is composed for the "forwarder"
+    When an e-mail from "sales@alpha-{uid}.invalid" arrives with subject "Re: Freight quote request [FRT:{D}]" and body:
+      """
+      20' USD 1,500 all in, 14 days free, transit 18 days, valid till 2026-12-31
+      """
+    Then the e-mail was processed as "processed"
+    When an e-mail from "quotes@beta-{uid}.invalid" arrives with subject "Re: Freight quote request [FRT:{D}]" and body:
+      """
+      20ft USD 1,400
+      """
+    And I call "GET /deals/{D}/freight/quotes"
+    Then the response field "best.forwarder" is "Beta Cargo {uid}"
+    When I call "POST /deals/{D}/freight/counter"
+    Then the response status is 200
+    And the response field "target_usd" is "1358"
+    When I call "POST /deals/{D}/freight/counter"
+    Then the response status is 409
+
+  @TC-FWD-002 @P1 @negative
+  Scenario Outline: A forwarder needs a name, an address and a lane
+    When I call "PUT /deals/freight/forwarders" with body:
+      """
+      <body>
+      """
+    Then the response status is 422
+
+    Examples:
+      | body                                         |
+      | {"name":"","email":"a@b.invalid","lanes":["AE"]} |
+      | {"name":"F","email":"nope","lanes":["AE"]}   |
+      | {"name":"F","email":"a@b.invalid","lanes":[]} |
+
+  @TC-FWD-003 @P1 @negative
+  Scenario: Nothing to counter before a quote arrives
+    When I call "POST /deals/{D}/freight/counter"
+    Then the response status is 409
+
+  @TC-FWD-004 @P1 @email @security @negative
+  Scenario: A quote from a forwarder that was never asked is not recorded
+    When an e-mail from "someone@unasked-{uid}.invalid" arrives with subject "Re: [FRT:{D}]" and body:
+      """
+      20' USD 900
+      """
+    Then the e-mail was processed as "needs_operator"
+```
+
+```gherkin
+@phase:radar-sources @flow @email
+Feature: Buyer leads from government portals and Indian missions
+
+  Background:
+    Given I am "staff"
+
+  @TC-LEAD-001 @P1 @positive
+  Scenario: A Trade Connect enquiry becomes a buyer lead
+    When an e-mail from "noreply@trade.gov.in" arrives with subject "Trade Connect enquiry {uid}" and body:
+      """
+      Company Name: Lead Buyer {uid} LLC
+      Country: United Arab Emirates
+      Email: buyer@lead-{uid}.invalid
+      Product: milled rice
+      HS code: 100630
+      Quantity: 60 MT
+      """
+    Then the e-mail was processed as "processed"
+    When I call "GET /deals/leads/recent"
+    Then the response field "leads" contains "Lead Buyer {uid} LLC"
+
+  @TC-LEAD-002 @P2 @positive
+  Scenario: Lead counts per source
+    When I call "GET /deals/leads/stats"
+    Then the response status is 200
+    And the response field "sources" is present
+
+  @TC-MSN-001 @P1 @negative
+  Scenario: A mission request needs the commercial wing's address
+    When I call "POST /deals/missions/requests" with body:
+      """
+      {"market":"JP","hs_code":"100630"}
+      """
+    Then the response status is 404
+
+  @TC-MSN-002 @P1 @positive
+  Scenario: Ask a mission for an importer list, then import the reply once
+    When I call "PUT /deals/compliance/countries/QA" with body:
+      """
+      {"commercial_wing_email":"com.doha@mea-{uid}.invalid","source":"embassy site"}
+      """
+    And I call "POST /deals/missions/requests" with body:
+      """
+      {"market":"QA","hs_code":"100630","product":"milled rice"}
+      """
+    Then the response status is 200
+    And I remember the response field "request_id" as "MSN"
+    And an e-mail containing "[MISSION:" is composed for the "mission"
+    When I call "POST /deals/missions/requests" with body:
+      """
+      {"market":"QA","hs_code":"100630"}
+      """
+    Then the response status is 409
+    When I call "POST /deals/missions/requests/{MSN}/import" with body:
+      """
+      {"rows":[{"company":"Doha Foods {uid}","email":"buy@dohafoods-{uid}.invalid"}]}
+      """
+    Then the response status is 200
+    And the response field "directory" is "1"
+
+  @TC-MSN-003 @P2 @negative
+  Scenario: An unknown mission request
+    When I call "POST /deals/missions/requests/MSN-NOPE/import" with body:
+      """
+      {}
+      """
+    Then the response status is 404
+```
+
+```gherkin
+@phase:radar-sources @api
+Feature: Destination requirements, India's export statistics and list actors
+
+  Background:
+    Given I am "staff"
+
+  @TC-DST-001 @P1 @positive
+  Scenario: Destination requirements combine staff entries, portal rows and refusal tests
+    When I call "GET /deals/compliance/destination-requirements?hs=100630&market=AE"
+    Then the response status is 200
+    And the response field "requirements" is present
+    And the response field "test_for" is present
+
+  @TC-DST-002 @P2 @negative
+  Scenario: Destination requirements need a product and a market
+    When I call "GET /deals/compliance/destination-requirements?hs=100630"
+    Then the response status is 422
+
+  @TC-IEX-001 @P1 @positive
+  Scenario: India's export statistics answer even with no rows yet
+    When I call "GET /trade-min/india-exports?hs_code=100630&market=AE&fob=500"
+    Then the response status is 200
+    And the response field "latest" is "null"
+
+  @TC-DIR-001 @P1 @negative
+  Scenario: Only the known list actors can be run
+    When I call "POST /trade-min/directory/sources/run?connector=apify_everything&hs_code=100630"
+    Then the response status is 422
+
+  @TC-DIR-002 @P1 @positive
+  Scenario: A list actor that is not built yet costs nothing
+    When I call "POST /trade-min/directory/sources/run?connector=apify_trade_fairs&hs_code=100630&market=AE"
+    Then the response status is 200
+    And the response field "stub" is "true"
+
+  @TC-DIR-003 @P1 @positive
+  Scenario: Companies from a list actor land in the directory
+    Given the actor "apify_association_members" returns:
+      """
+      {"companies":[{"name":"Association Importer {uid}","role":"buyer","country":"DE","source":"association:esa","flags":["association_member"]}]}
+      """
+    When I call "POST /trade-min/directory/sources/run?connector=apify_association_members&hs_code=100630&market=DE"
+    Then the response status is 200
+    And the response field "stored" is "1"
+```
+
+```gherkin
+@phase:radar-sources @flow @compliance
+Feature: Country risk from direct feeds
+
+  Background:
+    Given I am "staff"
+
+  @TC-CFD-001 @P0 @positive
+  Scenario: The feeds run on demand and report what they read
+    Given the setting "UN_SANCTIONS_XML_URL" is ""
+    When I call "POST /deals/compliance/country-feeds/run"
+    Then the response status is 200
+    And the response field "blocked" is present
+    And the response field "suggested" is present
+
+  @TC-CFD-002 @P0 @security @negative
+  Scenario: Only a compliance officer runs the feeds when officers are named
+    Given the setting "AUTH_COMPLIANCE_OFFICER_EMAILS" is "officer@portless-qa.invalid"
+    When I call "POST /deals/compliance/country-feeds/run"
+    Then the response status is 403
+```
+
 ## 7. UI scenarios
 
 Backend calls may be real or mocked. Scenarios tagged `@needs:route-mock` need a browser-level mock of the named response.
@@ -4929,7 +5705,7 @@ Feature: Sign-in, navigation and access
     Given the sign-in service refuses the password
     When I open "/login"
     And I fill "Email" with "qa@portless-qa.invalid"
-    And I fill "Password" with "wrong"
+    And I fill "Password" with "wrong-password"
     And I click "Sign in"
     Then I am on "/login"
     And an error is shown
@@ -4937,7 +5713,7 @@ Feature: Sign-in, navigation and access
   @TC-UI-011 @P2 @positive
   Scenario: Signing out returns to sign-in
     Given the browser is signed in as "staff"
-    When I click "Sign out"
+    When I click "Log out"
     Then I am on "/login"
 ```
 
@@ -4967,7 +5743,7 @@ Feature: Standard page states
       | /approvals     | /hitl-approval/approvals |
       | /money         | /escrow-guard/ledgers    |
       | /exceptions    | /exception-resolver/exceptions |
-      | /counterparties | /trade-min/buyers       |
+      | /counterparties | /trade-min/directory/buyers/page |
 
   @TC-UI-021 @P2 @negative
   Scenario: The error state does not mention a developer address
@@ -4988,7 +5764,7 @@ Feature: Radar, prospects and the match board
   Scenario: Starting a prospect from an opportunity
     Given an opportunity exists
     When I open "/radar"
-    And I click "Start deal"
+    And I click "Start prospect"
     Then a toast says "Prospect started"
     And a deal exists at "MATCHING" for the opportunity
 
@@ -4997,13 +5773,14 @@ Feature: Radar, prospects and the match board
     Given an opportunity exists
     And the API answers 500 for "POST /deals"
     When I open "/radar"
-    And I click "Start deal"
+    And I click "Start prospect"
     Then a toast says "Could not start the prospect"
 
   @TC-UI-032 @P2 @needs:route-mock @exception
   Scenario: A failed scan is reported
     Given the API answers 500 for "POST /trade-min/scan"
     When I open "/radar"
+    And I click "Scan"
     And I click "Scan"
     Then a toast says "Scan failed"
 
@@ -5054,8 +5831,7 @@ Feature: Radar, prospects and the match board
   Scenario: No candidate left to contact
     Given a deal "D" at status "MATCHING" from fixture "FX-STD"
     When I open "/deals/{D}"
-    And I click "Contact next buyers"
-    Then a toast says "No candidate to contact"
+    Then the button "Contact next buyers" is disabled
 
   @TC-UI-044 @P1 @positive
   Scenario: Add a supplier offer
@@ -5213,6 +5989,7 @@ Feature: Deal detail page
   Scenario: Poll carrier tracking without a booking
     Given a deal "D" at status "IN_TRANSIT" from fixture "FX-STD"
     When I open "/deals/{D}"
+    And I open the tab "Logistics"
     And I click "Poll carrier tracking"
     Then a toast is shown
 
@@ -5255,11 +6032,11 @@ Feature: Deal detail page
     Examples:
       | state                     | button                   | visibility |
       | funded, window not open   | Confirm delivery         | shown      |
-      | funded, window open       | Confirm delivery         | not shown  |
+      | funded, window open       | Confirm delivery         | disabled   |
       | funded                    | Record buyer acceptance  | shown      |
       | disputed                  | Record buyer acceptance  | not shown  |
-      | disputed                  | Clear the dispute        | shown      |
-      | not disputed              | Clear the dispute        | not shown  |
+      | disputed                  | Clear dispute            | shown      |
+      | not disputed              | Clear dispute            | not shown  |
       | fully released            | Refund                   | not shown  |
 
   @TC-UI-081 @P0 @money @negative
@@ -5272,8 +6049,8 @@ Feature: Deal detail page
     Then a toast says "A reason is required"
 
     Examples:
-      | open            | confirm       |
-      | Raise a dispute | Raise dispute |
+      | open          | confirm       |
+      | Raise dispute | Raise dispute |
 
   @TC-UI-082 @P0 @money @positive
   Scenario: Relaying the buyer's acceptance opens an approval and moves no money
@@ -5329,7 +6106,9 @@ Feature: Approvals inbox
   @TC-UI-100 @P0 @positive
   Scenario: Approve a gate
     Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
+    And the stage gate "ISSUE_PO" is open
     When I open "/approvals"
+    And I open the gate of deal "D"
     And I click "Approve"
     Then a toast says "Approved: Issue Po"
     And deal "D" has status "SUPPLIER_DISPATCH_READY"
@@ -5337,7 +6116,9 @@ Feature: Approvals inbox
   @TC-UI-101 @P0 @positive
   Scenario: Reject a gate with a note
     Given a deal "D" at status "ESCROW_FUNDED" from fixture "FX-STD"
+    And the stage gate "ISSUE_PO" is open
     When I open "/approvals"
+    And I open the gate of deal "D"
     And I fill "Optional note..." with "supplier changed terms"
     And I click "Reject"
     Then a toast says "Rejected: Issue Po"
@@ -5371,14 +6152,19 @@ Feature: Approvals inbox
   Scenario: Four-eyes flow in the console
     Given the setting "FOUR_EYES_THRESHOLD_USD" is "5000"
     And a deal "E" at status "SUPPLIER_DISPATCH_READY" from fixture "FX-STD" with T1 unreleased
+    And the stage gate "RELEASE_ESCROW_TRANCHE" is open
     When I open "/approvals"
+    And I open the gate of deal "E"
     Then I see "0 of 2 approvals"
     When I click "Approve"
     Then a toast says "more operator must countersign"
-    And I see "You already approved this gate"
+    When I open "/approvals"
+    And I open the gate of deal "E"
+    Then I see "You already approved this gate"
     And the button "Countersign" is disabled
     Given the browser is signed in as "staff2"
     When I open "/approvals"
+    And I open the gate of deal "E"
     And I click "Countersign"
     Then a toast says "Approved: Release Escrow Tranche"
 
@@ -5529,6 +6315,7 @@ Feature: Money, exceptions, settings and health
   Scenario: A refused policy shows the backend's reason
     Given the API answers 422 with detail "bad level" for "PUT /hitl-approval/autonomy-policy"
     When I open "/autonomy"
+    And I set "RFQ Dispatch" to "L1"
     And I click "Save"
     Then a toast says "Save failed"
 
@@ -5743,8 +6530,7 @@ Feature: Whole deals from matching to cash
   Scenario: Embargoed destination never reaches a PI
     Given a deal "D" built from fixture "FX-STD" with market "KP"
     When the negotiation is finalized at "1250"
-    Then deal "D" has status "NEGOTIATION_AGREED"
-    And the collection "proforma_invoices" has 0 records for the deal
+    Then the collection "proforma_invoices" has 0 records for the deal
     And no e-mail containing "Proforma Invoice" is composed
 
   @TC-E2E-010 @P1 @positive

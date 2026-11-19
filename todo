@@ -17,9 +17,9 @@ accountant · (Biz) founder / business · (QA) quality.
 ---
 
 <!-- todo-metrics:start -->
-## To-do at a glance (2026-11-19)
+## To-do at a glance (2026-11-20)
 
-**352 open · 332 done** (49 % done).
+**353 open · 333 done** (49 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
@@ -27,11 +27,11 @@ accountant · (Biz) founder / business · (QA) quality.
 | Go-live blockers | 11 | 0 |
 | Owner's track (accounts, keys) | 30 | 0 |
 | P0 — before the first real trade | 69 | 34 |
-| P1 — before more than a few deals a month | 157 | 275 |
+| P1 — before more than a few deals a month | 158 | 276 |
 | P2 — improvements | 21 | 23 |
 | Apify actors (outside this repo) | 40 | 0 |
 | Decisions needed | 23 | 0 |
-| **Total** | **352** | **332** |
+| **Total** | **353** | **333** |
 
 Open items by owner: Eng 61 · Apify 40 · Ops 26 · Legal 27 · Biz 43 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
@@ -218,7 +218,7 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(Eng)** Fix the defects the production-risk cases record (`TEST_CASES.md` section 10, DEF-13 … DEF-21; DEF-12 fixed) and decide DEC-08 … DEC-10 (overpayment, failed DUPRO, partial quality claims). — progress 2026-11-19: DEF-13 … DEF-16, DEF-18 … DEF-21 fixed (see the table in TEST_CASES.md); DEF-17 partly (APEDA contract registration open). DEC-08 … DEC-10 still need a decision; the known-defect catalogue cases need their steps automated.
 
 ### 6.2 Browser (console) tests — Quality assurance gaps
-- [ ] **(QA/Eng)** Browser automation as its own task in a **separate repository `portless-e2e` with Playwright** (chosen over Cypress: two operators in one test for four-eyes, several tabs for live updates and the Kill Switch, downloads, several origins, WebKit, free parallel runs). Plan, repository layout, sign-in stub and order of work: `docs/testing/BROWSER_SCENARIOS.md`.
+- [ ] **(QA/Eng)** Browser automation as its own task in a **separate repository `portless-e2e` with Playwright** (chosen over Cypress: two operators in one test for four-eyes, several tabs for live updates and the Kill Switch, downloads, several origins, WebKit, free parallel runs). Plan, repository layout, sign-in stub and order of work: `docs/testing/BROWSER_SCENARIOS.md`. — progress 2026-11-20: the catalogue's @ui cases now run in the automation worker (Playwright / Chromium against the real bundle, backend in-process): 79 browser iterations pass; the separate repository stays for cross-browser, multi-operator and visual runs.
 - [x] **(Eng)** Prerequisite for it: `data-testid` attributes on every console button and money figure (DEF-05). — done 2026-11-18: first pass: gate approve / reject / note / amount, every ledger row (`ledger-<label>`), Kill Switch (with `data-state`), deal status (`data-status`), Money & Margin figure cards, plus every new card and dialog of this week. The rest of the pages: as the browser suite reaches them.
 - [ ] **(QA)** Automate the 17 P0 `@ui` cases and the money / security browser cases first (TC-WEB-001 … TC-WEB-008, TC-WEB-017, TC-WEB-019, TC-WEB-023, TC-WEB-025).
 
@@ -437,17 +437,19 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **(QA)** An LLM journey (UC-16) like UC-15 but starting from a manually added local supplier, and one for a pre-arranged trade.
 
 ### 6.1 Automation coverage — Quality assurance gaps
-- [ ] **(QA/Eng)** The remaining 10 backend cases with unautomated steps (34 in total). Most common missing steps: "an opportunity with a scored supplier and buyer candidates", "the deal is driven to settlement", "the payout gate amounts in order are …", concurrent approval, ledger-breach fixtures, SSE stream connection.
+- [ ] **(QA/Eng)** The remaining 10 backend cases with unautomated steps (34 in total). Most common missing steps: "an opportunity with a scored supplier and buyer candidates", "the deal is driven to settlement", "the payout gate amounts in order are …", concurrent approval, ledger-breach fixtures, SSE stream connection. — progress 2026-11-20: exception playbook variants, LLM exhausted / invalid JSON / resolver crash, compliance fixture variants (DGFT-denied, prohibited HS, shared phone, young supplier, price spread), approval-state fixtures, screening BLOCK verdict, payer-country funding — automated; concurrency, SSE, ledger breaches and settlement drives remain.
 - [ ] **(QA/Eng)** Link TC-E2E-002 … TC-E2E-010 to LLM journeys with `@journey:` (as TC-E2E-000 is) or rewrite them for the backend runner.
 - [ ] **(QA)** Re-run all 15 LLM journeys (UC-01 … UC-15) after every change to the negotiation, commitment or money code; today only UC-01 and UC-15 ran after the latest changes.
-- [ ] **(QA)** Run the whole catalogue once and record the baseline (no full catalogue run is stored in the automation database).
+- [x] **(QA)** Run the whole catalogue once and record the baseline (no full catalogue run is stored in the automation database). — done 2026-11-20: docs/testing/AUTOMATION_BASELINE.md — 858 passed (779 backend, 79 browser), 2 failed (the two LLM journeys without the gateway), 216 not automated.
 - [ ] **(QA/Ops) P1** **Case-study scenarios with real numbers** — five worked trades, written once, as the reference for automation, operator training and the pilot: (1) basmati 1×20' to Jebel Ali, CIF, Tazapay, PSI, APEDA RCAC; (2) whole spices 1×40' HC to Hamburg, FOB, ethylene-oxide test, EU refusal history checked; (3) a 1000 MT buyer covered by 800 + 200 MT suppliers (composition); (4) QC fail → re-inspection → pass; (5) the buyer clears late → demurrage clock and who pays. Each lists the inputs (prices, freight quote, quantity, packing), the expected cost sheet line by line, the margin, every gate, every e-mail, every document with its key fields, and the money per tranche. Deliver each as `docs/case-studies/<n>.md`, a Gherkin case and an LLM journey that must match the expected numbers within a tolerance.
 
 ### 6.2 Browser (console) tests — Quality assurance gaps
 - [ ] **(QA)** Rewrite TC-E2E-001 … TC-E2E-010 as browser journeys (console for every decision, providers on the simulators).
 - [ ] **(QA)** The remaining 64 `@ui` cases and TC-WEB-009 … TC-WEB-032 (the `@known-defect` ones as each feature lands).
-- [ ] **(Eng)** Browser results written to the same `qa_*` collections so the Automation dashboard shows browser and backend results together; `@P0 and @ui` on every pull request to either repo, all `@ui` nightly, full browser matrix before a release.
+- [ ] **(Eng)** Browser results written to the same `qa_*` collections so the Automation dashboard shows browser and backend results together; `@P0 and @ui` on every pull request to either repo, all `@ui` nightly, full browser matrix before a release. — progress 2026-11-20: the browser runner (services/automation/browser.py + steps_ui.py) runs @ui cases inside the worker, so their results land in the same qa_* collections and dashboard; the CI triggers (@P0 and @ui per pull request, nightly) stay open — CI needs the portless-ui bundle built with VITE_PORTLESS_ACCOUNT_ID.
 - [x] **(Eng)** The UI repo has **no unit or component tests**. Add tests for money displays (amount, currency, tranche order), gate actions and status chips. — done 2026-11-19: Vitest suite added (see the Vitest item) — money displays, gate actions, status chips.
+- [ ] **(QA) P1** **Automate the browser form steps still missing** (56 @ui iterations not automated, docs/testing/AUTOMATION_BASELINE.md): add buyer / supplier offer / requirement, propose a match, record loading and milestones, submit a round, approve / reject / modify a draft, open a document, set an autonomy level, two tabs refreshing the token. Each needs the console form's labels; add them to services/automation/steps_ui.py.
+- [ ] **(QA/Eng) P1** **Run the browser cases in CI**: build portless-ui with `VITE_PORTLESS_ACCOUNT_ID` into `dist-qa`, install Playwright Chromium, run the worker with `--tag ui` (or `--only TC-UI`) on every pull request to either repository and nightly; keep the two LLM journeys for the staging run with the gateway.
 
 ### 6.3 Real provider sandboxes — Quality assurance gaps
 - [ ] **(QA)** A staging environment wired to provider sandboxes, separate database, separate mailbox, running nightly.

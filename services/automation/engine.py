@@ -136,7 +136,8 @@ async def _attempt(fn: StepFn, ctx: Ctx, args: tuple[str, ...], keyword: str, te
 
 
 async def run_iteration(case: Case, row: dict[str, str], client: httpx.AsyncClient, background: set[asyncio.Task],
-                        mail_log: list[dict[str, str]], llm_log: list[str]) -> dict[str, Any]:
+                        mail_log: list[dict[str, str]], llm_log: list[str],
+                        prepare: Callable[[Ctx], Awaitable[None]] | None = None) -> dict[str, Any]:
     """Result document for one iteration: passed, failed or not_automated."""
     started = time.monotonic()
     steps: list[Step] = [s.filled(row) for s in case.steps]
@@ -150,8 +151,12 @@ async def run_iteration(case: Case, row: dict[str, str], client: httpx.AsyncClie
     mail_log.clear()
     llm_log.clear()
     ctx = Ctx(client=client, background=background, emails=mail_log, llm_calls=llm_log)
+    from uuid import uuid4
+    ctx.ids["uid"] = uuid4().hex[:8]  # unique names for scenarios without a deal fixture (a fixture sets its own)
     keyword = "Given"
     try:
+        if prepare is not None:
+            await prepare(ctx)  # e.g. a fresh browser context for a @ui case
         for s in steps:
             if s.keyword not in ("And", "But"):
                 keyword = s.keyword

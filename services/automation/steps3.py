@@ -78,6 +78,59 @@ async def apply_after(ctx: Ctx, after: tuple[Any, ...]) -> None:
         repo = get_repository()
         record = await repo.get(gate.approval_id)
         await repo.save(record.model_copy(update={"status": "APPROVED", "decision": "APPROVE", "resolved_by": "qa"}))
+    elif kind == "approval_state":
+        from services.hitl_approval.repository import get_repository
+        state = after[1]
+        hold = await _hold(ctx)
+        if state == "approved for 1000":
+            gate = await _gate_exists(ctx, "RELEASE_SUPPLIER_PAYOUT", amount=1000.0, payload={
+                "deal_id": _deal_id(ctx), "payee_id": "S", "amount": 1000.0, "idempotency_key": uuid4().hex})
+        else:
+            tranche = state.rsplit(" ", 1)[-1] if state.startswith("approved for T") else "T3"
+            amount = next((float(t.amount) for t in hold.tranches if t.tranche_id == tranche), 5000.0)
+            gate = await _gate_exists(ctx, "RELEASE_ESCROW_TRANCHE", amount=amount, payload={
+                "deal_id": _deal_id(ctx), "escrow_id": hold.escrow_id, "tranche_id": tranche, "amount": amount,
+                "proof_refs": ["qa-proof"]})
+        repo = get_repository()
+        record = await repo.get(gate.approval_id)
+        if state == "pending":
+            return
+        if state == "rejected":
+            await repo.save(record.model_copy(update={"status": "REJECTED", "decision": "REJECT", "resolved_by": "qa"}))
+            return
+        await repo.save(record.model_copy(update={"status": "APPROVED", "decision": "APPROVE", "resolved_by": "qa"}))
+    elif kind == "dgft_denied":
+        from shared.orchestration import denied_list
+
+        async def denied(name: Any, iec: Any = None) -> dict[str, Any]:
+            return {"on_denied_list": True, "match": {"by": "iec", "name": name, "order_ref": "QA-ORDER"}}
+        ctx.patch(denied_list, "check", denied)
+    elif kind == "prohibited_hs":
+        from shared.orchestration import compliance
+        real = compliance.hs_policy_status
+        hs = str((await _deal(ctx)).hs_code)
+
+        async def prohibited(code: str) -> tuple[str, str]:
+            return ("prohibited", "automation: prohibited by ITC-HS Schedule 2") if code == hs else await real(code)
+        ctx.patch(compliance, "hs_policy_status", prohibited)
+    elif kind == "shared_phone":
+        from services.deals.repository import get_repository
+        deal = await _deal(ctx)
+        for party in deal.parties:
+            party.phone = "+971 4 555 0101"
+        await get_repository().save(deal)
+    elif kind == "young_supplier":
+        from types import SimpleNamespace
+        from services.deals.repository import get_repository
+        from services.sourcing import service as sourcing
+        deal = await _deal(ctx)
+        await get_repository().save(deal.model_copy(update={"winning_supplier_id": "SUP-QA-YOUNG"}))
+        quote = SimpleNamespace(supplier_id="SUP-QA-YOUNG", verification=SimpleNamespace(
+            dgft_denied=False, business_age_years=max(0.1, after[1] / 2)))
+
+        async def quotes(**kwargs: Any) -> list[Any]:
+            return [quote]
+        ctx.patch(sourcing, "list_quotes", quotes)
     else:
         raise NotAutomated(f"Fixture add-on not automated: {kind}")
 
