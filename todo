@@ -19,19 +19,19 @@ accountant · (Biz) founder / business · (QA) quality.
 <!-- todo-metrics:start -->
 ## To-do at a glance (2026-11-20)
 
-**333 open · 353 done** (51 % done).
+**335 open · 353 done** (51 % done).
 
 | Section | Open | Done |
 |---|---:|---:|
 | Where things stand | 1 | 0 |
 | Go-live blockers | 11 | 0 |
-| Owner's track (accounts, keys) | 30 | 0 |
+| Owner's track (accounts, keys) | 32 | 0 |
 | P0 — before the first real trade | 69 | 34 |
 | P1 — before more than a few deals a month | 138 | 296 |
 | P2 — improvements | 21 | 23 |
 | Apify actors (outside this repo) | 40 | 0 |
 | Decisions needed | 23 | 0 |
-| **Total** | **333** | **353** |
+| **Total** | **335** | **353** |
 
 Open items by owner: Eng 41 · Apify 40 · Ops 26 · Legal 27 · Biz 43 · QA 32 (untagged items are not counted; an item can name more than one owner).
 Recount: `python -X utf8 scripts/todo_metrics.py` (the test suite fails when this block is out of date).
@@ -112,6 +112,19 @@ Things only the founder can do: open the accounts, accept the terms, pass the pr
 - [ ] **Radar data to enter** (16): HS export policy confirmation per catalogue code, RoDTEP / drawback rates once the CA confirms eligibility, container size / type and destination requirements per product line, freight quotes you receive (`PUT /trade-min/freight-lanes`).
 - [ ] Load the real product lines and corridors on the Catalogue page (`PUT /trade-min/catalogue`) (1.5).
 - [ ] Tell engineering which groups are set, so each provider's sandbox run (6.3) can start; readiness should show no `fail` before `ENV_PROFILE=production`.
+
+### E. Integration decisions found in the review of 2026-11-20
+- [ ] **Truck from the supplier to the port — decide who arranges it.** Today there is no trucking integration: the app only estimates the inland leg (supplier address → nearest export port, road km × `TRADE_COST_INLAND_INR_PER_TONNE_KM` (3.5) + `TRADE_COST_INLAND_HANDLING_INR_PER_MT` (250)) and counts it only when a supplier quotes ex-works; on FOB the supplier delivers to the port. Decide: (a) buy FOB only — the supplier trucks, nothing more to build; or (b) also accept ex-works — then choose a trucking partner / forwarder for inland moves, set up e-way bills on the GST portal (3.5), give engineering your real per-lane inland rates to replace the estimate, and say whether you want a trucking booking integration (not on the to-do yet).
+- [ ] **Real cargo-insurance rates from the insurer / broker** — once the open marine policy exists (14.3), give engineering the premium for the sea leg (`LANDED_INSURANCE_PCT`, today an estimate of 0.5 %), the inland leg for ex-works purchases (`INSURANCE_INLAND_PCT`, 0.05 %) and seller's contingency cover (`INSURANCE_CONTINGENCY_PCT`, 0.1 %), plus how each shipment is declared and the certificate issued (no insurer is connected by API; staff record the declaration and claims).
+
+**Also yours, tracked in their own section** (listed here so the whole owner's list is in one place; tick them where they are):
+- Company registration and licences — legal form, incorporation, GST, IEC, LUT, RCMC, ICEGATE + AD code, FSSAI, plant quarantine, Udyam (14.1, 14.2); AD Category-I bank account and KYB with Tazapay / Escrow.com / payout route (14.3).
+- How Indian suppliers are paid — Payoneer, INR bank or gateway (decision 3.3); only then the payout keys above.
+- Tazapay — confirm the fee per transaction and per payout, settlement currency and timing, and the documents accepted per stage (2.1).
+- Maersk — confirm the token request, webhook payload / signature and shipping instructions on your account (2.3); confirm with the trade desk whether the carrier is booked before stuffing (2.3).
+- QIMA — sampling level (AQL) per commodity and product-tree ids per HS code (2.4); PEO service type (1.2).
+- Customs broker (CHA) under contract at your port (14.5), and the ICEGATE-or-manual filing decision (1.2).
+- Open marine cargo policy and ECGC export credit insurance (14.3); insurance certificate from the insurer (3.5).
 
 ---
 
