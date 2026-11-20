@@ -121,6 +121,13 @@ ACTION_CLASSES: tuple[ActionClass, ...] = (
         default="L0",
     ),
     ActionClass(
+        "CONFIRM_DEAL_COMPOSITION", "Deal Composition",
+        "With deal composition on: the best combination of one buyer and one or more suppliers "
+        "from their firm offers (margin per leg and in total, freight plan, runner-ups). Always "
+        "asks a person — the composition agent opens it at L0 whatever this level says.",
+        default="L0",
+    ),
+    ActionClass(
         "CONFIRM_SUPPLIER_SELECTION", "Supplier Selection",
         "Confirm a supplier the Match Engine did not auto-SOURCE (thin data / "
         "verification gap / re-match after a failed negotiation). A GST+IEC-verified "

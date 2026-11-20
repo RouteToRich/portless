@@ -320,6 +320,10 @@ async def _process_inbound(
     if getattr(mapping, "outreach_deal_id", None) and not mapping.negotiation_id:
         return await _handle_outreach_reply(record, raw, mapping)
 
+    # ── A supplier leg of a composed deal answering on its own thread ──────
+    if getattr(mapping, "leg_id", None) and not mapping.negotiation_id:
+        return await _handle_leg_reply(record, raw, mapping)
+
     # ── Supplier quote replying to an RFQ e-mail (sourcing stage) ──────────
     if getattr(mapping, "rfq_id", None) and not mapping.negotiation_id:
         return await _handle_rfq_reply(record, raw, mapping, counter_price_override)
@@ -675,6 +679,29 @@ async def _handle_outreach_reply(record: InboundEmailRecord, raw: InboundRawEmai
     )
 
 
+async def _handle_leg_reply(record: InboundEmailRecord, raw: InboundRawEmail, mapping) -> ProcessingResult:
+    """[LEG:<deal>:<leg>] reply → composition.handle_leg_reply (confirm / decline / PO ack)."""
+    repo = get_repository()
+    deal_id, leg_id = mapping.leg_deal_id, mapping.leg_id
+    record = record.model_copy(update={
+        "status": InboundEmailStatus.MAPPED, "deal_id": deal_id, "party": "supplier",
+        "mapping_confidence": mapping.confidence, "updated_at": datetime.now(timezone.utc),
+    })
+    await repo.save(record)
+    try:
+        from shared.orchestration import composition
+        out = await composition.handle_leg_reply(deal_id, leg_id, raw.from_address, raw.body_text, record.inbound_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Leg reply %s: handling failed: %s", record.inbound_id, exc)
+        out = {"handled": False, "reason": str(exc)}
+    status = InboundEmailStatus.PROCESSED if out.get("handled") else InboundEmailStatus.NEEDS_OPERATOR
+    record = record.model_copy(update={"status": status, "updated_at": datetime.now(timezone.utc),
+                                       **({"processed_at": datetime.now(timezone.utc)} if out.get("handled") else {})})
+    await repo.save(record)
+    return ProcessingResult(inbound_id=record.inbound_id, status=status,
+                            message=f"Leg {leg_id} reply for deal {deal_id}: {out.get('verdict') or out.get('reason')}")
+
+
 # ---------------------------------------------------------------------------
 # RFQ replies (sourcing stage) — supplier quote by e-mail
 # ---------------------------------------------------------------------------
@@ -758,6 +785,24 @@ async def _handle_rfq_reply(
             "updated_at": datetime.now(timezone.utc),
         })
         await repo.save(record)
+        try:
+            from shared.orchestration import firm_offers
+            from shared.orchestration.outreach import composition_enabled
+            if composition_enabled() and deal_id:
+                from services.deals.service import get_deal as _gd  # type: ignore[import]
+                _deal = await _gd(deal_id)
+                offer = next((o for o in _deal.supplier_offers if o.supplier_id == quote.supplier_id), None)
+                await firm_offers.capture_from_reply(_deal, "supplier", quote.supplier_id, raw.body_text, base={
+                    "company_name": getattr(offer, "company_name", ""), "email": record.from_address,
+                    "grade": getattr(offer, "grade", None), "price_usd_per_mt": price,
+                    "quantity_mt": getattr(offer, "capacity_mt_per_month", None),
+                    "min_quantity_mt": getattr(offer, "moq_mt", None), "incoterm": getattr(offer, "incoterm", None) or "FOB",
+                    "port": getattr(offer, "port_of_loading", None), "port_km": getattr(offer, "port_km", None),
+                    "verified": (bool(offer.gst_verified) and bool(offer.iec_active))
+                    if offer is not None and (offer.gst_verified is not None or offer.iec_active is not None) else None,
+                })
+        except Exception as exc:  # noqa: BLE001 — the quote is recorded whatever happens here
+            logger.warning("RFQ reply %s: firm offer not captured: %s", record.inbound_id, exc)
         logger.info(
             "Inbound %s → quote %s for RFQ %s (supplier %s, %.2f USD/MT, decision=%s)",
             record.inbound_id, quote.quote_id, rfq_id, quote.supplier_id, price, quote.re_scored_decision,

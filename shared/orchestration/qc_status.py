@@ -175,6 +175,10 @@ async def sync(deal_id: str | None) -> QcStatus | None:
         orders = await sl_repo().list_by_deal(deal_id)
         commitment = await supplier_commitment.get(deal_id)
         status, detail = compute(deal.status, commitment, orders)
+        from shared.orchestration import supplier_legs
+        legs_line = supplier_legs.qc_summary(deal)
+        if legs_line and str(getattr(deal.status, "value", deal.status)) in ("PO_ISSUED", "SUPPLIER_DISPATCH_READY"):
+            detail = f"{legs_line} — {detail}" if detail else legs_line
         from shared.orchestration import inspection_plan
         phases = phase_lines(inspection_plan.normalise(getattr(deal, "inspection_types", None)
                                                        or inspection_plan.default_types()), orders)

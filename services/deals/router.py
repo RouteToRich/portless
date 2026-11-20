@@ -32,6 +32,17 @@ router = APIRouter(prefix="/deals", tags=["deals"])
 
 
 # ---------------------------------------------------------------------------
+# Supplier legs — migration of old deals (todo 13.4). Before the /{deal_id} routes.
+# ---------------------------------------------------------------------------
+
+@router.post("/supplier-legs/migrate")
+async def migrate_supplier_legs(user: AuthUser = Depends(require_portless)) -> dict:
+    """Store one supplier leg on every old one-supplier deal (idempotent; behaviour unchanged)."""
+    from shared.orchestration import supplier_legs
+    return await supplier_legs.migrate_all()
+
+
+# ---------------------------------------------------------------------------
 # Trade compliance — HS export-policy confirmations (platform-wide, staff only).
 # Declared before the /{deal_id} routes so "compliance" is never read as an id.
 # ---------------------------------------------------------------------------
@@ -1493,6 +1504,112 @@ async def get_match_board(deal_id: str, user: AuthUser = Depends(get_current_use
     from shared.orchestration import matchmaking
     board = await matchmaking.build_board(deal)
     return board.model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# Deal composition (todo 13.1-13.4)
+# ---------------------------------------------------------------------------
+
+class FirmOfferBody(BaseModel):
+    side: str
+    counterparty_id: str
+    company_name: str = ""
+    email: str | None = None
+    grade: str | None = None
+    quantity_mt: float | None = None
+    min_quantity_mt: float | None = None
+    price_usd_per_mt: float
+    incoterm: str | None = None
+    port: str | None = None
+    date_by: datetime | None = None
+    valid_until: datetime | None = None
+    verified: bool | None = None
+    note: str | None = None
+
+
+class LegAckBody(BaseModel):
+    ready_date: str | None = None
+
+
+class LegCancelBody(BaseModel):
+    reason: str
+    buyer_consent: bool = False
+
+
+@router.get("/{deal_id}/composition")
+async def get_composition(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    """Live firm offers, candidate combinations, score breakdown, why one won, what would
+    change the answer, the per-thread price bounds and the supplier legs."""
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import composition, firm_offers, supplier_legs
+    offers = await firm_offers.live_offers(deal)
+    result = await composition.compose(deal, reason="viewed") if composition.enabled() else None
+    bounds = {}
+    for o in offers:
+        bounds[f"{o.side}:{o.counterparty_id}"] = await firm_offers.thread_bounds(deal, o.side, o.counterparty_id, offers=offers)
+    return {"enabled": composition.enabled(), "state": deal.composition or {},
+            "live_offers": [o.model_dump(mode="json") for o in offers],
+            "result": result.model_dump(mode="json") if result else None, "thread_bounds": bounds,
+            "legs": supplier_legs.summary(deal), "qc": supplier_legs.qc_summary(deal)}
+
+
+@router.post("/{deal_id}/composition/run")
+async def run_composition(deal_id: str, user: AuthUser = Depends(require_portless)) -> dict:
+    """Re-run the composition now (staff); on close-now it opens CONFIRM_DEAL_COMPOSITION."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import composition
+    if not composition.enabled():
+        raise HTTPException(status_code=409, detail="deal composition is off (DEAL_COMPOSITION_ENABLED)")
+    return await composition.run(deal_id, reason=f"run by {_who(user)}")
+
+
+@router.post("/{deal_id}/firm-offers")
+async def post_firm_offer(deal_id: str, body: FirmOfferBody, user: AuthUser = Depends(require_portless)) -> dict:
+    """Staff record a firm offer heard by phone / chat (source ``staff``); the composition re-runs."""
+    if body.side not in ("buyer", "supplier"):
+        raise HTTPException(status_code=422, detail="side must be buyer or supplier")
+    await _org_deal(deal_id, user)
+    from shared.orchestration import firm_offers
+    from uuid import uuid4
+    deal = await firm_offers.record(deal_id, {
+        **body.model_dump(exclude={"note"}), "offer_id": f"FO-{uuid4().hex[:10].upper()}", "source": "staff",
+        "origin_deal_id": deal_id,
+    })
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "firm_offer.recorded", deal_id, side=body.side, counterparty=body.counterparty_id,
+                      price=body.price_usd_per_mt, note=body.note)
+    return {"firm_offers": [o.model_dump(mode="json") for o in deal.firm_offers]}
+
+
+@router.get("/{deal_id}/legs")
+async def get_legs(deal_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    deal = await _org_deal(deal_id, user)
+    from shared.orchestration import supplier_legs
+    return {"legs": supplier_legs.summary(deal) or [x.model_dump(mode="json") for x in supplier_legs.legs_for(deal)],
+            "multi": supplier_legs.is_multi(deal), "qc": supplier_legs.qc_summary(deal)}
+
+
+@router.post("/{deal_id}/legs/{leg_id}/po-ack")
+async def leg_po_ack(deal_id: str, leg_id: str, body: LegAckBody, user: AuthUser = Depends(require_portless)) -> dict:
+    """Staff relay one leg's PO acknowledgement (and goods-ready date) heard by phone."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import supplier_legs
+    deal = await supplier_legs.acknowledge_po(deal_id, leg_id, by=_who(user), ready_date=body.ready_date)
+    from shared.audit_log import staff_relay
+    await staff_relay(user, "supplier_leg.po_ack", deal_id, leg_id=leg_id, ready_date=body.ready_date)
+    return {"legs": supplier_legs.summary(deal)}
+
+
+@router.post("/{deal_id}/legs/{leg_id}/cancel")
+async def leg_cancel(deal_id: str, leg_id: str, body: LegCancelBody, user: AuthUser = Depends(require_portless)) -> dict:
+    """Cancel one leg's quantity (e.g. a failed leg) — needs the buyer's consent and a reason."""
+    await _org_deal(deal_id, user)
+    from shared.orchestration import supplier_legs
+    try:
+        return await supplier_legs.cancel_leg(deal_id, leg_id, by=_who(user), reason=body.reason,
+                                              buyer_consent=body.buyer_consent)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.put("/{deal_id}/buyer-candidates/{candidate_id}/requirement", response_model=DealRecord)

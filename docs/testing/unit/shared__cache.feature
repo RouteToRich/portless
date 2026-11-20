@@ -162,9 +162,12 @@ Feature: shared/cache — unit tests
       # tests/test_trade_data_and_infra.py::TestCacheFacade::test_mongo_and_close
       Given within patch.object(cache.cache_settings.__class__, 'resolved_uri', return_value='mongodb://x'), patch('motor.motor_asyncio.AsyncIOMotorClient', return_value=client)
       And client.__getitem__.return_value = AsyncMongoMockClient()['c']
+      And from shared import mongo as shared_mongo
       When client = MagicMock()
       And await cache.close_cache()
+      And shared_mongo.close_all()
       Then isinstance(await cache.init_cache(), cache.MongoCacheBackend)
+      And client.close.assert_not_called()
       And client.close.assert_called_once()
       And cache._backend is None
 

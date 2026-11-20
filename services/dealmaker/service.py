@@ -582,11 +582,15 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
     deal = await _fetch_deal(req.deal_id)
     deal_status = deal.status.value if hasattr(deal.status, "value") else str(deal.status)
 
-    if deal_status != "ESCROW_FUNDED":
+    # A further supplier leg of a multi-supplier deal (todo 13.4) is issued while the deal is
+    # already PO_ISSUED by the first leg's PO; it never moves the deal again.
+    further_leg = bool(req.leg_id) and deal_status in ("PO_ISSUED", "SUPPLIER_DISPATCH_READY") and any(
+        p.leg_id and p.leg_id != req.leg_id for p in await repo.list_pos_by_deal(req.deal_id))
+    if deal_status != "ESCROW_FUNDED" and not further_leg:
         raise InvalidDealState(req.deal_id, deal_status, "ESCROW_FUNDED")
 
     from shared.domain.enums import DealStatus
-    if not can_transition(DealStatus(deal_status), DealStatus.PO_ISSUED):
+    if not further_leg and not can_transition(DealStatus(deal_status), DealStatus.PO_ISSUED):
         raise InvalidDealState(req.deal_id, deal_status, "ESCROW_FUNDED")
 
     # ── Margin guard ──────────────────────────────────────────────────────
@@ -680,8 +684,20 @@ async def issue_po(req: IssuePoRequest) -> PoResponse:
         content_hash=content_hash,
         issued_at=now,
         idempotency_key=req.idempotency_key,
+        leg_id=req.leg_id,
     )
     await repo.save_po(po_record)
+    if req.leg_id:
+        try:
+            from shared.orchestration import supplier_legs
+            await supplier_legs.set_leg(req.deal_id, req.leg_id, {"po_id": po_id})
+        except Exception as exc:  # noqa: BLE001 — the PO itself is issued
+            logger.warning("DealMaker: PO %s not linked to leg %s: %s", po_id, req.leg_id, exc)
+    if further_leg:
+        logger.info("DealMaker: PO %s issued for leg %s of deal %s (deal already PO_ISSUED)",
+                    po_id, req.leg_id, req.deal_id)
+        await _patch_deal_est_margin(req.deal_id, po_record)
+        return PoResponse.from_record(po_record)
 
     # ── State transition + event ──────────────────────────────────────────
     await _transition_deal(req.deal_id, "PO_ISSUED", f"PO {po_id} issued to supplier")
@@ -739,7 +755,14 @@ async def _patch_deal_est_margin(deal_id: str, po: PoRecord) -> None:
                 costs = sum(v for k, v in lines.items() if k != "contingency")
         except Exception as exc:  # noqa: BLE001
             logger.debug("DealMaker: cost sheet for est margin of %s unavailable: %s", deal_id, exc)
-        est = round(pi.total_value - po.total_value - costs, 2)
+        po_total = po.total_value
+        try:  # a multi-supplier deal: every leg's PO is a cost (todo 13.4)
+            pos = await get_repository().list_pos_by_deal(deal_id)
+            if len(pos) > 1:
+                po_total = sum(p.total_value for p in pos)
+        except Exception:  # noqa: BLE001
+            pass
+        est = round(pi.total_value - po_total - costs, 2)
         pct = round(est / pi.total_value * 100.0, 2) if pi.total_value else None
         from services.deals.schemas import UpdateFinancialsRequest  # type: ignore[import]
         from services.deals.service import update_financials  # type: ignore[import]

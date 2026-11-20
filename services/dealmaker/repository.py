@@ -44,6 +44,7 @@ class DealMakerRepository(Protocol):
     async def save_po(self, po: PoRecord) -> None: ...
     async def get_po(self, po_id: str) -> PoRecord | None: ...
     async def get_po_by_deal(self, deal_id: str) -> PoRecord | None: ...
+    async def list_pos_by_deal(self, deal_id: str) -> list[PoRecord]: ...
     async def get_po_by_idempotency_key(self, key: str) -> PoRecord | None: ...
 
 
@@ -89,6 +90,10 @@ class InMemoryDealMakerRepository:
             if po.deal_id == deal_id and po.status != "CANCELLED":
                 return po
         return None
+
+    async def list_pos_by_deal(self, deal_id: str) -> list[PoRecord]:
+        """Every live PO of the deal — one per supplier leg (todo 13.4)."""
+        return [po for po in self._pos.values() if po.deal_id == deal_id and po.status != "CANCELLED"]
 
     async def get_po_by_idempotency_key(self, key: str) -> PoRecord | None:
         for po in self._pos.values():
@@ -158,6 +163,13 @@ class MongoDealMakerRepository:
             return None
         doc.pop("_id", None)
         return PoRecord(**doc)
+
+    async def list_pos_by_deal(self, deal_id: str) -> list[PoRecord]:
+        out = []
+        async for doc in self._po.find({"deal_id": deal_id, "status": {"$ne": "CANCELLED"}}).sort("issued_at", 1):
+            doc.pop("_id", None)
+            out.append(PoRecord(**doc))
+        return out
 
     async def get_po_by_idempotency_key(self, key: str) -> PoRecord | None:
         doc = await self._po.find_one({"idempotency_key": key})

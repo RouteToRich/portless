@@ -544,12 +544,31 @@ async def _supplier_owed(deal_id: str) -> float | None:
     """What the supplier is owed in total — the Purchase Order value (best-effort)."""
     try:
         from services.dealmaker.repository import get_repository as _dm_repo  # type: ignore[import]
-        po = await _dm_repo().get_po_by_deal(deal_id)
+        repo = _dm_repo()
+        pos = await repo.list_pos_by_deal(deal_id) if hasattr(repo, "list_pos_by_deal") else []
+        if len([p for p in pos if getattr(p, "leg_id", None)]) > 1:  # a multi-supplier deal: every leg's PO (todo 13.4)
+            return round(sum(float(p.total_value) for p in pos if p.leg_id), 2)
+        po = await repo.get_po_by_deal(deal_id)
         if po is not None and po.total_value:
             return round(float(po.total_value), 2)
     except Exception as exc:  # noqa: BLE001
         logger.debug("EscrowGuard: PO lookup failed for %s: %s", deal_id, exc)
     return None
+
+
+async def _leg_check(deal: Any, req: Any, payouts: list[Any]) -> None:
+    """Multi-supplier deal: a payout goes to one leg's supplier and never above that leg's due."""
+    from shared.orchestration import supplier_legs
+    if not supplier_legs.is_multi(deal):
+        return
+    leg = next((x for x in supplier_legs.active_legs(deal) if f"SUPPLIER-{x.supplier_id}" == req.payee_id), None)
+    if leg is None:
+        raise InvalidDealState(req.deal_id, f"payee {req.payee_id} is no supplier leg of the deal", "payee = a leg's supplier")
+    owed = (await supplier_legs.owed_by_leg(req.deal_id, deal)).get(leg.leg_id, 0.0)
+    done, pend = supplier_legs.paid_by_leg(deal, payouts).get(leg.leg_id, (0.0, 0.0))
+    if done + pend + req.amount > owed + _FUNDING_TOLERANCE:
+        raise InvalidDealState(req.deal_id, f"payout {req.amount:.2f} would pay leg {leg.leg_id} more than its "
+                               f"{owed:.2f} ({done + pend:.2f} paid or pending)", "payout <= that leg's due")
 
 
 async def _net_owed(deal_id: str, owed: float | None) -> float | None:
@@ -698,6 +717,7 @@ async def request_payout(req: PayoutRequest) -> PayoutResponse:
         )
     if req.amount <= 0:
         raise InvalidDealState(req.deal_id, "payout amount <= 0", "amount > 0")
+    await _leg_check(deal, req, await repo.list_payouts_by_deal(req.deal_id))
 
     now = datetime.now(timezone.utc)
     payout_id = _new_payout_id()
@@ -818,8 +838,17 @@ async def handle_payout_webhook(
         # escrow releases) leave the deal CLEARED until the balance is paid.
         owed = await _net_owed(payout.deal_id, updated.total_owed if updated.total_owed is not None
                                else await _supplier_owed(payout.deal_id))
-        completed, pending = _payout_totals(await repo.list_payouts_by_deal(payout.deal_id))
+        all_payouts = await repo.list_payouts_by_deal(payout.deal_id)
+        completed, pending = _payout_totals(all_payouts)
         fully_paid = owed is None or completed >= owed - _FUNDING_TOLERANCE
+        try:  # a multi-supplier deal is PAID only when every leg is paid in full (todo 13.4)
+            from shared.orchestration import supplier_legs
+            _deal = await _fetch_deal(payout.deal_id)
+            if fully_paid and supplier_legs.is_multi(_deal):
+                fully_paid = supplier_legs.every_leg_paid(
+                    _deal, all_payouts, await supplier_legs.owed_by_leg(payout.deal_id, _deal), _FUNDING_TOLERANCE)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("EscrowGuard: leg payment check for %s failed: %s", payout.deal_id, exc)
         balance_due = round(owed - completed, 2) if owed is not None else None
         if fully_paid:
             if await _deal_status(payout.deal_id) != "PAID":

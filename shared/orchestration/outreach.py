@@ -762,6 +762,10 @@ async def advance(deal_id: str) -> dict[str, Any]:
     sent = await start_outreach(deal)
     open_ = [c for c in cands if _status(c) in ("pending", "contacted", "followed_up")]
     exhausted = sent == 0 and not open_ and bool(cands)
+    from shared.orchestration import composition
+    if exhausted and composition.keeps_open(deal):
+        logger.info("Outreach: deal %s — funnel ran out, but live offers keep the prospect open", deal_id)
+        return {"advanced": 0, "exhausted": False, "kept_open": True}
     if exhausted:
         try:
             from shared.bus import get_publisher

@@ -48,6 +48,9 @@ class ThirdPartyOrderRecord(BaseModel):
     empty_returned_at: datetime | None = None
     """The empty container is back at the carrier's depot (carrier event or staff) — detention stops."""
 
+    leg_id: str | None = None
+    """The supplier leg this QC order inspects (multi-supplier deals, todo 13.4)."""
+
     # QC result (populated by webhook, provider poll or operator)
     qc_result: Literal["PASS", "FAIL", "PENDING"] | None = None
     qc_report_url: str | None = None
@@ -123,6 +126,9 @@ class QcBookingRequest(BaseModel):
     inspection_type: str = "PSI"
     """``DUPRO`` / ``PSI`` / ``PEO`` — only a PSI moves the deal (QC_PASSED / QC_FAILED)."""
     idempotency_key: str | None = None
+    leg_id: str | None = None
+    """One supplier leg of a multi-supplier deal (todo 13.4): the inspection is at that leg's
+    facility; the deal passes QC only when every leg passed (supplier_legs.on_leg_qc_result)."""
 
 
 class QcQuoteRequest(BaseModel):

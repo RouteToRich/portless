@@ -260,6 +260,15 @@ async def _apply_update(
         })
         logger.info("ShieldLink: %s result %s (%s) for deal %s", tpo.inspection_type, result, source, tpo.deal_id)
         return {"status": "ok", "result": result, "inspection_type": tpo.inspection_type, "deal_id": tpo.deal_id}
+    if getattr(tpo, "leg_id", None):
+        # Multi-supplier deal (todo 13.4): one leg's report moves only that leg; the deal passes
+        # QC once every live leg passed, and a failed leg never takes the deal into dispute.
+        from shared.orchestration import supplier_legs
+        verdict = await supplier_legs.on_leg_qc_result(tpo.deal_id, tpo.leg_id, result, loading=loading,
+                                                       notes=notes, tpo_id=tpo.tpo_id)
+        if not verdict.get("proceed"):
+            return {"status": "ok", "result": result, "deal_id": tpo.deal_id, "leg_id": tpo.leg_id, **verdict}
+        loading = verdict.get("loading") or loading
     if result == "PASS":
         try:
             await sl._transition_deal(tpo.deal_id, "QC_PASSED", f"QC passed — ref {ext_ref}")

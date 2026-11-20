@@ -293,6 +293,21 @@ async def map_email(
             reason=f"Matched via subject token [BUY:{hit[0]}:{hit[1]}]",
         )
 
+    # ── Step 2a': Subject [LEG:...] token — a supplier leg of a composed deal ──
+    try:
+        from shared.orchestration.composition import parse_leg_token
+        leg_hit = parse_leg_token(subject)
+    except Exception:  # noqa: BLE001
+        leg_hit = None
+    if leg_hit:
+        return MappingResult(
+            leg_deal_id=leg_hit[0],
+            leg_id=leg_hit[1],
+            party="supplier",
+            confidence=MappingConfidence.SUBJECT_TOKEN,
+            reason=f"Matched via subject token [LEG:{leg_hit[0]}:{leg_hit[1]}]",
+        )
+
     # ── Step 2b: Subject [RFQ:...] token — supplier quote, sourcing stage ──
     rfq_id = rfq_id_from_subject(subject)
     if rfq_id:

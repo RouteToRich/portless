@@ -108,6 +108,10 @@ class MappingResult(BaseModel):
     outreach_candidate_id: str | None = None
     """Set when the e-mail is a buyer's reply to a ``[BUY:<deal>:<candidate>]``
     outreach introduction (buyer funnel)."""
+    leg_deal_id: str | None = None
+    leg_id: str | None = None
+    """Set when the e-mail is a supplier's reply on its ``[LEG:<deal>:<leg>]`` thread (one
+    supplier leg of a composed deal: firm order request, PO, reminders)."""
     party: str | None = None
     """'buyer' | 'supplier' — derived from which party was addressed in the outbound email."""
     confidence: MappingConfidence

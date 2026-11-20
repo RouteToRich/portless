@@ -370,6 +370,14 @@ async def _sweep_generic(deal: Any, status: str, now: datetime, counts: dict[str
             counts["exceptions"] += 1
 
 
+def _composition_keeps_open(deal: Any) -> bool:
+    try:
+        from shared.orchestration import composition
+        return composition.keeps_open(deal)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
     """One pass over every non-terminal deal. Returns counters for logging/tests."""
     counts = {"scanned": 0, "reminders": 0, "exceptions": 0}
@@ -408,6 +416,8 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
                 continue  # parked from the desk: no reminders, no stall exception
             elif status == "MATCHING" and _outreach_owns(deal):
                 continue  # the buyer funnel's own follow-up cadence applies
+            elif status in ("DRAFT", "MATCHING") and _composition_keeps_open(deal):
+                continue  # live offers on both sides: the composition agent decides, not the stall clock
             else:
                 await _sweep_generic(deal, status, now, counts)
         except Exception as exc:  # noqa: BLE001 — one bad deal must not stop the sweep
@@ -421,6 +431,18 @@ async def sweep_stalled_deals(now: datetime | None = None) -> dict[str, int]:
             counts["supplier_standby"] = moved
     except Exception as exc:  # noqa: BLE001
         logger.error("DealWatcher: supplier confirmation sweep failed: %s", exc)
+
+    # Deal composition (todo 13.1-13.4): firm-offer validity, silent supplier legs, near-expiry
+    # re-runs, and per-leg reminders after the PO.
+    try:
+        from shared.orchestration import composition, firm_offers, supplier_legs
+        for name, res in (("firm_offers", await firm_offers.sweep(now)), ("composition", await composition.sweep(now)),
+                          ("legs", await supplier_legs.sweep(now))):
+            for key, value in res.items():
+                if value:
+                    counts[f"{name}_{key}"] = value
+    except Exception as exc:  # noqa: BLE001
+        logger.error("DealWatcher: composition sweeps failed: %s", exc)
 
     # Outreach / RFQ e-mails that failed in transport: retried on the back-off schedule.
     try:

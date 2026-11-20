@@ -909,8 +909,9 @@ async def receive_quote(payload: QuoteIntakeRequest) -> QuoteRecord:
     await _record_offer(payload, quote, verification)
 
     from shared.orchestration import matchmaking
+    from shared.orchestration.outreach import composition_enabled
     if (re_scored_decision == "SOURCE" and deal and deal.get("status") == "MATCHING"
-            and not matchmaking.enabled() and registry_checked(verification)):
+            and not matchmaking.enabled() and not composition_enabled() and registry_checked(verification)):
         # An unchecked registry never auto-sources: the CONFIRM_SUPPLIER_SELECTION gate
         # (forced L0, flag registry_unchecked) decides instead.
         await _set_supplier_party(payload)

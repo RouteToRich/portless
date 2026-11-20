@@ -58,7 +58,8 @@ async def stale(now: datetime | None = None) -> list[dict[str, Any]]:
     out = []
     for d in await get_repository().list_active(limit=5000):
         status = str(getattr(getattr(d, "status", ""), "value", getattr(d, "status", "")))
-        if status not in PROSPECT_STATUSES or is_parked(d, now):
+        from shared.orchestration import composition
+        if status not in PROSPECT_STATUSES or is_parked(d, now) or composition.keeps_open(d):
             continue
         last = _last_activity(d)
         if last is not None and last < cut:

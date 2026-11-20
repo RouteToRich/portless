@@ -200,12 +200,99 @@ def leak_findings(body: str, party: str, session: Any, deal: Any | None = None, 
         core = _name_core(name)
         if len(core) >= 4 and re.search(rf"\b{re.escape(core)}\b", re.sub(r"[^a-z0-9 ]+", " ", text)):
             found.append(f"{other} name '{name}'")
+    if deal is not None and _composition_on():
+        to = getattr(session, "buyer_email" if party == "buyer" else "seller_email", None)
+        found.extend(prospect_leak_findings(body, to, party, deal))
     if check_prices:
         own = other_side_prices(session, other)  # this party's own figures are fine to mention
         for price in other_side_prices(session, party):
             if any(abs(n - price) < 0.5 for n in _numbers(body)) and not any(abs(price - o) < 0.5 for o in own):
                 found.append(f"{other}'s price {price:g}")
     return sorted(set(found))
+
+
+# ---------------------------------------------------------------------------
+# N parties per prospect (deal composition, todo 13.2)
+# ---------------------------------------------------------------------------
+
+_COUNT_WORDS = r"(?:\d+|two|three|four|five|several|multiple|many|other|another|alternative|second|additional)"
+_COUNT_DISCLOSURE = {
+    # a buyer never learns how many suppliers there are
+    "buyer": re.compile(rf"\b{_COUNT_WORDS}\s+(?:indian\s+)?(?:suppliers?|mills?|factories|manufacturers?|exporters?|sources?|vendors?)\b",
+                        re.IGNORECASE),
+    # a supplier never learns about the buyers or the other suppliers
+    "supplier": re.compile(rf"\b{_COUNT_WORDS}\s+(?:buyers?|customers?|importers?|clients?|suppliers?|mills?|factories|"
+                           rf"manufacturers?|exporters?|vendors?)\b", re.IGNORECASE),
+}
+
+
+def prospect_parties(deal: Any) -> list[dict[str, Any]]:
+    """Every company of the prospect / deal: buyer candidates, supplier offers, firm offers,
+    supplier legs and the parties — role, id, name and known addresses."""
+    rows: list[dict[str, Any]] = []
+
+    def add(role: str, pid: Any, name: Any, *addresses: Any) -> None:
+        rows.append({"role": role, "id": str(pid or ""), "name": name or "",
+                     "addresses": {norm(a) for a in addresses if is_real_address(a)}})
+
+    for c in getattr(deal, "buyer_candidates", None) or []:
+        add("buyer", c.candidate_id, c.legal_name, getattr(c, "email", None), getattr(c, "reply_address", None))
+    for o in getattr(deal, "supplier_offers", None) or []:
+        add("supplier", o.supplier_id, o.company_name, o.email)
+    for o in getattr(deal, "firm_offers", None) or []:
+        add(o.side, o.counterparty_id, o.company_name, o.email)
+    for leg in getattr(deal, "supplier_legs", None) or []:
+        add("supplier", leg.supplier_id, leg.company_name, leg.email)
+    for p in getattr(deal, "parties", None) or []:
+        if _role(p) in ("buyer", "supplier"):
+            add(_role(p), getattr(p, "party_id", None), getattr(p, "legal_name", None), getattr(p, "email", None))
+    return rows
+
+
+def prospect_leak_findings(body: str, to_address: str | None, side: str, deal: Any) -> list[str]:
+    """What of ANY other company of the prospect shows up in an e-mail to ``to_address`` (the
+    ``side``): every supplier and every other buyer for a buyer; every buyer and every other
+    supplier for a supplier. Also a count of the other side ("two other suppliers")."""
+    if not body or deal is None or side not in OTHER:
+        return []
+    text = body.lower()
+    plain = re.sub(r"[^a-z0-9 ]+", " ", text)
+    rows = prospect_parties(deal)
+    me_ids = {r["id"] for r in rows if r["role"] == side and r["id"]
+              and any(same_owner(to_address, a) for a in r["addresses"])}
+    me_names = {_name_core(r["name"]) for r in rows if r["id"] in me_ids}
+    found: list[str] = []
+    for r in rows:
+        if r["role"] == side and (r["id"] in me_ids or (to_address and any(same_owner(to_address, a) for a in r["addresses"]))):
+            continue
+        if r["role"] == side:
+            who = "another " + side
+        else:
+            who = "a " + r["role"]
+        for a in r["addresses"]:
+            if to_address and same_owner(a, to_address):
+                continue
+            if a in text:
+                found.append(f"{who}: e-mail address {a}")
+            d = domain(a)
+            if (d and d not in FREEMAIL and d != domain(to_address)
+                    and re.search(rf"(?<![\w.-]){re.escape(d)}(?![\w-])", text)):
+                found.append(f"{who}: domain {d}")
+        core = _name_core(r["name"])
+        if len(core) >= 4 and core not in me_names and re.search(rf"\b{re.escape(core)}\b", plain):
+            found.append(f"{who}: name {r['name']!r}")
+    m = _COUNT_DISCLOSURE[side].search(body)
+    if m:
+        found.append(f"tells the {side} about other parties ({m.group(0)!r})")
+    return sorted(set(found))
+
+
+def _composition_on() -> bool:
+    try:
+        from shared.orchestration.outreach import composition_enabled
+        return composition_enabled()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +330,8 @@ def preflight(record: Any, session: Any | None, deal: Any | None, thread: list[A
                        f"(current: {', '.join(sorted(addrs[party]))})")
 
     leaks = leak_findings(record.body, party, session, deal, addrs=addrs, check_prices=False)
+    if deal is not None and _composition_on():
+        leaks = sorted(set(leaks) | set(prospect_leak_findings(record.body, to, party, deal)))
     if leaks:
         reasons.append("body mentions the other side: " + "; ".join(leaks))
 
@@ -268,13 +357,17 @@ def preflight(record: Any, session: Any | None, deal: Any | None, thread: list[A
 # Memory scoping for the drafting agents
 # ---------------------------------------------------------------------------
 
-def knowledge_filter(role: str, counterparty_addresses: set[str]) -> Callable[[dict[str, Any]], bool]:
+def knowledge_filter(role: str, counterparty_addresses: set[str],
+                     prospect_addresses: set[str] | None = None) -> Callable[[dict[str, Any]], bool]:
     """Accept only memory that is about THIS counterparty or the product.
 
     Rejected: deal summaries (margins, the other side's price), graph facts (no
     metadata to vet), e-mails with the other side or with other companies,
-    notes about the other side."""
+    notes about the other side — and, with N parties per prospect, notes about
+    any other company of the prospect (``prospect_addresses``)."""
     other = OTHER.get(role, "")
+    others = {a for a in (prospect_addresses or set())
+              if not any(same_owner(a, mine) for mine in counterparty_addresses)}
 
     def accept(result: dict[str, Any]) -> bool:
         meta = result.get("metadata") or {}
@@ -282,6 +375,11 @@ def knowledge_filter(role: str, counterparty_addresses: set[str]) -> Callable[[d
         if kind == "product":
             return True
         if kind == "note":
+            about = norm(meta.get("subject_address"))
+            if about and any(same_owner(about, a) for a in others):
+                return False
+            if about and counterparty_addresses and not any(same_owner(about, a) for a in counterparty_addresses):
+                return False
             return meta.get("subject_type") in (role, "product", "market")
         if kind == "email":
             if meta.get("party") == other:

@@ -271,6 +271,15 @@ async def ready_for_pi(deal_id: str, *, agreed_price: float, quantity_mt: float 
                        market: str | None) -> bool:
     """True when the PI may go out. Otherwise makes sure the supplier has a firm
     order request in front of it and returns False (the PI follows its confirmation)."""
+    try:  # a composed deal (composition.py): its legs' own firm order requests replace this one
+        from services.deals.service import get_deal as _get  # type: ignore[import]
+        _deal = await _get(deal_id)
+        if (getattr(_deal, "composition", None) or {}).get("approved") and getattr(_deal, "supplier_legs", None):
+            from shared.orchestration import supplier_legs
+            live = supplier_legs.active_legs(_deal)
+            return bool(live) and all(x.status == "confirmed" for x in live)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("SupplierCommitment: composition check for %s failed: %s", deal_id, exc)
     if not enabled():
         return True
     rec = await get(deal_id)

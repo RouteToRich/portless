@@ -164,7 +164,7 @@ Feature: shared/orchestration/autonomy_policy — unit tests
     @unit @final_gaps
     Scenario: Mongo collection
       # tests/test_final_gaps.py::TestAutonomyPolicy::test_mongo_collection
-      Given within patch('shared.config.settings', new=SimpleNamespace(mongo_uri='u', mongo_db_name='d')), patch('motor.motor_asyncio.AsyncIOMotorClient', side_effect=lambda *_a: AsyncMongoMockCli…
+      Given within patch('shared.config.settings', new=SimpleNamespace(mongo_uri='u', mongo_db_name='d')), patch('motor.motor_asyncio.AsyncIOMotorClient', side_effect=lambda *_a, **_k: AsyncMongoM…
       When the test body runs
       Then au._mongo_collection() is not None
 

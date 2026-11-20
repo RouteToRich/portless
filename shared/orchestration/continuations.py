@@ -1675,12 +1675,18 @@ async def on_escrow_funded(event: DomainEvent) -> None:
             raise RuntimeError(
                 f"no supplier price available for deal {deal_id} — PO gate needs one"
             )
+        from shared.orchestration import supplier_legs
+        legs_note = ""
+        if supplier_legs.is_multi(deal):
+            legs = supplier_legs.active_legs(deal)
+            legs_note = " — one PO per supplier leg: " + "; ".join(
+                f"{x.company_name or x.supplier_id} {x.quantity_mt:g} MT at {x.price_usd_per_mt:,.2f}" for x in legs)
         from datetime import date, timedelta
         payload = event.payload or {}
         overpaid = (float(payload.get("funded_amount") or 0) - float(payload.get("amount") or 0))             if payload.get("funded_amount") is not None and payload.get("amount") is not None else 0.0
         await _create_gate(
             deal_id, "ISSUE_PO",
-            summary=f"Escrow funded — issue PO for deal {deal_id} at ${supplier_ask}/unit"
+            summary=f"Escrow funded — issue PO for deal {deal_id} at ${supplier_ask}/unit" + legs_note
                     + (f" (buyer overpaid {overpaid:,.2f} — return the excess)" if overpaid > 0.01 else ""),
             risk_flags=["escrow_overpaid"] if overpaid > 0.01 else None,
             financial_impact_usd=round(supplier_ask * quantity_mt, 2),
@@ -1748,7 +1754,15 @@ async def on_po_issued(event: DomainEvent) -> None:
     deal = await _get_deal_in_status(deal_id, "PO_ISSUED", "PO_ISSUED→QC")
     if deal is None:
         return
-    from shared.orchestration import qc_schedule, supplier_commitment
+    from shared.orchestration import qc_schedule, supplier_commitment, supplier_legs
+    if supplier_legs.is_multi(deal):
+        # todo 13.4: one PO per leg — each supplier hears about its own PO only; each leg's
+        # inspection is booked once that leg acknowledged (or at once without PO_ACK_REQUIRED).
+        await _best_effort("PO_ISSUED→NOTIFY_LEGS", deal_id, supplier_legs.notify_pos(deal_id))
+        await _best_effort("PO_ISSUED→QC_LEGS", deal_id, supplier_legs.book_qc_when_ready(deal_id))
+        await _best_effort("PO_ISSUED→TRANCHE_T1", deal_id,
+                           _tranche_gate(deal, "PO_ISSUED", [(event.payload or {}).get("po_id") or ""], "PO_ISSUED→TRANCHE_T1"))
+        return
     if supplier_commitment.po_ack_required():
         _, quantity_mt = await _negotiation_numbers(deal_id, deal)
         await _best_effort("PO_ISSUED→AWAIT_ACK", deal_id, supplier_commitment.await_po_ack(deal_id, quantity_mt))
@@ -2294,6 +2308,9 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
     created. Used at CLEARED (``first``) and again after every later tranche
     release / settlement until the supplier is paid in full."""
     deal_id = deal.deal_id
+    from shared.orchestration import supplier_legs
+    if supplier_legs.is_multi(deal):
+        return await _leg_payout_gates(deal, stage, first=first)
     supplier_ask, quantity_mt = await _negotiation_numbers(deal_id, deal)
     if first and not supplier_ask:
         raise RuntimeError(f"no supplier price available for deal {deal_id} — payout gate needs one")
@@ -2359,6 +2376,53 @@ async def _supplier_payout_gate(deal, stage: str, first: bool = False) -> bool:
         **({"autonomy_level": "L0"} if bank_flags else {}),
     )
     return True
+
+
+async def _leg_payout_gates(deal, stage: str, first: bool = False) -> bool:
+    """Multi-supplier deal (todo 13.4): one RELEASE_SUPPLIER_PAYOUT gate per leg, the released
+    funds split pro rata by leg value, never above a leg's own due (four-eyes and the compliance
+    money block apply to each gate as to any payout)."""
+    from services.escrow_guard.repository import get_repository as _eg_repo  # type: ignore[import]
+    from shared.orchestration import supplier_legs
+    deal_id = deal.deal_id
+    owed = await supplier_legs.owed_by_leg(deal_id, deal)
+    _o, _paid, _pend, available, released, reconciled, retained = await _supplier_owed_and_paid(deal, None, 0.0)
+    payouts = await _eg_repo().list_payouts_by_deal(deal_id)
+    paid = supplier_legs.paid_by_leg(deal, payouts)
+    plan = supplier_legs.payout_plan(owed, paid, available)
+    try:
+        from services.hitl_approval.service import list_approvals  # type: ignore[import]
+        pending = {(a.callback_payload or {}).get("leg_id") for a in await list_approvals(status="PENDING", deal_id=deal_id)
+                   if a.action == "RELEASE_SUPPLIER_PAYOUT"}
+    except Exception:  # noqa: BLE001
+        pending = set()
+    created = False
+    for leg in supplier_legs.active_legs(deal):
+        amount = plan.get(leg.leg_id, 0.0)
+        if amount <= 0.01 or leg.leg_id in pending:
+            continue
+        done, pend = paid.get(leg.leg_id, (0.0, 0.0))
+        due = round(owed[leg.leg_id] - done - pend, 2)
+        kind = "supplier_payout" if (done == 0 and pend == 0) else "supplier_balance"
+        await _create_gate(
+            deal_id, "RELEASE_SUPPLIER_PAYOUT",
+            summary=(f"{'Cargo cleared' if first else 'Escrow released funds'} — pay leg {leg.leg_id} "
+                     f"({leg.company_name or leg.supplier_id}) ${amount:,.2f}"
+                     + (f" of ${due:,.2f} still owed (its share of the released funds)" if amount < due - 0.01 else "")
+                     + f" for deal {deal_id}"),
+            financial_impact_usd=amount,
+            callback_payload={
+                "deal_id": deal_id, "payee_id": f"SUPPLIER-{leg.supplier_id}", "amount": amount,
+                "total_owed": round(sum(owed.values()), 2), "kind": kind, "leg_id": leg.leg_id,
+                "retained_until_acceptance": retained,
+                "idempotency_key": f"auto-payout-{deal_id}-{leg.leg_id}-{int(round(done + pend))}-{int(round(released))}",
+            },
+            idempotency_key=f"auto-payout-gate-{deal_id}-{leg.leg_id}-{int(round(released))}-{int(round(done + pend))}",
+            deal=deal, conditions_ok=reconciled,
+            risk_flags=["money_movement", "supplier_leg"] + (["partial_payout_capped_by_escrow"] if amount < due - 0.01 else []),
+        )
+        created = True
+    return created
 
 
 # ---------------------------------------------------------------------------

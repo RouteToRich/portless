@@ -769,6 +769,8 @@ async def check_trade(
         rel = check_related_parties(deal)
         if rel:
             findings.append(rel)
+        from shared.orchestration import supplier_legs
+        findings += supplier_legs.compliance_findings(deal)
         findings += await check_supplier_record(deal)
         findings += await check_prices(deal, buyer_price=buyer_price, supplier_price=supplier_price)
         findings += await check_registrations(deal)
@@ -997,6 +999,12 @@ async def check_shipment(deal) -> CheckResult:
                                     data={"loaded_hs": loading.hs_code}))
         pi, po = await _pi_po(deal.deal_id)
         ordered = getattr(po, "quantity_mt", None) or getattr(pi, "quantity_mt", None)
+        from shared.orchestration import supplier_legs
+        if supplier_legs.is_multi(deal):
+            # the total loaded against the PI, and each leg against its own PO
+            ordered = getattr(pi, "quantity_mt", None) or sum(x.quantity_mt for x in supplier_legs.active_legs(deal))
+            findings += supplier_legs.shipment_findings(deal, tol)
+            po = None
         if loading.loaded_quantity_mt is None:
             findings.append(Finding(code="shipment_qty_unknown", severity="review",
                                     message="inspector did not record the loaded quantity"))

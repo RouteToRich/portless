@@ -154,6 +154,78 @@ class SupplierOffer(BaseModel):
     """``asked`` · ``confirmed`` · ``expired`` (asked, no answer before the end)."""
 
 
+class FirmOffer(BaseModel):
+    """Where a negotiation thread ends with deal composition on (todo 13.2): a firm, dated offer
+    from one counterparty, "subject to final order confirmation". Buyer: Q MT of grade G at P in
+    its incoterm, shipment by D, valid until V. Supplier: up to Q MT of grade G at P FOB port Y,
+    ready by D, valid until V. The composition agent (composition.py) builds deals from these."""
+
+    offer_id: str
+    side: Literal["buyer", "supplier"]
+    counterparty_id: str
+    """Buyer: the candidate id. Supplier: the supplier id."""
+    company_name: str = ""
+    email: str | None = None
+    grade: str | None = None
+    quantity_mt: float | None = None
+    """Buyer: what it wants. Supplier: the most it can deliver by the date."""
+    min_quantity_mt: float | None = None
+    """Supplier MOQ."""
+    price_usd_per_mt: float | None = None
+    incoterm: str | None = None
+    port: str | None = None
+    """Buyer: destination port. Supplier: port of loading."""
+    port_km: float | None = None
+    date_by: datetime | None = None
+    """Buyer: shipment by. Supplier: goods ready by."""
+    valid_until: datetime | None = None
+    status: Literal["live", "expired", "withdrawn", "used"] = "live"
+    verified: bool | None = None
+    source: str = "reply"
+    """reply (read from its e-mail) · staff · derived (from the requirement / quote on the board)."""
+    origin_deal_id: str | None = None
+    received_at: datetime | None = None
+    reminder_sent_at: datetime | None = None
+    expired_at: datetime | None = None
+    spec: dict[str, Any] = Field(default_factory=dict)
+    facility_address: str | None = None
+
+
+class SupplierLeg(BaseModel):
+    """One supplier's share of a deal (todo 13.4). A one-supplier deal has one leg (derived from
+    the supplier party when ``DealRecord.supplier_legs`` is empty — supplier_legs.legs_for)."""
+
+    leg_id: str
+    supplier_id: str
+    company_name: str = ""
+    email: str | None = None
+    quantity_mt: float
+    price_usd_per_mt: float
+    price_basis: str = "quoted"
+    incoterm: str = "FOB"
+    port_of_loading: str | None = None
+    ready_date: str | None = None
+    facility_address: str | None = None
+    offer_id: str | None = None
+    status: Literal["proposed", "requested", "confirmed", "declined", "no_reply", "replaced", "cancelled"] = "proposed"
+    requested_at: datetime | None = None
+    confirmed_at: datetime | None = None
+    po_id: str | None = None
+    po_ack: str | None = None
+    """None · awaiting · acknowledged"""
+    po_ack_at: datetime | None = None
+    reminders: int = 0
+    last_reminder_at: datetime | None = None
+    qc_order_ids: list[str] = Field(default_factory=list)
+    qc_result: Literal["PASS", "FAIL"] | None = None
+    loaded_mt: float | None = None
+    containers: list[str] = Field(default_factory=list)
+    seals: list[str] = Field(default_factory=list)
+    paid_usd: float = 0.0
+    replaced_leg_id: str | None = None
+    note: str | None = None
+
+
 class BuyerCandidate(BaseModel):
     """One buyer the scan identified for this deal — the outreach funnel works
     through them in order until one is interested (see
@@ -304,6 +376,13 @@ class DealRecord(BaseModel):
     profit block: buyer / supplier price and basis, lot, margin, chance of
     closing, expected profit, flags). Kept unchanged, so estimate → negotiated →
     realised can be compared (trade_min.accuracy)."""
+    firm_offers: list[FirmOffer] = Field(default_factory=list)
+    """Firm offers read from the counterparties' own threads (deal composition, todo 13.2)."""
+    supplier_legs: list[SupplierLeg] = Field(default_factory=list)
+    """The suppliers of the deal and each one's share (todo 13.4). Empty → one leg from the supplier party."""
+    composition: dict[str, Any] | None = None
+    """The composition agent's latest answer (composition.py): best combination, best single
+    supplier, alternatives, close now / wait, the approved gate."""
 
     # ── Parties ───────────────────────────────────────────────────────────
     parties: list[Party] = Field(default_factory=list)

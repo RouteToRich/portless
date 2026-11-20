@@ -182,6 +182,10 @@ class IssuePoRequest(BaseModel):
     # Idempotency — re-submitting the same key returns the existing PO
     idempotency_key: str | None = None
 
+    leg_id: str | None = None
+    """One supplier leg of a multi-supplier deal (todo 13.4): the first leg's PO moves the deal
+    to PO_ISSUED; the others are issued while it already is."""
+
 
 class PoRecord(BaseModel):
     """Purchase Order as stored in the repository."""
@@ -221,6 +225,8 @@ class PoRecord(BaseModel):
 
     # Idempotency
     idempotency_key: str | None = None
+    leg_id: str | None = None
+    """The supplier leg this PO is for (multi-supplier deals, todo 13.4)."""
 
 
 class PoResponse(BaseModel):

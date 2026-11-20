@@ -32,7 +32,7 @@ MONEY = {
     "test_escrow_providers.py", "test_money_continuations.py", "test_supplier_retention.py",
     "test_trade_costs.py", "test_closed_margin_alert.py", "test_compliance_money_block.py",
     "test_approval_gate_enforcement.py", "test_platform_controls.py", "test_dealmaker.py",
-    "test_batch_c.py", "test_supplier_commitment.py",
+    "test_batch_c.py", "test_supplier_commitment.py", "test_deal_composition.py",
 }
 INTEGRATION = {
     "test_health.py", "test_routes_and_clients.py", "test_repositories_contract.py",

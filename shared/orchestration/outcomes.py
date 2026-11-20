@@ -50,7 +50,7 @@ _COMPLETION = {"PAID": "completed", "DISPUTE": "disputed", "REFUNDED": "refunded
 
 class Outcome(BaseModel):
     outcome_id: str = Field(default_factory=lambda: f"OUT-{uuid4().hex[:12].upper()}")
-    kind: Literal["match", "indicative_offer"] = "match"
+    kind: Literal["match", "indicative_offer", "composition"] = "match"
     deal_id: str
     hs_code: str | None = None
     market: str | None = None
@@ -90,6 +90,10 @@ class Outcome(BaseModel):
     resolved_at: datetime | None = None
     completion: str | None = None
     completed_at: datetime | None = None
+    # deal composition (composition.py): predicted vs realised margin, for calibration
+    legs: int | None = None
+    predicted_margin_usd: float | None = None
+    realized_margin_usd: float | None = None
 
 
 _memory: dict[str, Outcome] = {}
@@ -185,6 +189,26 @@ async def record_proposal(deal: Any, pair: Any, approval_id: str | None) -> Outc
         return None
 
 
+async def record_composition(deal: Any, combo: Any, approval_id: str | None) -> Outcome | None:
+    """An approved deal composition: what it predicted (margin, chance), for comparison with
+    what the deal realises (``on_status`` fills the realised margin at PAID)."""
+    try:
+        o = Outcome(
+            kind="composition", deal_id=deal.deal_id, hs_code=deal.hs_code, market=getattr(deal, "market", None),
+            candidate_id=combo.buyer_id, buyer_name=combo.buyer_name, offer_id=combo.buyer_offer_id,
+            supplier_id=",".join(leg.supplier_id for leg in combo.legs),
+            supplier_name=" + ".join(leg.company_name or leg.supplier_id for leg in combo.legs),
+            approval_id=approval_id, predicted_probability=combo.probability, margin_pct=combo.margin_pct,
+            buyer_price=combo.buyer_price_usd_per_mt, quantity_mt=combo.quantity_mt, legs=len(combo.legs),
+            predicted_margin_usd=combo.margin_usd, decision="approved", decided_at=datetime.now(timezone.utc),
+        )
+        await _save(o)
+        return o
+    except Exception as exc:  # noqa: BLE001 — tracking never blocks the deal
+        logger.warning("Outcomes: composition not recorded for %s: %s", getattr(deal, "deal_id", "?"), exc)
+        return None
+
+
 async def mark_decision(deal_id: str, candidate_id: str, offer_id: str, decision: str) -> None:
     try:
         now = datetime.now(timezone.utc)
@@ -227,10 +251,13 @@ async def on_status(deal: Any, status: str, reason: str | None = None) -> None:
     """Follow the deal after a match: signed / failed, then completion."""
     try:
         now = datetime.now(timezone.utc)
-        for o in await all_outcomes(kind="match", deal_id=deal.deal_id):
+        rows = await all_outcomes(kind="match", deal_id=deal.deal_id) + await all_outcomes(kind="composition", deal_id=deal.deal_id)
+        for o in rows:
             if o.decision != "approved":
                 continue
             upd: dict[str, Any] = {}
+            if o.kind == "composition" and status == "PAID" and getattr(deal, "realized_margin_usd", None) is not None:
+                upd["realized_margin_usd"] = float(deal.realized_margin_usd)
             if o.result == "open" and status == _SIGNED:
                 upd.update({"result": "signed", "result_status": status, "resolved_at": now})
             elif o.result == "open" and status in _FAILED_BEFORE_SIGN:

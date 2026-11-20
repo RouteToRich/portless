@@ -53,7 +53,16 @@ async def _cb_approve_transport_document(deal_id: str, payload: dict[str, Any]) 
 
 
 async def _cb_issue_po(deal_id: str, payload: dict[str, Any]) -> dict | None:
-    """Continue: issue Purchase Order after HITL approval."""
+    """Continue: issue Purchase Order after HITL approval (one per supplier leg on a
+    multi-supplier deal)."""
+    from shared.orchestration import supplier_legs
+    try:
+        from services.deals.service import get_deal  # type: ignore[import]
+        multi = supplier_legs.is_multi(await get_deal(deal_id))
+    except Exception:  # noqa: BLE001 — no deal record readable: the one-supplier path decides
+        multi = False
+    if multi:
+        return await supplier_legs.issue_pos(deal_id, payload)
     from services.dealmaker.service import issue_po  # type: ignore[import]
     from services.dealmaker.schemas import IssuePoRequest  # type: ignore[import]
     result = await issue_po(IssuePoRequest(**payload))
@@ -140,6 +149,20 @@ async def _rcb_confirm_match(deal_id: str, payload: dict[str, Any]) -> dict | No
 
     await outcomes.mark_decision(deal_id, payload.get("candidate_id", ""), payload.get("offer_id", ""), "rejected")
     return {"deal_id": deal_id, "status": "declined"}
+
+
+async def _cb_confirm_deal_composition(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """The approved combination becomes the deal: buyer party, supplier legs, leg requests."""
+    from shared.orchestration import composition
+
+    return await composition.approve(deal_id, payload)
+
+
+async def _rcb_confirm_deal_composition(deal_id: str, payload: dict[str, Any]) -> dict | None:
+    """Combination not taken — the prospect stays open; this combination is not proposed again."""
+    from shared.orchestration import composition
+
+    return await composition.reject(deal_id, payload)
 
 
 async def _rcb_send_buyer_outreach(deal_id: str, payload: dict[str, Any]) -> dict | None:
@@ -261,7 +284,11 @@ async def _cb_confirm_pi_acceptance(deal_id: str, payload: dict[str, Any]) -> di
 
 
 async def _cb_confirm_supplier_order(deal_id: str, payload: dict[str, Any]) -> dict | None:
-    """The supplier confirmed the firm order → committed price recorded, PI issued."""
+    """The supplier confirmed the firm order → committed price recorded, PI issued.
+    A composed deal's leg (``leg_id``): that leg is confirmed; the PI follows the last one."""
+    if payload.get("leg_id"):
+        from shared.orchestration import composition
+        return await composition.confirm_leg(deal_id, payload["leg_id"])
     from shared.orchestration import supplier_commitment
     pi = await supplier_commitment.record_confirmed(
         deal_id, supplier_id=payload["supplier_id"], price=float(payload["price"]),
@@ -435,6 +462,7 @@ _CALLBACK_MAP = {
     "SEND_INDICATIVE_OFFER": _cb_send_indicative_offer,
     "SEND_BEST_AND_FINAL": _cb_send_best_and_final,
     "CONFIRM_MATCH": _cb_confirm_match,
+    "CONFIRM_DEAL_COMPOSITION": _cb_confirm_deal_composition,
     "APPROVE_SB_CHECKLIST": _cb_approve_sb_checklist,
 }
 
@@ -531,6 +559,7 @@ _REJECT_CALLBACK_MAP = {
     "SEND_INDICATIVE_OFFER": _rcb_log_only,
     "SEND_BEST_AND_FINAL": _rcb_log_only,
     "CONFIRM_MATCH": _rcb_confirm_match,
+    "CONFIRM_DEAL_COMPOSITION": _rcb_confirm_deal_composition,
     # The checklist needs a fix — the CHA is asked again on its thread; nothing is filed.
     "APPROVE_SB_CHECKLIST": _rcb_log_only,
 }

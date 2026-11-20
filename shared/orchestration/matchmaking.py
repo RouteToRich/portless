@@ -930,6 +930,14 @@ async def evaluate(deal_id: str) -> dict[str, Any]:
     board = await build_board(deal)
     out: dict[str, Any] = {"pairs": len(board.pairs), "gates": []}
     confirmable = [p for p in board.pairs if p.feasible and p.firm and p.probability >= min_probability()]
+    from shared.orchestration import composition
+    if composition.enabled():
+        # Deal composition (todo 13.1): no pair is fixed before negotiation. Every interested
+        # buyer and quoting supplier stays a candidate; the composition agent chooses the deal
+        # (one buyer × 1..N suppliers) from their firm offers. Indicative offers still go out —
+        # they turn a buyer's interest into a price.
+        out["composition"] = await composition.run(deal_id, reason="match board re-evaluated")
+        confirmable = []
     done: set[str] = set()
     if confirmable:
         # The board is sorted by expected value: the first firm pair sells to the buyer who pays
@@ -991,6 +999,7 @@ async def handle_buyer_reply(deal: Any, cand: Any, from_address: str, body: str,
     except Exception:  # noqa: BLE001 - the default box size applies
         pass
     fields = await extraction.extract_buyer(new_text, product=_product_label(deal), container_mt=container_mt)
+    reply_text = new_text
     try:
         from shared import catalogue, product_spec
         spec = product_spec.read_attributes(catalogue.line_for(str(getattr(deal, "hs_code", "") or "")), new_text)
@@ -1063,6 +1072,23 @@ async def handle_buyer_reply(deal: Any, cand: Any, from_address: str, body: str,
             quantity_mt=merged.get("quantity_mt"), deal_id=deal.deal_id, counterparty_id=cand.candidate_id,
         ))
     status = updates.get("status", _status(cand))
+    req_now = updates["requirement"]
+    if (price and status in ("interested", "selected") and req_now.quantity_mt
+            and req_now.target_price_basis in _FIRM_BUYER):
+        try:  # deal composition: the buyer's firm offer, validity read from its own reply
+            from shared.orchestration import firm_offers
+            from datetime import timedelta as _td
+            await firm_offers.capture_from_reply(deal, "buyer", cand.candidate_id, reply_text, base={
+                "company_name": cand.legal_name, "email": from_address, "grade": req_now.grade,
+                "quantity_mt": req_now.quantity_mt, "price_usd_per_mt": float(price),
+                "incoterm": req_now.target_price_incoterm or req_now.incoterm or "CIF",
+                "port": req_now.destination_port, "spec": dict(req_now.spec or {}),
+                "date_by": (now + _td(days=req_now.delivery_by_days)) if req_now.delivery_by_days else None,
+                "verified": (getattr(cand, "validation_status", None) == "verified")
+                if getattr(cand, "validation_status", None) else None,
+            })
+        except Exception as exc:  # noqa: BLE001 — the reply is recorded whatever happens here
+            logger.warning("Matchmaking: buyer firm offer not captured for %s: %s", deal.deal_id, exc)
     result: dict[str, Any] = {"verdict": verdict, "candidate_id": cand.candidate_id, "matched": True,
                               "status": status, "requirement": updates["requirement"].model_dump(mode="json"),
                               "indicative_offer_response": getattr(updates.get("indicative_offer"), "response", None)}

@@ -386,6 +386,8 @@ async def _book_qc(req: QcBookingRequest, *, reinspection: bool = False,
     elif reinspection:
         if deal_status != "SUPPLIER_DISPATCH_READY":
             raise InvalidDealState(req.deal_id, deal_status, "SUPPLIER_DISPATCH_READY")
+    elif req.leg_id and deal_status == "SUPPLIER_DISPATCH_READY":
+        pass  # a further leg of a multi-supplier deal: the first leg's booking moved the deal already
     else:
         if deal_status != "PO_ISSUED":
             raise InvalidDealState(req.deal_id, deal_status, "PO_ISSUED")
@@ -441,6 +443,9 @@ async def _book_qc(req: QcBookingRequest, *, reinspection: bool = False,
                             + (f"; lab tests for {', '.join(lab)} (recent import refusals in the destination)" if lab else ""))
     hs_code = req.hs_code or getattr(deal, "hs_code", "")
     supplier = _supplier_facts(deal)
+    if req.leg_id:
+        from shared.orchestration import supplier_legs
+        supplier = supplier_legs.site_facts(deal, req.leg_id) or supplier
     connector = get_qc_connector(provider)
 
     # Create PENDING record first for crash-safety
@@ -457,6 +462,7 @@ async def _book_qc(req: QcBookingRequest, *, reinspection: bool = False,
         inspection_type=phase,
         note=note,
         idempotency_key=req.idempotency_key,
+        leg_id=req.leg_id,
         created_at=now,
         updated_at=now,
     )
@@ -521,8 +527,11 @@ async def _book_qc(req: QcBookingRequest, *, reinspection: bool = False,
         "updated_at": datetime.now(timezone.utc),
     })
     await repo.save(updated)
+    if req.leg_id:
+        from shared.orchestration import supplier_legs
+        await supplier_legs.add_qc_order(req.deal_id, req.leg_id, tpo_id)
 
-    if not reinspection and phase == "PSI":
+    if not reinspection and phase == "PSI" and deal_status == "PO_ISSUED":
         await _transition_deal(req.deal_id, "SUPPLIER_DISPATCH_READY", f"QC booked — ref {result.get('ext_ref')}")
     await _emit(EventTopic.QC_BOOKED, req.deal_id, {
         "tpo_id": tpo_id,

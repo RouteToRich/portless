@@ -351,9 +351,11 @@ async def _knowledge_context(session: Any, role: str) -> str:
         # and the product — never the other side's e-mails, deal summaries
         # with margins, or another buyer's / supplier's thread.
         mine = party_addresses(session, deal).get(role, set())
+        from .email_safety import prospect_parties
+        everyone = {a for r in prospect_parties(deal) for a in r["addresses"]} if deal is not None else set()
         return await context_for(purpose=f"negotiation with the {role}", hs_code=session.product_code,
                                  market=market, counterparties=[name, who], max_chars=1800,
-                                 accept=knowledge_filter(role, mine))
+                                 accept=knowledge_filter(role, mine, everyone))
     except Exception:  # noqa: BLE001
         return ""
 
